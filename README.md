@@ -8,9 +8,19 @@ while your coding agents work.
 
 > Status: hobby project, pre-alpha. The terminal has overview, planet, shipyard and wonder screens. Tab switches; enter queues a build, a ship, research, or a wonder contribution. Fleets fly on timers. Colony ships settle empty planets. Pirate raids land on a countdown. The game saves to SQLite.
 
-## The twist: your agents play along
+## A standalone game first
 
-An optional bridge turns your development activity into game events:
+hoshi is a complete game on its own: economy, research, fleets, colonies,
+story events, trade, wonders, prestige, daily missions and achievements. No
+account, network connection or AI service is needed.
+
+## Optional: your agents play along
+
+An optional bridge, behind the `bridge` cargo feature and a config switch,
+both off by default, turns your development activity into small, capped game
+events. It reads only free signals: local event files or sockets, and GitHub
+through your own `gh` login. It never calls AI models or any paid service, and
+the game is balanced without it.
 
 - a merged pull request pays out resources;
 - green CI boosts production or research;

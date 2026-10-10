@@ -23,16 +23,22 @@ you check in, queue the next build and leave.
   converts outside events into game events. Only core writes state.
 - **Local state in SQLite** (rusqlite, bundled), one file per player, with
   versioned migrations.
-- **Event bridge.** GitHub events (merged PRs, CI results) via the `gh` CLI or
-  a webhook, and a generic local activity feed (file or socket) that any agent
-  tool can write to. Events map to bounded game effects (payouts, boosts,
-  raids) defined in balance config.
+- **Standalone first.** hoshi must be a good game on its own. Every system is
+  fully playable and balanced without the bridge.
+- **Optional event bridge.** Behind the `bridge` cargo feature and a config
+  switch, both off by default. It reads only free signals: GitHub events
+  (merged PRs, CI results) through the user's own `gh` login or a webhook, and a
+  generic local activity feed (file or socket) that any agent tool can write
+  to. It never calls AI models or any paid service. Events map to small,
+  capped game effects (payouts, boosts, raids) defined in balance config, and
+  never unlock anything the normal game cannot.
 - **Single player first.** A shared universe is optional research later.
 
 ## Consequences
 
 - Deterministic core tests with a fake clock and seeded randomness.
-- The bridge is optional; the game works without GitHub.
+- The bridge is off by default and compiled out unless enabled; the game
+  works and is balanced without GitHub or any agent tool.
 - Effects are capped so the bridge rewards activity without dominating play.
 
 ## Rejected alternatives
