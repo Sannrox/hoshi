@@ -1,0 +1,10 @@
+/target
+.state/
+/.worktrees/
+*.db
+*.db-journal
+*.db-wal
+.DS_Store
+*.swp
+.idea/
+.vscode/
