@@ -18,8 +18,9 @@ design is recorded in [ADR 0002](docs/decisions/0002-terminal-idle-game-with-eve
 Do not commit local state (`.state/`, `*.db` saves), logs, or tokens.
 
 Human documentation: [README.md](README.md). Architecture decisions:
-[docs/decisions/](docs/decisions/README.md). `CLAUDE.md` only points here;
-this file is canonical.
+[docs/decisions/](docs/decisions/README.md). Design and balance follow
+[docs/realism.md](docs/realism.md) (physics and maths only; flavour stays
+fictional). `CLAUDE.md` only points here; this file is canonical.
 
 ## Dependencies and Ownership
 
@@ -55,10 +56,12 @@ There is no Makefile yet. When one is added, its targets become the source of
 truth for these commands and this section must point to them.
 
 GitHub Issues are the planning source of truth. Project-specific Skills live
-under `.agents/skills/`. Read `README.md` and accepted ADRs under
-`docs/decisions/` before changing system boundaries; record new boundaries,
-trust-model changes, and public contracts as ADRs with the
-`capture-project-decision` Skill.
+under `.agents/skills/`. Read `README.md`, [docs/realism.md](docs/realism.md)
+and accepted ADRs under `docs/decisions/` before changing system boundaries
+or balance numbers; record new boundaries, trust-model changes, and public
+contracts as ADRs with the `capture-project-decision` Skill. New design
+Issues name object types, links and core actions, and they either obey the
+realism rules or extend the simplifications list in that file.
 
 ## Agent delivery closeout (required)
 

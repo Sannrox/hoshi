@@ -12,11 +12,13 @@ explicitly authorizes publishing to GitHub.
 
 ## Procedure
 
-1. Read `AGENTS.md`, `README.md`, accepted ADRs under `docs/decisions/`, and the
-   matching form under `.github/ISSUE_TEMPLATE/`. Inspect affected code or docs
-   when named. Complete when the request is framed against actual project
-   boundaries (hoshi-core owns game rules and state; the TUI only renders and sends
-   commands; the bridge only turns outside events into game events).
+1. Read `AGENTS.md`, `README.md`, [docs/realism.md](../../../docs/realism.md),
+   accepted ADRs under `docs/decisions/`, and the matching form under
+   `.github/ISSUE_TEMPLATE/`. Inspect affected code or docs when named. Complete
+   when the request is framed against actual project boundaries (hoshi-core owns
+   game rules and state; the TUI only renders and sends commands; the bridge only
+   turns outside events into game events) and, for design or balance work, against
+   the realism rules (physics and maths; flavour stays fictional).
 2. Search open and closed Issues, Discussions, and PRs when GitHub access is
    available. Record possible duplicates or state that the search was not run.
 3. Classify the work:
