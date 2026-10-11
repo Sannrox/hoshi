@@ -5,6 +5,7 @@ mod balance;
 mod buildings;
 mod clock;
 mod combat;
+mod expedition;
 mod fleets;
 mod planets;
 mod research;
@@ -24,6 +25,10 @@ pub use buildings::{BuildError, BuildJob, BuildingKind, Buildings};
 pub use clock::{Clock, FakeClock, SystemClock};
 pub use combat::{
     CombatReport, CombatWinner, next_u64, plunder_from, rapid_fire_table, resolve_combat,
+};
+pub use expedition::{
+    ExpeditionConfig, ExpeditionKind, ExpeditionResult, ExpeditionWeights, fleet_points,
+    roll_expedition, scaled_weights,
 };
 pub use fleets::{
     Coord, FleetError, FlightConfig, Mission, MissionPhase, distance, flight_secs, fuel_cost,

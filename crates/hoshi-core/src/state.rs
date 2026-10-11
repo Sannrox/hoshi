@@ -6,8 +6,10 @@ use crate::activity::{
 use crate::balance::BalanceConfig;
 use crate::buildings::{BuildError, BuildJob, BuildingKind, Buildings};
 use crate::combat::{
-    CombatReport, CombatWinner, plunder_from, rapid_fire_table, resolve_combat, stats_from_catalog,
+    CombatReport, CombatWinner, next_u64, plunder_from, rapid_fire_table, resolve_combat,
+    stats_from_catalog,
 };
+use crate::expedition::{ExpeditionResult, roll_expedition};
 use crate::fleets::{Coord, FleetError, Mission, MissionPhase, distance, flight_secs, fuel_cost};
 use crate::planets::{Colony, PlanetType, planet_profile};
 use crate::research::{ModifierKind, PrereqGap, ResearchError, ResearchJob};
@@ -583,8 +585,67 @@ impl GameState {
             phase_ends_at: now.saturating_add(outbound_secs),
             fuel_paid: fuel,
             colonize: false,
+            expedition_seed: None,
+            expedition_applied: false,
         });
         Ok(())
+    }
+
+    pub fn expedition_slots(&self) -> u32 {
+        self.config.expedition.base_slots.saturating_add(
+            self.modifier(ModifierKind::ExpeditionSlots)
+                .floor()
+                .max(0.0) as u32,
+        )
+    }
+
+    fn expedition_used(&self) -> u32 {
+        self.missions
+            .iter()
+            .filter(|m| m.expedition_seed.is_some())
+            .count() as u32
+    }
+
+    pub fn expedition_dest(&self) -> Coord {
+        Coord {
+            galaxy: self.home.galaxy,
+            system: self.home.system,
+            position: self.config.expedition.dest_position,
+        }
+    }
+
+    /// Send a fleet to the expedition slot for `hold_secs`. The outcome seed is stored
+    /// on the mission so a reload cannot re-roll it.
+    pub fn launch_expedition(
+        &mut self,
+        ships: Fleet,
+        hold_secs: u64,
+        speed_percent: u8,
+        now_unix: u64,
+    ) -> Result<u64, FleetError> {
+        self.catch_up(now_unix);
+        let min = self.config.expedition.min_hold_secs;
+        let max = self.config.expedition.max_hold_secs;
+        if hold_secs < min || hold_secs > max {
+            return Err(FleetError::HoldOutOfRange {
+                got: hold_secs,
+                min,
+                max,
+            });
+        }
+        let cap = self.expedition_slots();
+        let used = self.expedition_used();
+        if used >= cap {
+            return Err(FleetError::NoExpeditionSlots { used, cap });
+        }
+        let dest = self.expedition_dest();
+        self.launch_fleet(ships, dest, speed_percent, hold_secs, now_unix)?;
+        let Some(mission) = self.missions.last_mut() else {
+            return Err(FleetError::EmptyFleet);
+        };
+        mission.expedition_seed = Some(next_u64(&mut self.rng_seed));
+        mission.expedition_applied = false;
+        Ok(mission.id)
     }
 
     /// Send one colony ship. Settlement is attempted on Action; failure returns the ship.
@@ -870,6 +931,9 @@ impl GameState {
                     let hold = self.missions[index].hold_secs;
                     self.missions[index].phase = MissionPhase::Action;
                     self.missions[index].phase_ends_at = done_at.saturating_add(hold);
+                    if self.apply_expedition_at(index, done_at) {
+                        continue;
+                    }
                 }
                 MissionPhase::Action => {
                     if self.try_colonize_at(index, done_at) {
@@ -886,6 +950,119 @@ impl GameState {
                     }
                 }
             }
+        }
+    }
+
+    /// Apply a pending expedition when Action starts. Returns true if the mission was removed.
+    fn apply_expedition_at(&mut self, index: usize, done_at: u64) -> bool {
+        let Some(seed) = self.missions[index].expedition_seed else {
+            return false;
+        };
+        if self.missions[index].expedition_applied {
+            return false;
+        }
+        self.missions[index].expedition_applied = true;
+        let ships = self.missions[index].ships;
+        let hold = self.missions[index].hold_secs;
+        let astro = self.tech_level("astrophysics");
+        let result = roll_expedition(
+            seed,
+            &ships,
+            astro,
+            hold,
+            &self.config.expedition,
+            &self.config.ships,
+        );
+        match result {
+            ExpeditionResult::Nothing => {
+                self.push_event(done_at, "expedition: nothing found".into());
+                false
+            }
+            ExpeditionResult::Resources(found) => {
+                self.credit_capped(found);
+                self.push_event(
+                    done_at,
+                    format!(
+                        "expedition: found M{:.0} C{:.0} D{:.0}",
+                        found.metal, found.crystal, found.deuterium
+                    ),
+                );
+                false
+            }
+            ExpeditionResult::Ships(found) => {
+                for kind in ShipKind::ALL {
+                    self.missions[index].ships.add(kind, found.get(kind));
+                }
+                let n = found.get(self.config.expedition.ship_kind);
+                self.push_event(
+                    done_at,
+                    format!("expedition: found {n} {}", self.config.expedition.ship_kind),
+                );
+                false
+            }
+            ExpeditionResult::Delay { extra_secs } => {
+                self.missions[index].phase_ends_at = self.missions[index]
+                    .phase_ends_at
+                    .saturating_add(extra_secs);
+                self.push_event(done_at, format!("expedition: delayed {extra_secs}s"));
+                false
+            }
+            ExpeditionResult::EarlyReturn => {
+                let ret = self.missions[index].outbound_secs;
+                self.missions[index].phase = MissionPhase::Return;
+                self.missions[index].phase_ends_at = done_at.saturating_add(ret);
+                self.push_event(done_at, "expedition: returning early".into());
+                false
+            }
+            ExpeditionResult::Pirates { enemy } => {
+                let mut fight_seed = seed.wrapping_add(0xA5A5_A5A5_A5A5_A5A5);
+                let atk_stats = self.player_combat_stats();
+                let def_stats = stats_from_catalog(&self.config.ships);
+                let rf = rapid_fire_table(&self.config.ships);
+                let report = resolve_combat(
+                    ships,
+                    enemy,
+                    &atk_stats,
+                    &def_stats,
+                    self.config.raid.max_rounds,
+                    &rf,
+                    &mut fight_seed,
+                );
+                self.missions[index].ships = report.attacker_after;
+                let survivors: u32 = ShipKind::ALL
+                    .iter()
+                    .map(|&k| self.missions[index].ships.get(k))
+                    .sum();
+                self.push_event(
+                    done_at,
+                    format!(
+                        "expedition: pirates. {} rounds. survivors {survivors}",
+                        report.rounds
+                    ),
+                );
+                if self.missions[index].ships.is_empty() {
+                    self.missions.remove(index);
+                    return true;
+                }
+                let ret = self.missions[index].outbound_secs;
+                self.missions[index].phase = MissionPhase::Return;
+                self.missions[index].phase_ends_at = done_at.saturating_add(ret);
+                false
+            }
+            ExpeditionResult::Loss => {
+                self.push_event(done_at, "expedition: fleet lost".into());
+                self.missions.remove(index);
+                true
+            }
+        }
+    }
+
+    fn credit_capped(&mut self, found: Resources) {
+        for kind in ResourceKind::ALL {
+            let cap = self.storage_cap(kind);
+            let current = self.resources.get(kind);
+            self.resources
+                .set(kind, (current + found.get(kind)).min(cap));
         }
     }
 
@@ -1396,6 +1573,7 @@ mod tests {
                 gas_giant: crate::PlanetTypeBonus::ZERO,
             },
             activity: crate::ActivityEffectsConfig::default(),
+            expedition: crate::ExpeditionConfig::default(),
         }
     }
 
@@ -2631,5 +2809,101 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
         );
         assert_eq!(state.last_tick_unix, 0);
         close(state.resources.metal, 0.0);
+    }
+
+    fn expedition_state(now: u64) -> GameState {
+        let mut cfg = test_config();
+        cfg.expedition.min_hold_secs = 10;
+        cfg.expedition.max_hold_secs = 10_000;
+        cfg.expedition.delay_secs = 50;
+        cfg.raid = crate::RaidConfig::inactive();
+        cfg.metal_storage.base = 1_000_000.0;
+        cfg.crystal_storage.base = 1_000_000.0;
+        cfg.deuterium_storage.base = 1_000_000.0;
+        let mut state = GameState::with_config(now, cfg);
+        state.fleet.add(ShipKind::LightFighter, 10);
+        state.resources.deuterium = 10_000.0;
+        state
+    }
+
+    #[test]
+    fn expedition_result_lands_in_the_event_log() {
+        let mut state = expedition_state(0);
+        state.launch_expedition(scout_fleet(), 10, 100, 0).unwrap();
+        let outbound = state.missions[0].outbound_secs;
+        state.catch_up(outbound);
+        assert!(
+            state
+                .events
+                .iter()
+                .any(|e| e.text.starts_with("expedition:")),
+            "{:?}",
+            state.events
+        );
+    }
+
+    #[test]
+    fn reloading_the_save_does_not_change_a_pending_expedition() {
+        let mut original = expedition_state(0);
+        original
+            .launch_expedition(scout_fleet(), 10, 100, 0)
+            .unwrap();
+        let mut conn = crate::open_save(std::path::Path::new(":memory:")).unwrap();
+        crate::save_state(&mut conn, &original).unwrap();
+        let mut loaded = crate::load_state(&conn, original.config.clone()).unwrap();
+        assert_eq!(
+            loaded.missions[0].expedition_seed,
+            original.missions[0].expedition_seed
+        );
+        let outbound = original.missions[0].outbound_secs;
+        let hold = original.missions[0].hold_secs;
+        original.rng_seed = 0xDEAD_BEEF_DEAD_BEEF;
+        original.catch_up(outbound + hold + outbound);
+        loaded.catch_up(outbound + hold + outbound);
+        assert_eq!(original.events, loaded.events);
+        assert_eq!(original.fleet, loaded.fleet);
+        close(original.resources.metal, loaded.resources.metal);
+        close(original.resources.crystal, loaded.resources.crystal);
+        close(original.resources.deuterium, loaded.resources.deuterium);
+    }
+
+    #[test]
+    fn expedition_slots_follow_astrophysics() {
+        let mut state = expedition_state(0);
+        assert_eq!(state.expedition_slots(), 1);
+        state.launch_expedition(scout_fleet(), 10, 100, 0).unwrap();
+        let err = state
+            .launch_expedition(scout_fleet(), 10, 100, 0)
+            .unwrap_err();
+        assert_eq!(err, FleetError::NoExpeditionSlots { used: 1, cap: 1 });
+        state.tech_levels.insert("astrophysics".into(), 1);
+        state.config.flight.base_fleet_slots = 2;
+        state.config.techs = crate::TechTree::parse(
+            r#"
+[[tech]]
+id = "astrophysics"
+name = "Astrophysics"
+metal = 1.0
+crystal = 1.0
+deuterium = 1.0
+cost_growth = 1.0
+base_seconds = 1.0
+time_growth = 1.0
+prereq_buildings = []
+prereq_techs = []
+modifiers = [{ kind = "expedition_slots", per_level = 1.0 }]
+"#,
+        )
+        .unwrap();
+        assert_eq!(state.expedition_slots(), 2);
+        state.launch_expedition(scout_fleet(), 10, 100, 0).unwrap();
+        assert_eq!(
+            state
+                .missions
+                .iter()
+                .filter(|m| m.expedition_seed.is_some())
+                .count(),
+            2
+        );
     }
 }

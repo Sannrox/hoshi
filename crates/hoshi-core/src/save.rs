@@ -14,7 +14,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 6;
+pub const SCHEMA_VERSION: u32 = 7;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -222,8 +222,8 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
             "INSERT INTO missions (
                 id, origin_g, origin_s, origin_p, dest_g, dest_s, dest_p,
                 speed_percent, phase, launched_at, outbound_secs, hold_secs,
-                phase_ends_at, fuel_paid, colonize
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                phase_ends_at, fuel_paid, colonize, expedition_seed, expedition_applied
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 mission.id as i64,
                 mission.origin.galaxy as i64,
@@ -240,6 +240,8 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 mission.phase_ends_at as i64,
                 mission.fuel_paid,
                 mission.colonize as i64,
+                mission.expedition_seed.map(|s| s as i64),
+                mission.expedition_applied as i64,
             ],
         )?;
         for kind in ShipKind::ALL {
@@ -521,7 +523,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     let mut stmt = conn.prepare(
         "SELECT id, origin_g, origin_s, origin_p, dest_g, dest_s, dest_p,
                 speed_percent, phase, launched_at, outbound_secs, hold_secs,
-                phase_ends_at, fuel_paid, colonize
+                phase_ends_at, fuel_paid, colonize, expedition_seed, expedition_applied
          FROM missions ORDER BY id",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -541,6 +543,8 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             row.get::<_, i64>(12)?,
             row.get::<_, f64>(13)?,
             row.get::<_, i64>(14)?,
+            row.get::<_, Option<i64>>(15)?,
+            row.get::<_, i64>(16)?,
         ))
     })?;
     let mut missions = Vec::new();
@@ -561,6 +565,8 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             phase_ends_at,
             fuel_paid,
             colonize,
+            expedition_seed,
+            expedition_applied,
         ) = row?;
         let phase =
             MissionPhase::from_key(&phase).ok_or(SaveError::Corrupt("unknown mission phase"))?;
@@ -596,6 +602,8 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             phase_ends_at: unix_ts(phase_ends_at)?,
             fuel_paid,
             colonize: colonize != 0,
+            expedition_seed: expedition_seed.map(|s| s as u64),
+            expedition_applied: expedition_applied != 0,
         });
     }
     state.missions = missions;
@@ -842,6 +850,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     if found < 6 {
         migrate_v6(conn)?;
     }
+    if found < 7 {
+        migrate_v7(conn)?;
+    }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
 }
@@ -1010,6 +1021,35 @@ fn migrate_v6(conn: &Connection) -> Result<(), SaveError> {
     Ok(())
 }
 
+fn missions_has_column(conn: &Connection, column: &str) -> Result<bool, SaveError> {
+    let mut stmt = conn.prepare("PRAGMA table_info(missions)")?;
+    let names = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for name in names {
+        if name? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn migrate_v7(conn: &Connection) -> Result<(), SaveError> {
+    // Each ADD is skipped if a previous attempt already applied it, so a crash
+    // between the two statements cannot brick the next open.
+    if !missions_has_column(conn, "expedition_seed")? {
+        conn.execute(
+            "ALTER TABLE missions ADD COLUMN expedition_seed INTEGER",
+            [],
+        )?;
+    }
+    if !missions_has_column(conn, "expedition_applied")? {
+        conn.execute(
+            "ALTER TABLE missions ADD COLUMN expedition_applied INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1164,6 +1204,52 @@ mod tests {
         assert_eq!(loaded.buildings.metal_mine, 4);
         assert_eq!(loaded.tech_level("weapons"), 3);
         assert_eq!(loaded.activity, crate::ActivityTracker::default());
+        assert!(missions_has_column(&conn, "expedition_seed").unwrap());
+        assert!(missions_has_column(&conn, "expedition_applied").unwrap());
+        migrate_v7(&conn).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    #[test]
+    fn migrate_v7_retries_after_a_partial_alter() {
+        let path = unique_path("v7-partial");
+        let _ = std::fs::remove_file(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            migrate_v1(&conn).unwrap();
+            migrate_v2(&conn).unwrap();
+            migrate_v3(&conn).unwrap();
+            migrate_v4(&conn).unwrap();
+            migrate_v5(&conn).unwrap();
+            migrate_v6(&conn).unwrap();
+            conn.execute_batch("PRAGMA user_version = 6;").unwrap();
+            conn.execute(
+                "ALTER TABLE missions ADD COLUMN expedition_seed INTEGER",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO meta (id, last_tick_unix, rng_seed) VALUES (1, 5, 0)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO resources (planet_id, metal, crystal, deuterium) VALUES (1, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+        }
+        let conn = open_save(&path).unwrap();
+        let version: u32 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        assert!(missions_has_column(&conn, "expedition_seed").unwrap());
+        assert!(missions_has_column(&conn, "expedition_applied").unwrap());
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.last_tick_unix, 5);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(format!("{}-wal", path.display()));
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));
