@@ -7,8 +7,9 @@ mod title;
 
 use app::{Action, App};
 use hoshi_core::{
-    BalanceConfig, Clock, GameState, SaveError, SystemClock, default_save_dir, inspect_save,
-    load_or_new, lock_save, open_save, resolve_save_path, save_state, simulate_greedy,
+    BalanceConfig, Clock, GameState, SaveError, SystemClock, default_save_dir, encode_galaxy_seed,
+    inspect_save, load_or_new, lock_save, open_save, parse_galaxy_seed, resolve_save_path,
+    save_state, simulate_greedy,
 };
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use std::io::Write;
@@ -38,6 +39,15 @@ fn main() {
             Err(e) => {
                 eprintln!("hoshi: {e}");
                 std::process::exit(2);
+            }
+        }
+    }
+    if args.get(1).map(String::as_str) == Some("new") {
+        match run_new_game(&args) {
+            Ok(()) => return,
+            Err(e) => {
+                eprintln!("hoshi: {e}");
+                std::process::exit(e.exit);
             }
         }
     }
@@ -118,6 +128,97 @@ fn run_post(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         let _ = args;
         Err("post requires a build with --features bridge".into())
     }
+}
+
+fn run_new_game(args: &[String]) -> Result<(), LaunchError> {
+    let mut seed = None;
+    let mut save = None;
+    let mut balance_path = None;
+    let mut i = 2;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if let Some(v) = a.strip_prefix("--seed=") {
+            seed = Some(parse_new_seed(v)?);
+            i += 1;
+            continue;
+        }
+        if a == "--seed" {
+            let v = args.get(i + 1).ok_or_else(|| LaunchError {
+                message: "--seed needs a value".into(),
+                exit: cli::EXIT_INVALID,
+            })?;
+            seed = Some(parse_new_seed(v)?);
+            i += 2;
+            continue;
+        }
+        if let Some(v) = a.strip_prefix("--save=") {
+            save = Some(PathBuf::from(v));
+            i += 1;
+            continue;
+        }
+        if a == "--save" {
+            let v = args.get(i + 1).ok_or_else(|| LaunchError {
+                message: "--save needs a value".into(),
+                exit: cli::EXIT_INVALID,
+            })?;
+            save = Some(PathBuf::from(v));
+            i += 2;
+            continue;
+        }
+        if let Some(v) = a.strip_prefix("--balance=") {
+            balance_path = Some(PathBuf::from(v));
+            i += 1;
+            continue;
+        }
+        if a == "--balance" {
+            let v = args.get(i + 1).ok_or_else(|| LaunchError {
+                message: "--balance needs a value".into(),
+                exit: cli::EXIT_INVALID,
+            })?;
+            balance_path = Some(PathBuf::from(v));
+            i += 2;
+            continue;
+        }
+        return Err(LaunchError {
+            message: format!("unknown new argument {a}"),
+            exit: cli::EXIT_INVALID,
+        });
+    }
+    let seed = seed.ok_or_else(|| LaunchError {
+        message: "new needs --seed".into(),
+        exit: cli::EXIT_INVALID,
+    })?;
+    let path = resolve_save_path(save.as_deref(), std::env::var_os("HOSHI_SAVE").as_deref());
+    if path.exists() {
+        return Err(LaunchError {
+            message: "save already exists".into(),
+            exit: cli::EXIT_INVALID,
+        });
+    }
+    let balance =
+        load_balance(balance_override(balance_path).as_deref()).map_err(|e| LaunchError {
+            message: e.to_string(),
+            exit: cli::EXIT_INTERNAL,
+        })?;
+    let now = SystemClock.now_unix();
+    let state = GameState::new_live_galaxy(now, balance, seed);
+    let _lock = lock_save(&path)?;
+    let mut conn = open_save(&path)?;
+    save_state(&mut conn, &state)?;
+    println!("{}", encode_galaxy_seed(seed));
+    Ok(())
+}
+
+fn parse_new_seed(v: &str) -> Result<u64, LaunchError> {
+    parse_galaxy_seed(v)
+        .map_err(|e| LaunchError {
+            message: e,
+            exit: cli::EXIT_INVALID,
+        })?
+        .ok_or_else(|| LaunchError {
+            message: "new needs --seed".into(),
+            exit: cli::EXIT_INVALID,
+        })
 }
 
 fn run_simulate(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {

@@ -2,13 +2,17 @@
 //! only renders and turns keys into core commands.
 
 use crate::title::AwaySummary;
-use hoshi_core::{BuildingKind, Coord, GameState, ResourceKind, Resources, ShipKind, WonderError};
+use hoshi_core::{
+    BuildingKind, Coord, GameState, ResourceKind, Resources, ShipKind, WonderError,
+    encode_galaxy_seed,
+};
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
+use std::io::{IsTerminal, Write};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
@@ -101,6 +105,11 @@ impl App {
             }
             KeyCode::Enter => self.activate(now_unix),
             KeyCode::Char('x') => self.cancel(now_unix),
+            KeyCode::Char('y') => {
+                let code = encode_galaxy_seed(self.state.galaxy_seed);
+                copy_to_clipboard(&code);
+                self.status = format!("copied {code}");
+            }
             _ => {}
         }
         Action::None
@@ -319,6 +328,11 @@ impl App {
             Line::from(self.raid_status()),
             Line::from(self.wonder_status()),
             Line::from(self.prestige_status()),
+            Line::from(format!(
+                "Seed {}  gen {}",
+                encode_galaxy_seed(s.galaxy_seed),
+                s.generator_version
+            )),
         ];
         lines.extend(self.planet_glance_lines());
         if let Some(event) = s.events.last() {
@@ -335,7 +349,7 @@ impl App {
     fn footer_lines(&self) -> Vec<Line<'static>> {
         vec![Line::from(match self.screen {
             Screen::Overview => {
-                "tab screens  [/] planet  j/k select  enter research  x cancel  q quit"
+                "tab screens  [/] planet  j/k select  enter research  x cancel  y copy seed  q quit"
             }
             Screen::Planet => {
                 "tab screens  [/] planet  j/k select  enter build  x cancel queue  q quit"
@@ -825,6 +839,41 @@ fn missing_label(missing: Resources) -> String {
     }
 }
 
+fn copy_to_clipboard(text: &str) {
+    let mut out = std::io::stdout();
+    if !out.is_terminal() {
+        return;
+    }
+    let _ = write!(out, "\x1b]52;c;{}\x07", base64_encode(text.as_bytes()));
+    let _ = out.flush();
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b0 = bytes[i];
+        let b1 = bytes.get(i + 1).copied().unwrap_or(0);
+        let b2 = bytes.get(i + 2).copied().unwrap_or(0);
+        let n = ((b0 as u32) << 16) | ((b1 as u32) << 8) | b2 as u32;
+        out.push(TABLE[((n >> 18) & 63) as usize] as char);
+        out.push(TABLE[((n >> 12) & 63) as usize] as char);
+        if i + 1 < bytes.len() {
+            out.push(TABLE[((n >> 6) & 63) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if i + 2 < bytes.len() {
+            out.push(TABLE[(n & 63) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        i += 3;
+    }
+    out
+}
+
 fn styled_row(text: String, reason: Option<String>) -> Line<'static> {
     match reason {
         None => Line::from(text),
@@ -962,6 +1011,20 @@ mod tests {
         let app = App::new(GameState::new(1_000));
         let text = render_text(&app, 80, 24);
         assert!(text.contains("Raid: 3600s"), "{text}");
+    }
+
+    #[test]
+    fn overview_shows_shareable_seed_and_y_copies_it() {
+        let mut state = GameState::new(1_000);
+        state.galaxy_seed = 42;
+        let mut app = App::new(state);
+        let code = encode_galaxy_seed(42);
+        let text = render_text(&app, 80, 24);
+        assert!(text.contains(&code), "{text}");
+        assert!(text.contains("gen 1"), "{text}");
+        app.handle_key(KeyCode::Char('y'), 1_000);
+        let text = render_text(&app, 80, 24);
+        assert!(text.contains(&format!("copied {code}")), "{text}");
     }
 
     #[test]

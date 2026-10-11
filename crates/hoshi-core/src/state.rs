@@ -162,6 +162,8 @@ pub struct GameState {
     pub rng_seed: u64,
     /// Stable seed for planet type and size. Does not change when combat consumes `rng_seed`.
     pub galaxy_seed: u64,
+    /// Generator that produced this galaxy. Old saves keep the version they were created with.
+    pub generator_version: u32,
     /// When true, `tick --advance` may move the clock. Wall-clock saves stay false.
     pub deterministic: bool,
     pub wonder: Option<WonderJob>,
@@ -178,8 +180,15 @@ impl GameState {
 
     pub fn with_config(now_unix: u64, config: BalanceConfig) -> Self {
         let galaxy_seed = 0;
-        let (home_kind, home_size) = planet_profile(galaxy_seed, Coord::HOME);
-        let outposts = generate_outposts(galaxy_seed, now_unix, &config.outposts, &[Coord::HOME]);
+        let version = crate::GALAXY_GENERATOR_VERSION;
+        let (home_kind, home_size) = planet_profile(galaxy_seed, Coord::HOME, version);
+        let outposts = generate_outposts(
+            galaxy_seed,
+            now_unix,
+            &config.outposts,
+            &[Coord::HOME],
+            version,
+        );
         let mut state = Self {
             resources: config.starting_resources,
             goods: BTreeMap::new(),
@@ -207,6 +216,7 @@ impl GameState {
             last_tick_unix: now_unix,
             rng_seed: 0,
             galaxy_seed,
+            generator_version: crate::GALAXY_GENERATOR_VERSION,
             deterministic: false,
             wonder: None,
             completed_wonders: Vec::new(),
@@ -220,14 +230,21 @@ impl GameState {
 
     /// New game whose RNG and planet rolls follow `seed`. Marks the save deterministic.
     pub fn with_seed(now_unix: u64, config: BalanceConfig, seed: u64) -> Self {
-        let (home_kind, home_size) = planet_profile(seed, Coord::HOME);
+        let version = crate::GALAXY_GENERATOR_VERSION;
+        let (home_kind, home_size) = planet_profile(seed, Coord::HOME, version);
         let mut state = Self::with_config(now_unix, config);
         state.rng_seed = seed;
         state.galaxy_seed = seed;
         state.home_kind = home_kind;
         state.home_size = home_size;
         state.deterministic = true;
-        state.outposts = generate_outposts(seed, now_unix, &state.config.outposts, &[Coord::HOME]);
+        state.outposts = generate_outposts(
+            seed,
+            now_unix,
+            &state.config.outposts,
+            &[Coord::HOME],
+            version,
+        );
         state
     }
 
@@ -1831,10 +1848,17 @@ impl GameState {
         next.deterministic = deterministic;
         next.galaxy_seed = next_seed;
         next.rng_seed = next_seed;
-        let (home_kind, home_size) = planet_profile(next_seed, Coord::HOME);
+        next.generator_version = crate::GALAXY_GENERATOR_VERSION;
+        let (home_kind, home_size) = planet_profile(next_seed, Coord::HOME, next.generator_version);
         next.home_kind = home_kind;
         next.home_size = home_size;
-        next.outposts = generate_outposts(next_seed, now, &next.config.outposts, &[Coord::HOME]);
+        next.outposts = generate_outposts(
+            next_seed,
+            now,
+            &next.config.outposts,
+            &[Coord::HOME],
+            next.generator_version,
+        );
         next.resources = next.config.starting_resources;
         next.apply_prestige_start();
         next.push_event(
@@ -2259,7 +2283,7 @@ impl GameState {
         }
         let mut ships = self.missions.remove(index).ships;
         ships.saturating_sub(ShipKind::ColonyShip, 1);
-        let (kind, size) = planet_profile(self.galaxy_seed, dest);
+        let (kind, size) = planet_profile(self.galaxy_seed, dest, self.generator_version);
         self.colonies.push(Colony {
             coord: dest,
             kind,
@@ -4357,6 +4381,22 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
     }
 
     #[test]
+    fn same_shareable_seed_replays_the_galaxy() {
+        let cfg = test_config();
+        let seed = 0xA11A_5EED_00C0_FFEE;
+        let a = GameState::new_live_galaxy(10, cfg.clone(), seed);
+        let b = GameState::new_live_galaxy(10, cfg, seed);
+        assert_eq!(a.home_kind, b.home_kind);
+        assert_eq!(a.home_size, b.home_size);
+        assert_eq!(a.outposts, b.outposts);
+        assert_eq!(a.generator_version, crate::GALAXY_GENERATOR_VERSION);
+        assert_eq!(
+            crate::parse_galaxy_seed(&crate::encode_galaxy_seed(seed)).unwrap(),
+            Some(seed)
+        );
+    }
+
+    #[test]
     fn planet_type_and_size_follow_the_galaxy_seed() {
         let mut a = colony_ready(0);
         a.galaxy_seed = 11;
@@ -4364,7 +4404,7 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
         a.launch_colony(empty_slot(), 100, 0).unwrap();
         let outbound = a.missions[0].outbound_secs;
         a.catch_up(outbound * 2);
-        let expected = planet_profile(11, empty_slot());
+        let expected = planet_profile(11, empty_slot(), a.generator_version);
         assert_eq!(a.colonies[0].kind, expected.0);
         assert_eq!(a.colonies[0].size, expected.1);
         let mut b = colony_ready(0);

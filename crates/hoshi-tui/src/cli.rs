@@ -118,7 +118,11 @@ pub fn is_cli_invocation(args: &[String]) -> bool {
             i += 2;
             continue;
         }
-        if a.starts_with("--save=") || a.starts_with("--balance=") || a == "--continue" {
+        if a.starts_with("--save=")
+            || a.starts_with("--balance=")
+            || a == "--continue"
+            || a == "new"
+        {
             i += 1;
             continue;
         }
@@ -830,6 +834,7 @@ mod tests {
         assert!(!is_cli_invocation(&args(&["--save", "x.sqlite"])));
         assert!(!is_cli_invocation(&args(&["--balance", "b.toml"])));
         assert!(!is_cli_invocation(&args(&["--continue"])));
+        assert!(!is_cli_invocation(&args(&["new"])));
         let out = run_cli(&args(&["stete"]));
         assert_eq!(out.exit, EXIT_INVALID);
         let value: Value = serde_json::from_str(&out.json).unwrap();

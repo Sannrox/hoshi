@@ -1,7 +1,9 @@
 //! Title screen: continue, new game, load, settings. No game rules live here.
 
 use crate::config::UserConfig;
-use hoshi_core::{SaveError, SaveGlance, inspect_save, lock_save, save_is_locked};
+use hoshi_core::{
+    SaveError, SaveGlance, inspect_save, lock_save, parse_galaxy_seed, save_is_locked,
+};
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Layout};
@@ -78,7 +80,7 @@ pub struct Slot {
 pub enum SlotStatus {
     Ready(SaveGlance),
     Locked,
-    Newer { found: u32 },
+    Newer { found: u32, kind: &'static str },
     Corrupt(String),
     Harness(SaveGlance),
 }
@@ -99,9 +101,7 @@ impl SlotStatus {
                 )
             }
             SlotStatus::Locked => "in use by another hoshi process".into(),
-            SlotStatus::Newer { found } => {
-                format!("made by a newer hoshi (schema {found}); please update")
-            }
+            SlotStatus::Newer { found, kind } => newer_message(kind, *found),
             SlotStatus::Corrupt(msg) => format!("corrupt ({msg})"),
         }
     }
@@ -281,11 +281,8 @@ impl Title {
                 );
                 TitleAction::None
             }
-            SlotStatus::Newer { found } => {
-                self.status = format!(
-                    "{}: made by a newer hoshi (schema {found}); please update",
-                    slot.name
-                );
+            SlotStatus::Newer { found, kind } => {
+                self.status = format!("{}: {}", slot.name, newer_message(kind, *found));
                 TitleAction::None
             }
             SlotStatus::Corrupt(msg) => {
@@ -661,7 +658,7 @@ impl Title {
                     self.new_field == NewField::Name,
                 ));
                 lines.push(field_line(
-                    "seed (blank = random)",
+                    "seed (code or number, blank = random)",
                     &self.new_seed,
                     self.new_field == NewField::Seed,
                 ));
@@ -755,13 +752,7 @@ pub struct NewGameSpec {
 }
 
 pub fn parse_seed(text: &str) -> Result<Option<u64>, String> {
-    let text = text.trim();
-    if text.is_empty() {
-        return Ok(None);
-    }
-    text.parse::<u64>()
-        .map(Some)
-        .map_err(|_| "invalid seed".to_string())
+    parse_galaxy_seed(text)
 }
 
 pub fn list_slots(dir: &Path, _now_unix: u64) -> Vec<Slot> {
@@ -797,18 +788,27 @@ pub fn classify_slot(path: &Path) -> SlotStatus {
         Ok(g) if g.deterministic => SlotStatus::Harness(g),
         Ok(g) => SlotStatus::Ready(g),
         Err(SaveError::Locked) => SlotStatus::Locked,
-        Err(SaveError::SchemaTooNew { found, .. }) => SlotStatus::Newer { found },
+        Err(SaveError::SchemaTooNew { found, .. }) => SlotStatus::Newer {
+            found,
+            kind: "schema",
+        },
+        Err(SaveError::GeneratorTooNew { found, .. }) => SlotStatus::Newer {
+            found,
+            kind: "generator",
+        },
         Err(SaveError::Corrupt(msg)) => SlotStatus::Corrupt(msg.to_string()),
         Err(e) => SlotStatus::Corrupt(e.to_string()),
     }
 }
 
+fn newer_message(kind: &str, found: u32) -> String {
+    format!("made by a newer hoshi ({kind} {found}); please update")
+}
+
 pub fn slot_message(status: &SlotStatus) -> String {
     match status {
         SlotStatus::Locked => "in use by another hoshi process".into(),
-        SlotStatus::Newer { found } => {
-            format!("made by a newer hoshi (schema {found}); please update")
-        }
+        SlotStatus::Newer { found, kind } => newer_message(kind, *found),
         SlotStatus::Corrupt(_) => "corrupt save".into(),
         SlotStatus::Harness(_) => "harness save (CLI only)".into(),
         SlotStatus::Ready(_) => String::new(),
@@ -1187,6 +1187,35 @@ mod tests {
     fn parse_seed_accepts_blank_and_u64_only() {
         assert_eq!(parse_seed("").unwrap(), None);
         assert_eq!(parse_seed("42").unwrap(), Some(42));
+        let code = hoshi_core::encode_galaxy_seed(42);
+        assert_eq!(parse_seed(&code).unwrap(), Some(42));
         assert!(parse_seed("nope").is_err());
+    }
+
+    #[test]
+    fn future_generator_is_newer_generator_not_schema() {
+        let dir = unique_dir();
+        write_save(&dir, "gen", &GameState::new(1));
+        let path = dir.join("gen.sqlite");
+        let conn = open_save(&path).unwrap();
+        conn.execute(
+            "UPDATE meta SET generator_version = ?1 WHERE id = 1",
+            [hoshi_core::GALAXY_GENERATOR_VERSION as i64 + 1],
+        )
+        .unwrap();
+        drop(conn);
+        let status = classify_slot(&path);
+        let found = hoshi_core::GALAXY_GENERATOR_VERSION + 1;
+        assert_eq!(
+            status,
+            SlotStatus::Newer {
+                found,
+                kind: "generator"
+            }
+        );
+        let msg = slot_message(&status);
+        assert!(msg.contains("generator"), "{msg}");
+        assert!(!msg.contains("schema"), "{msg}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

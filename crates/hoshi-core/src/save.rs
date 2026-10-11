@@ -19,12 +19,13 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 13;
+pub const SCHEMA_VERSION: u32 = 14;
 
 #[derive(Debug)]
 pub enum SaveError {
     Sqlite(rusqlite::Error),
     SchemaTooNew { found: u32, current: u32 },
+    GeneratorTooNew { found: u32, current: u32 },
     Corrupt(&'static str),
     Io(std::io::Error),
     Locked,
@@ -38,6 +39,12 @@ impl fmt::Display for SaveError {
                 write!(
                     f,
                     "save schema v{found} is newer than this build (v{current})"
+                )
+            }
+            SaveError::GeneratorTooNew { found, current } => {
+                write!(
+                    f,
+                    "save generator v{found} is newer than this build (v{current})"
                 )
             }
             SaveError::Corrupt(msg) => write!(f, "corrupt save: {msg}"),
@@ -147,8 +154,8 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
-        "INSERT INTO meta (id, last_tick_unix, rng_seed, galaxy_seed, home_kind, home_size, deterministic, outposts_seeded)
-         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, 1)",
+        "INSERT INTO meta (id, last_tick_unix, rng_seed, galaxy_seed, home_kind, home_size, deterministic, outposts_seeded, generator_version)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, 1, ?7)",
         params![
             state.last_tick_unix as i64,
             state.rng_seed as i64,
@@ -156,6 +163,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
             state.home_kind.as_key(),
             state.home_size as i64,
             i64::from(state.deterministic),
+            state.generator_version as i64,
         ],
     )?;
     tx.execute(
@@ -525,7 +533,7 @@ fn insert_build_queue(
 /// Reconstruct player state. `config` is the caller's rules; it is not stored in the save.
 pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState, SaveError> {
     let mut state = GameState::with_config(0, config);
-    let (last_tick, rng_seed, galaxy_seed, home_kind, home_size, deterministic, outposts_seeded): (
+    let (last_tick, rng_seed, galaxy_seed, home_kind, home_size, deterministic, outposts_seeded, generator_version): (
         i64,
         i64,
         i64,
@@ -533,17 +541,25 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         i64,
         i64,
         i64,
+        i64,
     ) = conn
         .query_row(
-            "SELECT last_tick_unix, rng_seed, galaxy_seed, home_kind, home_size, deterministic, outposts_seeded FROM meta WHERE id = 1",
+            "SELECT last_tick_unix, rng_seed, galaxy_seed, home_kind, home_size, deterministic, outposts_seeded, generator_version FROM meta WHERE id = 1",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?)),
         )
         .optional()?
         .ok_or(SaveError::Corrupt("missing meta row"))?;
     state.last_tick_unix = unix_ts(last_tick)?;
     state.rng_seed = rng_seed as u64;
     state.galaxy_seed = galaxy_seed as u64;
+    state.generator_version = u32_field(generator_version, "generator version")?;
+    if !crate::supports_galaxy_generator(state.generator_version) {
+        return Err(SaveError::GeneratorTooNew {
+            found: state.generator_version,
+            current: crate::GALAXY_GENERATOR_VERSION,
+        });
+    }
     state.home_kind =
         PlanetType::from_key(&home_kind).ok_or(SaveError::Corrupt("unknown home planet type"))?;
     state.home_size = u8::try_from(home_size).map_err(|_| SaveError::Corrupt("home size"))?;
@@ -1002,6 +1018,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             state.last_tick_unix,
             &state.config.outposts,
             &occupied,
+            state.generator_version,
         );
     }
 
@@ -1184,6 +1201,24 @@ pub fn inspect_save(path: &Path) -> Result<SaveGlance, SaveError> {
             found: schema,
             current: SCHEMA_VERSION,
         });
+    }
+    if schema >= 14 {
+        let stored = conn
+            .query_row(
+                "SELECT generator_version FROM meta WHERE id = 1",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        if let Some(stored) = stored {
+            let stored = u32_field(stored, "generator version")?;
+            if !crate::supports_galaxy_generator(stored) {
+                return Err(SaveError::GeneratorTooNew {
+                    found: stored,
+                    current: crate::GALAXY_GENERATOR_VERSION,
+                });
+            }
+        }
     }
     let last_tick: i64 = conn
         .query_row("SELECT last_tick_unix FROM meta WHERE id = 1", [], |row| {
@@ -1450,6 +1485,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 13 {
         migrate_v13(conn)?;
+    }
+    if found < 14 {
+        migrate_v14(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -1834,6 +1872,16 @@ fn migrate_v13(conn: &Connection) -> Result<(), SaveError> {
     Ok(())
 }
 
+fn migrate_v14(conn: &Connection) -> Result<(), SaveError> {
+    if !meta_has_column(conn, "generator_version")? {
+        conn.execute(
+            "ALTER TABLE meta ADD COLUMN generator_version INTEGER NOT NULL DEFAULT 1",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
 fn read_prestige(conn: &Connection, fallback_started: u64) -> Result<Prestige, SaveError> {
     let row = conn
         .query_row(
@@ -2082,7 +2130,7 @@ mod tests {
             system: 1,
             position: 14,
         };
-        let (kind, size) = crate::planet_profile(11, dest);
+        let (kind, size) = crate::planet_profile(11, dest, crate::GALAXY_GENERATOR_VERSION);
         let mut colony_fleet = crate::Fleet::default();
         colony_fleet.add(crate::ShipKind::SmallCargo, 1);
         state.colonies.push(crate::Colony {
@@ -2237,6 +2285,7 @@ mod tests {
         assert_eq!(loaded.rng_seed, 7);
         assert_eq!(loaded.resources.metal, 10.0);
         assert!(loaded.goods.is_empty());
+        assert_eq!(loaded.generator_version, 1);
         assert_eq!(loaded.buildings.metal_mine, 4);
         assert_eq!(loaded.tech_level("weapons"), 3);
         assert_eq!(loaded.activity, crate::ActivityTracker::default());
@@ -2632,6 +2681,44 @@ mod tests {
     }
 
     #[test]
+    fn migrate_v14_retries_and_round_trips_generator_version() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v14(&conn).unwrap();
+        migrate_v14(&conn).unwrap();
+        let mut state = GameState::new(3);
+        state.galaxy_seed = 99;
+        state.generator_version = 1;
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.galaxy_seed, 99);
+        assert_eq!(loaded.generator_version, 1);
+        assert_eq!(loaded, state);
+        assert!(meta_has_column(&conn, "generator_version").unwrap());
+    }
+
+    #[test]
+    fn load_rejects_a_future_generator_version() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let state = GameState::new(3);
+        save_state(&mut conn, &state).unwrap();
+        conn.execute(
+            "UPDATE meta SET generator_version = ?1 WHERE id = 1",
+            [crate::GALAXY_GENERATOR_VERSION as i64 + 1],
+        )
+        .unwrap();
+        let err = load_state(&conn, BalanceConfig::default()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                SaveError::GeneratorTooNew { found, current }
+                if found == crate::GALAXY_GENERATOR_VERSION + 1
+                    && current == crate::GALAXY_GENERATOR_VERSION
+            ),
+            "{err:?}"
+        );
+    }
+
+    #[test]
     fn save_is_locked_is_true_while_held() {
         let path = unique_path("probe-lock");
         assert!(!save_is_locked(&path));
@@ -2673,6 +2760,26 @@ mod tests {
         let err = inspect_save(&newer).unwrap_err();
         assert!(
             matches!(err, SaveError::SchemaTooNew { found, .. } if found == SCHEMA_VERSION + 1),
+            "{err:?}"
+        );
+
+        let future_gen = unique_path("inspect-generator");
+        let mut conn = open_save(&future_gen).unwrap();
+        save_state(&mut conn, &GameState::new(1)).unwrap();
+        conn.execute(
+            "UPDATE meta SET generator_version = ?1 WHERE id = 1",
+            [crate::GALAXY_GENERATOR_VERSION as i64 + 1],
+        )
+        .unwrap();
+        drop(conn);
+        let err = inspect_save(&future_gen).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                SaveError::GeneratorTooNew { found, current }
+                if found == crate::GALAXY_GENERATOR_VERSION + 1
+                    && current == crate::GALAXY_GENERATOR_VERSION
+            ),
             "{err:?}"
         );
 
