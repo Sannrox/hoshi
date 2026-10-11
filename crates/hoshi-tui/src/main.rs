@@ -1,6 +1,6 @@
 //! hoshi: an idle space-strategy game for the terminal (placeholder screen).
 
-use hoshi_core::{Clock, GameState, SystemClock};
+use hoshi_core::{Clock, GameState, ResourceKind, SystemClock};
 use ratatui::{
     crossterm::event::{self, Event, KeyCode, KeyEventKind},
     widgets::{Block, Paragraph},
@@ -14,8 +14,23 @@ fn main() -> std::io::Result<()> {
     let result = loop {
         state.catch_up(clock.now_unix());
         let text = format!(
-            "hoshi (pre-alpha)\n\nMetal: {:.0}  (+{:.0}/h)\n\nPress q to quit.",
-            state.metal, state.metal_per_hour
+            "hoshi (pre-alpha)\n\n\
+             Metal:      {:>10.0}  (+{:.0}/h)  cap {:.0}\n\
+             Crystal:    {:>10.0}  (+{:.0}/h)  cap {:.0}\n\
+             Deuterium:  {:>10.0}  (+{:.0}/h)  cap {:.0}\n\
+             Energy:     {:>10.0} / {:.0}\n\n\
+             Press q to quit.",
+            state.resources.metal,
+            state.production_per_hour(ResourceKind::Metal),
+            state.storage_cap(ResourceKind::Metal),
+            state.resources.crystal,
+            state.production_per_hour(ResourceKind::Crystal),
+            state.storage_cap(ResourceKind::Crystal),
+            state.resources.deuterium,
+            state.production_per_hour(ResourceKind::Deuterium),
+            state.storage_cap(ResourceKind::Deuterium),
+            state.energy_produced(),
+            state.energy_consumed(),
         );
         if let Err(e) = terminal.draw(|f| {
             f.render_widget(
