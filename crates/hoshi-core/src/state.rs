@@ -2,10 +2,20 @@
 
 use crate::balance::BalanceConfig;
 use crate::buildings::{BuildError, BuildJob, BuildingKind, Buildings};
+use crate::combat::{CombatWinner, plunder_from, resolve_combat, stats_from_catalog};
 use crate::fleets::{Coord, FleetError, Mission, MissionPhase, distance, flight_secs, fuel_cost};
 use crate::research::{ModifierKind, PrereqGap, ResearchError, ResearchJob};
-use crate::ships::{Fleet, ShipError, ShipJob, ShipKind};
+use crate::ships::{Fleet, ShipError, ShipJob, ShipKind, ShipStats};
 use std::collections::BTreeMap;
+
+const EVENT_LOG_CAP: usize = 32;
+
+/// A timestamped line for the TUI and save. Combat reports land here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GameEvent {
+    pub at: u64,
+    pub text: String,
+}
 
 /// Stored resources. Energy is a balance, not a stockpile.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -98,8 +108,10 @@ pub struct GameState {
     pub home: Coord,
     pub missions: Vec<Mission>,
     pub next_mission_id: u64,
+    pub next_raid_at: Option<u64>,
+    pub events: Vec<GameEvent>,
     pub last_tick_unix: u64,
-    /// Seeded RNG state for later combat and expeditions. Unused by catch-up.
+    /// Seeded RNG state. Combat and raids consume it; the save stores the current value.
     pub rng_seed: u64,
     pub config: BalanceConfig,
 }
@@ -121,6 +133,12 @@ impl GameState {
             home: Coord::HOME,
             missions: Vec::new(),
             next_mission_id: 0,
+            next_raid_at: if config.raid.enabled {
+                Some(now_unix.saturating_add(config.raid.first_delay_secs))
+            } else {
+                None
+            },
+            events: Vec::new(),
             last_tick_unix: now_unix,
             rng_seed: 0,
             config,
@@ -140,9 +158,17 @@ impl GameState {
             let research_at = self.research.as_ref().map(|job| job.completes_at);
             let ship_at = self.ship_queue.first().and_then(|job| job.completes_at);
             let mission_at = self.missions.iter().map(|m| m.phase_ends_at).min();
+            let raid_at = if self.config.raid.enabled {
+                self.next_raid_at
+            } else {
+                None
+            };
             let Some(done_at) = min_time(
-                min_time(min_time(build_at, research_at), ship_at),
-                mission_at,
+                min_time(
+                    min_time(min_time(build_at, research_at), ship_at),
+                    mission_at,
+                ),
+                raid_at,
             ) else {
                 self.produce_until(now_unix);
                 return;
@@ -168,6 +194,9 @@ impl GameState {
             }
             if mission_at == Some(done_at) {
                 self.advance_missions_at(done_at);
+            }
+            if raid_at == Some(done_at) {
+                self.resolve_raid_at(done_at);
             }
         }
     }
@@ -720,6 +749,90 @@ impl GameState {
         }
     }
 
+    /// Seconds until the next raid when it has been announced, else `None`.
+    pub fn raid_countdown_secs(&self) -> Option<u64> {
+        if !self.config.raid.enabled {
+            return None;
+        }
+        let lands = self.next_raid_at?;
+        if self.last_tick_unix + self.config.raid.min_warning_secs < lands {
+            return None;
+        }
+        Some(lands.saturating_sub(self.last_tick_unix))
+    }
+
+    fn resolve_raid_at(&mut self, done_at: u64) {
+        let pirates = self.pirate_fleet();
+        let atk_stats = stats_from_catalog(&self.config.ships);
+        let def_stats = self.player_combat_stats();
+        let report = resolve_combat(
+            pirates,
+            self.fleet,
+            &atk_stats,
+            &def_stats,
+            self.config.raid.max_rounds,
+            &mut self.rng_seed,
+        );
+        self.fleet = report.defender_after;
+        let plunder = if report.winner == CombatWinner::Attacker {
+            let taken = plunder_from(
+                self.resources,
+                self.config.raid.plunder_share,
+                self.config.raid.plunder_cap,
+            );
+            self.resources = self.resources.saturating_sub(taken);
+            taken
+        } else {
+            Resources::ZERO
+        };
+        self.push_event(done_at, format_raid_report(&report, plunder));
+        self.next_raid_at = Some(done_at.saturating_add(self.config.raid.interval_secs.max(1)));
+    }
+
+    fn pirate_fleet(&self) -> Fleet {
+        let points = self.fleet_combat_points();
+        let scaled = (points * self.config.raid.strength_factor).floor().max(0.0) as u32;
+        let n = scaled.max(self.config.raid.min_ships);
+        let mut fleet = Fleet::default();
+        if n > 0 {
+            fleet.add(ShipKind::LightFighter, n);
+        }
+        fleet
+    }
+
+    fn fleet_combat_points(&self) -> f64 {
+        ShipKind::ALL
+            .iter()
+            .map(|&kind| {
+                let stats = self.ship_stats(kind);
+                f64::from(self.fleet.get(kind)) * (stats.attack + stats.hull)
+            })
+            .sum()
+    }
+
+    fn player_combat_stats(&self) -> [ShipStats; 9] {
+        let mut out = [ShipStats {
+            attack: 0.0,
+            shield: 0.0,
+            hull: 0.0,
+            cargo: 0.0,
+            speed: 0.0,
+            fuel: 0.0,
+        }; 9];
+        for kind in ShipKind::ALL {
+            out[kind.index()] = self.ship_stats(kind);
+        }
+        out
+    }
+
+    fn push_event(&mut self, at: u64, text: String) {
+        self.events.push(GameEvent { at, text });
+        if self.events.len() > EVENT_LOG_CAP {
+            let drop = self.events.len() - EVENT_LOG_CAP;
+            self.events.drain(..drop);
+        }
+    }
+
     fn complete_one_ship(&mut self, done_at: u64) {
         let Some(job) = self.ship_queue.first() else {
             return;
@@ -828,6 +941,43 @@ impl GameState {
 
 /// Integrate a constant rate for `hours`, stopping exactly at `cap`.
 /// Never lowers `current` (over-cap stockpiles and zero/negative rates stay put).
+fn fleet_label(fleet: Fleet) -> String {
+    let parts: Vec<String> = ShipKind::ALL
+        .iter()
+        .filter_map(|&kind| {
+            let n = fleet.get(kind);
+            (n > 0).then(|| format!("{n} {kind}"))
+        })
+        .collect();
+    if parts.is_empty() {
+        "none".to_string()
+    } else {
+        parts.join(", ")
+    }
+}
+
+fn fleet_losses(before: Fleet, after: Fleet) -> Fleet {
+    let mut lost = Fleet::default();
+    for kind in ShipKind::ALL {
+        lost.add(kind, before.get(kind).saturating_sub(after.get(kind)));
+    }
+    lost
+}
+
+fn format_raid_report(report: &crate::CombatReport, plunder: Resources) -> String {
+    format!(
+        "raid: pirates {} vs {}. {} rounds. lost {}. pirates lost {}. plunder M{:.0} C{:.0} D{:.0}",
+        fleet_label(report.attacker_before),
+        fleet_label(report.defender_before),
+        report.rounds,
+        fleet_label(fleet_losses(report.defender_before, report.defender_after)),
+        fleet_label(fleet_losses(report.attacker_before, report.attacker_after)),
+        plunder.metal,
+        plunder.crystal,
+        plunder.deuterium
+    )
+}
+
 fn min_time(a: Option<u64>, b: Option<u64>) -> Option<u64> {
     match (a, b) {
         (Some(x), Some(y)) => Some(x.min(y)),
@@ -926,6 +1076,7 @@ mod tests {
             ships: crate::ShipCatalog::default(),
             max_ship_queue: 5,
             flight: crate::FlightConfig::default(),
+            raid: crate::RaidConfig::inactive(),
         }
     }
 
@@ -1661,5 +1812,94 @@ modifiers = []
             .launch_fleet(scout_fleet(), far_dest(), 100, 0, 0)
             .unwrap();
         assert_eq!(state.missions.len(), 2);
+    }
+
+    #[test]
+    fn disabled_raids_do_not_resolve_a_stale_schedule() {
+        let mut state = GameState::with_config(0, test_config());
+        state.next_raid_at = Some(10);
+        state.resources.metal = 500.0;
+        state.catch_up(100);
+        assert!(state.events.is_empty());
+        close(state.resources.metal, 500.0 + 100.0 * 100.0 / 3600.0);
+        assert_eq!(state.next_raid_at, Some(10));
+        assert_eq!(state.last_tick_unix, 100);
+    }
+
+    #[test]
+    fn starter_survives_the_first_raid() {
+        let mut state = GameState::new(0);
+        assert_eq!(state.next_raid_at, Some(3600));
+        assert_eq!(state.raid_countdown_secs(), Some(3600));
+        state.catch_up(3599);
+        assert!(state.events.is_empty());
+        assert_eq!(state.fleet.total(), 0);
+        state.catch_up(3600);
+        assert_eq!(state.events.len(), 1);
+        assert!(state.events[0].text.contains("raid:"));
+        assert!(state.events[0].text.contains("plunder"));
+        assert!(state.resources.metal > 0.0);
+        assert!(state.resources.crystal > 0.0);
+        assert_eq!(state.next_raid_at, Some(3600 + 8 * 3600));
+    }
+
+    #[test]
+    fn raid_during_offline_gap_matches_step_by_step() {
+        let mut gap = GameState::new(0);
+        gap.catch_up(7200);
+        let mut step = GameState::new(0);
+        for t in 1..=7200 {
+            step.catch_up(t);
+        }
+        close(gap.resources.metal, step.resources.metal);
+        close(gap.resources.crystal, step.resources.crystal);
+        assert_eq!(gap.fleet, step.fleet);
+        assert_eq!(gap.events, step.events);
+        assert_eq!(gap.rng_seed, step.rng_seed);
+        assert_eq!(gap.next_raid_at, step.next_raid_at);
+        assert_eq!(gap.last_tick_unix, 7200);
+    }
+
+    #[test]
+    fn no_raid_lands_before_configured_first_delay() {
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.first_delay_secs = 7200;
+        cfg.raid.min_warning_secs = 1800;
+        let mut state = GameState::with_config(100, cfg);
+        assert_eq!(state.next_raid_at, Some(7300));
+        assert_eq!(state.raid_countdown_secs(), None);
+        state.catch_up(5500);
+        assert!(state.events.is_empty());
+        assert_eq!(state.raid_countdown_secs(), Some(1800));
+        state.catch_up(7300);
+        assert_eq!(state.events.len(), 1);
+        assert_eq!(state.events[0].at, 7300);
+    }
+
+    #[test]
+    fn plunder_cap_is_applied_on_a_lost_raid() {
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.first_delay_secs = 10;
+        cfg.raid.min_warning_secs = 10;
+        cfg.raid.plunder_share = 1.0;
+        cfg.raid.plunder_cap = Resources {
+            metal: 40.0,
+            crystal: 30.0,
+            deuterium: 5.0,
+        };
+        cfg.starting_resources = Resources {
+            metal: 500.0,
+            crystal: 500.0,
+            deuterium: 100.0,
+        };
+        cfg.starting_buildings.metal_mine = 0;
+        cfg.starting_buildings.crystal_mine = 0;
+        cfg.starting_buildings.solar_plant = 0;
+        let mut state = GameState::with_config(0, cfg);
+        state.catch_up(10);
+        close(state.resources.metal, 460.0);
+        close(state.resources.crystal, 470.0);
+        close(state.resources.deuterium, 95.0);
+        assert!(state.events[0].text.contains("plunder M40 C30 D5"));
     }
 }

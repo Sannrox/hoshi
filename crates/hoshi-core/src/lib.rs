@@ -3,6 +3,7 @@
 mod balance;
 mod buildings;
 mod clock;
+mod combat;
 mod fleets;
 mod research;
 mod save;
@@ -10,10 +11,12 @@ mod ships;
 mod state;
 
 pub use balance::{
-    BalanceConfig, BuildingCatalog, BuildingSpec, EnergyProducerSpec, ProducerSpec, StorageSpec,
+    BalanceConfig, BuildingCatalog, BuildingSpec, EnergyProducerSpec, ProducerSpec, RaidConfig,
+    StorageSpec,
 };
 pub use buildings::{BuildError, BuildJob, BuildingKind, Buildings};
 pub use clock::{Clock, FakeClock, SystemClock};
+pub use combat::{CombatReport, CombatWinner, next_u64, plunder_from, resolve_combat};
 pub use fleets::{
     Coord, FleetError, FlightConfig, Mission, MissionPhase, distance, flight_secs, fuel_cost,
 };
@@ -28,4 +31,4 @@ pub use save::{
 pub use ships::{
     Fleet, ShipCatalog, ShipCatalogError, ShipError, ShipJob, ShipKind, ShipSpec, ShipStats,
 };
-pub use state::{GameState, ResourceKind, Resources};
+pub use state::{GameEvent, GameState, ResourceKind, Resources};
