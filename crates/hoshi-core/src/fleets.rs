@@ -121,6 +121,22 @@ pub struct Mission {
     pub expedition_seed: Option<u64>,
     /// Outcome already applied when Action started, so a delay cannot re-roll.
     pub expedition_applied: bool,
+    /// Cargo delivered on Action when `transport` is set.
+    pub cargo: crate::state::Resources,
+    pub transport: bool,
+}
+
+/// A repeating transport between two owned planets.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TradeRoute {
+    pub id: u64,
+    pub origin: Coord,
+    pub dest: Coord,
+    pub ships: Fleet,
+    pub cargo: crate::state::Resources,
+    pub speed_percent: u8,
+    pub interval_secs: u64,
+    pub next_at: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -157,6 +173,16 @@ pub enum FleetError {
         used: u32,
         cap: u32,
     },
+    CargoExceedsCapacity {
+        need: f64,
+        cap: f64,
+    },
+    InvalidCargo,
+    InsufficientCargo {
+        missing: crate::state::Resources,
+    },
+    UnknownPlanet,
+    NotOwned,
 }
 
 impl fmt::Display for FleetError {
@@ -188,6 +214,19 @@ impl fmt::Display for FleetError {
             FleetError::NoExpeditionSlots { used, cap } => {
                 write!(f, "no free expedition slots ({used}/{cap})")
             }
+            FleetError::CargoExceedsCapacity { need, cap } => {
+                write!(f, "cargo {need:.0} exceeds capacity {cap:.0}")
+            }
+            FleetError::InvalidCargo => {
+                write!(f, "cargo amounts must be finite and non-negative")
+            }
+            FleetError::InsufficientCargo { missing } => write!(
+                f,
+                "not enough cargo (missing metal {:.0}, crystal {:.0}, deuterium {:.0})",
+                missing.metal, missing.crystal, missing.deuterium
+            ),
+            FleetError::UnknownPlanet => write!(f, "unknown planet"),
+            FleetError::NotOwned => write!(f, "destination is not an owned planet"),
         }
     }
 }

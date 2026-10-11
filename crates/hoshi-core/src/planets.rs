@@ -1,6 +1,6 @@
 //! Planet types, sizes, and colonies. Type and size are a pure function of seed + coord.
 
-use crate::buildings::Buildings;
+use crate::buildings::{BuildJob, Buildings};
 use crate::combat::next_u64;
 use crate::fleets::Coord;
 use crate::ships::Fleet;
@@ -102,6 +102,7 @@ pub struct Colony {
     pub resources: Resources,
     pub buildings: Buildings,
     pub fleet: Fleet,
+    pub build_queue: Vec<BuildJob>,
 }
 
 /// Type from the slot band, size from a seeded roll. Gas giants stay small.
