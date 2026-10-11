@@ -117,6 +117,10 @@ pub struct Mission {
     pub fuel_paid: f64,
     /// When true, Action tries to found a colony instead of holding for return.
     pub colonize: bool,
+    /// Seed drawn at launch. `None` means this is not an expedition.
+    pub expedition_seed: Option<u64>,
+    /// Outcome already applied when Action started, so a delay cannot re-roll.
+    pub expedition_applied: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -144,6 +148,15 @@ pub enum FleetError {
     },
     AlreadyReturning,
     NeedColonyShip,
+    HoldOutOfRange {
+        got: u64,
+        min: u64,
+        max: u64,
+    },
+    NoExpeditionSlots {
+        used: u32,
+        cap: u32,
+    },
 }
 
 impl fmt::Display for FleetError {
@@ -169,6 +182,12 @@ impl fmt::Display for FleetError {
             FleetError::UnknownMission { id } => write!(f, "no mission {id}"),
             FleetError::AlreadyReturning => write!(f, "mission is already returning"),
             FleetError::NeedColonyShip => write!(f, "colony mission needs a colony ship"),
+            FleetError::HoldOutOfRange { got, min, max } => {
+                write!(f, "hold {got}s is outside {min}..={max}")
+            }
+            FleetError::NoExpeditionSlots { used, cap } => {
+                write!(f, "no free expedition slots ({used}/{cap})")
+            }
         }
     }
 }

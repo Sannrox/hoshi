@@ -4,6 +4,7 @@
 
 ### Added
 
+- Expeditions: send a fleet to the system's expedition slot for a chosen hold time. Outcomes (nothing, resources, ships, delay, early return, pirates, loss) come from a weighted table in balance config that scales with fleet size, astrophysics and hold time. The outcome seed is stored on the mission so reloading cannot re-roll it. A result line lands in the event log. Save schema v7.
 - Bridge activity maps to bounded game effects: a merged PR pays a slice of production, green CI boosts mines for a while, a long agent run speeds research, red CI or a stuck agent can trigger a raid. Each mapping has a cooldown and a daily cap. Off unless the bridge is enabled. Save schema v6 stores boosts and limits.
 - Optional GitHub poller on the local feed: merged pull requests and finished workflow runs via `gh api` (ETag, paginated lists) or a local webhook, deduplicated across restarts. Off unless the bridge is enabled and `github_repo` is set. No token is stored.
 - Optional local agent activity feed: line-delimited JSON in the state directory (`feed.jsonl`) and an optional Unix socket. Unknown types are ignored; malformed and oversize lines are skipped. Reading resumes from a stored byte offset. Off unless the `bridge` cargo feature is on and config enables it. `hoshi post` appends a line. See `docs/bridge-events.md`.
