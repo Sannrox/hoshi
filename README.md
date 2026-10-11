@@ -6,7 +6,7 @@ games: mine resources, raise buildings, research technologies, build fleets
 and send them on expeditions. Meant to be played in a spare terminal pane
 while your coding agents work.
 
-> Status: hobby project, pre-alpha. The skeleton shows one placeholder screen.
+> Status: hobby project, pre-alpha. The terminal shows resources, the build queue and research, and the game saves to SQLite.
 
 ## The twist: your agents play along
 
@@ -30,6 +30,8 @@ An optional bridge turns your development activity into game events:
 ```sh
 cargo run -p hoshi-tui
 ```
+
+The save file lives in the user data directory (`hoshi/save.sqlite`). Override the path with `--save PATH` or `HOSHI_SAVE`.
 
 ## Develop
 

@@ -19,6 +19,37 @@ pub enum BuildingKind {
 }
 
 impl BuildingKind {
+    pub fn as_key(self) -> &'static str {
+        match self {
+            BuildingKind::MetalMine => "metal_mine",
+            BuildingKind::CrystalMine => "crystal_mine",
+            BuildingKind::DeuteriumSynthesizer => "deuterium_synthesizer",
+            BuildingKind::SolarPlant => "solar_plant",
+            BuildingKind::MetalStorage => "metal_storage",
+            BuildingKind::CrystalStorage => "crystal_storage",
+            BuildingKind::DeuteriumStorage => "deuterium_storage",
+            BuildingKind::RoboticsFactory => "robotics_factory",
+            BuildingKind::ResearchLab => "research_lab",
+            BuildingKind::Shipyard => "shipyard",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Some(match key {
+            "metal_mine" => BuildingKind::MetalMine,
+            "crystal_mine" => BuildingKind::CrystalMine,
+            "deuterium_synthesizer" => BuildingKind::DeuteriumSynthesizer,
+            "solar_plant" => BuildingKind::SolarPlant,
+            "metal_storage" => BuildingKind::MetalStorage,
+            "crystal_storage" => BuildingKind::CrystalStorage,
+            "deuterium_storage" => BuildingKind::DeuteriumStorage,
+            "robotics_factory" => BuildingKind::RoboticsFactory,
+            "research_lab" => BuildingKind::ResearchLab,
+            "shipyard" => BuildingKind::Shipyard,
+            _ => return None,
+        })
+    }
+
     pub const ALL: [BuildingKind; 10] = [
         BuildingKind::MetalMine,
         BuildingKind::CrystalMine,

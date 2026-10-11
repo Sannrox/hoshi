@@ -92,6 +92,8 @@ pub struct GameState {
     pub tech_levels: BTreeMap<String, u32>,
     pub research: Option<ResearchJob>,
     pub last_tick_unix: u64,
+    /// Seeded RNG state for later combat and expeditions. Unused by catch-up.
+    pub rng_seed: u64,
     pub config: BalanceConfig,
 }
 
@@ -108,6 +110,7 @@ impl GameState {
             tech_levels: BTreeMap::new(),
             research: None,
             last_tick_unix: now_unix,
+            rng_seed: 0,
             config,
         }
     }
