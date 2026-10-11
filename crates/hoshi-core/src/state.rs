@@ -131,6 +131,8 @@ pub struct GameState {
     pub rng_seed: u64,
     /// Stable seed for planet type and size. Does not change when combat consumes `rng_seed`.
     pub galaxy_seed: u64,
+    /// When true, `tick --advance` may move the clock. Wall-clock saves stay false.
+    pub deterministic: bool,
     pub config: BalanceConfig,
 }
 
@@ -168,8 +170,21 @@ impl GameState {
             last_tick_unix: now_unix,
             rng_seed: 0,
             galaxy_seed,
+            deterministic: false,
             config,
         }
+    }
+
+    /// New game whose RNG and planet rolls follow `seed`. Marks the save deterministic.
+    pub fn with_seed(now_unix: u64, config: BalanceConfig, seed: u64) -> Self {
+        let (home_kind, home_size) = planet_profile(seed, Coord::HOME);
+        let mut state = Self::with_config(now_unix, config);
+        state.rng_seed = seed;
+        state.galaxy_seed = seed;
+        state.home_kind = home_kind;
+        state.home_size = home_size;
+        state.deterministic = true;
+        state
     }
 
     /// Advance production, the build queue and research to `now_unix`.

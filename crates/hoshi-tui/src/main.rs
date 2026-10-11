@@ -1,13 +1,15 @@
 //! hoshi: an idle space-strategy game for the terminal.
 
 mod app;
+mod cli;
 
 use app::{Action, App};
 use hoshi_core::{
-    BalanceConfig, Clock, SystemClock, load_or_new, open_save, resolve_save_path, save_state,
-    simulate_greedy,
+    BalanceConfig, Clock, SystemClock, load_or_new, lock_save, open_save, resolve_save_path,
+    save_state, simulate_greedy,
 };
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -32,6 +34,18 @@ fn main() {
                 std::process::exit(2);
             }
         }
+    }
+    if cli::is_cli_invocation(&args) {
+        let out = cli::run_cli(&args);
+        let mut stdout = std::io::stdout();
+        if stdout
+            .write_all(out.json.as_bytes())
+            .and_then(|_| stdout.flush())
+            .is_err()
+        {
+            std::process::exit(cli::EXIT_INTERNAL);
+        }
+        std::process::exit(out.exit);
     }
     if let Err(e) = run() {
         eprintln!("hoshi: {e}");
@@ -148,6 +162,16 @@ fn named_path(arg: &str, flag: &str) -> Option<PathBuf> {
     arg.strip_prefix(&format!("{flag}=")).map(PathBuf::from)
 }
 
+fn refuse_deterministic_tui(
+    state: &hoshi_core::GameState,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if state.deterministic {
+        Err("this save is deterministic; use the JSON CLI instead of the TUI".into())
+    } else {
+        Ok(())
+    }
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let clock = SystemClock;
     let flag = parse_save_flag(std::env::args());
@@ -155,8 +179,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let path = resolve_save_path(flag.as_deref(), env.as_deref());
     let config =
         load_balance(balance_override(parse_path_flag(std::env::args(), "--balance")).as_deref())?;
+    let _lock = lock_save(&path)?;
     let mut conn = open_save(&path)?;
     let state = load_or_new(&mut conn, clock.now_unix(), config)?;
+    refuse_deterministic_tui(&state)?;
     let mut app = App::new(state);
     #[cfg(feature = "bridge")]
     let mut bridge = {
@@ -334,6 +360,15 @@ mod tests {
             balance_override(Some(PathBuf::from("/tmp/flag.toml"))),
             Some(PathBuf::from("/tmp/flag.toml"))
         );
+    }
+
+    #[test]
+    fn tui_refuses_a_deterministic_save() {
+        let live = hoshi_core::GameState::new(0);
+        assert!(refuse_deterministic_tui(&live).is_ok());
+        let seeded = hoshi_core::GameState::with_seed(0, hoshi_core::BalanceConfig::default(), 1);
+        let err = refuse_deterministic_tui(&seeded).unwrap_err();
+        assert!(err.to_string().contains("deterministic"), "{err}");
     }
 
     #[test]

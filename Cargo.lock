@@ -209,6 +209,7 @@ dependencies = [
 name = "hoshi-core"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "rusqlite",
  "serde",
  "toml",
@@ -221,6 +222,7 @@ dependencies = [
  "hoshi-bridge",
  "hoshi-core",
  "ratatui",
+ "serde_json",
 ]
 
 [[package]]

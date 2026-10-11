@@ -11,10 +11,11 @@ use crate::state::{GameEvent, GameState, Resources};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::ffi::OsStr;
 use std::fmt;
+use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 8;
+pub const SCHEMA_VERSION: u32 = 9;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -22,6 +23,7 @@ pub enum SaveError {
     SchemaTooNew { found: u32, current: u32 },
     Corrupt(&'static str),
     Io(std::io::Error),
+    Locked,
 }
 
 impl fmt::Display for SaveError {
@@ -36,6 +38,7 @@ impl fmt::Display for SaveError {
             }
             SaveError::Corrupt(msg) => write!(f, "corrupt save: {msg}"),
             SaveError::Io(e) => write!(f, "save path: {e}"),
+            SaveError::Locked => write!(f, "save is locked"),
         }
     }
 }
@@ -128,14 +131,15 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
-        "INSERT INTO meta (id, last_tick_unix, rng_seed, galaxy_seed, home_kind, home_size)
-         VALUES (1, ?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO meta (id, last_tick_unix, rng_seed, galaxy_seed, home_kind, home_size, deterministic)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)",
         params![
             state.last_tick_unix as i64,
             state.rng_seed as i64,
             state.galaxy_seed as i64,
             state.home_kind.as_key(),
             state.home_size as i64,
+            i64::from(state.deterministic),
         ],
     )?;
     tx.execute(
@@ -383,17 +387,18 @@ fn insert_build_queue(
 /// Reconstruct player state. `config` is the caller's rules; it is not stored in the save.
 pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState, SaveError> {
     let mut state = GameState::with_config(0, config);
-    let (last_tick, rng_seed, galaxy_seed, home_kind, home_size): (
+    let (last_tick, rng_seed, galaxy_seed, home_kind, home_size, deterministic): (
         i64,
         i64,
         i64,
         String,
         i64,
+        i64,
     ) = conn
         .query_row(
-            "SELECT last_tick_unix, rng_seed, galaxy_seed, home_kind, home_size FROM meta WHERE id = 1",
+            "SELECT last_tick_unix, rng_seed, galaxy_seed, home_kind, home_size, deterministic FROM meta WHERE id = 1",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
         )
         .optional()?
         .ok_or(SaveError::Corrupt("missing meta row"))?;
@@ -403,6 +408,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     state.home_kind =
         PlanetType::from_key(&home_kind).ok_or(SaveError::Corrupt("unknown home planet type"))?;
     state.home_size = u8::try_from(home_size).map_err(|_| SaveError::Corrupt("home size"))?;
+    state.deterministic = deterministic != 0;
 
     let resources = conn
         .query_row(
@@ -841,6 +847,146 @@ pub fn load_or_new(
     load_state(conn, config)
 }
 
+/// Like [`load_or_new`], but a new save with `seed` is deterministic.
+pub fn load_or_new_with_seed(
+    conn: &mut Connection,
+    now_unix: u64,
+    config: BalanceConfig,
+    seed: u64,
+) -> Result<GameState, SaveError> {
+    let meta: i64 = count_rows(conn, "meta")?;
+    if meta == 0 {
+        let leftover = count_rows(conn, "resources")?
+            + count_rows(conn, "buildings")?
+            + count_rows(conn, "build_queue")?
+            + count_rows(conn, "tech_levels")?
+            + count_rows(conn, "research")?
+            + count_rows(conn, "ships")?
+            + count_rows(conn, "ship_queue")?
+            + count_rows(conn, "missions")?
+            + count_rows(conn, "mission_ships")?
+            + count_rows(conn, "raids")?
+            + count_rows(conn, "event_log")?
+            + count_rows(conn, "colonies")?
+            + count_rows(conn, "activity_boosts")?
+            + count_rows(conn, "activity_limits")?
+            + count_rows(conn, "routes")?
+            + count_rows(conn, "route_ships")?;
+        if leftover != 0 {
+            return Err(SaveError::Corrupt("missing meta row"));
+        }
+        let state = GameState::with_seed(now_unix, config, seed);
+        save_state(conn, &state)?;
+        return Ok(state);
+    }
+    load_state(conn, config)
+}
+
+/// Advisory exclusive lock beside the save. Held for the TUI session or one CLI command.
+#[derive(Debug)]
+pub struct SaveLock {
+    _file: File,
+}
+
+pub fn save_lock_path(save: &Path) -> PathBuf {
+    let mut path = save.as_os_str().to_os_string();
+    path.push(".lock");
+    PathBuf::from(path)
+}
+
+/// Non-blocking exclusive lock. [`SaveError::Locked`] when another process holds it.
+pub fn lock_save(path: &Path) -> Result<SaveLock, SaveError> {
+    if path == Path::new(":memory:") {
+        let path = std::env::temp_dir().join(format!("hoshi-mem-{}.lock", std::process::id()));
+        return Ok(SaveLock {
+            _file: open_lock_file(&path)?,
+        });
+    }
+    let path = save_identity(path);
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    Ok(SaveLock {
+        _file: open_lock_file(&save_lock_path(&path))?,
+    })
+}
+
+/// Same save file through different names (relative, absolute, symlink) shares one lock.
+fn save_identity(path: &Path) -> PathBuf {
+    let path = follow_save_symlinks(path);
+    if let Ok(real) = path.canonicalize() {
+        return real;
+    }
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) if !parent.as_os_str().is_empty() => match parent.canonicalize()
+        {
+            Ok(real_parent) => real_parent.join(name),
+            Err(_) => path,
+        },
+        _ => path,
+    }
+}
+
+fn follow_save_symlinks(path: &Path) -> PathBuf {
+    let mut current = path.to_path_buf();
+    for _ in 0..8 {
+        match std::fs::read_link(&current) {
+            Ok(target) => {
+                current = if target.is_absolute() {
+                    target
+                } else {
+                    match current.parent() {
+                        Some(parent) if !parent.as_os_str().is_empty() => parent.join(target),
+                        _ => target,
+                    }
+                };
+            }
+            Err(_) => break,
+        }
+    }
+    current
+}
+
+#[cfg(not(any(unix, windows)))]
+compile_error!("save locking requires unix flock or windows exclusive share");
+
+fn open_lock_file(path: &Path) -> Result<File, SaveError> {
+    let mut opts = OpenOptions::new();
+    opts.create(true).write(true).truncate(false);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_SHARE_NONE: a second open fails with ERROR_SHARING_VIOLATION.
+        opts.share_mode(0);
+    }
+    let file = match opts.open(path) {
+        Ok(file) => file,
+        Err(err) => return Err(lock_open_error(err)),
+    };
+    #[cfg(unix)]
+    {
+        let fd = std::os::unix::io::AsRawFd::as_raw_fd(&file);
+        let rc = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
+        if rc != 0 {
+            return Err(SaveError::Locked);
+        }
+    }
+    Ok(file)
+}
+
+fn lock_open_error(err: std::io::Error) -> SaveError {
+    #[cfg(windows)]
+    {
+        // ERROR_SHARING_VIOLATION
+        if err.raw_os_error() == Some(32) {
+            return SaveError::Locked;
+        }
+    }
+    SaveError::Io(err)
+}
+
 fn unix_ts(value: i64) -> Result<u64, SaveError> {
     u64::try_from(value).map_err(|_| SaveError::Corrupt("negative timestamp"))
 }
@@ -904,6 +1050,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 8 {
         migrate_v8(conn)?;
+    }
+    if found < 9 {
+        migrate_v9(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -1150,6 +1299,27 @@ fn migrate_v8(conn: &Connection) -> Result<(), SaveError> {
         );
         ",
     )?;
+    Ok(())
+}
+
+fn meta_has_column(conn: &Connection, column: &str) -> Result<bool, SaveError> {
+    let mut stmt = conn.prepare("PRAGMA table_info(meta)")?;
+    let names = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for name in names {
+        if name? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn migrate_v9(conn: &Connection) -> Result<(), SaveError> {
+    if !meta_has_column(conn, "deterministic")? {
+        conn.execute(
+            "ALTER TABLE meta ADD COLUMN deterministic INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
     Ok(())
 }
 
@@ -1625,6 +1795,43 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn lock_follows_a_symlink_to_the_same_save() {
+        let save = unique_path("lock-real");
+        let alias = save.with_file_name(format!(
+            "{}-alias.sqlite",
+            save.file_stem().unwrap().to_string_lossy()
+        ));
+        std::fs::write(&save, []).unwrap();
+        std::os::unix::fs::symlink(&save, &alias).unwrap();
+        let holder = lock_save(&save).unwrap();
+        let err = lock_save(&alias).unwrap_err();
+        assert!(matches!(err, SaveError::Locked), "{err:?}");
+        drop(holder);
+        let _ = std::fs::remove_file(&alias);
+        let _ = std::fs::remove_file(&save);
+        let _ = std::fs::remove_file(save_lock_path(&save));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn lock_follows_a_dangling_symlink() {
+        let save = unique_path("lock-dangle");
+        let alias = save.with_file_name(format!(
+            "{}-dangle.sqlite",
+            save.file_stem().unwrap().to_string_lossy()
+        ));
+        let _ = std::fs::remove_file(&save);
+        std::os::unix::fs::symlink(&save, &alias).unwrap();
+        let holder = lock_save(&alias).unwrap();
+        let err = lock_save(&save).unwrap_err();
+        assert!(matches!(err, SaveError::Locked), "{err:?}");
+        drop(holder);
+        let _ = std::fs::remove_file(&alias);
+        let _ = std::fs::remove_file(save_lock_path(&save));
+    }
+
+    #[test]
     fn load_keeps_the_caller_balance_config() {
         let default = BalanceConfig::default();
         let config = BalanceConfig {
@@ -1666,6 +1873,30 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(format!("{}-wal", path.display()));
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    #[test]
+    fn seeded_save_round_trips_deterministic_flag() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let state = load_or_new_with_seed(&mut conn, 10, BalanceConfig::default(), 42).unwrap();
+        assert!(state.deterministic);
+        assert_eq!(state.rng_seed, 42);
+        assert_eq!(state.galaxy_seed, 42);
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded, state);
+        assert!(meta_has_column(&conn, "deterministic").unwrap());
+    }
+
+    #[test]
+    fn migrate_v9_retries_after_a_partial_alter() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v9(&conn).unwrap();
+        migrate_v9(&conn).unwrap();
+        let mut state = GameState::new(3);
+        state.deterministic = true;
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert!(loaded.deterministic);
     }
 
     #[test]

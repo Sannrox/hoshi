@@ -15,6 +15,10 @@ bridge = ["dep:hoshi-bridge"]
 hoshi-core = { path = "../hoshi-core" }
 hoshi-bridge = { path = "../hoshi-bridge", optional = true }
 ratatui = "0.29"
+serde_json = "1.0.152"
+
+[dev-dependencies]
+hoshi-core = { path = "../hoshi-core" }
 
 [[bin]]
 name = "hoshi"
