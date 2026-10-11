@@ -1,0 +1,232 @@
+# Story events. Adding a row needs no code change.
+
+first_delay_secs = 1800
+cooldown_secs = 3600
+
+[[event]]
+id = "derelict"
+title = "Derelict hull"
+text = "A silent hull drifts near home. Salvage is fast and noisy. Towing it in is slower and costs fuel."
+weight = 12
+timeout_secs = 86400
+timeout_choice = "tow"
+min_elapsed_secs = 0
+
+[[event.choices]]
+id = "salvage"
+label = "Cut it open"
+metal = 400.0
+schedule_raid = true
+
+[[event.choices]]
+id = "tow"
+label = "Tow it home"
+deuterium = -40.0
+metal = 180.0
+
+[[event]]
+id = "smuggler"
+title = "Smuggler's offer"
+text = "A courier offers cheap fuel if you look the other way. Paying them is cheap. Refusing is quiet."
+weight = 10
+timeout_secs = 86400
+timeout_choice = "refuse"
+min_elapsed_secs = 0
+
+[[event.choices]]
+id = "deal"
+label = "Buy the fuel"
+deuterium = 80.0
+metal = -60.0
+schedule_raid = true
+
+[[event.choices]]
+id = "refuse"
+label = "Send them off"
+
+[[event]]
+id = "mutiny"
+title = "Restless crew"
+text = "Fighter crews on a long patrol want hazard pay. Pay them, or some ships go dark."
+weight = 8
+timeout_secs = 86400
+timeout_choice = "pay"
+min_elapsed_secs = 0
+min_fighters = 4
+
+[[event.choices]]
+id = "pay"
+label = "Pay them"
+metal = -120.0
+
+[[event.choices]]
+id = "refuse_pay"
+label = "Refuse"
+ships = { light_fighter = -2 }
+
+[[event]]
+id = "comet_ice"
+title = "Comet ice"
+text = "A dirty snowball crosses the inner system. Scooping it is free crystal. Ignoring it costs nothing."
+weight = 11
+timeout_secs = 86400
+timeout_choice = "leave"
+min_elapsed_secs = 0
+
+[[event.choices]]
+id = "scoop"
+label = "Scoop the ice"
+crystal = 220.0
+
+[[event.choices]]
+id = "leave"
+label = "Let it pass"
+
+[[event]]
+id = "solar_weather"
+title = "Solar weather"
+text = "A flare is coming. Burn fuel to ride it out, or let stockpiles take the hit."
+weight = 9
+timeout_secs = 86400
+timeout_choice = "burn"
+min_elapsed_secs = 0
+
+[[event.choices]]
+id = "burn"
+label = "Burn fuel"
+deuterium = -30.0
+
+[[event.choices]]
+id = "expose"
+label = "Ride it out"
+metal = -90.0
+
+[[event]]
+id = "trader_distress"
+title = "Trader in distress"
+text = "A cargo tug is leaking volatiles. A fuel gift buys their thanks. Leaving them is allowed."
+weight = 10
+timeout_secs = 86400
+timeout_choice = "pass"
+min_elapsed_secs = 0
+
+[[event.choices]]
+id = "help"
+label = "Send fuel"
+deuterium = -25.0
+crystal = 140.0
+
+[[event.choices]]
+id = "pass"
+label = "Keep course"
+
+[[event]]
+id = "pirate_broadcast"
+title = "Pirate broadcast"
+text = "Someone is bragging on an open band. Hunting them might yield a hull. Staying dark is safer."
+weight = 8
+timeout_secs = 86400
+timeout_choice = "hide"
+min_elapsed_secs = 0
+
+[[event.choices]]
+id = "hunt"
+label = "Hunt them"
+ships = { light_fighter = 1 }
+schedule_raid = true
+
+[[event.choices]]
+id = "hide"
+label = "Stay dark"
+
+[[event]]
+id = "ancient_probe"
+title = "Ancient probe"
+text = "A dead probe is full of cracked wafers. Strip the crystal, or log the find and leave it."
+weight = 7
+timeout_secs = 86400
+timeout_choice = "log"
+min_elapsed_secs = 0
+
+[[event.choices]]
+id = "strip"
+label = "Strip the wafers"
+crystal = 90.0
+
+[[event.choices]]
+id = "log"
+label = "Log and leave"
+
+[[event]]
+id = "dust_cloud"
+title = "Dust cloud"
+text = "A dense cloud sits on the usual lane. Burning through spends fuel and yields scrap. Waiting spends nothing."
+weight = 9
+timeout_secs = 86400
+timeout_choice = "wait"
+min_elapsed_secs = 0
+
+[[event.choices]]
+id = "push"
+label = "Burn through"
+deuterium = -20.0
+metal = 70.0
+
+[[event.choices]]
+id = "wait"
+label = "Wait it out"
+
+[[event]]
+id = "scrap_field"
+title = "Scrap field"
+text = "Old hull plates tumble in a debris belt. Hauling them is free metal. Leaving them is quieter."
+weight = 11
+timeout_secs = 86400
+timeout_choice = "ignore"
+min_elapsed_secs = 0
+
+[[event.choices]]
+id = "haul"
+label = "Haul the scrap"
+metal = 160.0
+
+[[event.choices]]
+id = "ignore"
+label = "Leave it"
+
+[[event]]
+id = "quiet_watch"
+title = "Quiet watch"
+text = "Sensors stay clean for a long stretch. Stand the crew down, or keep a fighter on alert."
+weight = 6
+timeout_secs = 86400
+timeout_choice = "stand_down"
+min_elapsed_secs = 0
+
+[[event.choices]]
+id = "stand_down"
+label = "Stand down"
+
+[[event.choices]]
+id = "alert"
+label = "Keep watch"
+deuterium = -10.0
+
+[[event]]
+id = "ice_cache"
+title = "Abandoned cache"
+text = "A marked crate of ice sits off a probe track. Claim it, or leave the mark for someone else."
+weight = 8
+timeout_secs = 86400
+timeout_choice = "skip"
+min_elapsed_secs = 0
+
+[[event.choices]]
+id = "claim"
+label = "Claim the ice"
+crystal = 80.0
+deuterium = 20.0
+
+[[event.choices]]
+id = "skip"
+label = "Leave the mark"

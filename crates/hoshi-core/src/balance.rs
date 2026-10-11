@@ -318,6 +318,7 @@ pub struct BalanceConfig {
     pub outposts: OutpostConfig,
     pub prestige: PrestigeConfig,
     pub chains: ChainConfig,
+    pub story: crate::StoryCatalog,
 }
 
 impl BalanceConfig {
@@ -974,6 +975,7 @@ impl File {
                 }
             },
             chains: self.chains.into_config().map_err(BalanceError::Invalid)?,
+            story: crate::StoryCatalog::default(),
         };
         config.validate()?;
         Ok(config)

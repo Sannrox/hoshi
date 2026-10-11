@@ -17,6 +17,7 @@ mod save;
 mod ships;
 mod simulate;
 mod state;
+mod story;
 mod wonders;
 
 pub use activity::{
@@ -68,4 +69,5 @@ pub use ships::{
 };
 pub use simulate::{DaySnapshot, PrestigeSimRow, SimReport, simulate_greedy};
 pub use state::{GameEvent, GameState, ResourceKind, Resources};
+pub use story::{PendingStory, StoryCatalog, StoryChoice, StoryError, StoryEvent};
 pub use wonders::{WonderError, WonderJob, WonderModifier, WonderSpec, WonderStage};

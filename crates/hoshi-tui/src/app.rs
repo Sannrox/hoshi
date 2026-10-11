@@ -3,7 +3,7 @@
 
 use crate::title::AwaySummary;
 use hoshi_core::{
-    BuildingKind, Coord, GameState, ResourceKind, Resources, ShipKind, WonderError,
+    BuildingKind, Coord, GameState, ResourceKind, Resources, ShipKind, StoryEvent, WonderError,
     encode_galaxy_seed,
 };
 use ratatui::Frame;
@@ -68,6 +68,17 @@ impl App {
                     self.away_hidden = true;
                 }
                 KeyCode::Char('q') => return Action::Quit,
+                _ => {}
+            }
+            return Action::None;
+        }
+        if self.story_event().is_some() {
+            match code {
+                KeyCode::Char('q') => return Action::Quit,
+                KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
+                    let idx = (c as u8 - b'1') as usize;
+                    self.choose_story_at(idx, now_unix);
+                }
                 _ => {}
             }
             return Action::None;
@@ -169,6 +180,34 @@ impl App {
             && !self.away_hidden
         {
             self.draw_away(frame, away);
+        } else if let Some(event) = self.story_event() {
+            self.draw_story(frame, event);
+        }
+    }
+
+    fn story_event(&self) -> Option<&StoryEvent> {
+        let pending = self.state.story_pending.as_ref()?;
+        self.state.config.story.get(&pending.event_id)
+    }
+
+    fn choose_story_at(&mut self, index: usize, now_unix: u64) {
+        let Some(id) = self
+            .story_event()
+            .and_then(|event| event.choices.get(index))
+            .map(|choice| choice.id.clone())
+        else {
+            return;
+        };
+        match self.state.choose_story(&id, now_unix) {
+            Ok(()) => {
+                self.status = self
+                    .state
+                    .events
+                    .last()
+                    .map(|e| e.text.clone())
+                    .unwrap_or_default();
+            }
+            Err(e) => self.status = e.to_string(),
         }
     }
 
@@ -192,6 +231,31 @@ impl App {
             lines.push(Line::from(event.clone()));
         }
         lines.push(Line::from("Enter dismisses. w on overview reopens."));
+        frame.render_widget(Paragraph::new(lines), inner);
+    }
+
+    fn draw_story(&self, frame: &mut Frame<'_>, event: &StoryEvent) {
+        let area = frame.area();
+        let block = Block::bordered().title(format!(" {} ", event.title));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let mut lines = vec![Line::from(event.text.clone()), Line::from("")];
+        for (i, choice) in event.choices.iter().enumerate() {
+            let n = i + 1;
+            let mark = if choice.id == event.timeout_choice {
+                " (default if ignored)"
+            } else {
+                ""
+            };
+            lines.push(Line::from(format!(
+                "{n} {label}{mark}",
+                label = choice.label
+            )));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(
+            "1-9 chooses. Ignored too long uses the default.",
+        ));
         frame.render_widget(Paragraph::new(lines), inner);
     }
 
@@ -1427,5 +1491,31 @@ mod tests {
         app.handle_key(KeyCode::Enter, 1_000);
         assert_eq!(app.state.prestige.current.index, 2);
         assert!(app.state.completed_wonders.is_empty());
+    }
+
+    #[test]
+    fn story_overlay_shows_text_and_number_keys_choose() {
+        let mut app = App::new(GameState::new(1_000));
+        app.state.story_pending = Some(hoshi_core::PendingStory {
+            event_id: "derelict".into(),
+            offered_at: 1_000,
+            timeout_at: 10_000,
+        });
+        let text = render_text(&app, 80, 24);
+        assert!(text.contains("Derelict hull"), "{text}");
+        assert!(text.contains("Cut it open"), "{text}");
+        assert!(text.contains("Tow it home"), "{text}");
+        app.handle_key(KeyCode::Char('2'), 1_000);
+        assert!(app.state.story_pending.is_none());
+        assert!(
+            app.state
+                .events
+                .iter()
+                .any(|e| e.text.contains("Derelict hull")),
+            "{:?}",
+            app.state.events
+        );
+        let text = render_text(&app, 80, 24);
+        assert!(!text.contains("Cut it open"), "{text}");
     }
 }
