@@ -1,7 +1,7 @@
 //! Overview and planet screens. Core owns the rules; this module only renders
 //! and turns keys into core commands.
 
-use hoshi_core::{BuildingKind, GameState, ResourceKind, Resources};
+use hoshi_core::{BuildingKind, GameState, ResourceKind, Resources, ShipKind};
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Layout};
@@ -97,15 +97,19 @@ impl App {
 
     fn activate(&mut self, now_unix: u64) {
         match self.screen {
-            Screen::Planet => {
-                let Some(kind) = BuildingKind::ALL.get(self.selected).copied() else {
-                    return;
-                };
-                match self.state.enqueue_build(kind, now_unix) {
+            Screen::Planet => match self.planet_item(self.selected) {
+                Some(PlanetItem::Building(kind)) => {
+                    match self.state.enqueue_build(kind, now_unix) {
+                        Ok(()) => self.status.clear(),
+                        Err(e) => self.status = e.to_string(),
+                    }
+                }
+                Some(PlanetItem::Ship(kind)) => match self.state.enqueue_ships(kind, 1, now_unix) {
                     Ok(()) => self.status.clear(),
                     Err(e) => self.status = e.to_string(),
-                }
-            }
+                },
+                None => {}
+            },
             Screen::Overview => {
                 let Some(id) = self.tech_id_at(self.selected) else {
                     return;
@@ -120,10 +124,24 @@ impl App {
 
     fn cancel(&mut self, now_unix: u64) {
         match self.screen {
-            Screen::Planet => match self.state.cancel_build(0, now_unix) {
-                Ok(_) => self.status.clear(),
-                Err(e) => self.status = e.to_string(),
-            },
+            Screen::Planet => {
+                let err = match self.planet_item(self.selected) {
+                    Some(PlanetItem::Ship(_)) => self
+                        .state
+                        .cancel_ships(0, now_unix)
+                        .err()
+                        .map(|e| e.to_string()),
+                    _ => self
+                        .state
+                        .cancel_build(0, now_unix)
+                        .err()
+                        .map(|e| e.to_string()),
+                };
+                match err {
+                    None => self.status.clear(),
+                    Some(e) => self.status = e,
+                }
+            }
             Screen::Overview => match self.state.cancel_research(now_unix) {
                 Ok(_) => self.status.clear(),
                 Err(e) => self.status = e.to_string(),
@@ -133,7 +151,7 @@ impl App {
 
     fn list_len(&self) -> usize {
         match self.screen {
-            Screen::Planet => BuildingKind::ALL.len(),
+            Screen::Planet => BuildingKind::ALL.len() + ShipKind::ALL.len(),
             Screen::Overview => self.state.config.techs.iter().count(),
         }
     }
@@ -161,6 +179,10 @@ impl App {
             )),
             Line::from(self.build_status()),
             Line::from(self.research_status()),
+            Line::from(format!(
+                "Ships      lf {}  hf {}  cargo {}",
+                s.fleet.light_fighter, s.fleet.heavy_fighter, s.fleet.small_cargo
+            )),
         ];
         if !self.status.is_empty() {
             lines.push(Line::from(self.status.clone()));
@@ -171,7 +193,7 @@ impl App {
     fn footer_lines(&self) -> Vec<Line<'static>> {
         vec![Line::from(match self.screen {
             Screen::Overview => "tab screens  j/k select  enter research  x cancel  q quit",
-            Screen::Planet => "tab screens  j/k select  enter build  x cancel queue  q quit",
+            Screen::Planet => "tab screens  j/k select  enter queue  x cancel queue  q quit",
         })]
     }
 
@@ -204,14 +226,56 @@ impl App {
                 job.from_level + 1
             )));
         }
+        rows.push(Line::from(format!(
+            "Ships lf {}  hf {}  cargo {}  queue {}/{}",
+            self.state.fleet.light_fighter,
+            self.state.fleet.heavy_fighter,
+            self.state.fleet.small_cargo,
+            self.state.ship_queue.len(),
+            self.state.config.max_ship_queue
+        )));
+        for (i, job) in self.state.ship_queue.iter().enumerate() {
+            let left = job
+                .completes_at
+                .map(|t| t.saturating_sub(self.state.last_tick_unix));
+            let timer = match left {
+                Some(s) => format!("{s}s"),
+                None => "wait".to_string(),
+            };
+            rows.push(Line::from(format!(
+                "  s{}. {} x{}  {timer}",
+                i + 1,
+                job.ship,
+                job.remaining
+            )));
+        }
         rows.push(Line::from("Buildings"));
-        let kinds: Vec<BuildingKind> = BuildingKind::ALL.to_vec();
-        let entries: Vec<Line<'static>> = kinds
+        let mut entries: Vec<Line<'static>> = BuildingKind::ALL
             .iter()
             .enumerate()
             .map(|(i, &kind)| self.building_row(i, kind))
             .collect();
+        let ship_offset = BuildingKind::ALL.len();
+        entries.extend(
+            ShipKind::ALL
+                .iter()
+                .enumerate()
+                .map(|(i, &kind)| self.ship_row(ship_offset + i, kind)),
+        );
         append_windowed(&mut rows, &entries, self.selected, height)
+    }
+
+    fn planet_item(&self, index: usize) -> Option<PlanetItem> {
+        if index < BuildingKind::ALL.len() {
+            return BuildingKind::ALL
+                .get(index)
+                .copied()
+                .map(PlanetItem::Building);
+        }
+        ShipKind::ALL
+            .get(index - BuildingKind::ALL.len())
+            .copied()
+            .map(PlanetItem::Ship)
     }
 
     fn research_lines(&self, height: usize) -> Vec<Line<'static>> {
@@ -232,6 +296,26 @@ impl App {
         let mark = if index == self.selected { '>' } else { ' ' };
         let text = format!("{mark} {kind}  lv{level}  {}  {secs}s", cost_label(cost));
         styled_row(text, self.building_block_reason(kind))
+    }
+
+    fn ship_row(&self, index: usize, kind: ShipKind) -> Line<'static> {
+        let spec = self.state.config.ships.get(kind);
+        let cost = spec.unit_cost();
+        let secs = spec.duration_secs();
+        let owned = self.state.fleet.get(kind);
+        let mark = if index == self.selected { '>' } else { ' ' };
+        let text = format!("{mark} {kind}  x{owned}  {}  {secs}s", cost_label(cost));
+        styled_row(text, self.ship_block_reason(cost))
+    }
+
+    fn ship_block_reason(&self, cost: Resources) -> Option<String> {
+        if self.state.buildings.shipyard < 1 {
+            return Some("need shipyard 1".to_string());
+        }
+        if !self.state.resources.can_afford(cost) {
+            return Some(missing_label(self.state.resources.missing(cost)));
+        }
+        None
     }
 
     fn tech_row(&self, index: usize, spec: &hoshi_core::TechSpec) -> Line<'static> {
@@ -311,6 +395,11 @@ impl App {
             None => "Research: idle".to_string(),
         }
     }
+}
+
+enum PlanetItem {
+    Building(BuildingKind),
+    Ship(ShipKind),
 }
 
 fn resource_line(name: &str, state: &GameState, kind: ResourceKind) -> Line<'static> {
@@ -445,6 +534,7 @@ mod tests {
             assert!(text.contains("Energy"), "{w}x{h}: {text}");
             assert!(text.contains("Build:"), "{w}x{h}: {text}");
             assert!(text.contains("Research:"), "{w}x{h}: {text}");
+            assert!(text.contains("Ships"), "{w}x{h}: {text}");
         }
     }
 
@@ -547,6 +637,95 @@ mod tests {
                 || line_is_dim(terminal.backend(), "need"),
             "unaffordable building should be dim: {text}"
         );
+    }
+
+    #[test]
+    fn planet_shows_ship_counts_and_enter_queues_a_batch() {
+        let mut state = GameState::new(1_000);
+        state.buildings.shipyard = 1;
+        state.resources.metal = 100_000.0;
+        state.resources.crystal = 100_000.0;
+        state.resources.deuterium = 100_000.0;
+        state.fleet.light_fighter = 4;
+        state.fleet.heavy_fighter = 2;
+        state.fleet.small_cargo = 1;
+        let mut app = App::new(state);
+        app.handle_key(KeyCode::Tab, 1_000);
+        let text = render_text(&app, 80, 30);
+        assert!(text.contains("lf 4"), "{text}");
+        assert!(text.contains("hf 2"), "{text}");
+        assert!(text.contains("cargo 1"), "{text}");
+        assert!(text.contains("light fighter"), "{text}");
+
+        app.selected = BuildingKind::ALL.len();
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert_eq!(app.state.ship_queue.len(), 1);
+        assert_eq!(app.state.ship_queue[0].ship, ShipKind::LightFighter);
+        assert_eq!(app.state.ship_queue[0].remaining, 1);
+        let text = render_text(&app, 80, 30);
+        assert!(text.contains("s1. light fighter x1"), "{text}");
+    }
+
+    #[test]
+    fn unaffordable_ships_are_dimmed_with_missing_or_shipyard() {
+        let mut app = App::new(GameState::new(1_000));
+        app.handle_key(KeyCode::Tab, 1_000);
+        app.selected = BuildingKind::ALL.len();
+        let backend = TestBackend::new(80, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let text = buffer_text(terminal.backend());
+        assert!(
+            text.contains("need shipyard 1"),
+            "planet ships should require a shipyard: {text}"
+        );
+        assert!(
+            line_is_dim(terminal.backend(), "light fighter"),
+            "locked ships should be dim: {text}"
+        );
+
+        let mut state = GameState::new(1_000);
+        state.buildings.shipyard = 1;
+        state.resources = hoshi_core::Resources::ZERO;
+        let mut app = App::new(state);
+        app.handle_key(KeyCode::Tab, 1_000);
+        app.selected = BuildingKind::ALL.len();
+        let backend = TestBackend::new(80, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let text = buffer_text(terminal.backend());
+        assert!(
+            text.contains("need M") || text.contains("need C"),
+            "unaffordable ships should show missing amounts: {text}"
+        );
+        assert!(
+            line_is_dim(terminal.backend(), "light fighter"),
+            "unaffordable ships should be dim: {text}"
+        );
+    }
+
+    #[test]
+    fn planet_x_cancels_the_selected_queue() {
+        let mut state = GameState::new(1_000);
+        state.buildings.shipyard = 1;
+        state.resources.metal = 100_000.0;
+        state.resources.crystal = 100_000.0;
+        state.resources.deuterium = 100_000.0;
+        let mut app = App::new(state);
+        app.handle_key(KeyCode::Tab, 1_000);
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert_eq!(app.state.build_queue.len(), 1);
+        app.selected = BuildingKind::ALL.len();
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert_eq!(app.state.ship_queue.len(), 1);
+
+        app.handle_key(KeyCode::Char('x'), 1_000);
+        assert!(app.state.ship_queue.is_empty());
+        assert_eq!(app.state.build_queue.len(), 1);
+
+        app.selected = 0;
+        app.handle_key(KeyCode::Char('x'), 1_000);
+        assert!(app.state.build_queue.is_empty());
     }
 
     #[test]

@@ -3,6 +3,7 @@
 use crate::balance::BalanceConfig;
 use crate::buildings::{BuildJob, BuildingKind, Buildings};
 use crate::research::ResearchJob;
+use crate::ships::{Fleet, ShipJob, ShipKind};
 use crate::state::{GameState, Resources};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::ffi::OsStr;
@@ -10,7 +11,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -109,7 +110,9 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM buildings;
          DELETE FROM build_queue;
          DELETE FROM tech_levels;
-         DELETE FROM research;",
+         DELETE FROM research;
+         DELETE FROM ships;
+         DELETE FROM ship_queue;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -169,6 +172,31 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 job.paid.deuterium,
                 job.started_at as i64,
                 job.completes_at as i64,
+            ],
+        )?;
+    }
+    for kind in ShipKind::ALL {
+        tx.execute(
+            "INSERT INTO ships (planet_id, kind, count) VALUES (1, ?1, ?2)",
+            params![kind.as_key(), state.fleet.get(kind)],
+        )?;
+    }
+    for (i, job) in state.ship_queue.iter().enumerate() {
+        tx.execute(
+            "INSERT INTO ship_queue (
+                planet_id, position, kind, remaining,
+                paid_metal, paid_crystal, paid_deuterium,
+                started_at, completes_at
+             ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                i as i64,
+                job.ship.as_key(),
+                job.remaining,
+                job.unit_paid.metal,
+                job.unit_paid.crystal,
+                job.unit_paid.deuterium,
+                job.started_at.map(|t| t as i64),
+                job.completes_at.map(|t| t as i64),
             ],
         )?;
     }
@@ -313,6 +341,51 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         }
     };
 
+    let mut fleet = Fleet::default();
+    let mut stmt = conn.prepare("SELECT kind, count FROM ships WHERE planet_id = 1")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
+    })?;
+    for row in rows {
+        let (kind, count) = row?;
+        let kind = ShipKind::from_key(&kind).ok_or(SaveError::Corrupt("unknown ship kind"))?;
+        fleet.add(kind, count);
+    }
+    state.fleet = fleet;
+
+    let mut stmt = conn.prepare(
+        "SELECT kind, remaining, paid_metal, paid_crystal, paid_deuterium, started_at, completes_at
+         FROM ship_queue WHERE planet_id = 1 ORDER BY position",
+    )?;
+    let mut queue = Vec::new();
+    let jobs = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, u32>(1)?,
+            row.get::<_, f64>(2)?,
+            row.get::<_, f64>(3)?,
+            row.get::<_, f64>(4)?,
+            row.get::<_, Option<i64>>(5)?,
+            row.get::<_, Option<i64>>(6)?,
+        ))
+    })?;
+    for job in jobs {
+        let (kind, remaining, metal, crystal, deuterium, started_at, completes_at) = job?;
+        let ship = ShipKind::from_key(&kind).ok_or(SaveError::Corrupt("unknown ship kind"))?;
+        queue.push(ShipJob {
+            ship,
+            remaining,
+            unit_paid: Resources {
+                metal,
+                crystal,
+                deuterium,
+            },
+            started_at: unix_ts_opt(started_at)?,
+            completes_at: unix_ts_opt(completes_at)?,
+        });
+    }
+    state.ship_queue = queue;
+
     Ok(state)
 }
 
@@ -328,7 +401,9 @@ pub fn load_or_new(
             + count_rows(conn, "buildings")?
             + count_rows(conn, "build_queue")?
             + count_rows(conn, "tech_levels")?
-            + count_rows(conn, "research")?;
+            + count_rows(conn, "research")?
+            + count_rows(conn, "ships")?
+            + count_rows(conn, "ship_queue")?;
         if leftover != 0 {
             return Err(SaveError::Corrupt("missing meta row"));
         }
@@ -355,6 +430,8 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "build_queue" => "SELECT COUNT(*) FROM build_queue",
         "tech_levels" => "SELECT COUNT(*) FROM tech_levels",
         "research" => "SELECT COUNT(*) FROM research",
+        "ships" => "SELECT COUNT(*) FROM ships",
+        "ship_queue" => "SELECT COUNT(*) FROM ship_queue",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -370,6 +447,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 1 {
         migrate_v1(conn)?;
+    }
+    if found < 2 {
+        migrate_v2(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -425,6 +505,32 @@ fn migrate_v1(conn: &Connection) -> Result<(), SaveError> {
     Ok(())
 }
 
+fn migrate_v2(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS ships (
+            planet_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            count INTEGER NOT NULL,
+            PRIMARY KEY (planet_id, kind)
+        );
+        CREATE TABLE IF NOT EXISTS ship_queue (
+            planet_id INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            remaining INTEGER NOT NULL,
+            paid_metal REAL NOT NULL,
+            paid_crystal REAL NOT NULL,
+            paid_deuterium REAL NOT NULL,
+            started_at INTEGER,
+            completes_at INTEGER,
+            PRIMARY KEY (planet_id, position)
+        );
+        ",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -456,6 +562,11 @@ mod tests {
             .enqueue_build(BuildingKind::SolarPlant, 1_700_000_000)
             .unwrap();
         state.start_research("computer", 1_700_000_000).unwrap();
+        state.buildings.shipyard = 1;
+        state
+            .enqueue_ships(crate::ShipKind::LightFighter, 2, 1_700_000_000)
+            .unwrap();
+        state.fleet.add(crate::ShipKind::HeavyFighter, 3);
         state
     }
 
