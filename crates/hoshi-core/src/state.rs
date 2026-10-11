@@ -10,7 +10,9 @@ use crate::combat::{
     stats_from_catalog,
 };
 use crate::expedition::{ExpeditionResult, roll_expedition};
-use crate::fleets::{Coord, FleetError, Mission, MissionPhase, distance, flight_secs, fuel_cost};
+use crate::fleets::{
+    Coord, FleetError, Mission, MissionPhase, TradeRoute, distance, flight_secs, fuel_cost,
+};
 use crate::planets::{Colony, PlanetType, planet_profile};
 use crate::research::{ModifierKind, PrereqGap, ResearchError, ResearchJob};
 use crate::ships::{Fleet, ShipError, ShipJob, ShipKind, ShipStats};
@@ -119,6 +121,8 @@ pub struct GameState {
     pub colonies: Vec<Colony>,
     pub missions: Vec<Mission>,
     pub next_mission_id: u64,
+    pub routes: Vec<TradeRoute>,
+    pub next_route_id: u64,
     pub next_raid_at: Option<u64>,
     pub events: Vec<GameEvent>,
     pub activity: ActivityTracker,
@@ -152,6 +156,8 @@ impl GameState {
             colonies: Vec::new(),
             missions: Vec::new(),
             next_mission_id: 0,
+            routes: Vec::new(),
+            next_route_id: 0,
             next_raid_at: if config.raid.enabled {
                 Some(now_unix.saturating_add(config.raid.first_delay_secs))
             } else {
@@ -175,10 +181,17 @@ impl GameState {
             return;
         }
         loop {
-            let build_at = self.build_queue.first().and_then(|job| job.completes_at);
+            let home_build_at = self.build_queue.first().and_then(|job| job.completes_at);
+            let colony_build_at = self
+                .colonies
+                .iter()
+                .filter_map(|c| c.build_queue.first().and_then(|job| job.completes_at))
+                .min();
+            let build_at = min_time(home_build_at, colony_build_at);
             let research_at = self.research.as_ref().map(|job| job.completes_at);
             let ship_at = self.ship_queue.first().and_then(|job| job.completes_at);
             let mission_at = self.missions.iter().map(|m| m.phase_ends_at).min();
+            let route_at = self.routes.iter().map(|r| r.next_at).min();
             let raid_at = if self.config.raid.enabled {
                 self.next_raid_at
             } else {
@@ -195,10 +208,13 @@ impl GameState {
             let Some(done_at) = min_time(
                 min_time(
                     min_time(
-                        min_time(min_time(build_at, research_at), ship_at),
-                        mission_at,
+                        min_time(
+                            min_time(min_time(build_at, research_at), ship_at),
+                            mission_at,
+                        ),
+                        raid_at,
                     ),
-                    raid_at,
+                    route_at,
                 ),
                 min_time(prod_boost_at, research_boost_at),
             ) else {
@@ -210,10 +226,24 @@ impl GameState {
                 return;
             }
             self.produce_until(done_at);
-            if build_at == Some(done_at) {
+            if home_build_at == Some(done_at) {
                 let job = self.build_queue.remove(0);
                 self.buildings.increment(job.building);
                 self.start_head(done_at);
+            }
+            let colony_done: Vec<usize> = self
+                .colonies
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| {
+                    c.build_queue.first().and_then(|job| job.completes_at) == Some(done_at)
+                })
+                .map(|(i, _)| i)
+                .collect();
+            for i in colony_done {
+                let job = self.colonies[i].build_queue.remove(0);
+                self.colonies[i].buildings.increment(job.building);
+                self.start_colony_head(i, done_at);
             }
             if research_at == Some(done_at)
                 && let Some(job) = self.research.take()
@@ -226,6 +256,9 @@ impl GameState {
             }
             if mission_at == Some(done_at) {
                 self.advance_missions_at(done_at);
+            }
+            if route_at == Some(done_at) {
+                self.fire_routes_at(done_at);
             }
             if raid_at == Some(done_at) {
                 self.resolve_raid_at(done_at);
@@ -288,19 +321,68 @@ impl GameState {
         ActivityApply::Applied
     }
 
-    /// Queue an upgrade. Resources are paid immediately; only the head runs.
-    /// Waiting jobs get their timer when they become head, so a robotics
-    /// completion in front of them shortens their duration.
+    /// Queue an upgrade on the home planet.
     pub fn enqueue_build(&mut self, kind: BuildingKind, now_unix: u64) -> Result<(), BuildError> {
+        self.enqueue_build_on(self.home, kind, now_unix)
+    }
+
+    /// Queue an upgrade. Resources are paid from that planet; only the head runs.
+    pub fn enqueue_build_on(
+        &mut self,
+        coord: Coord,
+        kind: BuildingKind,
+        now_unix: u64,
+    ) -> Result<(), BuildError> {
         self.catch_up(now_unix);
         let now = self.last_tick_unix;
-        let cap = self.config.max_build_queue;
-        if self.build_queue.len() >= cap {
+        if coord == self.home {
+            let buildings = self.buildings;
+            let robotics = buildings.robotics_factory;
+            return Self::push_build_job_parts(
+                kind,
+                now,
+                buildings,
+                &mut self.resources,
+                &mut self.build_queue,
+                robotics,
+                &self.config,
+            );
+        }
+        let idx = self
+            .colonies
+            .iter()
+            .position(|c| c.coord == coord)
+            .ok_or(BuildError::UnknownPlanet)?;
+        let buildings = self.colonies[idx].buildings;
+        let robotics = buildings.robotics_factory;
+        let colony = &mut self.colonies[idx];
+        Self::push_build_job_parts(
+            kind,
+            now,
+            buildings,
+            &mut colony.resources,
+            &mut colony.build_queue,
+            robotics,
+            &self.config,
+        )
+    }
+
+    fn push_build_job_parts(
+        kind: BuildingKind,
+        now: u64,
+        buildings: Buildings,
+        resources: &mut Resources,
+        queue: &mut Vec<BuildJob>,
+        robotics: u32,
+        config: &BalanceConfig,
+    ) -> Result<(), BuildError> {
+        let cap = config.max_build_queue;
+        if queue.len() >= cap {
             return Err(BuildError::QueueFull { cap });
         }
-        let prereqs = self.config.buildings.get(kind).prerequisites.clone();
+        let prereqs = config.buildings.get(kind).prerequisites.clone();
         for &(req, required) in &prereqs {
-            let actual = self.projected_level(req);
+            let actual = projected_on(&buildings, queue, req, queue.len());
             if actual < required {
                 return Err(BuildError::MissingPrerequisite {
                     building: req,
@@ -309,45 +391,97 @@ impl GameState {
                 });
             }
         }
-        let from_level = self.projected_level(kind);
-        let cost = self.config.buildings.get(kind).cost(from_level);
-        if !self.resources.can_afford(cost) {
+        let from_level = projected_on(&buildings, queue, kind, queue.len());
+        let cost = config.buildings.get(kind).cost(from_level);
+        if !resources.can_afford(cost) {
             return Err(BuildError::InsufficientResources {
-                missing: self.resources.missing(cost),
+                missing: resources.missing(cost),
                 cost,
             });
         }
-        self.resources = self.resources.saturating_sub(cost);
-        self.build_queue.push(BuildJob {
+        *resources = resources.saturating_sub(cost);
+        queue.push(BuildJob {
             building: kind,
             from_level,
             paid: cost,
             started_at: None,
             completes_at: None,
         });
-        if self.build_queue.len() == 1 {
-            self.start_head(now);
+        if queue.len() == 1 {
+            start_queue_head(queue, robotics, config, now);
         }
         Ok(())
     }
 
-    /// Cancel a queue slot and refund its paid cost in full (may exceed the cap).
+    /// Queue the same upgrade on every selected planet. Logistics tech is required.
+    /// Planets that cannot pay are reported; the others still enqueue.
+    pub fn enqueue_build_many(
+        &mut self,
+        kind: BuildingKind,
+        coords: &[Coord],
+        now_unix: u64,
+    ) -> Vec<(Coord, Result<(), BuildError>)> {
+        self.catch_up(now_unix);
+        if self.modifier(ModifierKind::Logistics) < 1.0 {
+            return coords
+                .iter()
+                .map(|&c| (c, Err(BuildError::NeedLogistics)))
+                .collect();
+        }
+        coords
+            .iter()
+            .map(|&c| (c, self.enqueue_build_on(c, kind, now_unix)))
+            .collect()
+    }
+
+    /// Cancel a queue slot on the home planet and refund its paid cost in full.
     pub fn cancel_build(&mut self, index: usize, now_unix: u64) -> Result<Resources, BuildError> {
+        self.cancel_build_on(self.home, index, now_unix)
+    }
+
+    pub fn cancel_build_on(
+        &mut self,
+        coord: Coord,
+        index: usize,
+        now_unix: u64,
+    ) -> Result<Resources, BuildError> {
         self.catch_up(now_unix);
         let now = self.last_tick_unix;
-        let len = self.build_queue.len();
+        if coord == self.home {
+            let len = self.build_queue.len();
+            if index >= len {
+                return Err(BuildError::EmptySlot { index, len });
+            }
+            let job = self.build_queue.remove(index);
+            self.resources = self.resources.saturating_add(job.paid);
+            self.reprice_queue();
+            if index == 0 {
+                if let Some(head) = self.build_queue.first_mut() {
+                    head.started_at = None;
+                    head.completes_at = None;
+                }
+                self.start_head(now);
+            }
+            return Ok(job.paid);
+        }
+        let idx = self
+            .colonies
+            .iter()
+            .position(|c| c.coord == coord)
+            .ok_or(BuildError::UnknownPlanet)?;
+        let len = self.colonies[idx].build_queue.len();
         if index >= len {
             return Err(BuildError::EmptySlot { index, len });
         }
-        let job = self.build_queue.remove(index);
-        self.resources = self.resources.saturating_add(job.paid);
-        self.reprice_queue();
+        let job = self.colonies[idx].build_queue.remove(index);
+        self.colonies[idx].resources = self.colonies[idx].resources.saturating_add(job.paid);
+        self.reprice_colony_queue(idx);
         if index == 0 {
-            if let Some(head) = self.build_queue.first_mut() {
+            if let Some(head) = self.colonies[idx].build_queue.first_mut() {
                 head.started_at = None;
                 head.completes_at = None;
             }
-            self.start_head(now);
+            self.start_colony_head(idx, now);
         }
         Ok(job.paid)
     }
@@ -509,16 +643,26 @@ impl GameState {
         dest: Coord,
         speed_percent: u8,
     ) -> Result<(u64, f64), FleetError> {
+        self.flight_from(self.home, dest, ships, speed_percent)
+    }
+
+    fn flight_from(
+        &self,
+        origin: Coord,
+        dest: Coord,
+        ships: Fleet,
+        speed_percent: u8,
+    ) -> Result<(u64, f64), FleetError> {
         if ships.is_empty() {
             return Err(FleetError::EmptyFleet);
         }
-        if dest == self.home {
+        if dest == origin {
             return Err(FleetError::SameLocation);
         }
         if !(10..=100).contains(&speed_percent) {
             return Err(FleetError::SpeedPercent { got: speed_percent });
         }
-        let dist = distance(self.home, dest, &self.config.flight);
+        let dist = distance(origin, dest, &self.config.flight);
         let mut slowest = f64::MAX;
         let mut units_fuel = 0.0;
         for kind in ShipKind::ALL {
@@ -587,6 +731,8 @@ impl GameState {
             colonize: false,
             expedition_seed: None,
             expedition_applied: false,
+            cargo: Resources::ZERO,
+            transport: false,
         });
         Ok(())
     }
@@ -646,6 +792,340 @@ impl GameState {
         mission.expedition_seed = Some(next_u64(&mut self.rng_seed));
         mission.expedition_applied = false;
         Ok(mission.id)
+    }
+
+    pub fn owned_coords(&self) -> Vec<Coord> {
+        let mut out = vec![self.home];
+        out.extend(self.colonies.iter().map(|c| c.coord));
+        out
+    }
+
+    pub fn resources_at(&self, coord: Coord) -> Option<&Resources> {
+        if coord == self.home {
+            Some(&self.resources)
+        } else {
+            self.colonies
+                .iter()
+                .find(|c| c.coord == coord)
+                .map(|c| &c.resources)
+        }
+    }
+
+    pub fn buildings_at(&self, coord: Coord) -> Option<&Buildings> {
+        if coord == self.home {
+            Some(&self.buildings)
+        } else {
+            self.colonies
+                .iter()
+                .find(|c| c.coord == coord)
+                .map(|c| &c.buildings)
+        }
+    }
+
+    pub fn queue_at(&self, coord: Coord) -> Option<&[BuildJob]> {
+        if coord == self.home {
+            Some(&self.build_queue)
+        } else {
+            self.colonies
+                .iter()
+                .find(|c| c.coord == coord)
+                .map(|c| c.build_queue.as_slice())
+        }
+    }
+
+    pub fn build_cost_on(&self, coord: Coord, kind: BuildingKind) -> Resources {
+        let buildings = self.buildings_at(coord).unwrap_or(&self.buildings);
+        let queue = self.queue_at(coord).unwrap_or(&self.build_queue);
+        let from_level = projected_on(buildings, queue, kind, queue.len());
+        self.config.buildings.get(kind).cost(from_level)
+    }
+
+    pub fn build_time_secs_on(&self, coord: Coord, kind: BuildingKind) -> u64 {
+        let buildings = self.buildings_at(coord).unwrap_or(&self.buildings);
+        let queue = self.queue_at(coord).unwrap_or(&self.build_queue);
+        let from_level = projected_on(buildings, queue, kind, queue.len());
+        duration_with_robotics(kind, from_level, buildings.robotics_factory, &self.config)
+    }
+
+    pub fn cargo_capacity(&self, ships: Fleet) -> f64 {
+        ShipKind::ALL
+            .iter()
+            .map(|&kind| f64::from(ships.get(kind)) * self.ship_stats(kind).cargo)
+            .sum()
+    }
+
+    fn cargo_mass(cargo: Resources) -> f64 {
+        cargo.metal + cargo.crystal + cargo.deuterium
+    }
+
+    fn check_cargo(cargo: Resources) -> Result<(), FleetError> {
+        let ok = [cargo.metal, cargo.crystal, cargo.deuterium]
+            .into_iter()
+            .all(|n| n.is_finite() && n >= 0.0);
+        if ok {
+            Ok(())
+        } else {
+            Err(FleetError::InvalidCargo)
+        }
+    }
+
+    fn add_fleet_at(&mut self, coord: Coord, ships: Fleet) {
+        if coord == self.home {
+            for kind in ShipKind::ALL {
+                self.fleet.add(kind, ships.get(kind));
+            }
+            return;
+        }
+        if let Some(colony) = self.colonies.iter_mut().find(|c| c.coord == coord) {
+            for kind in ShipKind::ALL {
+                colony.fleet.add(kind, ships.get(kind));
+            }
+        } else {
+            for kind in ShipKind::ALL {
+                self.fleet.add(kind, ships.get(kind));
+            }
+        }
+    }
+
+    fn credit_at(&mut self, coord: Coord, found: Resources) {
+        if coord == self.home {
+            self.credit_capped(found);
+            return;
+        }
+        if let Some(colony) = self.colonies.iter_mut().find(|c| c.coord == coord) {
+            let config = &self.config;
+            colony.resources.metal = (colony.resources.metal + found.metal).min(
+                config
+                    .metal_storage
+                    .capacity(colony.buildings.metal_storage),
+            );
+            colony.resources.crystal = (colony.resources.crystal + found.crystal).min(
+                config
+                    .crystal_storage
+                    .capacity(colony.buildings.crystal_storage),
+            );
+            colony.resources.deuterium = (colony.resources.deuterium + found.deuterium).min(
+                config
+                    .deuterium_storage
+                    .capacity(colony.buildings.deuterium_storage),
+            );
+        } else {
+            self.credit_capped(found);
+        }
+    }
+
+    fn take_ships_at(&mut self, coord: Coord, ships: Fleet) -> Result<(), FleetError> {
+        let fleet = if coord == self.home {
+            &mut self.fleet
+        } else {
+            &mut self
+                .colonies
+                .iter_mut()
+                .find(|c| c.coord == coord)
+                .ok_or(FleetError::UnknownPlanet)?
+                .fleet
+        };
+        for kind in ShipKind::ALL {
+            let need = ships.get(kind);
+            let have = fleet.get(kind);
+            if have < need {
+                return Err(FleetError::MissingShips { kind, need, have });
+            }
+        }
+        for kind in ShipKind::ALL {
+            fleet.saturating_sub(kind, ships.get(kind));
+        }
+        Ok(())
+    }
+
+    fn resources_at_mut(&mut self, coord: Coord) -> Result<&mut Resources, FleetError> {
+        if coord == self.home {
+            Ok(&mut self.resources)
+        } else {
+            self.colonies
+                .iter_mut()
+                .find(|c| c.coord == coord)
+                .map(|c| &mut c.resources)
+                .ok_or(FleetError::UnknownPlanet)
+        }
+    }
+
+    /// Move cargo between owned planets. Fuel is paid from the origin at launch.
+    pub fn launch_transport(
+        &mut self,
+        origin: Coord,
+        dest: Coord,
+        ships: Fleet,
+        cargo: Resources,
+        speed_percent: u8,
+        now_unix: u64,
+    ) -> Result<u64, FleetError> {
+        self.catch_up(now_unix);
+        if origin == dest {
+            return Err(FleetError::SameLocation);
+        }
+        if !self.occupied(dest) {
+            return Err(FleetError::NotOwned);
+        }
+        if !self.occupied(origin) {
+            return Err(FleetError::UnknownPlanet);
+        }
+        Self::check_cargo(cargo)?;
+        let cap = self.cargo_capacity(ships);
+        let need = Self::cargo_mass(cargo);
+        if need > cap + 1e-9 {
+            return Err(FleetError::CargoExceedsCapacity { need, cap });
+        }
+        let (outbound_secs, fuel) = self.flight_from(origin, dest, ships, speed_percent)?;
+        let needed = Resources {
+            metal: cargo.metal,
+            crystal: cargo.crystal,
+            deuterium: cargo.deuterium + fuel,
+        };
+        let cargo_missing = {
+            let res = self.resources_at_mut(origin)?;
+            if !res.can_afford(cargo) {
+                Some(res.missing(cargo))
+            } else {
+                None
+            }
+        };
+        if let Some(missing) = cargo_missing {
+            return Err(FleetError::InsufficientCargo { missing });
+        }
+        let fuel_missing = {
+            let res = self.resources_at_mut(origin)?;
+            if res.deuterium + 1e-9 < needed.deuterium {
+                Some((needed.deuterium - res.deuterium).max(0.0))
+            } else {
+                None
+            }
+        };
+        if let Some(missing) = fuel_missing {
+            return Err(FleetError::InsufficientFuel {
+                missing,
+                cost: fuel,
+            });
+        }
+        let cap_slots = self.fleet_slots();
+        let used = self.missions.len() as u32;
+        if used >= cap_slots {
+            return Err(FleetError::NoSlots {
+                used,
+                cap: cap_slots,
+            });
+        }
+        self.take_ships_at(origin, ships)?;
+        {
+            let res = self.resources_at_mut(origin)?;
+            *res = res.saturating_sub(needed);
+        }
+        let id = self.next_mission_id;
+        self.next_mission_id = self.next_mission_id.saturating_add(1);
+        let now = self.last_tick_unix;
+        self.missions.push(Mission {
+            id,
+            ships,
+            origin,
+            dest,
+            speed_percent,
+            phase: MissionPhase::Outbound,
+            launched_at: now,
+            outbound_secs,
+            hold_secs: 0,
+            phase_ends_at: now.saturating_add(outbound_secs),
+            fuel_paid: fuel,
+            colonize: false,
+            expedition_seed: None,
+            expedition_applied: false,
+            cargo,
+            transport: true,
+        });
+        Ok(id)
+    }
+
+    pub fn schedule_route(
+        &mut self,
+        origin: Coord,
+        dest: Coord,
+        ships: Fleet,
+        cargo: Resources,
+        interval_secs: u64,
+        now_unix: u64,
+    ) -> Result<u64, FleetError> {
+        self.catch_up(now_unix);
+        if interval_secs == 0 {
+            return Err(FleetError::HoldOutOfRange {
+                got: 0,
+                min: 1,
+                max: u64::MAX,
+            });
+        }
+        if origin == dest {
+            return Err(FleetError::SameLocation);
+        }
+        if !self.occupied(origin) || !self.occupied(dest) {
+            return Err(FleetError::NotOwned);
+        }
+        if ships.is_empty() {
+            return Err(FleetError::EmptyFleet);
+        }
+        Self::check_cargo(cargo)?;
+        let cap = self.cargo_capacity(ships);
+        let need = Self::cargo_mass(cargo);
+        if need > cap + 1e-9 {
+            return Err(FleetError::CargoExceedsCapacity { need, cap });
+        }
+        let id = self.next_route_id;
+        self.next_route_id = self.next_route_id.saturating_add(1);
+        self.routes.push(TradeRoute {
+            id,
+            origin,
+            dest,
+            ships,
+            cargo,
+            speed_percent: 100,
+            interval_secs,
+            next_at: self.last_tick_unix,
+        });
+        Ok(id)
+    }
+
+    pub fn cancel_route(&mut self, id: u64) -> Result<(), FleetError> {
+        let idx = self
+            .routes
+            .iter()
+            .position(|r| r.id == id)
+            .ok_or(FleetError::UnknownMission { id })?;
+        self.routes.remove(idx);
+        Ok(())
+    }
+
+    fn fire_routes_at(&mut self, done_at: u64) {
+        let ids: Vec<u64> = self
+            .routes
+            .iter()
+            .filter(|r| r.next_at == done_at)
+            .map(|r| r.id)
+            .collect();
+        for id in ids {
+            let Some(index) = self.routes.iter().position(|r| r.id == id) else {
+                continue;
+            };
+            let route = self.routes[index].clone();
+            self.routes[index].next_at = done_at.saturating_add(route.interval_secs.max(1));
+            match self.launch_transport(
+                route.origin,
+                route.dest,
+                route.ships,
+                route.cargo,
+                route.speed_percent,
+                done_at,
+            ) {
+                Ok(_) => {}
+                Err(err) => self.push_event(done_at, format!("route {id}: skipped ({err})")),
+            }
+        }
     }
 
     /// Send one colony ship. Settlement is attempted on Action; failure returns the ship.
@@ -882,25 +1362,73 @@ impl GameState {
     }
 
     fn duration_secs(&self, kind: BuildingKind, from_level: u32) -> u64 {
-        let raw = self.config.buildings.get(kind).raw_seconds(from_level);
-        let divisor =
-            1.0 + f64::from(self.buildings.robotics_factory) * self.config.robotics_speed_per_level;
-        let secs = if divisor > 0.0 { raw / divisor } else { raw };
-        secs.ceil().max(1.0) as u64
+        duration_with_robotics(
+            kind,
+            from_level,
+            self.buildings.robotics_factory,
+            &self.config,
+        )
     }
 
     fn start_head(&mut self, now_unix: u64) {
-        let Some(job) = self.build_queue.first() else {
-            return;
-        };
-        if job.completes_at.is_some() {
-            return;
+        let robotics = self.buildings.robotics_factory;
+        start_queue_head(
+            &mut self.build_queue,
+            robotics,
+            &self.config,
+            now_unix.max(self.last_tick_unix),
+        );
+    }
+
+    fn start_colony_head(&mut self, index: usize, now_unix: u64) {
+        let robotics = self.colonies[index].buildings.robotics_factory;
+        start_queue_head(
+            &mut self.colonies[index].build_queue,
+            robotics,
+            &self.config,
+            now_unix.max(self.last_tick_unix),
+        );
+    }
+
+    fn reprice_colony_queue(&mut self, index: usize) {
+        let mut i = 0;
+        while i < self.colonies[index].build_queue.len() {
+            let kind = self.colonies[index].build_queue[i].building;
+            let prereqs = self.config.buildings.get(kind).prerequisites.clone();
+            let ok = prereqs.iter().all(|&(req, required)| {
+                projected_on(
+                    &self.colonies[index].buildings,
+                    &self.colonies[index].build_queue,
+                    req,
+                    i,
+                ) >= required
+            });
+            if !ok {
+                let job = self.colonies[index].build_queue.remove(i);
+                self.colonies[index].resources =
+                    self.colonies[index].resources.saturating_add(job.paid);
+                continue;
+            }
+            let from_level = projected_on(
+                &self.colonies[index].buildings,
+                &self.colonies[index].build_queue,
+                kind,
+                i,
+            );
+            let new_cost = self.config.buildings.get(kind).cost(from_level);
+            let old_paid = self.colonies[index].build_queue[i].paid;
+            self.colonies[index].resources =
+                self.colonies[index].resources.saturating_add(old_paid);
+            if !self.colonies[index].resources.can_afford(new_cost) {
+                self.colonies[index].build_queue.remove(i);
+                continue;
+            }
+            self.colonies[index].resources =
+                self.colonies[index].resources.saturating_sub(new_cost);
+            self.colonies[index].build_queue[i].from_level = from_level;
+            self.colonies[index].build_queue[i].paid = new_cost;
+            i += 1;
         }
-        let duration = self.duration_secs(job.building, job.from_level);
-        let now = now_unix.max(self.last_tick_unix);
-        let job = &mut self.build_queue[0];
-        job.started_at = Some(now);
-        job.completes_at = Some(now.saturating_add(duration));
     }
 
     fn start_ship_head(&mut self, now_unix: u64) {
@@ -939,14 +1467,21 @@ impl GameState {
                     if self.try_colonize_at(index, done_at) {
                         continue;
                     }
+                    if self.missions[index].transport {
+                        let dest = self.missions[index].dest;
+                        let cargo = self.missions[index].cargo;
+                        self.credit_at(dest, cargo);
+                        self.missions[index].cargo = Resources::ZERO;
+                    }
                     let ret = self.missions[index].outbound_secs;
                     self.missions[index].phase = MissionPhase::Return;
                     self.missions[index].phase_ends_at = done_at.saturating_add(ret);
                 }
                 MissionPhase::Return => {
-                    let ships = self.missions.remove(index).ships;
-                    for kind in ShipKind::ALL {
-                        self.fleet.add(kind, ships.get(kind));
+                    let mission = self.missions.remove(index);
+                    self.add_fleet_at(mission.origin, mission.ships);
+                    if mission.transport {
+                        self.credit_at(mission.origin, mission.cargo);
                     }
                 }
             }
@@ -1087,6 +1622,7 @@ impl GameState {
             resources: Resources::ZERO,
             buildings: Buildings::default(),
             fleet: ships,
+            build_queue: Vec::new(),
         });
         true
     }
@@ -1476,6 +2012,44 @@ fn min_time(a: Option<u64>, b: Option<u64>) -> Option<u64> {
 
 /// Integrate a constant rate for `hours`, stopping exactly at `cap`.
 /// Never lowers `current` (over-cap stockpiles and zero/negative rates stay put).
+fn projected_on(
+    buildings: &Buildings,
+    queue: &[BuildJob],
+    kind: BuildingKind,
+    index: usize,
+) -> u32 {
+    buildings.get(kind)
+        + queue[..index]
+            .iter()
+            .filter(|job| job.building == kind)
+            .count() as u32
+}
+
+fn duration_with_robotics(
+    kind: BuildingKind,
+    from_level: u32,
+    robotics: u32,
+    config: &BalanceConfig,
+) -> u64 {
+    let raw = config.buildings.get(kind).raw_seconds(from_level);
+    let divisor = 1.0 + f64::from(robotics) * config.robotics_speed_per_level;
+    let secs = if divisor > 0.0 { raw / divisor } else { raw };
+    secs.ceil().max(1.0) as u64
+}
+
+fn start_queue_head(queue: &mut [BuildJob], robotics: u32, config: &BalanceConfig, now: u64) {
+    let Some(job) = queue.first() else {
+        return;
+    };
+    if job.completes_at.is_some() {
+        return;
+    }
+    let duration = duration_with_robotics(job.building, job.from_level, robotics, config);
+    let job = &mut queue[0];
+    job.started_at = Some(now);
+    job.completes_at = Some(now.saturating_add(duration));
+}
+
 fn add_capped(current: f64, rate_per_hour: f64, hours: f64, cap: f64) -> f64 {
     if hours <= 0.0 || rate_per_hour <= 0.0 || current >= cap {
         current
@@ -2905,5 +3479,316 @@ modifiers = [{ kind = "expedition_slots", per_level = 1.0 }]
                 .count(),
             2
         );
+    }
+
+    fn neighbor() -> Coord {
+        Coord {
+            galaxy: 1,
+            system: 1,
+            position: 2,
+        }
+    }
+
+    fn plant_colony(state: &mut GameState, coord: Coord) {
+        state.colonies.push(Colony {
+            coord,
+            kind: PlanetType::Rocky,
+            size: 120,
+            resources: Resources {
+                metal: 100_000.0,
+                crystal: 100_000.0,
+                deuterium: 100_000.0,
+            },
+            buildings: Buildings::default(),
+            fleet: Fleet::default(),
+            build_queue: Vec::new(),
+        });
+    }
+
+    fn cargo_fleet() -> Fleet {
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::SmallCargo, 1);
+        ships
+    }
+
+    fn logistics_config() -> BalanceConfig {
+        let mut cfg = test_config();
+        cfg.techs = TechTree::parse(
+            r#"
+[[tech]]
+id = "logistics"
+name = "Logistics"
+metal = 1.0
+crystal = 1.0
+deuterium = 1.0
+cost_growth = 1.0
+base_seconds = 1.0
+time_growth = 1.0
+prereq_buildings = []
+prereq_techs = []
+modifiers = [{ kind = "logistics", per_level = 1.0 }]
+"#,
+        )
+        .expect("test logistics tech");
+        cfg.flight.base_fleet_slots = 4;
+        cfg.metal_storage.base = 1_000_000.0;
+        cfg.crystal_storage.base = 1_000_000.0;
+        cfg.deuterium_storage.base = 1_000_000.0;
+        cfg
+    }
+
+    #[test]
+    fn colony_and_home_queues_advance_independently() {
+        let mut state = GameState::with_config(0, test_config());
+        state.resources = Resources {
+            metal: 100_000.0,
+            crystal: 100_000.0,
+            deuterium: 100_000.0,
+        };
+        plant_colony(&mut state, neighbor());
+        state.colonies[0].buildings.robotics_factory = 1;
+        state
+            .enqueue_build_on(state.home, BuildingKind::MetalMine, 0)
+            .unwrap();
+        state
+            .enqueue_build_on(neighbor(), BuildingKind::MetalMine, 0)
+            .unwrap();
+        let home_done = state.build_queue[0].completes_at.unwrap();
+        let colony_done = state.colonies[0].build_queue[0].completes_at.unwrap();
+        assert!(colony_done < home_done);
+        state.catch_up(colony_done);
+        assert_eq!(state.colonies[0].buildings.metal_mine, 1);
+        assert!(state.colonies[0].build_queue.is_empty());
+        assert_eq!(state.buildings.metal_mine, 1);
+        assert_eq!(state.build_queue.len(), 1);
+        state.catch_up(home_done);
+        assert_eq!(state.buildings.metal_mine, 2);
+        assert!(state.build_queue.is_empty());
+    }
+
+    #[test]
+    fn transport_rejects_cargo_over_capacity_and_pays_fuel() {
+        let mut state = GameState::with_config(0, logistics_config());
+        state.resources.metal = 10_000.0;
+        state.resources.crystal = 0.0;
+        state.resources.deuterium = 50.0;
+        plant_colony(&mut state, neighbor());
+        state.fleet.add(ShipKind::SmallCargo, 1);
+        let over = Resources {
+            metal: 5_001.0,
+            crystal: 0.0,
+            deuterium: 0.0,
+        };
+        let err = state
+            .launch_transport(state.home, neighbor(), cargo_fleet(), over, 100, 0)
+            .unwrap_err();
+        match err {
+            FleetError::CargoExceedsCapacity { need, cap } => {
+                close(need, 5_001.0);
+                close(cap, state.cargo_capacity(cargo_fleet()));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(state.fleet.get(ShipKind::SmallCargo), 1);
+        close(state.resources.deuterium, 50.0);
+
+        state.resources.metal = 50.0;
+        let short_metal = Resources {
+            metal: 200.0,
+            crystal: 0.0,
+            deuterium: 0.0,
+        };
+        match state.launch_transport(state.home, neighbor(), cargo_fleet(), short_metal, 100, 0) {
+            Err(FleetError::InsufficientCargo { missing }) => close(missing.metal, 150.0),
+            other => panic!("{other:?}"),
+        }
+        state.resources.metal = 10_000.0;
+
+        let cargo = Resources {
+            metal: 100.0,
+            crystal: 0.0,
+            deuterium: 0.0,
+        };
+        let id = state
+            .launch_transport(state.home, neighbor(), cargo_fleet(), cargo, 100, 0)
+            .unwrap();
+        assert_eq!(state.fleet.get(ShipKind::SmallCargo), 0);
+        close(state.resources.metal, 9_900.0);
+        let fuel = state.missions[0].fuel_paid;
+        assert!(fuel > 0.0);
+        close(state.resources.deuterium, 50.0 - fuel);
+        let outbound = state.missions[0].outbound_secs;
+        state.catch_up(outbound);
+        close(state.colonies[0].resources.metal, 100_100.0);
+        assert!(state.missions[0].transport);
+        assert_eq!(state.missions[0].id, id);
+        state.catch_up(outbound * 2);
+        assert!(state.missions.is_empty());
+        assert_eq!(state.fleet.get(ShipKind::SmallCargo), 1);
+    }
+
+    #[test]
+    fn recalling_an_outbound_transport_returns_its_cargo() {
+        let mut state = GameState::with_config(0, logistics_config());
+        plant_colony(&mut state, neighbor());
+        state.fleet.add(ShipKind::SmallCargo, 1);
+        state.resources.metal = 10_000.0;
+        state.resources.deuterium = 50.0;
+        let cargo = Resources {
+            metal: 100.0,
+            crystal: 0.0,
+            deuterium: 0.0,
+        };
+        let id = state
+            .launch_transport(state.home, neighbor(), cargo_fleet(), cargo, 100, 0)
+            .unwrap();
+        let fuel = state.missions[0].fuel_paid;
+        let metal_rate = state.production_per_hour(ResourceKind::Metal);
+        state.recall_fleet(id, 0).unwrap();
+        state.catch_up(1);
+        assert!(state.missions.is_empty());
+        assert_eq!(state.fleet.get(ShipKind::SmallCargo), 1);
+        close(state.resources.metal, 10_000.0 + metal_rate / 3600.0);
+        close(state.resources.deuterium, 50.0 - fuel);
+        close(state.colonies[0].resources.metal, 100_000.0);
+    }
+
+    #[test]
+    fn negative_or_non_finite_cargo_is_rejected() {
+        let mut state = GameState::with_config(0, logistics_config());
+        plant_colony(&mut state, neighbor());
+        state.fleet.add(ShipKind::SmallCargo, 2);
+        state.resources.metal = 10_000.0;
+        state.resources.deuterium = 50.0;
+        let bad = Resources {
+            metal: -10.0,
+            crystal: 0.0,
+            deuterium: 0.0,
+        };
+        assert_eq!(
+            state.launch_transport(state.home, neighbor(), cargo_fleet(), bad, 100, 0),
+            Err(FleetError::InvalidCargo)
+        );
+        close(state.resources.metal, 10_000.0);
+        assert_eq!(state.fleet.get(ShipKind::SmallCargo), 2);
+        assert_eq!(
+            state.schedule_route(state.home, neighbor(), cargo_fleet(), bad, 10, 0),
+            Err(FleetError::InvalidCargo)
+        );
+        let over = Resources {
+            metal: 5_001.0,
+            crystal: 0.0,
+            deuterium: 0.0,
+        };
+        match state.schedule_route(state.home, neighbor(), cargo_fleet(), over, 10, 0) {
+            Err(FleetError::CargoExceedsCapacity { .. }) => {}
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            state.schedule_route(
+                state.home,
+                neighbor(),
+                Fleet::default(),
+                Resources::ZERO,
+                10,
+                0
+            ),
+            Err(FleetError::EmptyFleet)
+        );
+        assert!(state.routes.is_empty());
+    }
+
+    #[test]
+    fn repeating_route_launches_when_cargo_and_ships_are_ready() {
+        let mut state = GameState::with_config(0, logistics_config());
+        plant_colony(&mut state, neighbor());
+        state.fleet.add(ShipKind::SmallCargo, 1);
+        state.resources.metal = 10_000.0;
+        state.resources.deuterium = 50.0;
+        let cargo = Resources {
+            metal: 100.0,
+            crystal: 0.0,
+            deuterium: 0.0,
+        };
+        let id = state
+            .schedule_route(state.home, neighbor(), cargo_fleet(), cargo, 10, 0)
+            .unwrap();
+        let metal_rate = state.production_per_hour(ResourceKind::Metal);
+        state.catch_up(1);
+        assert_eq!(state.missions.len(), 1);
+        assert!(state.missions[0].transport);
+        close(
+            state.resources.metal,
+            10_000.0 - 100.0 + metal_rate / 3600.0,
+        );
+        close(state.colonies[0].resources.metal, 100_100.0);
+        assert_eq!(state.fleet.get(ShipKind::SmallCargo), 0);
+        assert_eq!(state.routes[0].id, id);
+        assert_eq!(state.routes[0].next_at, 10);
+    }
+
+    #[test]
+    fn repeating_route_skips_when_cargo_is_short_and_can_cancel() {
+        let mut state = GameState::with_config(0, logistics_config());
+        plant_colony(&mut state, neighbor());
+        state.fleet.add(ShipKind::SmallCargo, 1);
+        state.resources.metal = 10.0;
+        state.resources.deuterium = 50.0;
+        let cargo = Resources {
+            metal: 100.0,
+            crystal: 0.0,
+            deuterium: 0.0,
+        };
+        let id = state
+            .schedule_route(state.home, neighbor(), cargo_fleet(), cargo, 10, 0)
+            .unwrap();
+        state.catch_up(1);
+        assert!(
+            state
+                .events
+                .iter()
+                .any(|e| e.text.contains(&format!("route {id}: skipped"))),
+            "{:?}",
+            state.events
+        );
+        assert!(state.missions.is_empty());
+        assert_eq!(state.fleet.get(ShipKind::SmallCargo), 1);
+        state.cancel_route(id).unwrap();
+        let events = state.events.len();
+        state.catch_up(100);
+        assert_eq!(state.events.len(), events);
+        assert!(state.routes.is_empty());
+    }
+
+    #[test]
+    fn enqueue_build_many_needs_logistics_and_reports_unaffordable() {
+        let mut state = GameState::with_config(0, logistics_config());
+        state.resources = Resources {
+            metal: 100_000.0,
+            crystal: 100_000.0,
+            deuterium: 100_000.0,
+        };
+        plant_colony(&mut state, neighbor());
+        state.colonies[0].resources = Resources::ZERO;
+        let coords = [state.home, neighbor()];
+        let blocked = state.enqueue_build_many(BuildingKind::MetalMine, &coords, 0);
+        assert!(
+            blocked
+                .iter()
+                .all(|(_, r)| matches!(r, Err(BuildError::NeedLogistics)))
+        );
+        assert!(state.build_queue.is_empty());
+        assert!(state.colonies[0].build_queue.is_empty());
+
+        state.tech_levels.insert("logistics".into(), 1);
+        let results = state.enqueue_build_many(BuildingKind::MetalMine, &coords, 0);
+        assert!(results[0].1.is_ok(), "{:?}", results[0].1);
+        assert!(
+            matches!(results[1].1, Err(BuildError::InsufficientResources { .. })),
+            "{:?}",
+            results[1].1
+        );
+        assert_eq!(state.build_queue.len(), 1);
+        assert!(state.colonies[0].build_queue.is_empty());
     }
 }

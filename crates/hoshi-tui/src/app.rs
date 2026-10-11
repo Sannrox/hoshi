@@ -1,7 +1,7 @@
 //! Overview, planet and shipyard screens. Core owns the rules; this module
 //! only renders and turns keys into core commands.
 
-use hoshi_core::{BuildingKind, GameState, ResourceKind, Resources, ShipKind};
+use hoshi_core::{BuildingKind, Coord, GameState, ResourceKind, Resources, ShipKind};
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Layout};
@@ -26,6 +26,7 @@ pub struct App {
     pub state: GameState,
     screen: Screen,
     selected: usize,
+    planet_index: usize,
     status: String,
 }
 
@@ -35,12 +36,14 @@ impl App {
             state,
             screen: Screen::Overview,
             selected: 0,
+            planet_index: 0,
             status: String::new(),
         }
     }
 
     pub fn handle_key(&mut self, code: KeyCode, now_unix: u64) -> Action {
         self.state.catch_up(now_unix);
+        self.clamp_planet();
         match code {
             KeyCode::Char('q') => return Action::Quit,
             KeyCode::Tab => {
@@ -52,6 +55,8 @@ impl App {
                 self.selected = 0;
                 self.status.clear();
             }
+            KeyCode::Char(']') => self.cycle_planet(1),
+            KeyCode::Char('[') => self.cycle_planet(-1),
             KeyCode::Char('j') | KeyCode::Down => {
                 let len = self.list_len();
                 if len > 0 {
@@ -69,6 +74,29 @@ impl App {
             _ => {}
         }
         Action::None
+    }
+
+    fn cycle_planet(&mut self, delta: i32) {
+        let n = self.state.owned_coords().len() as i32;
+        if n <= 0 {
+            return;
+        }
+        let next = (self.planet_index as i32 + delta).rem_euclid(n);
+        self.planet_index = next as usize;
+        self.status.clear();
+    }
+
+    fn clamp_planet(&mut self) {
+        let n = self.state.owned_coords().len().max(1);
+        if self.planet_index >= n {
+            self.planet_index = n - 1;
+        }
+    }
+
+    fn selected_coord(&self) -> Coord {
+        let coords = self.state.owned_coords();
+        let i = self.planet_index.min(coords.len().saturating_sub(1));
+        coords[i]
     }
 
     pub fn draw(&self, frame: &mut Frame<'_>) {
@@ -104,7 +132,8 @@ impl App {
                 let Some(kind) = BuildingKind::ALL.get(self.selected).copied() else {
                     return;
                 };
-                match self.state.enqueue_build(kind, now_unix) {
+                let coord = self.selected_coord();
+                match self.state.enqueue_build_on(coord, kind, now_unix) {
                     Ok(()) => self.status.clear(),
                     Err(e) => self.status = e.to_string(),
                 }
@@ -132,10 +161,13 @@ impl App {
 
     fn cancel(&mut self, now_unix: u64) {
         match self.screen {
-            Screen::Planet => match self.state.cancel_build(0, now_unix) {
-                Ok(_) => self.status.clear(),
-                Err(e) => self.status = e.to_string(),
-            },
+            Screen::Planet => {
+                let coord = self.selected_coord();
+                match self.state.cancel_build_on(coord, 0, now_unix) {
+                    Ok(_) => self.status.clear(),
+                    Err(e) => self.status = e.to_string(),
+                }
+            }
             Screen::Shipyard => match self.state.cancel_ships(0, now_unix) {
                 Ok(_) => self.status.clear(),
                 Err(e) => self.status = e.to_string(),
@@ -181,6 +213,7 @@ impl App {
             Line::from(self.ship_status()),
             Line::from(self.raid_status()),
         ];
+        lines.extend(self.planet_glance_lines());
         if let Some(event) = s.events.last() {
             for piece in event.text.split(". ") {
                 lines.push(Line::from(piece.to_string()));
@@ -194,9 +227,15 @@ impl App {
 
     fn footer_lines(&self) -> Vec<Line<'static>> {
         vec![Line::from(match self.screen {
-            Screen::Overview => "tab screens  j/k select  enter research  x cancel  q quit",
-            Screen::Planet => "tab screens  j/k select  enter build  x cancel queue  q quit",
-            Screen::Shipyard => "tab screens  j/k select  enter queue  x cancel queue  q quit",
+            Screen::Overview => {
+                "tab screens  [/] planet  j/k select  enter research  x cancel  q quit"
+            }
+            Screen::Planet => {
+                "tab screens  [/] planet  j/k select  enter build  x cancel queue  q quit"
+            }
+            Screen::Shipyard => {
+                "tab screens  [/] planet  j/k select  enter queue  x cancel queue  q quit"
+            }
         })]
     }
 
@@ -209,13 +248,15 @@ impl App {
     }
 
     fn planet_lines(&self, height: usize) -> Vec<Line<'static>> {
+        let coord = self.selected_coord();
+        let queue = self.state.queue_at(coord).unwrap_or(&[]);
         let mut rows: Vec<Line<'static>> = Vec::new();
         rows.push(Line::from(format!(
-            "Queue {}/{}",
-            self.state.build_queue.len(),
+            "Planet {coord}  Queue {}/{}",
+            queue.len(),
             self.state.config.max_build_queue
         )));
-        for (i, job) in self.state.build_queue.iter().enumerate() {
+        for (i, job) in queue.iter().enumerate() {
             let left = job
                 .completes_at
                 .map(|t| t.saturating_sub(self.state.last_tick_unix));
@@ -282,9 +323,14 @@ impl App {
     }
 
     fn building_row(&self, index: usize, kind: BuildingKind) -> Line<'static> {
-        let level = self.state.buildings.get(kind);
-        let cost = self.state.build_cost(kind);
-        let secs = self.state.build_time_secs(kind);
+        let coord = self.selected_coord();
+        let level = self
+            .state
+            .buildings_at(coord)
+            .unwrap_or(&self.state.buildings)
+            .get(kind);
+        let cost = self.state.build_cost_on(coord, kind);
+        let secs = self.state.build_time_secs_on(coord, kind);
         let mark = if index == self.selected { '>' } else { ' ' };
         let text = format!("{mark} {kind}  lv{level}  {}  {secs}s", cost_label(cost));
         styled_row(text, self.building_block_reason(kind))
@@ -333,21 +379,27 @@ impl App {
     }
 
     fn building_block_reason(&self, kind: BuildingKind) -> Option<String> {
+        let coord = self.selected_coord();
+        let buildings = self
+            .state
+            .buildings_at(coord)
+            .unwrap_or(&self.state.buildings);
+        let queue = self.state.queue_at(coord).unwrap_or(&[]);
         for &(req, required) in &self.state.config.buildings.get(kind).prerequisites {
-            let actual = self.state.buildings.get(req)
-                + self
-                    .state
-                    .build_queue
-                    .iter()
-                    .filter(|job| job.building == req)
-                    .count() as u32;
+            let actual =
+                buildings.get(req) + queue.iter().filter(|job| job.building == req).count() as u32;
             if actual < required {
                 return Some(format!("need {req} {required}"));
             }
         }
-        let cost = self.state.build_cost(kind);
-        if !self.state.resources.can_afford(cost) {
-            return Some(missing_label(self.state.resources.missing(cost)));
+        let cost = self.state.build_cost_on(coord, kind);
+        let resources = self
+            .state
+            .resources_at(coord)
+            .copied()
+            .unwrap_or(self.state.resources);
+        if !resources.can_afford(cost) {
+            return Some(missing_label(resources.missing(cost)));
         }
         None
     }
@@ -427,6 +479,36 @@ impl App {
             None => "Raid: none".to_string(),
         }
     }
+
+    fn planet_glance_lines(&self) -> Vec<Line<'static>> {
+        let selected = self.selected_coord();
+        self.state
+            .owned_coords()
+            .into_iter()
+            .map(|coord| {
+                let mark = if coord == selected { '>' } else { ' ' };
+                let res = self
+                    .state
+                    .resources_at(coord)
+                    .copied()
+                    .unwrap_or(Resources::ZERO);
+                let active = match self.state.queue_at(coord).and_then(|q| q.first()) {
+                    Some(job) => {
+                        let left = job
+                            .completes_at
+                            .unwrap_or(self.state.last_tick_unix)
+                            .saturating_sub(self.state.last_tick_unix);
+                        format!("{} {left}s", job.building)
+                    }
+                    None => "idle".to_string(),
+                };
+                Line::from(format!(
+                    "{mark} {coord}  M{:.0} C{:.0} D{:.0}  {active}",
+                    res.metal, res.crystal, res.deuterium
+                ))
+            })
+            .collect()
+    }
 }
 
 fn resource_line(name: &str, state: &GameState, kind: ResourceKind) -> Line<'static> {
@@ -505,7 +587,8 @@ fn append_windowed(
 mod tests {
     use super::*;
     use hoshi_core::{
-        BalanceConfig, Clock, FakeClock, GameState, load_state, open_save, save_state,
+        BalanceConfig, Buildings, Clock, Colony, Coord, FakeClock, Fleet, GameState, PlanetType,
+        Resources, load_state, open_save, save_state,
     };
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -830,5 +913,49 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(format!("{}-wal", path.display()));
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    #[test]
+    fn planet_switcher_shows_glance_and_builds_on_the_selected_world() {
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 2,
+        };
+        let mut state = GameState::new(1_000);
+        state.resources.metal = 10_000.0;
+        state.resources.crystal = 10_000.0;
+        state.resources.deuterium = 10_000.0;
+        state.colonies.push(Colony {
+            coord: dest,
+            kind: PlanetType::Rocky,
+            size: 120,
+            resources: Resources {
+                metal: 10_000.0,
+                crystal: 10_000.0,
+                deuterium: 10_000.0,
+            },
+            buildings: Buildings::default(),
+            fleet: Fleet::default(),
+            build_queue: Vec::new(),
+        });
+        let mut app = App::new(state);
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("1:1:1"), "{text}");
+        assert!(text.contains("1:1:2"), "{text}");
+        assert!(text.contains("M10000"), "{text}");
+
+        app.handle_key(KeyCode::Char(']'), 1_000);
+        assert_eq!(app.selected_coord(), dest);
+        app.handle_key(KeyCode::Tab, 1_000);
+        assert_eq!(app.screen, Screen::Planet);
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.state.build_queue.is_empty());
+        assert_eq!(app.state.colonies[0].build_queue.len(), 1);
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("Planet 1:1:2"), "{text}");
+        assert!(text.contains("metal mine"), "{text}");
+        app.handle_key(KeyCode::Char('['), 1_000);
+        assert_eq!(app.selected_coord(), Coord::HOME);
     }
 }

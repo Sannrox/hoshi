@@ -31,7 +31,8 @@ pub use expedition::{
     roll_expedition, scaled_weights,
 };
 pub use fleets::{
-    Coord, FleetError, FlightConfig, Mission, MissionPhase, distance, flight_secs, fuel_cost,
+    Coord, FleetError, FlightConfig, Mission, MissionPhase, TradeRoute, distance, flight_secs,
+    fuel_cost,
 };
 pub use planets::{Colony, PlanetType, PlanetTypeBonus, PlanetTypeCatalog, planet_profile};
 pub use research::{

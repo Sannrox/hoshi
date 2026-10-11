@@ -162,6 +162,8 @@ pub enum BuildError {
         index: usize,
         len: usize,
     },
+    UnknownPlanet,
+    NeedLogistics,
 }
 
 impl fmt::Display for BuildError {
@@ -189,6 +191,13 @@ impl fmt::Display for BuildError {
             } => write!(f, "requires {building} level {required} (have {actual})"),
             BuildError::EmptySlot { index, len } => {
                 write!(f, "no build job at index {index} (queue length {len})")
+            }
+            BuildError::UnknownPlanet => write!(f, "unknown planet"),
+            BuildError::NeedLogistics => {
+                write!(
+                    f,
+                    "logistics research is required to queue on several planets"
+                )
             }
         }
     }

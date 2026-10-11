@@ -20,6 +20,7 @@ pub enum ModifierKind {
     Espionage,
     DriveSpeed,
     ColonySlots,
+    Logistics,
     MetalOutput,
     CrystalOutput,
     DeuteriumOutput,
@@ -366,6 +367,7 @@ mod tests {
         assert!(tree.get("energy").is_some());
         assert!(tree.get("weapons").is_some());
         assert!(tree.get("astrophysics").is_some());
+        assert!(tree.get("logistics").is_some());
         let weapons = tree.get("weapons").unwrap();
         assert_eq!(weapons.modifiers[0].kind, ModifierKind::WeaponDamage);
         assert!((weapons.modifiers[0].per_level - 0.1).abs() < 1e-12);

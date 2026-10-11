@@ -3,7 +3,7 @@
 use crate::activity::{ActivityChannel, ActivityTracker};
 use crate::balance::BalanceConfig;
 use crate::buildings::{BuildJob, BuildingKind, Buildings};
-use crate::fleets::{Coord, Mission, MissionPhase};
+use crate::fleets::{Coord, Mission, MissionPhase, TradeRoute};
 use crate::planets::{Colony, PlanetType};
 use crate::research::ResearchJob;
 use crate::ships::{Fleet, ShipJob, ShipKind};
@@ -14,7 +14,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 7;
+pub const SCHEMA_VERSION: u32 = 8;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -122,7 +122,9 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM event_log;
          DELETE FROM colonies;
          DELETE FROM activity_boosts;
-         DELETE FROM activity_limits;",
+         DELETE FROM activity_limits;
+         DELETE FROM route_ships;
+         DELETE FROM routes;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -150,25 +152,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
             params![kind.as_key(), state.buildings.get(kind)],
         )?;
     }
-    for (i, job) in state.build_queue.iter().enumerate() {
-        tx.execute(
-            "INSERT INTO build_queue (
-                planet_id, position, kind, from_level,
-                paid_metal, paid_crystal, paid_deuterium,
-                started_at, completes_at
-             ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                i as i64,
-                job.building.as_key(),
-                job.from_level,
-                job.paid.metal,
-                job.paid.crystal,
-                job.paid.deuterium,
-                job.started_at.map(|t| t as i64),
-                job.completes_at.map(|t| t as i64),
-            ],
-        )?;
-    }
+    insert_build_queue(&tx, 1, &state.build_queue)?;
     for (id, level) in &state.tech_levels {
         tx.execute(
             "INSERT INTO tech_levels (id, level) VALUES (?1, ?2)",
@@ -222,8 +206,9 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
             "INSERT INTO missions (
                 id, origin_g, origin_s, origin_p, dest_g, dest_s, dest_p,
                 speed_percent, phase, launched_at, outbound_secs, hold_secs,
-                phase_ends_at, fuel_paid, colonize, expedition_seed, expedition_applied
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                phase_ends_at, fuel_paid, colonize, expedition_seed, expedition_applied,
+                cargo_metal, cargo_crystal, cargo_deuterium, transport
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
             params![
                 mission.id as i64,
                 mission.origin.galaxy as i64,
@@ -242,6 +227,10 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 mission.colonize as i64,
                 mission.expedition_seed.map(|s| s as i64),
                 mission.expedition_applied as i64,
+                mission.cargo.metal,
+                mission.cargo.crystal,
+                mission.cargo.deuterium,
+                mission.transport as i64,
             ],
         )?;
         for kind in ShipKind::ALL {
@@ -252,6 +241,40 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
             tx.execute(
                 "INSERT INTO mission_ships (mission_id, kind, count) VALUES (?1, ?2, ?3)",
                 params![mission.id as i64, kind.as_key(), count],
+            )?;
+        }
+    }
+    for route in state.routes.iter() {
+        tx.execute(
+            "INSERT INTO routes (
+                id, origin_g, origin_s, origin_p, dest_g, dest_s, dest_p,
+                cargo_metal, cargo_crystal, cargo_deuterium,
+                speed_percent, interval_secs, next_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                route.id as i64,
+                route.origin.galaxy as i64,
+                route.origin.system as i64,
+                route.origin.position as i64,
+                route.dest.galaxy as i64,
+                route.dest.system as i64,
+                route.dest.position as i64,
+                route.cargo.metal,
+                route.cargo.crystal,
+                route.cargo.deuterium,
+                route.speed_percent as i64,
+                route.interval_secs as i64,
+                route.next_at as i64,
+            ],
+        )?;
+        for kind in ShipKind::ALL {
+            let count = route.ships.get(kind);
+            if count == 0 {
+                continue;
+            }
+            tx.execute(
+                "INSERT INTO route_ships (route_id, kind, count) VALUES (?1, ?2, ?3)",
+                params![route.id as i64, kind.as_key(), count],
             )?;
         }
     }
@@ -323,8 +346,37 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 params![planet_id, kind.as_key(), colony.fleet.get(kind)],
             )?;
         }
+        insert_build_queue(&tx, planet_id, &colony.build_queue)?;
     }
     tx.commit()?;
+    Ok(())
+}
+
+fn insert_build_queue(
+    conn: &Connection,
+    planet_id: i64,
+    queue: &[BuildJob],
+) -> Result<(), SaveError> {
+    for (i, job) in queue.iter().enumerate() {
+        conn.execute(
+            "INSERT INTO build_queue (
+                planet_id, position, kind, from_level,
+                paid_metal, paid_crystal, paid_deuterium,
+                started_at, completes_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                planet_id,
+                i as i64,
+                job.building.as_key(),
+                job.from_level,
+                job.paid.metal,
+                job.paid.crystal,
+                job.paid.deuterium,
+                job.started_at.map(|t| t as i64),
+                job.completes_at.map(|t| t as i64),
+            ],
+        )?;
+    }
     Ok(())
 }
 
@@ -394,39 +446,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     }
     state.buildings = buildings;
 
-    let mut stmt = conn.prepare(
-        "SELECT kind, from_level, paid_metal, paid_crystal, paid_deuterium, started_at, completes_at
-         FROM build_queue WHERE planet_id = 1 ORDER BY position",
-    )?;
-    let mut queue = Vec::new();
-    let jobs = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, u32>(1)?,
-            row.get::<_, f64>(2)?,
-            row.get::<_, f64>(3)?,
-            row.get::<_, f64>(4)?,
-            row.get::<_, Option<i64>>(5)?,
-            row.get::<_, Option<i64>>(6)?,
-        ))
-    })?;
-    for job in jobs {
-        let (kind, from_level, metal, crystal, deuterium, started_at, completes_at) = job?;
-        let building =
-            BuildingKind::from_key(&kind).ok_or(SaveError::Corrupt("unknown building kind"))?;
-        queue.push(BuildJob {
-            building,
-            from_level,
-            paid: Resources {
-                metal,
-                crystal,
-                deuterium,
-            },
-            started_at: unix_ts_opt(started_at)?,
-            completes_at: unix_ts_opt(completes_at)?,
-        });
-    }
-    state.build_queue = queue;
+    state.build_queue = read_build_queue(conn, 1)?;
 
     let mut stmt = conn.prepare("SELECT id, level FROM tech_levels")?;
     let techs = stmt.query_map([], |row| {
@@ -523,7 +543,8 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     let mut stmt = conn.prepare(
         "SELECT id, origin_g, origin_s, origin_p, dest_g, dest_s, dest_p,
                 speed_percent, phase, launched_at, outbound_secs, hold_secs,
-                phase_ends_at, fuel_paid, colonize, expedition_seed, expedition_applied
+                phase_ends_at, fuel_paid, colonize, expedition_seed, expedition_applied,
+                cargo_metal, cargo_crystal, cargo_deuterium, transport
          FROM missions ORDER BY id",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -545,6 +566,10 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             row.get::<_, i64>(14)?,
             row.get::<_, Option<i64>>(15)?,
             row.get::<_, i64>(16)?,
+            row.get::<_, f64>(17)?,
+            row.get::<_, f64>(18)?,
+            row.get::<_, f64>(19)?,
+            row.get::<_, i64>(20)?,
         ))
     })?;
     let mut missions = Vec::new();
@@ -567,6 +592,10 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             colonize,
             expedition_seed,
             expedition_applied,
+            cargo_metal,
+            cargo_crystal,
+            cargo_deuterium,
+            transport,
         ) = row?;
         let phase =
             MissionPhase::from_key(&phase).ok_or(SaveError::Corrupt("unknown mission phase"))?;
@@ -604,6 +633,12 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             colonize: colonize != 0,
             expedition_seed: expedition_seed.map(|s| s as u64),
             expedition_applied: expedition_applied != 0,
+            cargo: Resources {
+                metal: cargo_metal,
+                crystal: cargo_crystal,
+                deuterium: cargo_deuterium,
+            },
+            transport: transport != 0,
         });
     }
     state.missions = missions;
@@ -611,6 +646,15 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         .missions
         .iter()
         .map(|m| m.id)
+        .max()
+        .map(|id| id.saturating_add(1))
+        .unwrap_or(0);
+
+    state.routes = read_routes(conn)?;
+    state.next_route_id = state
+        .routes
+        .iter()
+        .map(|r| r.id)
         .max()
         .map(|id| id.saturating_add(1))
         .unwrap_or(0);
@@ -709,6 +753,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             resources,
             buildings,
             fleet,
+            build_queue: read_build_queue(conn, planet_id)?,
         });
     }
 
@@ -783,7 +828,9 @@ pub fn load_or_new(
             + count_rows(conn, "event_log")?
             + count_rows(conn, "colonies")?
             + count_rows(conn, "activity_boosts")?
-            + count_rows(conn, "activity_limits")?;
+            + count_rows(conn, "activity_limits")?
+            + count_rows(conn, "routes")?
+            + count_rows(conn, "route_ships")?;
         if leftover != 0 {
             return Err(SaveError::Corrupt("missing meta row"));
         }
@@ -819,6 +866,8 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "colonies" => "SELECT COUNT(*) FROM colonies",
         "activity_boosts" => "SELECT COUNT(*) FROM activity_boosts",
         "activity_limits" => "SELECT COUNT(*) FROM activity_limits",
+        "routes" => "SELECT COUNT(*) FROM routes",
+        "route_ships" => "SELECT COUNT(*) FROM route_ships",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -852,6 +901,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 7 {
         migrate_v7(conn)?;
+    }
+    if found < 8 {
+        migrate_v8(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -1050,6 +1102,176 @@ fn migrate_v7(conn: &Connection) -> Result<(), SaveError> {
     Ok(())
 }
 
+fn migrate_v8(conn: &Connection) -> Result<(), SaveError> {
+    for (column, sql) in [
+        (
+            "cargo_metal",
+            "ALTER TABLE missions ADD COLUMN cargo_metal REAL NOT NULL DEFAULT 0",
+        ),
+        (
+            "cargo_crystal",
+            "ALTER TABLE missions ADD COLUMN cargo_crystal REAL NOT NULL DEFAULT 0",
+        ),
+        (
+            "cargo_deuterium",
+            "ALTER TABLE missions ADD COLUMN cargo_deuterium REAL NOT NULL DEFAULT 0",
+        ),
+        (
+            "transport",
+            "ALTER TABLE missions ADD COLUMN transport INTEGER NOT NULL DEFAULT 0",
+        ),
+    ] {
+        if !missions_has_column(conn, column)? {
+            conn.execute(sql, [])?;
+        }
+    }
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS routes (
+            id INTEGER PRIMARY KEY,
+            origin_g INTEGER NOT NULL,
+            origin_s INTEGER NOT NULL,
+            origin_p INTEGER NOT NULL,
+            dest_g INTEGER NOT NULL,
+            dest_s INTEGER NOT NULL,
+            dest_p INTEGER NOT NULL,
+            cargo_metal REAL NOT NULL,
+            cargo_crystal REAL NOT NULL,
+            cargo_deuterium REAL NOT NULL,
+            speed_percent INTEGER NOT NULL,
+            interval_secs INTEGER NOT NULL,
+            next_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS route_ships (
+            route_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            count INTEGER NOT NULL,
+            PRIMARY KEY (route_id, kind)
+        );
+        ",
+    )?;
+    Ok(())
+}
+
+fn read_build_queue(conn: &Connection, planet_id: i64) -> Result<Vec<BuildJob>, SaveError> {
+    let mut stmt = conn.prepare(
+        "SELECT kind, from_level, paid_metal, paid_crystal, paid_deuterium, started_at, completes_at
+         FROM build_queue WHERE planet_id = ?1 ORDER BY position",
+    )?;
+    let jobs = stmt.query_map(params![planet_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, u32>(1)?,
+            row.get::<_, f64>(2)?,
+            row.get::<_, f64>(3)?,
+            row.get::<_, f64>(4)?,
+            row.get::<_, Option<i64>>(5)?,
+            row.get::<_, Option<i64>>(6)?,
+        ))
+    })?;
+    let mut queue = Vec::new();
+    for job in jobs {
+        let (kind, from_level, metal, crystal, deuterium, started_at, completes_at) = job?;
+        let building =
+            BuildingKind::from_key(&kind).ok_or(SaveError::Corrupt("unknown building kind"))?;
+        queue.push(BuildJob {
+            building,
+            from_level,
+            paid: Resources {
+                metal,
+                crystal,
+                deuterium,
+            },
+            started_at: unix_ts_opt(started_at)?,
+            completes_at: unix_ts_opt(completes_at)?,
+        });
+    }
+    Ok(queue)
+}
+
+fn read_routes(conn: &Connection) -> Result<Vec<TradeRoute>, SaveError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, origin_g, origin_s, origin_p, dest_g, dest_s, dest_p,
+                cargo_metal, cargo_crystal, cargo_deuterium,
+                speed_percent, interval_secs, next_at
+         FROM routes ORDER BY id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, i64>(5)?,
+            row.get::<_, i64>(6)?,
+            row.get::<_, f64>(7)?,
+            row.get::<_, f64>(8)?,
+            row.get::<_, f64>(9)?,
+            row.get::<_, i64>(10)?,
+            row.get::<_, i64>(11)?,
+            row.get::<_, i64>(12)?,
+        ))
+    })?;
+    let mut pending = Vec::new();
+    for row in rows {
+        pending.push(row?);
+    }
+    drop(stmt);
+    let mut routes = Vec::new();
+    for (
+        id,
+        og,
+        os,
+        op,
+        dg,
+        ds,
+        dp,
+        cargo_metal,
+        cargo_crystal,
+        cargo_deuterium,
+        speed,
+        interval_secs,
+        next_at,
+    ) in pending
+    {
+        let mut ships = Fleet::default();
+        let mut ship_stmt =
+            conn.prepare("SELECT kind, count FROM route_ships WHERE route_id = ?1")?;
+        let ship_rows = ship_stmt.query_map(params![id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
+        })?;
+        for ship_row in ship_rows {
+            let (kind, count) = ship_row?;
+            let kind = ShipKind::from_key(&kind).ok_or(SaveError::Corrupt("unknown ship kind"))?;
+            ships.add(kind, count);
+        }
+        routes.push(TradeRoute {
+            id: unix_ts(id)?,
+            origin: Coord {
+                galaxy: u16_coord(og)?,
+                system: u16_coord(os)?,
+                position: u16_coord(op)?,
+            },
+            dest: Coord {
+                galaxy: u16_coord(dg)?,
+                system: u16_coord(ds)?,
+                position: u16_coord(dp)?,
+            },
+            ships,
+            cargo: Resources {
+                metal: cargo_metal,
+                crystal: cargo_crystal,
+                deuterium: cargo_deuterium,
+            },
+            speed_percent: u8::try_from(speed).map_err(|_| SaveError::Corrupt("speed percent"))?,
+            interval_secs: unix_ts(interval_secs)?,
+            next_at: unix_ts(next_at)?,
+        });
+    }
+    Ok(routes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1111,7 +1333,35 @@ mod tests {
                 ..crate::Buildings::default()
             },
             fleet: colony_fleet,
+            build_queue: vec![BuildJob {
+                building: BuildingKind::SolarPlant,
+                from_level: 0,
+                paid: Resources {
+                    metal: 1.0,
+                    crystal: 1.0,
+                    deuterium: 0.0,
+                },
+                started_at: Some(1_700_000_000),
+                completes_at: Some(1_700_000_040),
+            }],
         });
+        let mut route_ships = crate::Fleet::default();
+        route_ships.add(crate::ShipKind::SmallCargo, 2);
+        state.routes.push(crate::TradeRoute {
+            id: 0,
+            origin: crate::Coord::HOME,
+            dest,
+            ships: route_ships,
+            cargo: Resources {
+                metal: 10.0,
+                crystal: 0.0,
+                deuterium: 0.0,
+            },
+            speed_percent: 100,
+            interval_secs: 60,
+            next_at: 1_700_000_000,
+        });
+        state.next_route_id = 1;
         state.events.push(crate::GameEvent {
             at: 1_700_000_000,
             text: "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder M0 C0 D0".into(),
@@ -1133,6 +1383,12 @@ mod tests {
             .unwrap();
         if let Some(mission) = state.missions.last_mut() {
             mission.colonize = true;
+            mission.transport = true;
+            mission.cargo = Resources {
+                metal: 3.0,
+                crystal: 2.0,
+                deuterium: 1.0,
+            };
         }
         state
     }
@@ -1206,7 +1462,10 @@ mod tests {
         assert_eq!(loaded.activity, crate::ActivityTracker::default());
         assert!(missions_has_column(&conn, "expedition_seed").unwrap());
         assert!(missions_has_column(&conn, "expedition_applied").unwrap());
+        assert!(missions_has_column(&conn, "cargo_metal").unwrap());
+        assert!(missions_has_column(&conn, "transport").unwrap());
         migrate_v7(&conn).unwrap();
+        migrate_v8(&conn).unwrap();
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(format!("{}-wal", path.display()));
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));
@@ -1248,8 +1507,57 @@ mod tests {
         assert_eq!(version, SCHEMA_VERSION);
         assert!(missions_has_column(&conn, "expedition_seed").unwrap());
         assert!(missions_has_column(&conn, "expedition_applied").unwrap());
+        assert!(missions_has_column(&conn, "cargo_metal").unwrap());
+        assert!(missions_has_column(&conn, "transport").unwrap());
         let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
         assert_eq!(loaded.last_tick_unix, 5);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    #[test]
+    fn migrate_v8_retries_after_a_partial_alter() {
+        let path = unique_path("v8-partial");
+        let _ = std::fs::remove_file(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            migrate_v1(&conn).unwrap();
+            migrate_v2(&conn).unwrap();
+            migrate_v3(&conn).unwrap();
+            migrate_v4(&conn).unwrap();
+            migrate_v5(&conn).unwrap();
+            migrate_v6(&conn).unwrap();
+            migrate_v7(&conn).unwrap();
+            conn.execute_batch("PRAGMA user_version = 7;").unwrap();
+            conn.execute(
+                "ALTER TABLE missions ADD COLUMN cargo_metal REAL NOT NULL DEFAULT 0",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO meta (id, last_tick_unix, rng_seed) VALUES (1, 8, 0)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO resources (planet_id, metal, crystal, deuterium) VALUES (1, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+        }
+        let conn = open_save(&path).unwrap();
+        let version: u32 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        assert!(missions_has_column(&conn, "cargo_metal").unwrap());
+        assert!(missions_has_column(&conn, "cargo_crystal").unwrap());
+        assert!(missions_has_column(&conn, "cargo_deuterium").unwrap());
+        assert!(missions_has_column(&conn, "transport").unwrap());
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.last_tick_unix, 8);
+        assert!(loaded.routes.is_empty());
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(format!("{}-wal", path.display()));
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));

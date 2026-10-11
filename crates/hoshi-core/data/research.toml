@@ -181,3 +181,16 @@ time_growth = 2.0
 prereq_buildings = [{ building = "research_lab", level = 3 }]
 prereq_techs = [{ id = "energy", level = 3 }]
 modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
+
+[[tech]]
+id = "logistics"
+name = "Logistics"
+metal = 2000.0
+crystal = 4000.0
+deuterium = 1000.0
+cost_growth = 2.0
+base_seconds = 600.0
+time_growth = 2.0
+prereq_buildings = [{ building = "research_lab", level = 4 }]
+prereq_techs = [{ id = "colonization", level = 1 }]
+modifiers = [{ kind = "logistics", per_level = 1.0 }]
