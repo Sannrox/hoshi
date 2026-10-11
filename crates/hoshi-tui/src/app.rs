@@ -296,11 +296,24 @@ impl App {
         let coord = self.selected_coord();
         let queue = self.state.queue_at(coord).unwrap_or(&[]);
         let mut rows: Vec<Line<'static>> = Vec::new();
+        let kind = self
+            .state
+            .planet_kind(coord)
+            .map(|k| k.as_key())
+            .unwrap_or("unknown");
+        let size = self.state.planet_size(coord).unwrap_or(0);
         rows.push(Line::from(format!(
-            "Planet {coord}  Queue {}/{}",
+            "Planet {coord}  {kind}  size {size}  Queue {}/{}",
             queue.len(),
             self.state.config.max_build_queue
         )));
+        if let Some(rare) = self.state.rare_bonus_at(coord) {
+            rows.push(Line::from(format!(
+                "Rare: {}  {}",
+                rare.name,
+                rare.summary()
+            )));
+        }
         for (i, job) in queue.iter().enumerate() {
             let left = job
                 .completes_at
@@ -1061,6 +1074,7 @@ mod tests {
             buildings: Buildings::default(),
             fleet: Fleet::default(),
             build_queue: Vec::new(),
+            rare: None,
         });
         let mut app = App::new(state);
         let text = render_text(&app, 100, 32);
@@ -1080,6 +1094,34 @@ mod tests {
         assert!(text.contains("metal mine"), "{text}");
         app.handle_key(KeyCode::Char('['), 1_000);
         assert_eq!(app.selected_coord(), Coord::HOME);
+    }
+
+    #[test]
+    fn planet_screen_shows_rare_bonus_from_config() {
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 2,
+        };
+        let mut state = GameState::new(1_000);
+        state.colonies.push(Colony {
+            coord: dest,
+            kind: PlanetType::Rocky,
+            size: 140,
+            resources: Resources::ZERO,
+            buildings: Buildings::default(),
+            fleet: Fleet::default(),
+            build_queue: Vec::new(),
+            rare: Some("rich_vein".into()),
+        });
+        let mut app = App::new(state);
+        app.handle_key(KeyCode::Char(']'), 1_000);
+        app.handle_key(KeyCode::Tab, 1_000);
+        assert_eq!(app.screen, Screen::Planet);
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("Planet 1:1:2"), "{text}");
+        assert!(text.contains("Rare: Rich vein"), "{text}");
+        assert!(text.contains("metal +25%"), "{text}");
     }
 
     #[test]

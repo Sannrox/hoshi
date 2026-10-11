@@ -20,9 +20,10 @@ pub enum ShipKind {
     EspionageProbe,
     Explorer,
     ColonyShip,
+    TroopTransport,
 }
 
-pub const SHIP_KINDS: usize = 10;
+pub const SHIP_KINDS: usize = 11;
 
 impl ShipKind {
     pub const ALL: [ShipKind; SHIP_KINDS] = [
@@ -36,6 +37,7 @@ impl ShipKind {
         ShipKind::EspionageProbe,
         ShipKind::Explorer,
         ShipKind::ColonyShip,
+        ShipKind::TroopTransport,
     ];
 
     pub fn as_key(self) -> &'static str {
@@ -50,6 +52,7 @@ impl ShipKind {
             ShipKind::EspionageProbe => "espionage_probe",
             ShipKind::Explorer => "explorer",
             ShipKind::ColonyShip => "colony_ship",
+            ShipKind::TroopTransport => "troop_transport",
         }
     }
 
@@ -65,6 +68,7 @@ impl ShipKind {
             "espionage_probe" => ShipKind::EspionageProbe,
             "explorer" => ShipKind::Explorer,
             "colony_ship" => ShipKind::ColonyShip,
+            "troop_transport" => ShipKind::TroopTransport,
             _ => return None,
         })
     }
@@ -81,6 +85,7 @@ impl ShipKind {
             ShipKind::EspionageProbe => 7,
             ShipKind::Explorer => 8,
             ShipKind::ColonyShip => 9,
+            ShipKind::TroopTransport => 10,
         }
     }
 }
@@ -98,6 +103,7 @@ impl fmt::Display for ShipKind {
             ShipKind::EspionageProbe => "espionage probe",
             ShipKind::Explorer => "explorer",
             ShipKind::ColonyShip => "colony ship",
+            ShipKind::TroopTransport => "troop transport",
         })
     }
 }
@@ -388,7 +394,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bundled_catalog_has_ten_named_types() {
+    fn bundled_catalog_has_eleven_named_types() {
         let catalog = ShipCatalog::default();
         for kind in ShipKind::ALL {
             assert_eq!(catalog.get(kind).kind, kind);

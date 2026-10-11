@@ -7,11 +7,14 @@ use crate::balance::BalanceConfig;
 use crate::buildings::{BuildError, BuildJob, BuildingKind, Buildings};
 use crate::combat::{
     CombatReport, CombatWinner, next_u64, plunder_from, rapid_fire_table, resolve_combat,
-    stats_from_catalog,
+    resolve_ground, stats_from_catalog,
 };
 use crate::expedition::{ExpeditionResult, roll_expedition};
 use crate::fleets::{
     Coord, FleetError, Mission, MissionPhase, TradeRoute, distance, flight_secs, fuel_cost,
+};
+use crate::outposts::{
+    Outpost, RarePlanetBonus, generate_outposts, scaled_defence, scaled_garrison,
 };
 use crate::planets::{Colony, PlanetType, planet_profile};
 use crate::research::{ModifierKind, PrereqGap, ResearchError, ResearchJob};
@@ -136,6 +139,7 @@ pub struct GameState {
     pub deterministic: bool,
     pub wonder: Option<WonderJob>,
     pub completed_wonders: Vec<String>,
+    pub outposts: Vec<Outpost>,
     pub config: BalanceConfig,
 }
 
@@ -147,6 +151,7 @@ impl GameState {
     pub fn with_config(now_unix: u64, config: BalanceConfig) -> Self {
         let galaxy_seed = 0;
         let (home_kind, home_size) = planet_profile(galaxy_seed, Coord::HOME);
+        let outposts = generate_outposts(galaxy_seed, now_unix, &config.outposts, &[Coord::HOME]);
         Self {
             resources: config.starting_resources,
             buildings: config.starting_buildings,
@@ -176,6 +181,7 @@ impl GameState {
             deterministic: false,
             wonder: None,
             completed_wonders: Vec::new(),
+            outposts,
             config,
         }
     }
@@ -189,6 +195,7 @@ impl GameState {
         state.home_kind = home_kind;
         state.home_size = home_size;
         state.deterministic = true;
+        state.outposts = generate_outposts(seed, now_unix, &state.config.outposts, &[Coord::HOME]);
         state
     }
 
@@ -226,6 +233,11 @@ impl GameState {
                 .research_boost_until
                 .filter(|&t| t > self.last_tick_unix);
             let wonder_at = self.wonder.as_ref().and_then(|job| job.completes_at);
+            let rebuild_at = self
+                .outposts
+                .iter()
+                .map(|o| o.next_rebuild_at(self.config.outposts.rebuild_secs))
+                .min();
             let Some(done_at) = min_time(
                 min_time(
                     min_time(
@@ -237,7 +249,10 @@ impl GameState {
                     ),
                     route_at,
                 ),
-                min_time(min_time(prod_boost_at, research_boost_at), wonder_at),
+                min_time(
+                    min_time(prod_boost_at, research_boost_at),
+                    min_time(wonder_at, rebuild_at),
+                ),
             ) else {
                 self.produce_until(now_unix);
                 return;
@@ -296,6 +311,9 @@ impl GameState {
             }
             if wonder_at == Some(done_at) {
                 self.complete_wonder_stage(done_at);
+            }
+            if rebuild_at == Some(done_at) {
+                self.rebuild_outposts_at(done_at);
             }
         }
     }
@@ -650,8 +668,24 @@ impl GameState {
         }
     }
 
+    /// Ships queue at home. A rare shipyard-world bonus on any owned planet
+    /// speeds that shared queue.
     pub fn ship_time_secs(&self, kind: ShipKind) -> u64 {
-        self.config.ships.get(kind).duration_secs()
+        let speed = self
+            .owned_coords()
+            .into_iter()
+            .filter_map(|coord| self.rare_bonus_at(coord).map(|row| row.shipyard_speed))
+            .fold(0.0_f64, f64::max);
+        ship_duration(self.config.ships.get(kind).duration_secs(), speed)
+    }
+
+    /// Duration if this world were the shipyard, including its rare speed bonus.
+    pub fn ship_time_secs_on(&self, coord: Coord, kind: ShipKind) -> u64 {
+        let speed = self
+            .rare_bonus_at(coord)
+            .map(|row| row.shipyard_speed)
+            .unwrap_or(0.0);
+        ship_duration(self.config.ships.get(kind).duration_secs(), speed)
     }
 
     pub fn fleet_slots(&self) -> u32 {
@@ -757,6 +791,8 @@ impl GameState {
             expedition_applied: false,
             cargo: Resources::ZERO,
             transport: false,
+            attack: false,
+            invade: false,
         });
         Ok(())
     }
@@ -1064,6 +1100,8 @@ impl GameState {
             expedition_applied: false,
             cargo,
             transport: true,
+            attack: false,
+            invade: false,
         });
         Ok(id)
     }
@@ -1171,6 +1209,95 @@ impl GameState {
         };
         mission.colonize = true;
         Ok(mission.id)
+    }
+
+    /// Send a fleet to fight an outpost's orbital defences.
+    pub fn launch_attack(
+        &mut self,
+        ships: Fleet,
+        dest: Coord,
+        speed_percent: u8,
+        now_unix: u64,
+    ) -> Result<u64, FleetError> {
+        self.catch_up(now_unix);
+        if self.outpost(dest).is_none() {
+            return Err(FleetError::UnknownOutpost);
+        }
+        self.launch_fleet(ships, dest, speed_percent, 0, now_unix)?;
+        let Some(mission) = self.missions.last_mut() else {
+            return Err(FleetError::EmptyFleet);
+        };
+        mission.attack = true;
+        Ok(mission.id)
+    }
+
+    /// Land troop transports. Refused while any orbital defences remain.
+    pub fn launch_invasion(
+        &mut self,
+        ships: Fleet,
+        dest: Coord,
+        speed_percent: u8,
+        now_unix: u64,
+    ) -> Result<u64, FleetError> {
+        self.catch_up(now_unix);
+        let Some(outpost) = self.outpost(dest) else {
+            return Err(FleetError::UnknownOutpost);
+        };
+        if outpost.defences.total() > 0 {
+            return Err(FleetError::DefencesRemain);
+        }
+        if ships.get(ShipKind::TroopTransport) == 0 {
+            return Err(FleetError::NeedTroopTransport);
+        }
+        let used = 1 + self.colonies.len() as u32;
+        let cap = self.colony_cap();
+        if used >= cap {
+            return Err(FleetError::ColonyCap { used, cap });
+        }
+        self.launch_fleet(ships, dest, speed_percent, 0, now_unix)?;
+        let Some(mission) = self.missions.last_mut() else {
+            return Err(FleetError::EmptyFleet);
+        };
+        mission.invade = true;
+        Ok(mission.id)
+    }
+
+    pub fn outpost(&self, coord: Coord) -> Option<&Outpost> {
+        self.outposts.iter().find(|o| o.coord == coord)
+    }
+
+    pub fn rare_bonus_at(&self, coord: Coord) -> Option<&RarePlanetBonus> {
+        let id = if coord == self.home {
+            return None;
+        } else {
+            self.colonies
+                .iter()
+                .find(|c| c.coord == coord)
+                .and_then(|c| c.rare.as_deref())?
+        };
+        self.config.outposts.rare.iter().find(|row| row.id == id)
+    }
+
+    pub fn planet_kind(&self, coord: Coord) -> Option<PlanetType> {
+        if coord == self.home {
+            Some(self.home_kind)
+        } else {
+            self.colonies
+                .iter()
+                .find(|c| c.coord == coord)
+                .map(|c| c.kind)
+        }
+    }
+
+    pub fn planet_size(&self, coord: Coord) -> Option<u8> {
+        if coord == self.home {
+            Some(self.home_size)
+        } else {
+            self.colonies
+                .iter()
+                .find(|c| c.coord == coord)
+                .map(|c| c.size)
+        }
     }
 
     pub fn colony_cap(&self) -> u32 {
@@ -1319,12 +1446,13 @@ impl GameState {
 
     fn colony_production_per_hour(&self, colony: &Colony, kind: ResourceKind) -> f64 {
         let bonus = self.config.planet_types.get(colony.kind);
+        let rare = self.rare_bonus_for(colony);
         let energy_t = self.tech_modifier(ModifierKind::EnergyOutput);
         let produced = self
             .config
             .solar_plant
             .energy_output(colony.buildings.solar_plant)
-            * (1.0 + energy_t + bonus.energy).max(0.0);
+            * (1.0 + energy_t + bonus.energy + rare.energy).max(0.0);
         let consumed = self
             .config
             .metal_mine
@@ -1349,24 +1477,49 @@ impl GameState {
                     .metal_mine
                     .production_per_hour(colony.buildings.metal_mine),
                 ModifierKind::MetalOutput,
-                bonus.metal,
+                bonus.metal + rare.metal,
             ),
             ResourceKind::Crystal => (
                 self.config
                     .crystal_mine
                     .production_per_hour(colony.buildings.crystal_mine),
                 ModifierKind::CrystalOutput,
-                bonus.crystal,
+                bonus.crystal + rare.crystal,
             ),
             ResourceKind::Deuterium => (
                 self.config
                     .deuterium_synthesizer
                     .production_per_hour(colony.buildings.deuterium_synthesizer),
                 ModifierKind::DeuteriumOutput,
-                bonus.deuterium,
+                bonus.deuterium + rare.deuterium,
             ),
         };
         raw * (1.0 + self.tech_modifier(output) + planet_bonus) * factor * boost
+    }
+
+    fn rare_bonus_for(&self, colony: &Colony) -> RarePlanetBonus {
+        colony
+            .rare
+            .as_ref()
+            .and_then(|id| {
+                self.config
+                    .outposts
+                    .rare
+                    .iter()
+                    .find(|row| row.id == *id)
+                    .cloned()
+            })
+            .unwrap_or(RarePlanetBonus {
+                id: String::new(),
+                name: String::new(),
+                weight: 0,
+                metal: 0.0,
+                crystal: 0.0,
+                deuterium: 0.0,
+                energy: 0.0,
+                shipyard_speed: 0.0,
+                fields: 0,
+            })
     }
 
     fn complete_wonder_stage(&mut self, now: u64) {
@@ -1389,7 +1542,9 @@ impl GameState {
     }
 
     fn occupied(&self, coord: Coord) -> bool {
-        coord == self.home || self.colonies.iter().any(|c| c.coord == coord)
+        coord == self.home
+            || self.colonies.iter().any(|c| c.coord == coord)
+            || self.outposts.iter().any(|o| o.coord == coord)
     }
 
     /// Turn a fleet around. Outbound recall uses elapsed time as the return.
@@ -1715,6 +1870,12 @@ impl GameState {
                     if self.try_colonize_at(index, done_at) {
                         continue;
                     }
+                    if self.try_attack_at(index, done_at) {
+                        continue;
+                    }
+                    if self.try_invade_at(index, done_at) {
+                        continue;
+                    }
                     if self.missions[index].transport {
                         let dest = self.missions[index].dest;
                         let cargo = self.missions[index].cargo;
@@ -1871,6 +2032,128 @@ impl GameState {
             buildings: Buildings::default(),
             fleet: ships,
             build_queue: Vec::new(),
+            rare: None,
+        });
+        true
+    }
+
+    fn rebuild_outposts_at(&mut self, done_at: u64) {
+        let interval = self.config.outposts.rebuild_secs;
+        let progress = self.fighter_equivalent();
+        let cfg = &self.config.outposts;
+        for outpost in &mut self.outposts {
+            if outpost.next_rebuild_at(interval) == done_at {
+                outpost.defences = scaled_defence(progress, cfg);
+                outpost.garrison = scaled_garrison(progress, cfg);
+                outpost.last_rebuild_at = done_at;
+            }
+        }
+    }
+
+    fn fighter_equivalent(&self) -> f64 {
+        let stats = self.ship_stats(ShipKind::LightFighter);
+        let unit = (stats.attack + stats.hull).max(1.0);
+        self.fleet_combat_points() / unit
+    }
+
+    /// Fight outpost defences. Returns true when the attacking fleet is gone.
+    fn try_attack_at(&mut self, index: usize, done_at: u64) -> bool {
+        if !self.missions[index].attack {
+            return false;
+        }
+        let dest = self.missions[index].dest;
+        let Some(outpost_idx) = self.outposts.iter().position(|o| o.coord == dest) else {
+            return false;
+        };
+        let ships = self.missions[index].ships;
+        let defences = self.outposts[outpost_idx].defences;
+        let atk_stats = self.player_combat_stats();
+        let def_stats = stats_from_catalog(&self.config.ships);
+        let rf = rapid_fire_table(&self.config.ships);
+        let report = resolve_combat(
+            ships,
+            defences,
+            &atk_stats,
+            &def_stats,
+            self.config.raid.max_rounds,
+            &rf,
+            &mut self.rng_seed,
+        );
+        self.outposts[outpost_idx].defences = report.defender_after;
+        self.missions[index].ships = report.attacker_after;
+        self.push_event(done_at, format_outpost_attack(&report, dest));
+        if self.missions[index].ships.is_empty() {
+            self.missions.remove(index);
+            return true;
+        }
+        false
+    }
+
+    /// Land troops. Returns true when the outpost becomes a colony (mission consumed).
+    fn try_invade_at(&mut self, index: usize, done_at: u64) -> bool {
+        if !self.missions[index].invade {
+            return false;
+        }
+        let dest = self.missions[index].dest;
+        let Some(outpost_idx) = self.outposts.iter().position(|o| o.coord == dest) else {
+            return false;
+        };
+        if self.outposts[outpost_idx].defences.total() > 0 {
+            self.push_event(
+                done_at,
+                format!("outpost {dest}: invade refused (defences remain)"),
+            );
+            return false;
+        }
+        let used = 1 + self.colonies.len() as u32;
+        let cap = self.colony_cap();
+        if used >= cap {
+            self.push_event(
+                done_at,
+                format!("outpost {dest}: invade refused (colony cap {used}/{cap})"),
+            );
+            return false;
+        }
+        let troops = self.missions[index]
+            .ships
+            .get(ShipKind::TroopTransport)
+            .saturating_mul(self.config.outposts.troop_strength);
+        let garrison = self.outposts[outpost_idx].garrison;
+        let ground = resolve_ground(
+            troops,
+            garrison,
+            self.config.outposts.variance,
+            &mut self.rng_seed,
+        );
+        let mut report = CombatReport {
+            rounds: 0,
+            attacker_before: self.missions[index].ships,
+            defender_before: Fleet::default(),
+            attacker_after: self.missions[index].ships,
+            defender_after: Fleet::default(),
+            winner: ground.winner,
+            ground: Some(ground.clone()),
+        };
+        let landed = self.missions[index].ships.get(ShipKind::TroopTransport);
+        self.missions[index]
+            .ships
+            .saturating_sub(ShipKind::TroopTransport, landed);
+        report.attacker_after = self.missions[index].ships;
+        self.push_event(done_at, format_outpost_invade(&report, dest));
+        if ground.winner != CombatWinner::Attacker {
+            return false;
+        }
+        let outpost = self.outposts.remove(outpost_idx);
+        let ships = self.missions.remove(index).ships;
+        self.colonies.push(Colony {
+            coord: outpost.coord,
+            kind: outpost.kind,
+            size: outpost.size,
+            resources: Resources::ZERO,
+            buildings: Buildings::default(),
+            fleet: ships,
+            build_queue: Vec::new(),
+            rare: outpost.rare,
         });
         true
     }
@@ -2236,6 +2519,30 @@ fn fleet_losses(before: Fleet, after: Fleet) -> Fleet {
     lost
 }
 
+fn format_outpost_attack(report: &crate::CombatReport, dest: Coord) -> String {
+    format!(
+        "outpost {dest}: attack. {} rounds. lost {}. defences lost {}. winner {}",
+        report.rounds,
+        fleet_label(fleet_losses(report.attacker_before, report.attacker_after)),
+        fleet_label(fleet_losses(report.defender_before, report.defender_after)),
+        report.winner.as_key()
+    )
+}
+
+fn format_outpost_invade(report: &crate::CombatReport, dest: Coord) -> String {
+    match &report.ground {
+        Some(ground) => format!(
+            "outpost {dest}: invade. troops {} vs garrison {}. rolls {}/{}. winner {}",
+            ground.attacker_strength,
+            ground.defender_strength,
+            ground.attacker_roll,
+            ground.defender_roll,
+            ground.winner.as_key()
+        ),
+        None => format!("outpost {dest}: invade. winner {}", report.winner.as_key()),
+    }
+}
+
 fn format_raid_report(report: &crate::CombatReport, plunder: Resources) -> String {
     format!(
         "raid: pirates {} vs {}. {} rounds. lost {}. pirates lost {}. plunder M{:.0} C{:.0} D{:.0}",
@@ -2248,6 +2555,11 @@ fn format_raid_report(report: &crate::CombatReport, plunder: Resources) -> Strin
         plunder.crystal,
         plunder.deuterium
     )
+}
+
+fn ship_duration(base_secs: u64, shipyard_speed: f64) -> u64 {
+    let base = base_secs as f64;
+    (base / (1.0 + shipyard_speed).max(1.0)).ceil().max(1.0) as u64
 }
 
 fn min_time(a: Option<u64>, b: Option<u64>) -> Option<u64> {
@@ -2398,6 +2710,7 @@ mod tests {
             expedition: crate::ExpeditionConfig::default(),
             pacing: crate::PacingTargets::default(),
             wonders: Vec::new(),
+            outposts: crate::OutpostConfig::default(),
         }
     }
 
@@ -3752,6 +4065,7 @@ modifiers = [{ kind = "expedition_slots", per_level = 1.0 }]
             buildings: Buildings::default(),
             fleet: Fleet::default(),
             build_queue: Vec::new(),
+            rare: None,
         });
     }
 
@@ -4238,6 +4552,206 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         close(
             state.ship_stats(ShipKind::LightFighter).speed,
             before * 1.20,
+        );
+    }
+
+    fn outpost_config() -> BalanceConfig {
+        let mut cfg = colony_config();
+        cfg.flight.base_fleet_slots = 4;
+        cfg.outposts.count = 3;
+        cfg.outposts.min_ships = 1;
+        cfg.outposts.min_garrison = 2;
+        cfg.outposts.strength_factor = 0.4;
+        cfg.outposts.garrison_factor = 0.5;
+        cfg.outposts.rebuild_secs = 86_400;
+        cfg.outposts.variance = 0.0;
+        cfg.outposts.troop_strength = 5;
+        cfg.outposts.rare_chance = 0.0;
+        cfg
+    }
+
+    fn fighters(n: u32) -> Fleet {
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::LightFighter, n);
+        ships
+    }
+
+    fn troops(n: u32) -> Fleet {
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::TroopTransport, n);
+        ships
+    }
+
+    fn fly_home(state: &mut GameState) {
+        if state.missions.is_empty() {
+            return;
+        }
+        let until = state.missions[0]
+            .phase_ends_at
+            .saturating_add(state.missions[0].outbound_secs);
+        state.catch_up(until);
+        assert!(state.missions.is_empty());
+    }
+
+    #[test]
+    fn invasion_is_refused_while_defences_remain() {
+        let mut state = GameState::with_config(0, outpost_config());
+        state.resources.deuterium = 10_000.0;
+        let dest = state.outposts[0].coord;
+        assert!(state.outpost(dest).unwrap().defences.total() > 0);
+        state.fleet.add(ShipKind::TroopTransport, 2);
+        assert_eq!(
+            state.launch_invasion(troops(2), dest, 100, 0),
+            Err(FleetError::DefencesRemain)
+        );
+        assert_eq!(state.colonies.len(), 0);
+        assert!(state.outpost(dest).is_some());
+    }
+
+    #[test]
+    fn ground_combat_is_deterministic_and_lands_in_the_report() {
+        let mut cfg = outpost_config();
+        cfg.outposts.variance = 0.2;
+        let mut a = GameState::with_seed(0, cfg.clone(), 42);
+        let mut b = GameState::with_seed(0, cfg, 42);
+        a.resources.deuterium = 10_000.0;
+        b.resources.deuterium = 10_000.0;
+        a.tech_levels.insert("colonization".into(), 1);
+        b.tech_levels.insert("colonization".into(), 1);
+        let dest = a.outposts[0].coord;
+        assert_eq!(dest, b.outposts[0].coord);
+        a.outposts[0].defences = Fleet::default();
+        b.outposts[0].defences = Fleet::default();
+        a.outposts[0].garrison = 4;
+        b.outposts[0].garrison = 4;
+        a.fleet.add(ShipKind::TroopTransport, 3);
+        b.fleet.add(ShipKind::TroopTransport, 3);
+        a.launch_invasion(troops(3), dest, 100, 0).unwrap();
+        b.launch_invasion(troops(3), dest, 100, 0).unwrap();
+        fly_home(&mut a);
+        fly_home(&mut b);
+        let report_a = a
+            .events
+            .iter()
+            .find(|e| e.text.contains("invade"))
+            .expect("invade report");
+        let report_b = b
+            .events
+            .iter()
+            .find(|e| e.text.contains("invade"))
+            .expect("invade report");
+        assert_eq!(report_a.text, report_b.text);
+        assert!(
+            report_a.text.contains("troops 15 vs garrison 4"),
+            "{}",
+            report_a.text
+        );
+        assert!(report_a.text.contains("rolls"), "{}", report_a.text);
+        assert!(report_a.text.contains("winner"), "{}", report_a.text);
+    }
+
+    #[test]
+    fn conquered_outpost_counts_against_the_colony_cap() {
+        let mut state = GameState::with_config(0, outpost_config());
+        state.resources.deuterium = 10_000.0;
+        let dest = state.outposts[0].coord;
+        state.outposts[0].defences = Fleet::default();
+        state.fleet.add(ShipKind::TroopTransport, 2);
+        assert_eq!(state.colony_cap(), 1);
+        assert_eq!(
+            state.launch_invasion(troops(2), dest, 100, 0),
+            Err(FleetError::ColonyCap { used: 1, cap: 1 })
+        );
+        state.tech_levels.insert("colonization".into(), 1);
+        assert_eq!(state.colony_cap(), 2);
+        state.launch_invasion(troops(2), dest, 100, 0).unwrap();
+        fly_home(&mut state);
+        assert_eq!(state.colonies.len(), 1);
+        assert_eq!(state.colonies[0].coord, dest);
+        assert!(state.outpost(dest).is_none());
+        assert_eq!(1 + state.colonies.len() as u32, state.colony_cap());
+        let dest2 = state.outposts[0].coord;
+        state.outposts[0].defences = Fleet::default();
+        state.fleet.add(ShipKind::TroopTransport, 2);
+        assert_eq!(
+            state.launch_invasion(troops(2), dest2, 100, 0),
+            Err(FleetError::ColonyCap { used: 2, cap: 2 })
+        );
+    }
+
+    #[test]
+    fn rare_bonus_comes_from_config() {
+        let mut state = GameState::with_config(0, outpost_config());
+        state.resources.deuterium = 10_000.0;
+        state.tech_levels.insert("colonization".into(), 1);
+        let dest = state.outposts[0].coord;
+        state.outposts[0].defences = Fleet::default();
+        state.outposts[0].rare = Some("rich_vein".into());
+        state.fleet.add(ShipKind::TroopTransport, 2);
+        state.launch_invasion(troops(2), dest, 100, 0).unwrap();
+        fly_home(&mut state);
+        assert_eq!(state.colonies[0].rare.as_deref(), Some("rich_vein"));
+        let bonus = state.rare_bonus_at(dest).expect("rare bonus");
+        assert_eq!(bonus.id, "rich_vein");
+        assert!((bonus.metal - 0.25).abs() < 1e-9);
+        assert!(
+            bonus.summary().contains("metal +25%"),
+            "{}",
+            bonus.summary()
+        );
+        let base = outpost_config()
+            .ships
+            .get(ShipKind::LightFighter)
+            .duration_secs();
+        let faster_cfg = outpost_config();
+        let mut world = GameState::with_config(0, faster_cfg);
+        world.colonies.push(Colony {
+            coord: dest,
+            kind: PlanetType::Rocky,
+            size: 140,
+            resources: Resources::ZERO,
+            buildings: Buildings::default(),
+            fleet: Fleet::default(),
+            build_queue: Vec::new(),
+            rare: Some("shipyard_world".into()),
+        });
+        let sped = world.ship_time_secs(ShipKind::LightFighter);
+        assert!(sped < base, "sped={sped} base={base}");
+        assert_eq!(sped, world.ship_time_secs_on(dest, ShipKind::LightFighter));
+    }
+
+    #[test]
+    fn outpost_strength_scales_with_player_progress_and_early_outposts_are_winnable() {
+        let mut cfg = outpost_config();
+        cfg.outposts.rebuild_secs = 10;
+        let mut state = GameState::with_config(0, cfg);
+        state.resources.deuterium = 10_000.0;
+        state.tech_levels.insert("colonization".into(), 1);
+        let dest = state.outposts[0].coord;
+        let start_ships = state
+            .outpost(dest)
+            .unwrap()
+            .defences
+            .get(ShipKind::LightFighter);
+        assert_eq!(start_ships, 1);
+        state.fleet.add(ShipKind::LightFighter, 8);
+        state.launch_attack(fighters(8), dest, 100, 0).unwrap();
+        fly_home(&mut state);
+        assert_eq!(
+            state.outpost(dest).unwrap().defences.total(),
+            0,
+            "early outpost should fall to a small fighter wing"
+        );
+        state.fleet.add(ShipKind::LightFighter, 200);
+        state.catch_up(10);
+        let rebuilt = state
+            .outpost(dest)
+            .unwrap()
+            .defences
+            .get(ShipKind::LightFighter);
+        assert!(
+            rebuilt > start_ships,
+            "rebuilt={rebuilt} start={start_ships}"
         );
     }
 }

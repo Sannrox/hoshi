@@ -124,6 +124,10 @@ pub struct Mission {
     /// Cargo delivered on Action when `transport` is set.
     pub cargo: crate::state::Resources,
     pub transport: bool,
+    /// Action fights the outpost's orbital defences.
+    pub attack: bool,
+    /// Action lands troops. Refused while defences remain.
+    pub invade: bool,
 }
 
 /// A repeating transport between two owned planets.
@@ -183,6 +187,13 @@ pub enum FleetError {
     },
     UnknownPlanet,
     NotOwned,
+    UnknownOutpost,
+    DefencesRemain,
+    NeedTroopTransport,
+    ColonyCap {
+        used: u32,
+        cap: u32,
+    },
 }
 
 impl fmt::Display for FleetError {
@@ -227,6 +238,16 @@ impl fmt::Display for FleetError {
             ),
             FleetError::UnknownPlanet => write!(f, "unknown planet"),
             FleetError::NotOwned => write!(f, "destination is not an owned planet"),
+            FleetError::UnknownOutpost => write!(f, "no pirate outpost at destination"),
+            FleetError::DefencesRemain => {
+                write!(f, "invasion refused while orbital defences remain")
+            }
+            FleetError::NeedTroopTransport => {
+                write!(f, "invasion needs a troop transport")
+            }
+            FleetError::ColonyCap { used, cap } => {
+                write!(f, "colony cap reached ({used}/{cap})")
+            }
         }
     }
 }

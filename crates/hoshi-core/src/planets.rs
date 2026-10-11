@@ -103,6 +103,8 @@ pub struct Colony {
     pub buildings: Buildings,
     pub fleet: Fleet,
     pub build_queue: Vec<BuildJob>,
+    /// Rare-planet bonus id from config, when this world was a special outpost.
+    pub rare: Option<String>,
 }
 
 /// Type from the slot band, size from a seeded roll. Gas giants stay small.

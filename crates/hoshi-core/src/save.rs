@@ -4,6 +4,7 @@ use crate::activity::{ActivityChannel, ActivityTracker};
 use crate::balance::BalanceConfig;
 use crate::buildings::{BuildJob, BuildingKind, Buildings};
 use crate::fleets::{Coord, Mission, MissionPhase, TradeRoute};
+use crate::outposts::{Outpost, generate_outposts};
 use crate::planets::{Colony, PlanetType};
 use crate::research::ResearchJob;
 use crate::ships::{Fleet, ShipJob, ShipKind};
@@ -16,7 +17,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 10;
+pub const SCHEMA_VERSION: u32 = 11;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -130,12 +131,14 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM route_ships;
          DELETE FROM routes;
          DELETE FROM wonder_job;
-         DELETE FROM wonder_done;",
+         DELETE FROM wonder_done;
+         DELETE FROM outpost_ships;
+         DELETE FROM outposts;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
-        "INSERT INTO meta (id, last_tick_unix, rng_seed, galaxy_seed, home_kind, home_size, deterministic)
-         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO meta (id, last_tick_unix, rng_seed, galaxy_seed, home_kind, home_size, deterministic, outposts_seeded)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, 1)",
         params![
             state.last_tick_unix as i64,
             state.rng_seed as i64,
@@ -214,8 +217,8 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 id, origin_g, origin_s, origin_p, dest_g, dest_s, dest_p,
                 speed_percent, phase, launched_at, outbound_secs, hold_secs,
                 phase_ends_at, fuel_paid, colonize, expedition_seed, expedition_applied,
-                cargo_metal, cargo_crystal, cargo_deuterium, transport
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+                cargo_metal, cargo_crystal, cargo_deuterium, transport, attack, invade
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
             params![
                 mission.id as i64,
                 mission.origin.galaxy as i64,
@@ -238,6 +241,8 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 mission.cargo.crystal,
                 mission.cargo.deuterium,
                 mission.transport as i64,
+                mission.attack as i64,
+                mission.invade as i64,
             ],
         )?;
         for kind in ShipKind::ALL {
@@ -321,8 +326,8 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
     for (i, colony) in state.colonies.iter().enumerate() {
         let planet_id = (i as i64) + 2;
         tx.execute(
-            "INSERT INTO colonies (planet_id, galaxy, system, position, kind, size)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO colonies (planet_id, galaxy, system, position, kind, size, rare)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 planet_id,
                 colony.coord.galaxy as i64,
@@ -330,6 +335,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 colony.coord.position as i64,
                 colony.kind.as_key(),
                 colony.size as i64,
+                colony.rare.as_deref(),
             ],
         )?;
         tx.execute(
@@ -376,6 +382,35 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
             params![i as i64, id],
         )?;
     }
+    for (i, outpost) in state.outposts.iter().enumerate() {
+        let planet_id = (i as i64) + 1;
+        tx.execute(
+            "INSERT INTO outposts (
+                planet_id, galaxy, system, position, kind, size, garrison, rare, last_rebuild_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                planet_id,
+                outpost.coord.galaxy as i64,
+                outpost.coord.system as i64,
+                outpost.coord.position as i64,
+                outpost.kind.as_key(),
+                outpost.size as i64,
+                outpost.garrison as i64,
+                outpost.rare.as_deref(),
+                outpost.last_rebuild_at as i64,
+            ],
+        )?;
+        for kind in ShipKind::ALL {
+            let count = outpost.defences.get(kind);
+            if count == 0 {
+                continue;
+            }
+            tx.execute(
+                "INSERT INTO outpost_ships (planet_id, kind, count) VALUES (?1, ?2, ?3)",
+                params![planet_id, kind.as_key(), count],
+            )?;
+        }
+    }
     tx.commit()?;
     Ok(())
 }
@@ -411,18 +446,19 @@ fn insert_build_queue(
 /// Reconstruct player state. `config` is the caller's rules; it is not stored in the save.
 pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState, SaveError> {
     let mut state = GameState::with_config(0, config);
-    let (last_tick, rng_seed, galaxy_seed, home_kind, home_size, deterministic): (
+    let (last_tick, rng_seed, galaxy_seed, home_kind, home_size, deterministic, outposts_seeded): (
         i64,
         i64,
         i64,
         String,
         i64,
         i64,
+        i64,
     ) = conn
         .query_row(
-            "SELECT last_tick_unix, rng_seed, galaxy_seed, home_kind, home_size, deterministic FROM meta WHERE id = 1",
+            "SELECT last_tick_unix, rng_seed, galaxy_seed, home_kind, home_size, deterministic, outposts_seeded FROM meta WHERE id = 1",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
         )
         .optional()?
         .ok_or(SaveError::Corrupt("missing meta row"))?;
@@ -574,7 +610,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         "SELECT id, origin_g, origin_s, origin_p, dest_g, dest_s, dest_p,
                 speed_percent, phase, launched_at, outbound_secs, hold_secs,
                 phase_ends_at, fuel_paid, colonize, expedition_seed, expedition_applied,
-                cargo_metal, cargo_crystal, cargo_deuterium, transport
+                cargo_metal, cargo_crystal, cargo_deuterium, transport, attack, invade
          FROM missions ORDER BY id",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -600,6 +636,8 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             row.get::<_, f64>(18)?,
             row.get::<_, f64>(19)?,
             row.get::<_, i64>(20)?,
+            row.get::<_, i64>(21)?,
+            row.get::<_, i64>(22)?,
         ))
     })?;
     let mut missions = Vec::new();
@@ -626,6 +664,8 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             cargo_crystal,
             cargo_deuterium,
             transport,
+            attack,
+            invade,
         ) = row?;
         let phase =
             MissionPhase::from_key(&phase).ok_or(SaveError::Corrupt("unknown mission phase"))?;
@@ -669,6 +709,8 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
                 deuterium: cargo_deuterium,
             },
             transport: transport != 0,
+            attack: attack != 0,
+            invade: invade != 0,
         });
     }
     state.missions = missions;
@@ -719,7 +761,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     }
 
     let mut stmt = conn.prepare(
-        "SELECT planet_id, galaxy, system, position, kind, size FROM colonies ORDER BY planet_id",
+        "SELECT planet_id, galaxy, system, position, kind, size, rare FROM colonies ORDER BY planet_id",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok((
@@ -729,6 +771,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             row.get::<_, i64>(3)?,
             row.get::<_, String>(4)?,
             row.get::<_, i64>(5)?,
+            row.get::<_, Option<String>>(6)?,
         ))
     })?;
     let mut pending = Vec::new();
@@ -737,7 +780,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     }
     drop(stmt);
     state.colonies.clear();
-    for (planet_id, g, s, p, kind, size) in pending {
+    for (planet_id, g, s, p, kind, size, rare) in pending {
         let kind =
             PlanetType::from_key(&kind).ok_or(SaveError::Corrupt("unknown colony planet type"))?;
         let resources = conn.query_row(
@@ -784,6 +827,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             buildings,
             fleet,
             build_queue: read_build_queue(conn, planet_id)?,
+            rare,
         });
     }
 
@@ -867,7 +911,75 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         state.completed_wonders.push(row?);
     }
 
+    state.outposts = read_outposts(conn)?;
+    if outposts_seeded == 0 && state.outposts.is_empty() {
+        let mut occupied = vec![state.home];
+        occupied.extend(state.colonies.iter().map(|c| c.coord));
+        state.outposts = generate_outposts(
+            state.galaxy_seed,
+            state.last_tick_unix,
+            &state.config.outposts,
+            &occupied,
+        );
+    }
+
     Ok(state)
+}
+
+fn read_outposts(conn: &Connection) -> Result<Vec<Outpost>, SaveError> {
+    let mut stmt = conn.prepare(
+        "SELECT planet_id, galaxy, system, position, kind, size, garrison, rare, last_rebuild_at
+         FROM outposts ORDER BY planet_id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, i64>(5)?,
+            row.get::<_, i64>(6)?,
+            row.get::<_, Option<String>>(7)?,
+            row.get::<_, i64>(8)?,
+        ))
+    })?;
+    let mut pending = Vec::new();
+    for row in rows {
+        pending.push(row?);
+    }
+    drop(stmt);
+    let mut outposts = Vec::new();
+    for (planet_id, g, s, p, kind, size, garrison, rare, last_rebuild_at) in pending {
+        let kind =
+            PlanetType::from_key(&kind).ok_or(SaveError::Corrupt("unknown outpost planet type"))?;
+        let mut defences = Fleet::default();
+        let mut sstmt =
+            conn.prepare("SELECT kind, count FROM outpost_ships WHERE planet_id = ?1")?;
+        let srows = sstmt.query_map(params![planet_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
+        })?;
+        for srow in srows {
+            let (key, count) = srow?;
+            let skind = ShipKind::from_key(&key).ok_or(SaveError::Corrupt("unknown ship kind"))?;
+            defences.add(skind, count);
+        }
+        outposts.push(Outpost {
+            coord: Coord {
+                galaxy: u16_coord(g)?,
+                system: u16_coord(s)?,
+                position: u16_coord(p)?,
+            },
+            kind,
+            size: u8::try_from(size).map_err(|_| SaveError::Corrupt("outpost size"))?,
+            defences,
+            garrison: u32::try_from(garrison)
+                .map_err(|_| SaveError::Corrupt("outpost garrison"))?,
+            rare,
+            last_rebuild_at: unix_ts(last_rebuild_at)?,
+        });
+    }
+    Ok(outposts)
 }
 
 fn u16_coord(value: i64) -> Result<u16, SaveError> {
@@ -1047,6 +1159,8 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "route_ships" => "SELECT COUNT(*) FROM route_ships",
         "wonder_job" => "SELECT COUNT(*) FROM wonder_job",
         "wonder_done" => "SELECT COUNT(*) FROM wonder_done",
+        "outposts" => "SELECT COUNT(*) FROM outposts",
+        "outpost_ships" => "SELECT COUNT(*) FROM outpost_ships",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -1070,7 +1184,9 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "routes")?
         + count_rows(conn, "route_ships")?
         + count_rows(conn, "wonder_job")?
-        + count_rows(conn, "wonder_done")?)
+        + count_rows(conn, "wonder_done")?
+        + count_rows(conn, "outposts")?
+        + count_rows(conn, "outpost_ships")?)
 }
 
 fn migrate(conn: &Connection) -> Result<(), SaveError> {
@@ -1110,6 +1226,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 10 {
         migrate_v10(conn)?;
+    }
+    if found < 11 {
+        migrate_v11(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -1401,6 +1520,65 @@ fn migrate_v10(conn: &Connection) -> Result<(), SaveError> {
     Ok(())
 }
 
+fn migrate_v11(conn: &Connection) -> Result<(), SaveError> {
+    if !meta_has_column(conn, "outposts_seeded")? {
+        conn.execute(
+            "ALTER TABLE meta ADD COLUMN outposts_seeded INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    if !colonies_has_column(conn, "rare")? {
+        conn.execute("ALTER TABLE colonies ADD COLUMN rare TEXT", [])?;
+    }
+    for (column, sql) in [
+        (
+            "attack",
+            "ALTER TABLE missions ADD COLUMN attack INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "invade",
+            "ALTER TABLE missions ADD COLUMN invade INTEGER NOT NULL DEFAULT 0",
+        ),
+    ] {
+        if !missions_has_column(conn, column)? {
+            conn.execute(sql, [])?;
+        }
+    }
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS outposts (
+            planet_id INTEGER PRIMARY KEY,
+            galaxy INTEGER NOT NULL,
+            system INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            size INTEGER NOT NULL,
+            garrison INTEGER NOT NULL,
+            rare TEXT,
+            last_rebuild_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS outpost_ships (
+            planet_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            count INTEGER NOT NULL,
+            PRIMARY KEY (planet_id, kind)
+        );
+        ",
+    )?;
+    Ok(())
+}
+
+fn colonies_has_column(conn: &Connection, column: &str) -> Result<bool, SaveError> {
+    let mut stmt = conn.prepare("PRAGMA table_info(colonies)")?;
+    let names = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for name in names {
+        if name? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn read_build_queue(conn: &Connection, planet_id: i64) -> Result<Vec<BuildJob>, SaveError> {
     let mut stmt = conn.prepare(
         "SELECT kind, from_level, paid_metal, paid_crystal, paid_deuterium, started_at, completes_at
@@ -1581,6 +1759,7 @@ mod tests {
                 ..crate::Buildings::default()
             },
             fleet: colony_fleet,
+            rare: None,
             build_queue: vec![BuildJob {
                 building: BuildingKind::SolarPlant,
                 from_level: 0,
