@@ -110,8 +110,26 @@ pub struct Colony {
     pub goods: BTreeMap<String, f64>,
 }
 
+// Fail the build if GALAXY_GENERATOR_VERSION bumps without a new table arm.
+const _: () = assert!(crate::GALAXY_GENERATOR_VERSION == 1);
+
 /// Type from the slot band, size from a seeded roll. Gas giants stay small.
-pub fn planet_profile(galaxy_seed: u64, coord: Coord) -> (PlanetType, u8) {
+///
+/// `version` is the save's generator table. Only table 1 exists; colonize and
+/// outpost rolls pass the stored version so a later table keeps old galaxies.
+pub fn planet_profile(galaxy_seed: u64, coord: Coord, version: u32) -> (PlanetType, u8) {
+    galaxy_profile(version)(galaxy_seed, coord)
+}
+
+#[allow(clippy::match_same_arms)] // table 2 lands here when GALAXY_GENERATOR_VERSION bumps
+fn galaxy_profile(version: u32) -> fn(u64, Coord) -> (PlanetType, u8) {
+    match version {
+        0 | 1 => profile_v1,
+        _ => profile_v1,
+    }
+}
+
+fn profile_v1(galaxy_seed: u64, coord: Coord) -> (PlanetType, u8) {
     let mut seed = galaxy_seed
         ^ (u64::from(coord.galaxy) << 32)
         ^ (u64::from(coord.system) << 16)
@@ -143,6 +161,7 @@ mod tests {
                 system: 2,
                 position: 14,
             },
+            1,
         );
         let b = planet_profile(
             7,
@@ -151,6 +170,7 @@ mod tests {
                 system: 2,
                 position: 14,
             },
+            1,
         );
         assert_eq!(a, b);
         assert_eq!(a.0, PlanetType::GasGiant);
@@ -161,6 +181,7 @@ mod tests {
                 system: 2,
                 position: 3,
             },
+            1,
         );
         assert_eq!(inner.0, PlanetType::Rocky);
         let other = planet_profile(
@@ -170,6 +191,7 @@ mod tests {
                 system: 2,
                 position: 14,
             },
+            1,
         );
         assert_ne!(a.1, other.1);
     }

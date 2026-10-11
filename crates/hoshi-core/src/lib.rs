@@ -8,6 +8,7 @@ mod clock;
 mod combat;
 mod expedition;
 mod fleets;
+mod galaxy;
 mod outposts;
 mod planets;
 mod prestige;
@@ -40,6 +41,9 @@ pub use expedition::{
 pub use fleets::{
     Coord, FleetError, FlightConfig, Mission, MissionPhase, TradeRoute, distance, flight_secs,
     fuel_cost,
+};
+pub use galaxy::{
+    GALAXY_GENERATOR_VERSION, encode_galaxy_seed, parse_galaxy_seed, supports_galaxy_generator,
 };
 pub use outposts::{
     Outpost, OutpostConfig, RarePlanetBonus, generate_outposts, scaled_defence, scaled_garrison,

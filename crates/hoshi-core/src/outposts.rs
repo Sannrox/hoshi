@@ -158,11 +158,14 @@ pub fn scaled_garrison(fighter_eq: f64, cfg: &OutpostConfig) -> u32 {
 }
 
 /// Scatter outposts outside the home system so nearby colonize/transport slots stay free.
+///
+/// `version` is the save's generator table, forwarded to [`planet_profile`].
 pub fn generate_outposts(
     galaxy_seed: u64,
     now: u64,
     cfg: &OutpostConfig,
     occupied: &[Coord],
+    version: u32,
 ) -> Vec<Outpost> {
     let mut seed = galaxy_seed ^ 0x0A11_0057_0A11_0057;
     let mut out = Vec::new();
@@ -182,7 +185,7 @@ pub fn generate_outposts(
             continue;
         }
         used.push(coord);
-        let (kind, size) = planet_profile(galaxy_seed, coord);
+        let (kind, size) = planet_profile(galaxy_seed, coord, version);
         let rare = pick_rare(&mut seed, cfg);
         let extra = rare
             .as_ref()
@@ -237,12 +240,12 @@ mod tests {
     fn generation_repeats_for_a_seed_and_skips_home() {
         let cfg = OutpostConfig::default();
         let home = Coord::HOME;
-        let a = generate_outposts(7, 0, &cfg, &[home]);
-        let b = generate_outposts(7, 0, &cfg, &[home]);
+        let a = generate_outposts(7, 0, &cfg, &[home], 1);
+        let b = generate_outposts(7, 0, &cfg, &[home], 1);
         assert_eq!(a, b);
         assert_eq!(a.len(), cfg.count as usize);
         assert!(a.iter().all(|o| o.coord != home && o.coord.system >= 2));
-        let other = generate_outposts(8, 0, &cfg, &[home]);
+        let other = generate_outposts(8, 0, &cfg, &[home], 1);
         assert_ne!(a[0].coord, other[0].coord);
     }
 
