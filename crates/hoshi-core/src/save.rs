@@ -19,7 +19,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 16;
+pub const SCHEMA_VERSION: u32 = 17;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -153,12 +153,14 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM goods;
          DELETE FROM story_pending;
          DELETE FROM market_prices;
-         DELETE FROM market_history;",
+         DELETE FROM market_history;
+         DELETE FROM faction_standing;
+         DELETE FROM faction_log;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
-        "INSERT INTO meta (id, last_tick_unix, rng_seed, galaxy_seed, home_kind, home_size, deterministic, outposts_seeded, generator_version, last_story_at, last_market_at)
-         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8, ?9)",
+        "INSERT INTO meta (id, last_tick_unix, rng_seed, galaxy_seed, home_kind, home_size, deterministic, outposts_seeded, generator_version, last_story_at, last_market_at, last_diplomacy_at)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8, ?9, ?10)",
         params![
             state.last_tick_unix as i64,
             state.rng_seed as i64,
@@ -169,6 +171,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
             state.generator_version as i64,
             state.last_story_at as i64,
             state.last_market_at as i64,
+            state.last_diplomacy_at as i64,
         ],
     )?;
     tx.execute(
@@ -369,6 +372,24 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
             )?;
         }
     }
+    for (id, standing) in &state.diplomacy.standing {
+        tx.execute(
+            "INSERT INTO faction_standing (id, standing) VALUES (?1, ?2)",
+            params![id, standing],
+        )?;
+    }
+    for (i, change) in state.diplomacy.log.iter().enumerate() {
+        tx.execute(
+            "INSERT INTO faction_log (position, at, faction, delta, reason) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                i as i64,
+                change.at as i64,
+                change.faction,
+                change.delta,
+                change.reason,
+            ],
+        )?;
+    }
     for (i, colony) in state.colonies.iter().enumerate() {
         let planet_id = (i as i64) + 2;
         tx.execute(
@@ -560,7 +581,7 @@ fn insert_build_queue(
 /// Reconstruct player state. `config` is the caller's rules; it is not stored in the save.
 pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState, SaveError> {
     let mut state = GameState::with_config(0, config);
-    let (last_tick, rng_seed, galaxy_seed, home_kind, home_size, deterministic, outposts_seeded, generator_version, last_story_at, last_market_at): (
+    let (last_tick, rng_seed, galaxy_seed, home_kind, home_size, deterministic, outposts_seeded, generator_version, last_story_at, last_market_at, last_diplomacy_at): (
         i64,
         i64,
         i64,
@@ -571,11 +592,12 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         i64,
         i64,
         i64,
+        i64,
     ) = conn
         .query_row(
-            "SELECT last_tick_unix, rng_seed, galaxy_seed, home_kind, home_size, deterministic, outposts_seeded, generator_version, last_story_at, last_market_at FROM meta WHERE id = 1",
+            "SELECT last_tick_unix, rng_seed, galaxy_seed, home_kind, home_size, deterministic, outposts_seeded, generator_version, last_story_at, last_market_at, last_diplomacy_at FROM meta WHERE id = 1",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?, row.get(10)?)),
         )
         .optional()?
         .ok_or(SaveError::Corrupt("missing meta row"))?;
@@ -584,6 +606,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     state.galaxy_seed = galaxy_seed as u64;
     state.last_story_at = unix_ts(last_story_at)?;
     state.last_market_at = unix_ts(last_market_at)?;
+    state.last_diplomacy_at = unix_ts(last_diplomacy_at)?;
     state.generator_version = u32_field(generator_version, "generator version")?;
     if !crate::supports_galaxy_generator(state.generator_version) {
         return Err(SaveError::GeneratorTooNew {
@@ -858,21 +881,21 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         .map(|id| id.saturating_add(1))
         .unwrap_or(0);
 
-    state.next_raid_at = conn
+    let raid_row: Option<Option<i64>> = conn
         .query_row("SELECT next_raid_at FROM raids WHERE id = 1", [], |row| {
             row.get::<_, Option<i64>>(0)
         })
-        .optional()?
-        .flatten()
-        .map(unix_ts)
-        .transpose()?;
-    if state.next_raid_at.is_none() && state.config.raid.enabled {
-        state.next_raid_at = Some(
+        .optional()?;
+    state.next_raid_at = match raid_row {
+        Some(Some(ts)) => Some(unix_ts(ts)?),
+        Some(None) => None,
+        None if state.config.raid.enabled => Some(
             state
                 .last_tick_unix
                 .saturating_add(state.config.raid.first_delay_secs),
-        );
-    }
+        ),
+        None => None,
+    };
 
     let mut stmt = conn.prepare("SELECT at, text FROM event_log ORDER BY position")?;
     let rows = stmt.query_map([], |row| {
@@ -910,6 +933,8 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     };
 
     load_market(conn, &mut state)?;
+    load_diplomacy(conn, &mut state)?;
+    state.sync_raid_schedule_after_standing(state.last_tick_unix);
 
     let mut stmt = conn.prepare(
         "SELECT planet_id, galaxy, system, position, kind, size, rare FROM colonies ORDER BY planet_id",
@@ -1465,6 +1490,8 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "story_pending" => "SELECT COUNT(*) FROM story_pending",
         "market_prices" => "SELECT COUNT(*) FROM market_prices",
         "market_history" => "SELECT COUNT(*) FROM market_history",
+        "faction_standing" => "SELECT COUNT(*) FROM faction_standing",
+        "faction_log" => "SELECT COUNT(*) FROM faction_log",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -1497,7 +1524,9 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "goods")?
         + count_rows(conn, "story_pending")?
         + count_rows(conn, "market_prices")?
-        + count_rows(conn, "market_history")?)
+        + count_rows(conn, "market_history")?
+        + count_rows(conn, "faction_standing")?
+        + count_rows(conn, "faction_log")?)
 }
 
 fn migrate(conn: &Connection) -> Result<(), SaveError> {
@@ -1555,6 +1584,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 16 {
         migrate_v16(conn)?;
+    }
+    if found < 17 {
+        migrate_v17(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -1990,6 +2022,69 @@ fn migrate_v16(conn: &Connection) -> Result<(), SaveError> {
         );
         ",
     )?;
+    Ok(())
+}
+
+fn migrate_v17(conn: &Connection) -> Result<(), SaveError> {
+    if !meta_has_column(conn, "last_diplomacy_at")? {
+        conn.execute(
+            "ALTER TABLE meta ADD COLUMN last_diplomacy_at INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS faction_standing (
+            id TEXT PRIMARY KEY,
+            standing REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS faction_log (
+            position INTEGER PRIMARY KEY,
+            at INTEGER NOT NULL,
+            faction TEXT NOT NULL,
+            delta REAL NOT NULL,
+            reason TEXT NOT NULL
+        );
+        ",
+    )?;
+    Ok(())
+}
+
+fn load_diplomacy(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
+    let mut stmt = conn.prepare("SELECT id, standing FROM faction_standing")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+    })?;
+    for row in rows {
+        let (id, standing) = row?;
+        if !standing.is_finite() {
+            return Err(SaveError::Corrupt("faction standing"));
+        }
+        state.diplomacy.set_standing(&id, standing);
+    }
+    let mut stmt =
+        conn.prepare("SELECT at, faction, delta, reason FROM faction_log ORDER BY position")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, f64>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    })?;
+    state.diplomacy.log.clear();
+    for row in rows {
+        let (at, faction, delta, reason) = row?;
+        if !delta.is_finite() {
+            return Err(SaveError::Corrupt("faction log delta"));
+        }
+        state.diplomacy.log.push(crate::StandingChange {
+            at: unix_ts(at)?,
+            faction,
+            delta,
+            reason,
+        });
+    }
     Ok(())
 }
 
@@ -2451,6 +2546,7 @@ mod tests {
         assert_eq!(loaded.last_story_at, 0);
         assert!(loaded.story_pending.is_none());
         assert_eq!(loaded.last_market_at, 0);
+        assert_eq!(loaded.last_diplomacy_at, 0);
         assert_eq!(loaded.buildings.metal_mine, 4);
         assert_eq!(loaded.tech_level("weapons"), 3);
         assert_eq!(loaded.activity, crate::ActivityTracker::default());
@@ -2903,6 +2999,51 @@ mod tests {
         assert!(meta_has_column(&conn, "last_market_at").unwrap());
         assert_eq!(count_rows(&conn, "market_prices").unwrap(), 3);
         assert_eq!(count_rows(&conn, "market_history").unwrap(), 9);
+    }
+
+    #[test]
+    fn migrate_v17_retries_and_round_trips_faction_standing() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v17(&conn).unwrap();
+        migrate_v17(&conn).unwrap();
+        let mut state = GameState::new(3);
+        state.last_diplomacy_at = 77;
+        state.diplomacy.set_standing("traders", 21.0);
+        state.diplomacy.set_standing("pirates", -12.0);
+        state.diplomacy.log.push(crate::StandingChange {
+            at: 9,
+            faction: "traders".into(),
+            delta: 21.0,
+            reason: "trade".into(),
+        });
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.last_diplomacy_at, 77);
+        assert_eq!(loaded.diplomacy, state.diplomacy);
+        assert_eq!(loaded, state);
+        assert!(meta_has_column(&conn, "last_diplomacy_at").unwrap());
+        assert_eq!(count_rows(&conn, "faction_standing").unwrap(), 3);
+        assert_eq!(count_rows(&conn, "faction_log").unwrap(), 1);
+    }
+
+    #[test]
+    fn pact_keeps_an_explicit_empty_raid_schedule_across_save() {
+        let mut state = GameState::new(3);
+        state.diplomacy.set_standing("pirates", 60.0);
+        state.next_raid_at = None;
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.next_raid_at, None);
+        close_standing_save(&loaded, "pirates", 60.0);
+    }
+
+    fn close_standing_save(state: &GameState, id: &str, expected: f64) {
+        let got = state.diplomacy.standing(id);
+        assert!(
+            (got - expected).abs() < 1e-6,
+            "{id} standing {got} != {expected}"
+        );
     }
 
     #[test]

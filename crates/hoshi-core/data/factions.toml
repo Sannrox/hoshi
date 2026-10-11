@@ -1,0 +1,120 @@
+# NPC factions. Adding a row needs no code change.
+
+enabled = true
+tick_secs = 3600
+decay = 0.05
+history_len = 8
+min_standing = -100.0
+max_standing = 100.0
+
+[[faction]]
+id = "traders"
+name = "Traders' guild"
+start = 0.0
+trade_delta = 1.0
+
+[[faction.tier]]
+id = "embargo"
+min = -100.0
+name = "Embargo"
+market_fee = 0.04
+
+[[faction.tier]]
+id = "wary"
+min = -40.0
+name = "Wary"
+market_fee = 0.02
+
+[[faction.tier]]
+id = "neutral"
+min = -10.0
+name = "Neutral"
+
+[[faction.tier]]
+id = "favored"
+min = 20.0
+name = "Favored"
+market_fee = -0.02
+modifiers = [{ kind = "metal_output", value = 0.05 }]
+
+[[faction.tier]]
+id = "honored"
+min = 50.0
+name = "Honored"
+market_fee = -0.03
+modifiers = [
+    { kind = "metal_output", value = 0.10 },
+    { kind = "crystal_output", value = 0.05 },
+]
+
+[[faction]]
+id = "pirates"
+name = "Pirate clans"
+start = 0.0
+raid_win_delta = -8.0
+raid_loss_delta = -4.0
+conquest_delta = -15.0
+tribute_metal = 200.0
+tribute_delta = 12.0
+
+[[faction.tier]]
+id = "war"
+min = -100.0
+name = "War"
+raid_delay_mult = 0.5
+
+[[faction.tier]]
+id = "hostile"
+min = -40.0
+name = "Hostile"
+raid_delay_mult = 0.75
+
+[[faction.tier]]
+id = "neutral"
+min = -10.0
+name = "Neutral"
+raid_delay_mult = 1.0
+
+[[faction.tier]]
+id = "truce"
+min = 25.0
+name = "Truce"
+raid_delay_mult = 2.0
+
+[[faction.tier]]
+id = "pact"
+min = 60.0
+name = "Pact"
+raid_delay_mult = 0.0
+
+[[faction]]
+id = "ancients"
+name = "Ancient empire"
+start = 0.0
+
+[[faction.tier]]
+id = "awakened"
+min = -100.0
+name = "Awakened"
+schedule_raid = true
+modifiers = [{ kind = "weapon_damage", value = -0.05 }]
+
+[[faction.tier]]
+id = "dormant"
+min = -20.0
+name = "Dormant"
+
+[[faction.tier]]
+id = "curious"
+min = 20.0
+name = "Curious"
+modifiers = [{ kind = "espionage", value = 1.0 }]
+
+[[faction.tier]]
+id = "patron"
+min = 50.0
+name = "Patron"
+modifiers = [
+    { kind = "espionage", value = 2.0 },
+    { kind = "energy_output", value = 0.10 },
+]

@@ -320,6 +320,7 @@ pub struct BalanceConfig {
     pub chains: ChainConfig,
     pub story: crate::StoryCatalog,
     pub market: crate::MarketConfig,
+    pub diplomacy: crate::DiplomacyConfig,
 }
 
 impl BalanceConfig {
@@ -1087,6 +1088,7 @@ impl File {
             },
             chains: self.chains.into_config().map_err(BalanceError::Invalid)?,
             story: crate::StoryCatalog::default(),
+            diplomacy: crate::DiplomacyConfig::default(),
             market: crate::MarketConfig {
                 enabled: self.market.enabled,
                 tick_secs: self.market.tick_secs,
@@ -1553,6 +1555,7 @@ mod tests {
         assert!(cfg.chains.enabled());
         assert!(cfg.chains.validate().is_ok());
         assert_eq!(cfg.market, crate::MarketConfig::default_active());
+        assert_eq!(cfg.diplomacy, crate::DiplomacyConfig::default());
         assert_eq!(cfg.wonders.len(), 3);
         assert_eq!(cfg.wonders[0].id, "dyson_ring");
         assert_eq!(cfg.wonders[0].prereq_techs[0].id, "energy");

@@ -1,5 +1,5 @@
-//! Overview, planet, shipyard, wonder, prestige and market screens. Core owns
-//! the rules; this module only renders and turns keys into core commands.
+//! Overview, planet, shipyard, wonder, prestige, market and diplomacy screens.
+//! Core owns the rules; this module only renders and turns keys into core commands.
 
 use crate::title::AwaySummary;
 use hoshi_core::{
@@ -22,6 +22,7 @@ pub enum Screen {
     Wonder,
     Prestige,
     Market,
+    Diplomacy,
 }
 
 const TRADE_PAIRS: [(ResourceKind, ResourceKind); 6] = [
@@ -107,7 +108,8 @@ impl App {
                     Screen::Shipyard => Screen::Wonder,
                     Screen::Wonder => Screen::Prestige,
                     Screen::Prestige => Screen::Market,
-                    Screen::Market => Screen::Overview,
+                    Screen::Market => Screen::Diplomacy,
+                    Screen::Diplomacy => Screen::Overview,
                 };
                 self.selected = 0;
                 self.status.clear();
@@ -170,12 +172,27 @@ impl App {
 
     pub fn draw(&self, frame: &mut Frame<'_>) {
         let title = match self.screen {
-            Screen::Overview => " hoshi  [overview] planet shipyard wonder prestige market ",
-            Screen::Planet => " hoshi  overview [planet] shipyard wonder prestige market ",
-            Screen::Shipyard => " hoshi  overview planet [shipyard] wonder prestige market ",
-            Screen::Wonder => " hoshi  overview planet shipyard [wonder] prestige market ",
-            Screen::Prestige => " hoshi  overview planet shipyard wonder [prestige] market ",
-            Screen::Market => " hoshi  overview planet shipyard wonder prestige [market] ",
+            Screen::Overview => {
+                " hoshi  [overview] planet shipyard wonder prestige market diplomacy "
+            }
+            Screen::Planet => {
+                " hoshi  overview [planet] shipyard wonder prestige market diplomacy "
+            }
+            Screen::Shipyard => {
+                " hoshi  overview planet [shipyard] wonder prestige market diplomacy "
+            }
+            Screen::Wonder => {
+                " hoshi  overview planet shipyard [wonder] prestige market diplomacy "
+            }
+            Screen::Prestige => {
+                " hoshi  overview planet shipyard wonder [prestige] market diplomacy "
+            }
+            Screen::Market => {
+                " hoshi  overview planet shipyard wonder prestige [market] diplomacy "
+            }
+            Screen::Diplomacy => {
+                " hoshi  overview planet shipyard wonder prestige market [diplomacy] "
+            }
         };
         let block = Block::bordered().title(title);
         let inner = block.inner(frame.area());
@@ -312,6 +329,19 @@ impl App {
             Screen::Wonder => self.activate_wonder(now_unix),
             Screen::Prestige => self.activate_prestige(now_unix),
             Screen::Market => self.activate_market(now_unix),
+            Screen::Diplomacy => self.activate_diplomacy(now_unix),
+        }
+    }
+
+    fn activate_diplomacy(&mut self, now_unix: u64) {
+        let Some(spec) = self.state.config.diplomacy.iter().nth(self.selected) else {
+            return;
+        };
+        let id = spec.id.clone();
+        let name = spec.name.clone();
+        match self.state.pay_tribute(&id, now_unix) {
+            Ok(()) => self.status = format!("tribute paid to {name}"),
+            Err(e) => self.status = e.to_string(),
         }
     }
 
@@ -394,7 +424,7 @@ impl App {
                 self.confirming_prestige = false;
                 self.status.clear();
             }
-            Screen::Market => {}
+            Screen::Market | Screen::Diplomacy => {}
         }
     }
 
@@ -406,6 +436,7 @@ impl App {
             Screen::Wonder => self.state.config.wonders.len(),
             Screen::Prestige => 1 + self.state.config.prestige.bonuses.len(),
             Screen::Market => TRADE_PAIRS.len(),
+            Screen::Diplomacy => self.state.config.diplomacy.len(),
         }
     }
 
@@ -468,6 +499,7 @@ impl App {
             Screen::Wonder => "tab screens  [/] planet  j/k select  enter start/contribute  q quit",
             Screen::Prestige => "tab screens  j/k select  enter buy/reset  x back  q quit",
             Screen::Market => "tab screens  j/k pair  +/- amount  enter trade  q quit",
+            Screen::Diplomacy => "tab screens  j/k faction  enter tribute  q quit",
         })]
     }
 
@@ -479,6 +511,7 @@ impl App {
             Screen::Wonder => self.wonder_lines(height),
             Screen::Prestige => self.prestige_lines(height),
             Screen::Market => self.market_lines(height),
+            Screen::Diplomacy => self.diplomacy_lines(height),
         }
     }
 
@@ -870,7 +903,7 @@ impl App {
 
     fn market_lines(&self, height: usize) -> Vec<Line<'static>> {
         let market = &self.state.market;
-        let fee_pct = self.state.config.market.fee * 100.0;
+        let fee_pct = self.state.effective_market_fee() * 100.0;
         let mut rows = vec![
             Line::from(format!(
                 "Prices  metal {:.3}  crystal {:.3}  deuterium {:.3}",
@@ -910,6 +943,58 @@ impl App {
                         Line::from(format!("{mark} {} -> {}  {e}", pay.label(), recv.label()))
                     }
                 }
+            })
+            .collect();
+        append_windowed(&mut rows, &entries, self.selected, height)
+    }
+
+    fn diplomacy_lines(&self, height: usize) -> Vec<Line<'static>> {
+        let cfg = &self.state.config.diplomacy;
+        let mut rows = vec![Line::from(if cfg.enabled {
+            format!(
+                "Decay {:.0}% / {}s  standing {}..{}",
+                cfg.decay * 100.0,
+                cfg.tick_secs,
+                cfg.min_standing,
+                cfg.max_standing
+            )
+        } else {
+            "Diplomacy off".into()
+        })];
+        if self.state.diplomacy.log.is_empty() {
+            rows.push(Line::from("Recent: none"));
+        } else {
+            rows.push(Line::from("Recent:"));
+            for change in self.state.diplomacy.log.iter().rev().take(4) {
+                rows.push(Line::from(format!(
+                    "  {} {:+.0} {} t{}",
+                    change.faction, change.delta, change.reason, change.at
+                )));
+            }
+        }
+        let entries: Vec<Line<'static>> = cfg
+            .iter()
+            .enumerate()
+            .map(|(i, spec)| {
+                let mark = if i == self.selected { '>' } else { ' ' };
+                let standing = self.state.diplomacy.standing(&spec.id);
+                let tier = spec.tier(standing).map(|t| t.name.as_str()).unwrap_or("-");
+                let next = match spec.next_tier(standing) {
+                    Some(t) => format!("next {} {:.0}", t.name, t.min),
+                    None => "max".into(),
+                };
+                let tribute = if spec.tribute_metal > 0.0 {
+                    format!(
+                        "  tribute {:.0}M {:+.0}",
+                        spec.tribute_metal, spec.tribute_delta
+                    )
+                } else {
+                    String::new()
+                };
+                Line::from(format!(
+                    "{mark} {}  {standing:.0}  {tier}  {next}{tribute}",
+                    spec.name
+                ))
             })
             .collect();
         append_windowed(&mut rows, &entries, self.selected, height)
@@ -1257,6 +1342,7 @@ mod tests {
         app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
+        app.handle_key(KeyCode::Tab, clock.now_unix());
         assert_eq!(app.screen, Screen::Overview);
         let energy = app
             .state
@@ -1434,6 +1520,7 @@ mod tests {
         assert!(app.state.ship_queue.is_empty());
         assert_eq!(app.state.build_queue.len(), 1);
 
+        app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
@@ -1662,5 +1749,46 @@ mod tests {
         app.handle_key(KeyCode::Char('+'), 1_000);
         let text = render_text(&app, 100, 32);
         assert!(text.contains("amount 20"), "{text}");
+    }
+
+    #[test]
+    fn diplomacy_screen_shows_standing_next_tier_and_pays_tribute() {
+        let mut state = GameState::new(1_000);
+        state.resources.metal = 1_000.0;
+        let mut app = App::new(state);
+        for _ in 0..6 {
+            app.handle_key(KeyCode::Tab, 1_000);
+        }
+        assert_eq!(app.screen, Screen::Diplomacy);
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("[diplomacy]"), "{text}");
+        assert!(text.contains("Traders' guild"), "{text}");
+        assert!(text.contains("Pirate clans"), "{text}");
+        assert!(text.contains("Ancient empire"), "{text}");
+        assert!(
+            text.contains("Neutral") || text.contains("Dormant"),
+            "{text}"
+        );
+        assert!(text.contains("next"), "{text}");
+        assert!(text.contains("Recent: none"), "{text}");
+        app.handle_key(KeyCode::Char('j'), 1_000);
+        app.handle_key(KeyCode::Enter, 1_000);
+        close_standing(&app, "pirates", 12.0);
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("tribute"), "{text}");
+        assert!(
+            text.contains("truce") || text.contains("Truce") || text.contains("Neutral"),
+            "{text}"
+        );
+        assert!(text.contains("Recent:"), "{text}");
+        assert!(text.contains("pirates"), "{text}");
+    }
+
+    fn close_standing(app: &App, id: &str, expected: f64) {
+        let got = app.state.diplomacy.standing(id);
+        assert!(
+            (got - expected).abs() < 1e-6,
+            "{id} standing {got} != {expected}"
+        );
     }
 }

@@ -6,6 +6,7 @@ mod buildings;
 mod chains;
 mod clock;
 mod combat;
+mod diplomacy;
 mod expedition;
 mod fleets;
 mod galaxy;
@@ -35,6 +36,9 @@ pub use clock::{Clock, FakeClock, SystemClock};
 pub use combat::{
     CombatReport, CombatWinner, GroundReport, next_u64, plunder_from, rapid_fire_table,
     resolve_combat, resolve_ground,
+};
+pub use diplomacy::{
+    DiplomacyConfig, DiplomacyError, DiplomacyState, FactionSpec, FactionTier, StandingChange,
 };
 pub use expedition::{
     ExpeditionConfig, ExpeditionKind, ExpeditionResult, ExpeditionWeights, fleet_points,
