@@ -1,12 +1,16 @@
 //! hoshi-core: game rules, state, timers and offline progression.
 
 mod balance;
+mod buildings;
 mod clock;
 mod state;
 
-pub use balance::{BalanceConfig, EnergyProducerSpec, ProducerSpec, StorageSpec};
+pub use balance::{
+    BalanceConfig, BuildingCatalog, BuildingSpec, EnergyProducerSpec, ProducerSpec, StorageSpec,
+};
+pub use buildings::{BuildError, BuildJob, BuildingKind, Buildings};
 pub use clock::{Clock, FakeClock, SystemClock};
-pub use state::{Buildings, GameState, ResourceKind, Resources};
+pub use state::{GameState, ResourceKind, Resources};
 
 /// Open (or create) the SQLite save at `path`. Schema arrives with the save/load issue.
 pub fn open_save(path: &std::path::Path) -> rusqlite::Result<rusqlite::Connection> {
