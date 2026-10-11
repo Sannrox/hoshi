@@ -4,6 +4,7 @@ mod balance;
 mod buildings;
 mod clock;
 mod research;
+mod save;
 mod state;
 
 pub use balance::{
@@ -15,21 +16,8 @@ pub use research::{
     BuildingPrereq, ModifierKind, PrereqGap, ResearchError, ResearchJob, TechModifier, TechPrereq,
     TechSpec, TechTree, TechTreeError,
 };
+pub use save::{
+    SCHEMA_VERSION, SaveError, default_save_path, load_or_new, load_state, open_save,
+    resolve_save_path, save_state,
+};
 pub use state::{GameState, ResourceKind, Resources};
-
-/// Open (or create) the SQLite save at `path`. Schema arrives with the save/load issue.
-pub fn open_save(path: &std::path::Path) -> rusqlite::Result<rusqlite::Connection> {
-    let conn = rusqlite::Connection::open(path)?;
-    conn.execute_batch("PRAGMA user_version = 0;")?;
-    Ok(conn)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn save_opens_in_memory() {
-        assert!(open_save(std::path::Path::new(":memory:")).is_ok());
-    }
-}
