@@ -115,6 +115,8 @@ pub struct Mission {
     pub hold_secs: u64,
     pub phase_ends_at: u64,
     pub fuel_paid: f64,
+    /// When true, Action tries to found a colony instead of holding for return.
+    pub colonize: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -141,6 +143,7 @@ pub enum FleetError {
         id: u64,
     },
     AlreadyReturning,
+    NeedColonyShip,
 }
 
 impl fmt::Display for FleetError {
@@ -165,6 +168,7 @@ impl fmt::Display for FleetError {
             }
             FleetError::UnknownMission { id } => write!(f, "no mission {id}"),
             FleetError::AlreadyReturning => write!(f, "mission is already returning"),
+            FleetError::NeedColonyShip => write!(f, "colony mission needs a colony ship"),
         }
     }
 }

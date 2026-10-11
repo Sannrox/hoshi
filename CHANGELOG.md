@@ -4,6 +4,7 @@
 
 ### Added
 
+- Colony ships and colonization research. An empty slot can be settled on arrival; occupied or over-cap landings send the ship home. Planet type and size come from the galaxy seed and the slot, survive save/load, and feed the same modifier lookup as research. Save schema v5 stores colonies and the colonize mission flag.
 - Combat rapid-fire extra shots from `ships.toml`. `GameState::trigger_raid` is the shared raid API for the scheduler and a later bridge. The overview splits the combat report so both sides' losses are visible.
 - Pirate raids: a countdown (default one hour) then a six-round fight against a pirate fleet scaled to the player. Shields refill each round; hull does not. A lost fight takes a capped share of stored resources. The combat report goes in the event log and the overview shows the countdown. Save schema v4 stores the next raid and the log.
 - Fleets launch to `galaxy:system:position` with flight time from distance, slowest ship speed and a speed percent. Deuterium fuel is paid at launch. Missions run outbound, action and return phases during `catch_up`; recall mid-outbound returns in the elapsed time. Computer technology adds fleet slots. Save schema v3 stores missions.

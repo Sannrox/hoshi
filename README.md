@@ -6,7 +6,7 @@ games: mine resources, raise buildings, research technologies, build fleets
 and send them on expeditions. Meant to be played in a spare terminal pane
 while your coding agents work.
 
-> Status: hobby project, pre-alpha. The terminal has overview, planet and shipyard screens. Tab switches; enter queues a build, a ship, or research. Fleets fly on timers. Pirate raids land on a countdown. The game saves to SQLite.
+> Status: hobby project, pre-alpha. The terminal has overview, planet and shipyard screens. Tab switches; enter queues a build, a ship, or research. Fleets fly on timers. Colony ships settle empty planets. Pirate raids land on a countdown. The game saves to SQLite.
 
 ## The twist: your agents play along
 

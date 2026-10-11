@@ -168,3 +168,20 @@ fuel = 300.0
 shipyard = 5
 drive = "impulse_drive"
 prereq_techs = [{ id = "astrophysics", level = 1 }, { id = "impulse_drive", level = 3 }]
+
+[[ship]]
+id = "colony_ship"
+name = "Colony Ship"
+metal = 10000.0
+crystal = 20000.0
+deuterium = 10000.0
+base_seconds = 400.0
+attack = 0.0
+shield = 100.0
+hull = 3000.0
+cargo = 7500.0
+speed = 2500.0
+fuel = 1000.0
+shipyard = 4
+drive = "impulse_drive"
+prereq_techs = [{ id = "colonization", level = 1 }, { id = "impulse_drive", level = 3 }]

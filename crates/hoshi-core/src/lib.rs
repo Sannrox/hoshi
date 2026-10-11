@@ -5,6 +5,7 @@ mod buildings;
 mod clock;
 mod combat;
 mod fleets;
+mod planets;
 mod research;
 mod save;
 mod ships;
@@ -22,6 +23,7 @@ pub use combat::{
 pub use fleets::{
     Coord, FleetError, FlightConfig, Mission, MissionPhase, distance, flight_secs, fuel_cost,
 };
+pub use planets::{Colony, PlanetType, PlanetTypeBonus, PlanetTypeCatalog, planet_profile};
 pub use research::{
     BuildingPrereq, ModifierKind, PrereqGap, ResearchError, ResearchJob, TechModifier, TechPrereq,
     TechSpec, TechTree, TechTreeError,
@@ -31,6 +33,7 @@ pub use save::{
     resolve_save_path, save_state,
 };
 pub use ships::{
-    Fleet, ShipCatalog, ShipCatalogError, ShipError, ShipJob, ShipKind, ShipSpec, ShipStats,
+    Fleet, SHIP_KINDS, ShipCatalog, ShipCatalogError, ShipError, ShipJob, ShipKind, ShipSpec,
+    ShipStats,
 };
 pub use state::{GameEvent, GameState, ResourceKind, Resources};

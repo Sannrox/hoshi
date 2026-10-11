@@ -251,6 +251,7 @@ pub struct BalanceConfig {
     pub max_ship_queue: usize,
     pub flight: crate::FlightConfig,
     pub raid: RaidConfig,
+    pub planet_types: crate::PlanetTypeCatalog,
     pub starting_resources: Resources,
     pub starting_buildings: Buildings,
 }
@@ -300,6 +301,7 @@ impl Default for BalanceConfig {
             max_ship_queue: 5,
             flight: crate::FlightConfig::default(),
             raid: RaidConfig::default(),
+            planet_types: crate::PlanetTypeCatalog::default(),
             starting_resources: Resources {
                 metal: 500.0,
                 crystal: 500.0,

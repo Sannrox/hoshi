@@ -3,6 +3,7 @@
 use crate::balance::BalanceConfig;
 use crate::buildings::{BuildJob, BuildingKind, Buildings};
 use crate::fleets::{Coord, Mission, MissionPhase};
+use crate::planets::{Colony, PlanetType};
 use crate::research::ResearchJob;
 use crate::ships::{Fleet, ShipJob, ShipKind};
 use crate::state::{GameEvent, GameState, Resources};
@@ -12,7 +13,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -117,12 +118,20 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM mission_ships;
          DELETE FROM missions;
          DELETE FROM raids;
-         DELETE FROM event_log;",
+         DELETE FROM event_log;
+         DELETE FROM colonies;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
-        "INSERT INTO meta (id, last_tick_unix, rng_seed) VALUES (1, ?1, ?2)",
-        params![state.last_tick_unix as i64, state.rng_seed as i64],
+        "INSERT INTO meta (id, last_tick_unix, rng_seed, galaxy_seed, home_kind, home_size)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5)",
+        params![
+            state.last_tick_unix as i64,
+            state.rng_seed as i64,
+            state.galaxy_seed as i64,
+            state.home_kind.as_key(),
+            state.home_size as i64,
+        ],
     )?;
     tx.execute(
         "INSERT INTO resources (planet_id, metal, crystal, deuterium) VALUES (1, ?1, ?2, ?3)",
@@ -210,8 +219,8 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
             "INSERT INTO missions (
                 id, origin_g, origin_s, origin_p, dest_g, dest_s, dest_p,
                 speed_percent, phase, launched_at, outbound_secs, hold_secs,
-                phase_ends_at, fuel_paid
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                phase_ends_at, fuel_paid, colonize
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 mission.id as i64,
                 mission.origin.galaxy as i64,
@@ -227,6 +236,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 mission.hold_secs as i64,
                 mission.phase_ends_at as i64,
                 mission.fuel_paid,
+                mission.colonize as i64,
             ],
         )?;
         for kind in ShipKind::ALL {
@@ -250,6 +260,42 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
             params![i as i64, event.at as i64, event.text],
         )?;
     }
+    for (i, colony) in state.colonies.iter().enumerate() {
+        let planet_id = (i as i64) + 2;
+        tx.execute(
+            "INSERT INTO colonies (planet_id, galaxy, system, position, kind, size)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                planet_id,
+                colony.coord.galaxy as i64,
+                colony.coord.system as i64,
+                colony.coord.position as i64,
+                colony.kind.as_key(),
+                colony.size as i64,
+            ],
+        )?;
+        tx.execute(
+            "INSERT INTO resources (planet_id, metal, crystal, deuterium) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                planet_id,
+                colony.resources.metal,
+                colony.resources.crystal,
+                colony.resources.deuterium
+            ],
+        )?;
+        for kind in BuildingKind::ALL {
+            tx.execute(
+                "INSERT INTO buildings (planet_id, kind, level) VALUES (?1, ?2, ?3)",
+                params![planet_id, kind.as_key(), colony.buildings.get(kind)],
+            )?;
+        }
+        for kind in ShipKind::ALL {
+            tx.execute(
+                "INSERT INTO ships (planet_id, kind, count) VALUES (?1, ?2, ?3)",
+                params![planet_id, kind.as_key(), colony.fleet.get(kind)],
+            )?;
+        }
+    }
     tx.commit()?;
     Ok(())
 }
@@ -257,16 +303,26 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
 /// Reconstruct player state. `config` is the caller's rules; it is not stored in the save.
 pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState, SaveError> {
     let mut state = GameState::with_config(0, config);
-    let (last_tick, rng_seed): (i64, i64) = conn
+    let (last_tick, rng_seed, galaxy_seed, home_kind, home_size): (
+        i64,
+        i64,
+        i64,
+        String,
+        i64,
+    ) = conn
         .query_row(
-            "SELECT last_tick_unix, rng_seed FROM meta WHERE id = 1",
+            "SELECT last_tick_unix, rng_seed, galaxy_seed, home_kind, home_size FROM meta WHERE id = 1",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
         )
         .optional()?
         .ok_or(SaveError::Corrupt("missing meta row"))?;
     state.last_tick_unix = unix_ts(last_tick)?;
     state.rng_seed = rng_seed as u64;
+    state.galaxy_seed = galaxy_seed as u64;
+    state.home_kind =
+        PlanetType::from_key(&home_kind).ok_or(SaveError::Corrupt("unknown home planet type"))?;
+    state.home_size = u8::try_from(home_size).map_err(|_| SaveError::Corrupt("home size"))?;
 
     let resources = conn
         .query_row(
@@ -439,7 +495,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     let mut stmt = conn.prepare(
         "SELECT id, origin_g, origin_s, origin_p, dest_g, dest_s, dest_p,
                 speed_percent, phase, launched_at, outbound_secs, hold_secs,
-                phase_ends_at, fuel_paid
+                phase_ends_at, fuel_paid, colonize
          FROM missions ORDER BY id",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -458,6 +514,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             row.get::<_, i64>(11)?,
             row.get::<_, i64>(12)?,
             row.get::<_, f64>(13)?,
+            row.get::<_, i64>(14)?,
         ))
     })?;
     let mut missions = Vec::new();
@@ -477,6 +534,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             hold_secs,
             phase_ends_at,
             fuel_paid,
+            colonize,
         ) = row?;
         let phase =
             MissionPhase::from_key(&phase).ok_or(SaveError::Corrupt("unknown mission phase"))?;
@@ -511,6 +569,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             hold_secs: unix_ts(hold_secs)?,
             phase_ends_at: unix_ts(phase_ends_at)?,
             fuel_paid,
+            colonize: colonize != 0,
         });
     }
     state.missions = missions;
@@ -551,6 +610,74 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         });
     }
 
+    let mut stmt = conn.prepare(
+        "SELECT planet_id, galaxy, system, position, kind, size FROM colonies ORDER BY planet_id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, i64>(5)?,
+        ))
+    })?;
+    let mut pending = Vec::new();
+    for row in rows {
+        pending.push(row?);
+    }
+    drop(stmt);
+    state.colonies.clear();
+    for (planet_id, g, s, p, kind, size) in pending {
+        let kind =
+            PlanetType::from_key(&kind).ok_or(SaveError::Corrupt("unknown colony planet type"))?;
+        let resources = conn.query_row(
+            "SELECT metal, crystal, deuterium FROM resources WHERE planet_id = ?1",
+            params![planet_id],
+            |row| {
+                Ok(Resources {
+                    metal: row.get(0)?,
+                    crystal: row.get(1)?,
+                    deuterium: row.get(2)?,
+                })
+            },
+        )?;
+        let mut buildings = crate::Buildings::default();
+        let mut bstmt = conn.prepare("SELECT kind, level FROM buildings WHERE planet_id = ?1")?;
+        let brows = bstmt.query_map(params![planet_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
+        })?;
+        for brow in brows {
+            let (key, level) = brow?;
+            let bkind =
+                BuildingKind::from_key(&key).ok_or(SaveError::Corrupt("unknown building"))?;
+            buildings.set(bkind, level);
+        }
+        let mut fleet = Fleet::default();
+        let mut sstmt = conn.prepare("SELECT kind, count FROM ships WHERE planet_id = ?1")?;
+        let srows = sstmt.query_map(params![planet_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
+        })?;
+        for srow in srows {
+            let (key, count) = srow?;
+            let skind = ShipKind::from_key(&key).ok_or(SaveError::Corrupt("unknown ship kind"))?;
+            fleet.add(skind, count);
+        }
+        state.colonies.push(Colony {
+            coord: Coord {
+                galaxy: u16_coord(g)?,
+                system: u16_coord(s)?,
+                position: u16_coord(p)?,
+            },
+            kind,
+            size: u8::try_from(size).map_err(|_| SaveError::Corrupt("colony size"))?,
+            resources,
+            buildings,
+            fleet,
+        });
+    }
+
     Ok(state)
 }
 
@@ -576,7 +703,8 @@ pub fn load_or_new(
             + count_rows(conn, "missions")?
             + count_rows(conn, "mission_ships")?
             + count_rows(conn, "raids")?
-            + count_rows(conn, "event_log")?;
+            + count_rows(conn, "event_log")?
+            + count_rows(conn, "colonies")?;
         if leftover != 0 {
             return Err(SaveError::Corrupt("missing meta row"));
         }
@@ -609,6 +737,7 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "mission_ships" => "SELECT COUNT(*) FROM mission_ships",
         "raids" => "SELECT COUNT(*) FROM raids",
         "event_log" => "SELECT COUNT(*) FROM event_log",
+        "colonies" => "SELECT COUNT(*) FROM colonies",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -633,6 +762,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 4 {
         migrate_v4(conn)?;
+    }
+    if found < 5 {
+        migrate_v5(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -761,6 +893,26 @@ fn migrate_v4(conn: &Connection) -> Result<(), SaveError> {
     Ok(())
 }
 
+fn migrate_v5(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "
+        ALTER TABLE meta ADD COLUMN galaxy_seed INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE meta ADD COLUMN home_kind TEXT NOT NULL DEFAULT 'rocky';
+        ALTER TABLE meta ADD COLUMN home_size INTEGER NOT NULL DEFAULT 163;
+        ALTER TABLE missions ADD COLUMN colonize INTEGER NOT NULL DEFAULT 0;
+        CREATE TABLE IF NOT EXISTS colonies (
+            planet_id INTEGER PRIMARY KEY,
+            galaxy INTEGER NOT NULL,
+            system INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            size INTEGER NOT NULL
+        );
+        ",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -799,6 +951,30 @@ mod tests {
             .unwrap();
         state.fleet.add(crate::ShipKind::HeavyFighter, 3);
         state.fleet.add(crate::ShipKind::LightFighter, 2);
+        state.galaxy_seed = 11;
+        let dest = crate::Coord {
+            galaxy: 1,
+            system: 1,
+            position: 14,
+        };
+        let (kind, size) = crate::planet_profile(11, dest);
+        let mut colony_fleet = crate::Fleet::default();
+        colony_fleet.add(crate::ShipKind::SmallCargo, 1);
+        state.colonies.push(crate::Colony {
+            coord: dest,
+            kind,
+            size,
+            resources: Resources {
+                metal: 50.0,
+                crystal: 20.0,
+                deuterium: 5.0,
+            },
+            buildings: crate::Buildings {
+                metal_mine: 1,
+                ..crate::Buildings::default()
+            },
+            fleet: colony_fleet,
+        });
         state.events.push(crate::GameEvent {
             at: 1_700_000_000,
             text: "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder M0 C0 D0".into(),
@@ -818,6 +994,9 @@ mod tests {
                 1_700_000_000,
             )
             .unwrap();
+        if let Some(mission) = state.missions.last_mut() {
+            mission.colonize = true;
+        }
         state
     }
 
