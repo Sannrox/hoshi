@@ -119,6 +119,31 @@ impl ResourceKind {
         ResourceKind::Crystal,
         ResourceKind::Deuterium,
     ];
+
+    pub fn as_key(self) -> &'static str {
+        match self {
+            ResourceKind::Metal => "metal",
+            ResourceKind::Crystal => "crystal",
+            ResourceKind::Deuterium => "deuterium",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "metal" => Some(ResourceKind::Metal),
+            "crystal" => Some(ResourceKind::Crystal),
+            "deuterium" => Some(ResourceKind::Deuterium),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ResourceKind::Metal => "metal",
+            ResourceKind::Crystal => "crystal",
+            ResourceKind::Deuterium => "deuterium",
+        }
+    }
 }
 
 struct ChainSite<'a> {
@@ -172,6 +197,8 @@ pub struct GameState {
     pub prestige: Prestige,
     pub story_pending: Option<crate::PendingStory>,
     pub last_story_at: u64,
+    pub market: crate::MarketState,
+    pub last_market_at: u64,
     pub config: BalanceConfig,
 }
 
@@ -226,6 +253,8 @@ impl GameState {
             prestige: Prestige::new(now_unix),
             story_pending: None,
             last_story_at: 0,
+            market: crate::MarketState::from_config(&config.market),
+            last_market_at: 0,
             config,
         };
         state.apply_prestige_start();
@@ -299,6 +328,7 @@ impl GameState {
                 .map(|o| o.next_rebuild_at(self.config.outposts.rebuild_secs))
                 .min();
             let story_at = self.next_story_at();
+            let market_at = self.next_market_at();
             let Some(done_at) = min_time(
                 min_time(
                     min_time(
@@ -312,7 +342,10 @@ impl GameState {
                 ),
                 min_time(
                     min_time(prod_boost_at, research_boost_at),
-                    min_time(wonder_at, min_time(rebuild_at, story_at)),
+                    min_time(
+                        wonder_at,
+                        min_time(rebuild_at, min_time(story_at, market_at)),
+                    ),
                 ),
             ) else {
                 self.produce_until(now_unix);
@@ -380,6 +413,9 @@ impl GameState {
             }
             if rebuild_at == Some(done_at) {
                 self.rebuild_outposts_at(done_at);
+            }
+            if market_at == Some(done_at) {
+                self.tick_market(done_at);
             }
             self.resolve_story(done_at);
         }
@@ -2646,6 +2682,94 @@ impl GameState {
         self.apply_story_choice(&pending.event_id, choice_id, self.last_tick_unix)
     }
 
+    fn next_market_at(&self) -> Option<u64> {
+        if !self.config.market.enabled {
+            return None;
+        }
+        let due = if self.last_market_at == 0 {
+            self.prestige
+                .current
+                .started_at
+                .saturating_add(self.config.market.tick_secs)
+        } else {
+            self.last_market_at
+                .saturating_add(self.config.market.tick_secs)
+        };
+        if due > self.last_tick_unix {
+            Some(due)
+        } else {
+            Some(self.last_tick_unix.saturating_add(1))
+        }
+    }
+
+    fn tick_market(&mut self, at: u64) {
+        if !self.config.market.enabled {
+            return;
+        }
+        self.market.tick(&self.config.market, &mut self.rng_seed);
+        self.last_market_at = at;
+    }
+
+    pub fn quote_market(
+        &self,
+        pay: ResourceKind,
+        recv: ResourceKind,
+        amount: f64,
+    ) -> Result<crate::TradeQuote, crate::MarketError> {
+        if !self.config.market.enabled {
+            return Err(crate::MarketError::Disabled);
+        }
+        self.market.quote(pay, recv, amount, &self.config.market)
+    }
+
+    /// Spend `amount` of `pay` for `recv` at the current quote, then move the mid.
+    pub fn trade_market(
+        &mut self,
+        pay: ResourceKind,
+        recv: ResourceKind,
+        amount: f64,
+        now_unix: u64,
+    ) -> Result<crate::TradeQuote, crate::MarketError> {
+        self.catch_up(now_unix);
+        if !self.config.market.enabled {
+            return Err(crate::MarketError::Disabled);
+        }
+        let quote = self.market.quote(pay, recv, amount, &self.config.market)?;
+        let have = self.resources.get(pay);
+        if have + 1e-9 < quote.pay_amount {
+            return Err(crate::MarketError::Insufficient {
+                missing: quote.pay_amount - have,
+                kind: pay,
+            });
+        }
+        if quote.pay_amount > self.config.market.cargo_free {
+            let have_cargo = self.cargo_capacity(self.fleet);
+            if have_cargo + 1e-9 < quote.pay_amount {
+                return Err(crate::MarketError::NeedCargo {
+                    need: quote.pay_amount,
+                    have: have_cargo,
+                });
+            }
+        }
+        self.resources.set(pay, (have - quote.pay_amount).max(0.0));
+        let got = self.resources.get(recv);
+        let cap = self.storage_cap(recv);
+        self.resources
+            .set(recv, (got + quote.recv_amount).min(cap).max(got));
+        self.market.apply_trade_impact(&quote, &self.config.market);
+        self.push_event(
+            self.last_tick_unix,
+            format!(
+                "market: {:.0} {} -> {:.1} {}",
+                quote.pay_amount,
+                pay.label(),
+                quote.recv_amount,
+                recv.label()
+            ),
+        );
+        Ok(quote)
+    }
+
     fn apply_story_choice(
         &mut self,
         event_id: &str,
@@ -2678,6 +2802,20 @@ impl GameState {
                 Some(existing) => existing.min(soon),
                 None => soon,
             });
+        }
+        if self.config.market.enabled {
+            self.market
+                .shock(ResourceKind::Metal, choice.metal_price, &self.config.market);
+            self.market.shock(
+                ResourceKind::Crystal,
+                choice.crystal_price,
+                &self.config.market,
+            );
+            self.market.shock(
+                ResourceKind::Deuterium,
+                choice.deuterium_price,
+                &self.config.market,
+            );
         }
         self.last_story_at = at;
         self.story_pending = None;
@@ -3445,6 +3583,7 @@ mod tests {
             prestige: crate::PrestigeConfig::default(),
             chains: crate::ChainConfig::default(),
             story: crate::StoryCatalog::empty(),
+            market: crate::MarketConfig::inactive(),
         }
     }
 
@@ -5890,6 +6029,7 @@ timeout_choice = "leave"
 id = "take"
 label = "Take it"
 metal = 40.0
+deuterium_price = -0.12
 [[event.choices]]
 id = "leave"
 label = "Leave it"
@@ -6022,5 +6162,109 @@ label = "Pass"
         next.prestige = state.prestige.clone();
         assert!(next.story_pending.is_none());
         assert_eq!(next.last_story_at, 0);
+    }
+
+    fn market_config() -> BalanceConfig {
+        let mut cfg = test_config();
+        cfg.market = crate::MarketConfig {
+            enabled: true,
+            tick_secs: 10,
+            ..crate::MarketConfig::default_active()
+        };
+        cfg
+    }
+
+    #[test]
+    fn market_catch_up_gap_matches_step_by_step() {
+        let cfg = market_config();
+        let mut gap = GameState::with_config(0, cfg.clone());
+        gap.rng_seed = 11;
+        gap.catch_up(100);
+        let mut step = GameState::with_config(0, cfg);
+        step.rng_seed = 11;
+        for t in 1..=100 {
+            step.catch_up(t);
+        }
+        assert_eq!(gap.market, step.market);
+        assert_eq!(gap.last_market_at, step.last_market_at);
+        assert_eq!(gap.rng_seed, step.rng_seed);
+        assert!(gap.last_market_at > 0);
+        for kind in ResourceKind::ALL {
+            let mean = gap.config.market.mean(kind);
+            let p = gap.market.price(kind);
+            assert!(
+                p >= mean * gap.config.market.min_mult - 1e-9,
+                "{kind:?} {p}"
+            );
+            assert!(
+                p <= mean * gap.config.market.max_mult + 1e-9,
+                "{kind:?} {p}"
+            );
+        }
+    }
+
+    #[test]
+    fn market_buy_then_sell_back_loses() {
+        let mut cfg = market_config();
+        cfg.market.tick_secs = 10_000;
+        cfg.market.cargo_free = 1_000.0;
+        let mut state = GameState::with_config(0, cfg);
+        state.resources.metal = 500.0;
+        let buy = state
+            .trade_market(ResourceKind::Metal, ResourceKind::Crystal, 100.0, 0)
+            .unwrap();
+        let back = state
+            .trade_market(
+                ResourceKind::Crystal,
+                ResourceKind::Metal,
+                buy.recv_amount,
+                0,
+            )
+            .unwrap();
+        assert!(
+            back.recv_amount < 100.0,
+            "round trip {} -> {}",
+            100.0,
+            back.recv_amount
+        );
+        assert!(state.resources.metal < 500.0);
+    }
+
+    #[test]
+    fn market_large_trade_needs_cargo() {
+        let mut cfg = market_config();
+        cfg.market.cargo_free = 50.0;
+        cfg.market.tick_secs = 10_000;
+        let mut state = GameState::with_config(0, cfg);
+        state.resources.metal = 200.0;
+        let err = state
+            .trade_market(ResourceKind::Metal, ResourceKind::Crystal, 100.0, 0)
+            .unwrap_err();
+        assert!(
+            matches!(err, crate::MarketError::NeedCargo { need, have } if (need - 100.0).abs() < 1e-9 && have == 0.0),
+            "{err:?}"
+        );
+        state.fleet.add(ShipKind::SmallCargo, 1);
+        state
+            .trade_market(ResourceKind::Metal, ResourceKind::Crystal, 100.0, 0)
+            .unwrap();
+        close(state.resources.metal, 100.0);
+    }
+
+    #[test]
+    fn story_choice_shocks_market_when_enabled() {
+        let mut cfg = story_config();
+        cfg.market = crate::MarketConfig::default_active();
+        cfg.market.tick_secs = 10_000;
+        let mut state = GameState::with_config(0, cfg);
+        state.rng_seed = 1;
+        let before = state.market.deuterium;
+        state.catch_up(10);
+        state.choose_story("take", 12).unwrap();
+        assert!(
+            state.market.deuterium < before,
+            "before {before} after {}",
+            state.market.deuterium
+        );
     }
 }

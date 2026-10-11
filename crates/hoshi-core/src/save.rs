@@ -19,7 +19,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 15;
+pub const SCHEMA_VERSION: u32 = 16;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -151,12 +151,14 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM prestige_runs;
          DELETE FROM prestige;
          DELETE FROM goods;
-         DELETE FROM story_pending;",
+         DELETE FROM story_pending;
+         DELETE FROM market_prices;
+         DELETE FROM market_history;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
-        "INSERT INTO meta (id, last_tick_unix, rng_seed, galaxy_seed, home_kind, home_size, deterministic, outposts_seeded, generator_version, last_story_at)
-         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8)",
+        "INSERT INTO meta (id, last_tick_unix, rng_seed, galaxy_seed, home_kind, home_size, deterministic, outposts_seeded, generator_version, last_story_at, last_market_at)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8, ?9)",
         params![
             state.last_tick_unix as i64,
             state.rng_seed as i64,
@@ -166,6 +168,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
             i64::from(state.deterministic),
             state.generator_version as i64,
             state.last_story_at as i64,
+            state.last_market_at as i64,
         ],
     )?;
     tx.execute(
@@ -353,6 +356,18 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 pending.timeout_at as i64,
             ],
         )?;
+    }
+    for kind in crate::ResourceKind::ALL {
+        tx.execute(
+            "INSERT INTO market_prices (kind, price) VALUES (?1, ?2)",
+            params![kind.as_key(), state.market.price(kind)],
+        )?;
+        for (i, price) in state.market.history(kind).iter().enumerate() {
+            tx.execute(
+                "INSERT INTO market_history (kind, position, price) VALUES (?1, ?2, ?3)",
+                params![kind.as_key(), i as i64, price],
+            )?;
+        }
     }
     for (i, colony) in state.colonies.iter().enumerate() {
         let planet_id = (i as i64) + 2;
@@ -545,7 +560,7 @@ fn insert_build_queue(
 /// Reconstruct player state. `config` is the caller's rules; it is not stored in the save.
 pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState, SaveError> {
     let mut state = GameState::with_config(0, config);
-    let (last_tick, rng_seed, galaxy_seed, home_kind, home_size, deterministic, outposts_seeded, generator_version, last_story_at): (
+    let (last_tick, rng_seed, galaxy_seed, home_kind, home_size, deterministic, outposts_seeded, generator_version, last_story_at, last_market_at): (
         i64,
         i64,
         i64,
@@ -555,11 +570,12 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         i64,
         i64,
         i64,
+        i64,
     ) = conn
         .query_row(
-            "SELECT last_tick_unix, rng_seed, galaxy_seed, home_kind, home_size, deterministic, outposts_seeded, generator_version, last_story_at FROM meta WHERE id = 1",
+            "SELECT last_tick_unix, rng_seed, galaxy_seed, home_kind, home_size, deterministic, outposts_seeded, generator_version, last_story_at, last_market_at FROM meta WHERE id = 1",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?)),
         )
         .optional()?
         .ok_or(SaveError::Corrupt("missing meta row"))?;
@@ -567,6 +583,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     state.rng_seed = rng_seed as u64;
     state.galaxy_seed = galaxy_seed as u64;
     state.last_story_at = unix_ts(last_story_at)?;
+    state.last_market_at = unix_ts(last_market_at)?;
     state.generator_version = u32_field(generator_version, "generator version")?;
     if !crate::supports_galaxy_generator(state.generator_version) {
         return Err(SaveError::GeneratorTooNew {
@@ -891,6 +908,8 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         }),
         None => None,
     };
+
+    load_market(conn, &mut state)?;
 
     let mut stmt = conn.prepare(
         "SELECT planet_id, galaxy, system, position, kind, size, rare FROM colonies ORDER BY planet_id",
@@ -1444,6 +1463,8 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "prestige_runs" => "SELECT COUNT(*) FROM prestige_runs",
         "goods" => "SELECT COUNT(*) FROM goods",
         "story_pending" => "SELECT COUNT(*) FROM story_pending",
+        "market_prices" => "SELECT COUNT(*) FROM market_prices",
+        "market_history" => "SELECT COUNT(*) FROM market_history",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -1474,7 +1495,9 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "prestige_owned")?
         + count_rows(conn, "prestige_runs")?
         + count_rows(conn, "goods")?
-        + count_rows(conn, "story_pending")?)
+        + count_rows(conn, "story_pending")?
+        + count_rows(conn, "market_prices")?
+        + count_rows(conn, "market_history")?)
 }
 
 fn migrate(conn: &Connection) -> Result<(), SaveError> {
@@ -1529,6 +1552,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 15 {
         migrate_v15(conn)?;
+    }
+    if found < 16 {
+        migrate_v16(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -1943,6 +1969,81 @@ fn migrate_v15(conn: &Connection) -> Result<(), SaveError> {
     Ok(())
 }
 
+fn migrate_v16(conn: &Connection) -> Result<(), SaveError> {
+    if !meta_has_column(conn, "last_market_at")? {
+        conn.execute(
+            "ALTER TABLE meta ADD COLUMN last_market_at INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS market_prices (
+            kind TEXT PRIMARY KEY,
+            price REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS market_history (
+            kind TEXT NOT NULL,
+            position INTEGER NOT NULL,
+            price REAL NOT NULL,
+            PRIMARY KEY (kind, position)
+        );
+        ",
+    )?;
+    Ok(())
+}
+
+fn load_market(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
+    let mut stmt = conn.prepare("SELECT kind, price FROM market_prices")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+    })?;
+    for row in rows {
+        let (kind, price) = row?;
+        let kind = crate::ResourceKind::from_key(&kind)
+            .ok_or(SaveError::Corrupt("unknown market resource"))?;
+        if !price.is_finite() || price <= 0.0 {
+            return Err(SaveError::Corrupt("market price"));
+        }
+        state.market.set_price(kind, price);
+    }
+    let mut metal = Vec::new();
+    let mut crystal = Vec::new();
+    let mut deuterium = Vec::new();
+    let mut stmt =
+        conn.prepare("SELECT kind, position, price FROM market_history ORDER BY kind, position")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, f64>(2)?,
+        ))
+    })?;
+    for row in rows {
+        let (kind, _position, price) = row?;
+        let kind = crate::ResourceKind::from_key(&kind)
+            .ok_or(SaveError::Corrupt("unknown market history resource"))?;
+        if !price.is_finite() || price <= 0.0 {
+            return Err(SaveError::Corrupt("market history price"));
+        }
+        match kind {
+            crate::ResourceKind::Metal => metal.push(price),
+            crate::ResourceKind::Crystal => crystal.push(price),
+            crate::ResourceKind::Deuterium => deuterium.push(price),
+        }
+    }
+    if !metal.is_empty() {
+        state.market.metal_hist = metal;
+    }
+    if !crystal.is_empty() {
+        state.market.crystal_hist = crystal;
+    }
+    if !deuterium.is_empty() {
+        state.market.deuterium_hist = deuterium;
+    }
+    Ok(())
+}
+
 fn read_prestige(conn: &Connection, fallback_started: u64) -> Result<Prestige, SaveError> {
     let row = conn
         .query_row(
@@ -2349,6 +2450,7 @@ mod tests {
         assert_eq!(loaded.generator_version, 1);
         assert_eq!(loaded.last_story_at, 0);
         assert!(loaded.story_pending.is_none());
+        assert_eq!(loaded.last_market_at, 0);
         assert_eq!(loaded.buildings.metal_mine, 4);
         assert_eq!(loaded.tech_level("weapons"), 3);
         assert_eq!(loaded.activity, crate::ActivityTracker::default());
@@ -2778,6 +2880,29 @@ mod tests {
         assert_eq!(loaded, state);
         assert!(meta_has_column(&conn, "last_story_at").unwrap());
         assert_eq!(count_rows(&conn, "story_pending").unwrap(), 1);
+    }
+
+    #[test]
+    fn migrate_v16_retries_and_round_trips_market_prices() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v16(&conn).unwrap();
+        migrate_v16(&conn).unwrap();
+        let mut state = GameState::new(3);
+        state.last_market_at = 44;
+        state.market.metal = 1.4;
+        state.market.crystal = 1.7;
+        state.market.deuterium = 3.6;
+        state.market.metal_hist = vec![1.0, 1.2, 1.4];
+        state.market.crystal_hist = vec![2.0, 1.8, 1.7];
+        state.market.deuterium_hist = vec![3.0, 3.3, 3.6];
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.last_market_at, 44);
+        assert_eq!(loaded.market, state.market);
+        assert_eq!(loaded, state);
+        assert!(meta_has_column(&conn, "last_market_at").unwrap());
+        assert_eq!(count_rows(&conn, "market_prices").unwrap(), 3);
+        assert_eq!(count_rows(&conn, "market_history").unwrap(), 9);
     }
 
     #[test]

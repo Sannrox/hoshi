@@ -6,7 +6,7 @@ games: mine resources, raise buildings, research technologies, build fleets
 and send them on expeditions. Meant to be played in a spare terminal pane
 while your coding agents work.
 
-> Status: hobby project, pre-alpha. `hoshi` opens on a title screen (continue, new, load, settings). Tab switches overview, planet, shipyard, wonder and prestige. Enter queues a build, a ship, research, or a wonder contribution. Mines run production chains from planet deposits to ship parts. Galaxy seeds are short checksummed codes (`hoshi new --seed`, `y` copies from the overview). Story events offer numbered choices on a cooldown; ignored too long uses the default. Fleets fly on timers. Colony ships settle empty planets. Pirate outposts take a fleet attack then a troop landing. A prestige reset starts a new galaxy with kept bonuses. Pirate raids land on a countdown. The game saves to SQLite.
+> Status: hobby project, pre-alpha. `hoshi` opens on a title screen (continue, new, load, settings). Tab switches overview, planet, shipyard, wonder, prestige and market. Enter queues a build, a ship, research, or a wonder contribution. Mines run production chains from planet deposits to ship parts. Galaxy seeds are short checksummed codes (`hoshi new --seed`, `y` copies from the overview). Story events offer numbered choices on a cooldown; ignored too long uses the default. The market trades metal, crystal and deuterium at drifting prices. Fleets fly on timers. Colony ships settle empty planets. Pirate outposts take a fleet attack then a troop landing. A prestige reset starts a new galaxy with kept bonuses. Pirate raids land on a countdown. The game saves to SQLite.
 
 ## A standalone game first
 

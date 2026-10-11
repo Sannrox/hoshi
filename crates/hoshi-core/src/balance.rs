@@ -319,6 +319,7 @@ pub struct BalanceConfig {
     pub prestige: PrestigeConfig,
     pub chains: ChainConfig,
     pub story: crate::StoryCatalog,
+    pub market: crate::MarketConfig,
 }
 
 impl BalanceConfig {
@@ -372,6 +373,116 @@ struct File {
     prestige: FilePrestige,
     #[serde(default)]
     chains: FileChains,
+    #[serde(default)]
+    market: FileMarket,
+}
+
+#[derive(Deserialize)]
+struct FileMarket {
+    #[serde(default = "default_true")]
+    enabled: bool,
+    #[serde(default = "default_market_tick")]
+    tick_secs: u64,
+    #[serde(default = "default_market_reversion")]
+    reversion: f64,
+    #[serde(default = "default_market_vol")]
+    volatility: f64,
+    #[serde(default = "default_market_shock_chance")]
+    shock_chance: f64,
+    #[serde(default = "default_market_shock_size")]
+    shock_size: f64,
+    #[serde(default = "default_market_fee")]
+    fee: f64,
+    #[serde(default = "default_market_slip")]
+    slippage: f64,
+    #[serde(default = "default_market_impact")]
+    impact_unit: f64,
+    #[serde(default = "default_market_min")]
+    min_mult: f64,
+    #[serde(default = "default_market_max")]
+    max_mult: f64,
+    #[serde(default = "default_market_hist")]
+    history_len: u32,
+    #[serde(default = "default_market_metal")]
+    metal_mean: f64,
+    #[serde(default = "default_market_crystal")]
+    crystal_mean: f64,
+    #[serde(default = "default_market_deut")]
+    deuterium_mean: f64,
+    #[serde(default = "default_market_cargo")]
+    cargo_free: f64,
+}
+
+fn default_true() -> bool {
+    true
+}
+fn default_market_tick() -> u64 {
+    3600
+}
+fn default_market_reversion() -> f64 {
+    0.15
+}
+fn default_market_vol() -> f64 {
+    0.04
+}
+fn default_market_shock_chance() -> f64 {
+    0.05
+}
+fn default_market_shock_size() -> f64 {
+    0.12
+}
+fn default_market_fee() -> f64 {
+    0.04
+}
+fn default_market_slip() -> f64 {
+    0.002
+}
+fn default_market_impact() -> f64 {
+    100.0
+}
+fn default_market_min() -> f64 {
+    0.5
+}
+fn default_market_max() -> f64 {
+    2.0
+}
+fn default_market_hist() -> u32 {
+    24
+}
+fn default_market_metal() -> f64 {
+    1.0
+}
+fn default_market_crystal() -> f64 {
+    2.0
+}
+fn default_market_deut() -> f64 {
+    3.0
+}
+fn default_market_cargo() -> f64 {
+    50.0
+}
+
+impl Default for FileMarket {
+    fn default() -> Self {
+        Self {
+            enabled: default_true(),
+            tick_secs: default_market_tick(),
+            reversion: default_market_reversion(),
+            volatility: default_market_vol(),
+            shock_chance: default_market_shock_chance(),
+            shock_size: default_market_shock_size(),
+            fee: default_market_fee(),
+            slippage: default_market_slip(),
+            impact_unit: default_market_impact(),
+            min_mult: default_market_min(),
+            max_mult: default_market_max(),
+            history_len: default_market_hist(),
+            metal_mean: default_market_metal(),
+            crystal_mean: default_market_crystal(),
+            deuterium_mean: default_market_deut(),
+            cargo_free: default_market_cargo(),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -976,6 +1087,24 @@ impl File {
             },
             chains: self.chains.into_config().map_err(BalanceError::Invalid)?,
             story: crate::StoryCatalog::default(),
+            market: crate::MarketConfig {
+                enabled: self.market.enabled,
+                tick_secs: self.market.tick_secs,
+                reversion: self.market.reversion,
+                volatility: self.market.volatility,
+                shock_chance: self.market.shock_chance,
+                shock_size: self.market.shock_size,
+                fee: self.market.fee,
+                slippage: self.market.slippage,
+                impact_unit: self.market.impact_unit,
+                min_mult: self.market.min_mult,
+                max_mult: self.market.max_mult,
+                history_len: self.market.history_len.max(1) as usize,
+                metal_mean: self.market.metal_mean,
+                crystal_mean: self.market.crystal_mean,
+                deuterium_mean: self.market.deuterium_mean,
+                cargo_free: self.market.cargo_free,
+            },
         };
         config.validate()?;
         Ok(config)
@@ -1299,6 +1428,44 @@ impl BalanceConfig {
                 row.shipyard_speed,
             )?;
         }
+        if self.market.enabled {
+            if self.market.tick_secs < 1 {
+                return Err(BalanceError::Invalid(
+                    "market.tick_secs must be >= 1".into(),
+                ));
+            }
+            if self.market.history_len < 1 {
+                return Err(BalanceError::Invalid(
+                    "market.history_len must be >= 1".into(),
+                ));
+            }
+            finite_positive("market.reversion", self.market.reversion)?;
+            nonneg_finite("market.volatility", self.market.volatility)?;
+            nonneg_finite("market.shock_chance", self.market.shock_chance)?;
+            if self.market.shock_chance > 1.0 {
+                return Err(BalanceError::Invalid(
+                    "market.shock_chance must be <= 1".into(),
+                ));
+            }
+            nonneg_finite("market.shock_size", self.market.shock_size)?;
+            nonneg_finite("market.fee", self.market.fee)?;
+            if self.market.fee >= 1.0 {
+                return Err(BalanceError::Invalid("market.fee must be < 1".into()));
+            }
+            nonneg_finite("market.slippage", self.market.slippage)?;
+            finite_positive("market.impact_unit", self.market.impact_unit)?;
+            finite_positive("market.min_mult", self.market.min_mult)?;
+            finite_positive("market.max_mult", self.market.max_mult)?;
+            if self.market.max_mult < self.market.min_mult {
+                return Err(BalanceError::Invalid(
+                    "market.max_mult must be >= min_mult".into(),
+                ));
+            }
+            finite_positive("market.metal_mean", self.market.metal_mean)?;
+            finite_positive("market.crystal_mean", self.market.crystal_mean)?;
+            finite_positive("market.deuterium_mean", self.market.deuterium_mean)?;
+            nonneg_finite("market.cargo_free", self.market.cargo_free)?;
+        }
         Ok(())
     }
 }
@@ -1385,6 +1552,7 @@ mod tests {
         assert_eq!(cfg.prestige, crate::PrestigeConfig::default());
         assert!(cfg.chains.enabled());
         assert!(cfg.chains.validate().is_ok());
+        assert_eq!(cfg.market, crate::MarketConfig::default_active());
         assert_eq!(cfg.wonders.len(), 3);
         assert_eq!(cfg.wonders[0].id, "dyson_ring");
         assert_eq!(cfg.wonders[0].prereq_techs[0].id, "energy");

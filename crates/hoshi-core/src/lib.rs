@@ -9,6 +9,7 @@ mod combat;
 mod expedition;
 mod fleets;
 mod galaxy;
+mod market;
 mod outposts;
 mod planets;
 mod prestige;
@@ -46,6 +47,7 @@ pub use fleets::{
 pub use galaxy::{
     GALAXY_GENERATOR_VERSION, encode_galaxy_seed, parse_galaxy_seed, supports_galaxy_generator,
 };
+pub use market::{MarketConfig, MarketError, MarketState, TradeQuote};
 pub use outposts::{
     Outpost, OutpostConfig, RarePlanetBonus, generate_outposts, scaled_defence, scaled_garrison,
 };

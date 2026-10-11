@@ -64,6 +64,9 @@ pub struct StoryChoice {
     pub deuterium: f64,
     pub ships: Vec<(ShipKind, i32)>,
     pub schedule_raid: bool,
+    pub metal_price: f64,
+    pub crystal_price: f64,
+    pub deuterium_price: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -182,6 +185,12 @@ struct FileChoice {
     ships: BTreeMap<String, i32>,
     #[serde(default)]
     schedule_raid: bool,
+    #[serde(default)]
+    metal_price: f64,
+    #[serde(default)]
+    crystal_price: f64,
+    #[serde(default)]
+    deuterium_price: f64,
 }
 
 impl FileEvent {
@@ -220,6 +229,9 @@ impl FileEvent {
                 deuterium: raw.deuterium,
                 ships,
                 schedule_raid: raw.schedule_raid,
+                metal_price: raw.metal_price,
+                crystal_price: raw.crystal_price,
+                deuterium_price: raw.deuterium_price,
             });
         }
         if !choice_ids.contains(&self.timeout_choice) {
