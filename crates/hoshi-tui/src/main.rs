@@ -13,12 +13,30 @@ fn main() -> std::io::Result<()> {
     let mut terminal = ratatui::init();
     let result = loop {
         state.catch_up(clock.now_unix());
+        let build_line = match state.build_queue.first() {
+            Some(job) => {
+                let left = job
+                    .completes_at
+                    .unwrap_or(state.last_tick_unix)
+                    .saturating_sub(state.last_tick_unix);
+                format!(
+                    "Build: {} -> lv{}  {}s  ({}/{} queued)\n\n",
+                    job.building,
+                    job.from_level + 1,
+                    left,
+                    state.build_queue.len(),
+                    state.config.max_build_queue
+                )
+            }
+            None => "Build: idle\n\n".to_string(),
+        };
         let text = format!(
             "hoshi (pre-alpha)\n\n\
              Metal:      {:>10.0}  (+{:.0}/h)  cap {:.0}\n\
              Crystal:    {:>10.0}  (+{:.0}/h)  cap {:.0}\n\
              Deuterium:  {:>10.0}  (+{:.0}/h)  cap {:.0}\n\
-             Energy:     {:>10.0} / {:.0}\n\n\
+             Energy:     {:>10.0} / {:.0}\n\
+             {build_line}\
              Press q to quit.",
             state.resources.metal,
             state.production_per_hour(ResourceKind::Metal),
