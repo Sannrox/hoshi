@@ -3,6 +3,7 @@
 mod balance;
 mod buildings;
 mod clock;
+mod fleets;
 mod research;
 mod save;
 mod ships;
@@ -13,6 +14,9 @@ pub use balance::{
 };
 pub use buildings::{BuildError, BuildJob, BuildingKind, Buildings};
 pub use clock::{Clock, FakeClock, SystemClock};
+pub use fleets::{
+    Coord, FleetError, FlightConfig, Mission, MissionPhase, distance, flight_secs, fuel_cost,
+};
 pub use research::{
     BuildingPrereq, ModifierKind, PrereqGap, ResearchError, ResearchJob, TechModifier, TechPrereq,
     TechSpec, TechTree, TechTreeError,

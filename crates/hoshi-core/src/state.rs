@@ -2,6 +2,7 @@
 
 use crate::balance::BalanceConfig;
 use crate::buildings::{BuildError, BuildJob, BuildingKind, Buildings};
+use crate::fleets::{Coord, FleetError, Mission, MissionPhase, distance, flight_secs, fuel_cost};
 use crate::research::{ModifierKind, PrereqGap, ResearchError, ResearchJob};
 use crate::ships::{Fleet, ShipError, ShipJob, ShipKind};
 use std::collections::BTreeMap;
@@ -94,6 +95,9 @@ pub struct GameState {
     pub research: Option<ResearchJob>,
     pub fleet: Fleet,
     pub ship_queue: Vec<ShipJob>,
+    pub home: Coord,
+    pub missions: Vec<Mission>,
+    pub next_mission_id: u64,
     pub last_tick_unix: u64,
     /// Seeded RNG state for later combat and expeditions. Unused by catch-up.
     pub rng_seed: u64,
@@ -114,6 +118,9 @@ impl GameState {
             research: None,
             fleet: Fleet::default(),
             ship_queue: Vec::new(),
+            home: Coord::HOME,
+            missions: Vec::new(),
+            next_mission_id: 0,
             last_tick_unix: now_unix,
             rng_seed: 0,
             config,
@@ -132,7 +139,11 @@ impl GameState {
             let build_at = self.build_queue.first().and_then(|job| job.completes_at);
             let research_at = self.research.as_ref().map(|job| job.completes_at);
             let ship_at = self.ship_queue.first().and_then(|job| job.completes_at);
-            let Some(done_at) = min_time(min_time(build_at, research_at), ship_at) else {
+            let mission_at = self.missions.iter().map(|m| m.phase_ends_at).min();
+            let Some(done_at) = min_time(
+                min_time(min_time(build_at, research_at), ship_at),
+                mission_at,
+            ) else {
                 self.produce_until(now_unix);
                 return;
             };
@@ -154,6 +165,9 @@ impl GameState {
             }
             if ship_at == Some(done_at) {
                 self.complete_one_ship(done_at);
+            }
+            if mission_at == Some(done_at) {
+                self.advance_missions_at(done_at);
             }
         }
     }
@@ -364,6 +378,125 @@ impl GameState {
         self.config.ships.get(kind).duration_secs()
     }
 
+    pub fn fleet_slots(&self) -> u32 {
+        self.config
+            .flight
+            .base_fleet_slots
+            .saturating_add(self.modifier(ModifierKind::FleetSlots).floor().max(0.0) as u32)
+    }
+
+    pub fn flight_time_and_fuel(
+        &self,
+        ships: Fleet,
+        dest: Coord,
+        speed_percent: u8,
+    ) -> Result<(u64, f64), FleetError> {
+        if ships.is_empty() {
+            return Err(FleetError::EmptyFleet);
+        }
+        if dest == self.home {
+            return Err(FleetError::SameLocation);
+        }
+        if !(10..=100).contains(&speed_percent) {
+            return Err(FleetError::SpeedPercent { got: speed_percent });
+        }
+        let dist = distance(self.home, dest, &self.config.flight);
+        let mut slowest = f64::MAX;
+        let mut units_fuel = 0.0;
+        for kind in ShipKind::ALL {
+            let n = ships.get(kind);
+            if n == 0 {
+                continue;
+            }
+            let stats = self.ship_stats(kind);
+            slowest = slowest.min(stats.speed);
+            units_fuel += f64::from(n) * stats.fuel;
+        }
+        Ok((
+            flight_secs(dist, slowest, speed_percent),
+            fuel_cost(units_fuel, dist, speed_percent, &self.config.flight),
+        ))
+    }
+
+    /// Detach ships from the planet, pay deuterium, and start outbound.
+    pub fn launch_fleet(
+        &mut self,
+        ships: Fleet,
+        dest: Coord,
+        speed_percent: u8,
+        hold_secs: u64,
+        now_unix: u64,
+    ) -> Result<(), FleetError> {
+        self.catch_up(now_unix);
+        let now = self.last_tick_unix;
+        let (outbound_secs, fuel) = self.flight_time_and_fuel(ships, dest, speed_percent)?;
+        for kind in ShipKind::ALL {
+            let need = ships.get(kind);
+            let have = self.fleet.get(kind);
+            if have < need {
+                return Err(FleetError::MissingShips { kind, need, have });
+            }
+        }
+        let cap = self.fleet_slots();
+        let used = self.missions.len() as u32;
+        if used >= cap {
+            return Err(FleetError::NoSlots { used, cap });
+        }
+        if self.resources.deuterium + 1e-9 < fuel {
+            return Err(FleetError::InsufficientFuel {
+                missing: (fuel - self.resources.deuterium).max(0.0),
+                cost: fuel,
+            });
+        }
+        self.resources.deuterium = (self.resources.deuterium - fuel).max(0.0);
+        for kind in ShipKind::ALL {
+            self.fleet.saturating_sub(kind, ships.get(kind));
+        }
+        let id = self.next_mission_id;
+        self.next_mission_id = self.next_mission_id.saturating_add(1);
+        self.missions.push(Mission {
+            id,
+            ships,
+            origin: self.home,
+            dest,
+            speed_percent,
+            phase: MissionPhase::Outbound,
+            launched_at: now,
+            outbound_secs,
+            hold_secs,
+            phase_ends_at: now.saturating_add(outbound_secs),
+            fuel_paid: fuel,
+        });
+        Ok(())
+    }
+
+    /// Turn a fleet around. Outbound recall uses elapsed time as the return.
+    /// `id` is the mission's stable id, so a catch-up that finishes another
+    /// fleet cannot retarget this one.
+    pub fn recall_fleet(&mut self, id: u64, now_unix: u64) -> Result<(), FleetError> {
+        self.catch_up(now_unix);
+        let now = self.last_tick_unix;
+        let mission = self
+            .missions
+            .iter_mut()
+            .find(|m| m.id == id)
+            .ok_or(FleetError::UnknownMission { id })?;
+        match mission.phase {
+            MissionPhase::Return => return Err(FleetError::AlreadyReturning),
+            MissionPhase::Outbound => {
+                let elapsed = now.saturating_sub(mission.launched_at);
+                mission.phase = MissionPhase::Return;
+                mission.phase_ends_at = now.saturating_add(elapsed);
+            }
+            MissionPhase::Action => {
+                let ret = mission.outbound_secs;
+                mission.phase = MissionPhase::Return;
+                mission.phase_ends_at = now.saturating_add(ret);
+            }
+        }
+        Ok(())
+    }
+
     pub fn missing_ship_prereqs(&self, kind: ShipKind) -> Vec<PrereqGap> {
         let spec = self.config.ships.get(kind);
         spec.prereq_techs
@@ -557,6 +690,36 @@ impl GameState {
         job.completes_at = Some(now.saturating_add(duration));
     }
 
+    fn advance_missions_at(&mut self, done_at: u64) {
+        loop {
+            let Some(index) = self
+                .missions
+                .iter()
+                .position(|m| m.phase_ends_at == done_at)
+            else {
+                return;
+            };
+            match self.missions[index].phase {
+                MissionPhase::Outbound => {
+                    let hold = self.missions[index].hold_secs;
+                    self.missions[index].phase = MissionPhase::Action;
+                    self.missions[index].phase_ends_at = done_at.saturating_add(hold);
+                }
+                MissionPhase::Action => {
+                    let ret = self.missions[index].outbound_secs;
+                    self.missions[index].phase = MissionPhase::Return;
+                    self.missions[index].phase_ends_at = done_at.saturating_add(ret);
+                }
+                MissionPhase::Return => {
+                    let ships = self.missions.remove(index).ships;
+                    for kind in ShipKind::ALL {
+                        self.fleet.add(kind, ships.get(kind));
+                    }
+                }
+            }
+        }
+    }
+
     fn complete_one_ship(&mut self, done_at: u64) {
         let Some(job) = self.ship_queue.first() else {
             return;
@@ -688,6 +851,7 @@ mod tests {
     use crate::TechTree;
     use crate::buildings::{BuildError, BuildingKind};
     use crate::clock::{Clock, FakeClock};
+    use crate::fleets::{Coord, FleetError, MissionPhase};
     use crate::research::{ModifierKind, PrereqGap, ResearchError};
     use crate::ships::{ShipError, ShipKind};
 
@@ -761,6 +925,7 @@ mod tests {
             techs: TechTree::empty(),
             ships: crate::ShipCatalog::default(),
             max_ship_queue: 5,
+            flight: crate::FlightConfig::default(),
         }
     }
 
@@ -1417,5 +1582,84 @@ modifiers = []
                 actual: 0,
             }
         );
+    }
+
+    fn scout_fleet() -> Fleet {
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::LightFighter, 2);
+        ships
+    }
+
+    fn far_dest() -> Coord {
+        Coord {
+            galaxy: 2,
+            system: 1,
+            position: 1,
+        }
+    }
+
+    fn flying_state(now: u64) -> GameState {
+        let mut state = GameState::new(now);
+        state.fleet.add(ShipKind::LightFighter, 4);
+        state.resources.deuterium = 10_000.0;
+        state
+    }
+
+    #[test]
+    fn recall_mid_outbound_returns_in_elapsed_time() {
+        let mut state = flying_state(0);
+        state
+            .launch_fleet(scout_fleet(), far_dest(), 100, 0, 0)
+            .unwrap();
+        let id = state.missions[0].id;
+        let outbound = state.missions[0].outbound_secs;
+        assert!(outbound > 1);
+        state.recall_fleet(id, 1).unwrap();
+        assert_eq!(state.missions[0].phase, MissionPhase::Return);
+        assert_eq!(state.missions[0].phase_ends_at, 2);
+        state.catch_up(2);
+        assert!(state.missions.is_empty());
+        assert_eq!(state.fleet.get(ShipKind::LightFighter), 4);
+    }
+
+    #[test]
+    fn arrival_and_return_resolve_across_an_offline_gap() {
+        let mut gap = flying_state(0);
+        gap.launch_fleet(scout_fleet(), far_dest(), 100, 0, 0)
+            .unwrap();
+        let outbound = gap.missions[0].outbound_secs;
+        gap.catch_up(outbound * 2);
+        assert!(gap.missions.is_empty());
+        assert_eq!(gap.fleet.get(ShipKind::LightFighter), 4);
+
+        let mut step = flying_state(0);
+        step.launch_fleet(scout_fleet(), far_dest(), 100, 0, 0)
+            .unwrap();
+        for t in 1..=outbound * 2 {
+            step.catch_up(t);
+        }
+        assert_eq!(step.fleet, gap.fleet);
+        assert_eq!(step.missions, gap.missions);
+        assert_eq!(step.resources.deuterium, gap.resources.deuterium);
+        assert_eq!(step.last_tick_unix, gap.last_tick_unix);
+    }
+
+    #[test]
+    fn fleet_slots_follow_computer_technology() {
+        let mut state = flying_state(0);
+        assert_eq!(state.fleet_slots(), 1);
+        state
+            .launch_fleet(scout_fleet(), far_dest(), 100, 0, 0)
+            .unwrap();
+        let err = state
+            .launch_fleet(scout_fleet(), far_dest(), 100, 0, 0)
+            .unwrap_err();
+        assert_eq!(err, FleetError::NoSlots { used: 1, cap: 1 });
+        state.tech_levels.insert("computer".into(), 1);
+        assert_eq!(state.fleet_slots(), 2);
+        state
+            .launch_fleet(scout_fleet(), far_dest(), 100, 0, 0)
+            .unwrap();
+        assert_eq!(state.missions.len(), 2);
     }
 }

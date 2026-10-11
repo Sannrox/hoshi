@@ -225,6 +225,15 @@ impl Fleet {
         self.counts[i] = self.counts[i].saturating_add(n);
     }
 
+    pub fn saturating_sub(&mut self, kind: ShipKind, n: u32) {
+        let i = kind.index();
+        self.counts[i] = self.counts[i].saturating_sub(n);
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.total() == 0
+    }
+
     pub fn total(self) -> u32 {
         self.counts.iter().copied().fold(0, u32::saturating_add)
     }

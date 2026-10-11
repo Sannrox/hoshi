@@ -193,6 +193,7 @@ pub struct BalanceConfig {
     pub ships: crate::ShipCatalog,
     /// Maximum shipyard batches waiting or in progress on one planet.
     pub max_ship_queue: usize,
+    pub flight: crate::FlightConfig,
     pub starting_resources: Resources,
     pub starting_buildings: Buildings,
 }
@@ -240,6 +241,7 @@ impl Default for BalanceConfig {
             techs: crate::TechTree::default(),
             ships: crate::ShipCatalog::default(),
             max_ship_queue: 5,
+            flight: crate::FlightConfig::default(),
             starting_resources: Resources {
                 metal: 500.0,
                 crystal: 500.0,
