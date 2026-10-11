@@ -6,6 +6,14 @@ games: mine resources, raise buildings, research technologies, build fleets
 and send them on expeditions. Meant to be played in a spare terminal pane
 while your coding agents work.
 
+hoshi is a fictional game with a second purpose: it is a showcase for how
+ontologies are used in business and government work. Its domain model has
+clear object types (players, planets, fleets, factions, outposts), explicit
+links between them, moves expressed as governed actions, and auditable
+outcomes, so the same game can demonstrate modelling, permissions and audit on
+a realistic workload. Physics and maths (production, energy, travel times) aim
+to be plausible; species, factions and story are pure fiction.
+
 > Status: hobby project, pre-alpha. The terminal has overview, planet and shipyard screens. Tab switches; enter queues a build, a ship, or research. Fleets fly on timers. Colony ships settle empty planets. Pirate raids land on a countdown. The game saves to SQLite.
 
 ## The twist: your agents play along
