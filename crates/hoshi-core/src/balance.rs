@@ -252,6 +252,7 @@ pub struct BalanceConfig {
     pub flight: crate::FlightConfig,
     pub raid: RaidConfig,
     pub planet_types: crate::PlanetTypeCatalog,
+    pub activity: crate::ActivityEffectsConfig,
     pub starting_resources: Resources,
     pub starting_buildings: Buildings,
 }
@@ -302,6 +303,7 @@ impl Default for BalanceConfig {
             flight: crate::FlightConfig::default(),
             raid: RaidConfig::default(),
             planet_types: crate::PlanetTypeCatalog::default(),
+            activity: crate::ActivityEffectsConfig::default(),
             starting_resources: Resources {
                 metal: 500.0,
                 crystal: 500.0,

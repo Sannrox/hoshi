@@ -59,12 +59,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut terminal = ratatui::init();
     let mut last_save = Instant::now();
     let result = loop {
-        app.state.catch_up(clock.now_unix());
         #[cfg(feature = "bridge")]
         {
-            // Advance the feed offset. Applying events to game state is a later issue.
-            let _ = bridge.poll();
+            if let Ok(batch) = bridge.poll() {
+                apply_bridge_events(&mut app.state, batch, clock.now_unix());
+            }
         }
+        app.state.catch_up(clock.now_unix());
         if last_save.elapsed() >= SAVE_INTERVAL {
             if let Err(e) = save_state(&mut conn, &app.state) {
                 break Err(std::io::Error::other(e.to_string()));
@@ -92,6 +93,57 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     save_state(&mut conn, &app.state)?;
     result?;
     Ok(())
+}
+
+#[cfg(feature = "bridge")]
+fn apply_bridge_events(
+    state: &mut hoshi_core::GameState,
+    batch: hoshi_bridge::ReadBatch,
+    now_unix: u64,
+) {
+    let mut events = batch.events;
+    events.sort_by_key(|e| e.ts);
+    for event in events {
+        if let Some(pulse) = pulse_from_event(&event) {
+            let _ = state.apply_activity(pulse, now_unix);
+        }
+    }
+}
+
+#[cfg(feature = "bridge")]
+fn pulse_from_event(event: &hoshi_bridge::ActivityEvent) -> Option<hoshi_core::ActivityPulse> {
+    use hoshi_bridge::ActivityKind;
+    use hoshi_core::ActivityPulse;
+    match event.kind {
+        ActivityKind::PrMerged => Some(ActivityPulse::PrMerged { ts: event.ts }),
+        ActivityKind::WorkflowFinished => {
+            let success =
+                event.payload.get("conclusion").and_then(|v| v.as_str()) == Some("success");
+            Some(ActivityPulse::WorkflowFinished {
+                ts: event.ts,
+                success,
+            })
+        }
+        ActivityKind::AgentFinished => Some(ActivityPulse::AgentFinished {
+            ts: event.ts,
+            duration_secs: payload_secs(event, &["duration_secs", "elapsed"]),
+        }),
+        ActivityKind::AgentWaitingForInput => Some(ActivityPulse::AgentWaiting {
+            ts: event.ts,
+            waiting_secs: payload_secs(event, &["waiting_secs", "duration_secs", "elapsed"]),
+        }),
+        ActivityKind::AgentStarted | ActivityKind::AgentFailed => None,
+    }
+}
+
+#[cfg(feature = "bridge")]
+fn payload_secs(event: &hoshi_bridge::ActivityEvent, keys: &[&str]) -> u64 {
+    for key in keys {
+        if let Some(n) = event.payload.get(*key).and_then(|v| v.as_u64()) {
+            return n;
+        }
+    }
+    0
 }
 
 fn parse_save_flag(args: impl IntoIterator<Item = impl AsRef<str>>) -> Option<PathBuf> {
@@ -146,5 +198,33 @@ mod tests {
             let err = run_post(&[]).unwrap_err();
             assert!(err.to_string().contains("bridge"));
         }
+    }
+
+    #[test]
+    #[cfg(feature = "bridge")]
+    fn pulse_maps_merged_pr_and_green_ci() {
+        let pr = hoshi_bridge::parse_line(
+            r#"{"type":"pr_merged","source":"github","ts":9,"payload":{"id":1}}"#,
+            8192,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            pulse_from_event(&pr),
+            Some(hoshi_core::ActivityPulse::PrMerged { ts: 9 })
+        );
+        let ci = hoshi_bridge::parse_line(
+            r#"{"type":"workflow_finished","source":"github","ts":4,"payload":{"conclusion":"success"}}"#,
+            8192,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            pulse_from_event(&ci),
+            Some(hoshi_core::ActivityPulse::WorkflowFinished {
+                ts: 4,
+                success: true,
+            })
+        );
     }
 }

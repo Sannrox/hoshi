@@ -50,3 +50,17 @@ cargo run -p hoshi-tui --features bridge -- post --save /path/to/save.sqlite --t
 ## Restart
 
 The reader stores a byte offset in `feed.jsonl.offset` and continues from there after a restart.
+
+## Game effects
+
+When the TUI is built with `--features bridge` and the feed is enabled, accepted events apply at their timestamp during catch-up:
+
+| Event | Effect |
+| --- | --- |
+| `pr_merged` | Resource payout of configured hours of current production |
+| `workflow_finished` with `conclusion` `success` | Temporary production boost |
+| `workflow_finished` otherwise | Raid via `GameState::trigger_raid` |
+| `agent_finished` with `duration_secs` (or `elapsed`) at or above the threshold | Temporary research speed boost |
+| `agent_waiting_for_input` with `waiting_secs` at or above the threshold | Raid |
+
+Each mapping is individually disableable and has a cooldown and a daily cap. `agent_started` and `agent_failed` do not grant effects.

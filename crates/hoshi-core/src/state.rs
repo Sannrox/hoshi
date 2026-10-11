@@ -1,5 +1,8 @@
 //! Planet stockpiles, building levels and offline catch-up.
 
+use crate::activity::{
+    ActivityApply, ActivityChannel, ActivityPulse, ActivityTracker, resolve_channel,
+};
 use crate::balance::BalanceConfig;
 use crate::buildings::{BuildError, BuildJob, BuildingKind, Buildings};
 use crate::combat::{
@@ -116,6 +119,7 @@ pub struct GameState {
     pub next_mission_id: u64,
     pub next_raid_at: Option<u64>,
     pub events: Vec<GameEvent>,
+    pub activity: ActivityTracker,
     pub last_tick_unix: u64,
     /// Seeded RNG state. Combat and raids consume it; the save stores the current value.
     pub rng_seed: u64,
@@ -152,6 +156,7 @@ impl GameState {
                 None
             },
             events: Vec::new(),
+            activity: ActivityTracker::default(),
             last_tick_unix: now_unix,
             rng_seed: 0,
             galaxy_seed,
@@ -177,12 +182,23 @@ impl GameState {
             } else {
                 None
             };
+            let prod_boost_at = self
+                .activity
+                .prod_boost_until
+                .filter(|&t| t > self.last_tick_unix);
+            let research_boost_at = self
+                .activity
+                .research_boost_until
+                .filter(|&t| t > self.last_tick_unix);
             let Some(done_at) = min_time(
                 min_time(
-                    min_time(min_time(build_at, research_at), ship_at),
-                    mission_at,
+                    min_time(
+                        min_time(min_time(build_at, research_at), ship_at),
+                        mission_at,
+                    ),
+                    raid_at,
                 ),
-                raid_at,
+                min_time(prod_boost_at, research_boost_at),
             ) else {
                 self.produce_until(now_unix);
                 return;
@@ -212,7 +228,62 @@ impl GameState {
             if raid_at == Some(done_at) {
                 self.resolve_raid_at(done_at);
             }
+            if prod_boost_at == Some(done_at) {
+                self.activity.prod_boost_until = None;
+                self.activity.prod_boost_factor = 0.0;
+            }
+            if research_boost_at == Some(done_at) {
+                let old = (1.0 + self.activity.research_boost_factor).max(1.0);
+                self.activity.research_boost_until = None;
+                self.activity.research_boost_factor = 0.0;
+                self.rescale_research(done_at, old, 1.0);
+            }
         }
+    }
+
+    /// Apply a bridge pulse at its timestamp. Catch-up runs first so offline
+    /// production through that instant is already in the stockpile.
+    /// Events dated after `now_unix` are skipped so a bad feed cannot skip time.
+    pub fn apply_activity(&mut self, pulse: ActivityPulse, now_unix: u64) -> ActivityApply {
+        if !self.config.activity.enabled {
+            return ActivityApply::Skipped;
+        }
+        let Some((channel, ts)) = resolve_channel(pulse, &self.config.activity) else {
+            return ActivityApply::Skipped;
+        };
+        if ts > now_unix || ts < self.last_tick_unix {
+            return ActivityApply::Skipped;
+        }
+        let spec = self.config.activity.get(channel).clone();
+        if !spec.enabled {
+            return ActivityApply::Skipped;
+        }
+        if matches!(
+            channel,
+            ActivityChannel::CiRed | ActivityChannel::AgentStuck
+        ) && !self.config.raid.enabled
+        {
+            return ActivityApply::Skipped;
+        }
+        if !self
+            .activity
+            .admit(channel, ts, spec.cooldown_secs, spec.daily_cap)
+        {
+            return ActivityApply::Skipped;
+        }
+        self.catch_up(ts);
+        let at = self.last_tick_unix.max(ts);
+        match channel {
+            ActivityChannel::PrMerged => self.grant_payout(at, spec.payout_hours),
+            ActivityChannel::CiGreen => self.set_prod_boost(at, spec.boost_factor, spec.boost_secs),
+            ActivityChannel::CiRed | ActivityChannel::AgentStuck => {
+                let _ = self.trigger_raid(at);
+            }
+            ActivityChannel::AgentLongRun => {
+                self.set_research_boost(at, spec.boost_factor, spec.boost_secs)
+            }
+        }
+        ActivityApply::Applied
     }
 
     /// Queue an upgrade. Resources are paid immediately; only the head runs.
@@ -299,7 +370,9 @@ impl GameState {
                 })?;
             (
                 spec.cost(from_level),
-                spec.duration_secs(from_level),
+                ((spec.duration_secs(from_level) as f64) / self.research_speed())
+                    .ceil()
+                    .max(1.0) as u64,
                 self.research_prereq_gaps(spec),
             )
         };
@@ -960,8 +1033,9 @@ impl GameState {
         }
         let hours = (now_unix - self.last_tick_unix) as f64 / 3600.0;
         let factor = self.energy_factor();
+        let boost = self.prod_boost_mult();
         for kind in ResourceKind::ALL {
-            let rate = self.base_production_per_hour(kind) * factor;
+            let rate = self.base_production_per_hour(kind) * factor * boost;
             let cap = self.storage_cap(kind);
             let current = self.resources.get(kind);
             self.resources
@@ -994,17 +1068,20 @@ impl GameState {
                 .metal_mine
                 .production_per_hour(colony.buildings.metal_mine)
                 * (1.0 + metal_t + bonus.metal)
-                * factor;
+                * factor
+                * boost;
             let crystal_rate = config
                 .crystal_mine
                 .production_per_hour(colony.buildings.crystal_mine)
                 * (1.0 + crystal_t + bonus.crystal)
-                * factor;
+                * factor
+                * boost;
             let deut_rate = config
                 .deuterium_synthesizer
                 .production_per_hour(colony.buildings.deuterium_synthesizer)
                 * (1.0 + deut_t + bonus.deuterium)
-                * factor;
+                * factor
+                * boost;
             let metal_cap = config
                 .metal_storage
                 .capacity(colony.buildings.metal_storage);
@@ -1059,7 +1136,79 @@ impl GameState {
     }
 
     pub fn production_per_hour(&self, kind: ResourceKind) -> f64 {
-        self.base_production_per_hour(kind) * self.energy_factor()
+        self.base_production_per_hour(kind) * self.energy_factor() * self.prod_boost_mult()
+    }
+
+    fn prod_boost_mult(&self) -> f64 {
+        match self.activity.prod_boost_until {
+            Some(until) if self.last_tick_unix < until => 1.0 + self.activity.prod_boost_factor,
+            _ => 1.0,
+        }
+    }
+
+    fn research_speed(&self) -> f64 {
+        match self.activity.research_boost_until {
+            Some(until) if self.last_tick_unix < until => {
+                (1.0 + self.activity.research_boost_factor).max(1.0)
+            }
+            _ => 1.0,
+        }
+    }
+
+    fn rescale_research(&mut self, at: u64, old_speed: f64, new_speed: f64) {
+        if (old_speed - new_speed).abs() < 1e-12 {
+            return;
+        }
+        let Some(job) = self.research.as_mut() else {
+            return;
+        };
+        let remaining = job.completes_at.saturating_sub(at) as f64;
+        let base = (remaining * old_speed).max(1.0);
+        let new_rem = (base / new_speed.max(1e-9)).ceil().max(1.0) as u64;
+        job.completes_at = at.saturating_add(new_rem);
+    }
+
+    fn grant_payout(&mut self, at: u64, hours: f64) {
+        if hours <= 0.0 {
+            return;
+        }
+        for kind in ResourceKind::ALL {
+            let rate = self.production_per_hour(kind);
+            let cap = self.storage_cap(kind);
+            let current = self.resources.get(kind);
+            self.resources
+                .set(kind, add_capped(current, rate, hours, cap));
+        }
+        self.push_event(
+            at,
+            format!("activity: merged PR paid {hours}h of production"),
+        );
+    }
+
+    fn set_prod_boost(&mut self, at: u64, factor: f64, secs: u64) {
+        if factor <= 0.0 || secs == 0 {
+            return;
+        }
+        self.activity.prod_boost_factor = factor;
+        self.activity.prod_boost_until = Some(at.saturating_add(secs));
+        self.push_event(
+            at,
+            format!("activity: production +{:.0}% for {secs}s", factor * 100.0),
+        );
+    }
+
+    fn set_research_boost(&mut self, at: u64, factor: f64, secs: u64) {
+        if factor <= 0.0 || secs == 0 {
+            return;
+        }
+        let old = self.research_speed();
+        self.activity.research_boost_factor = factor;
+        self.activity.research_boost_until = Some(at.saturating_add(secs));
+        self.rescale_research(at, old, 1.0 + factor);
+        self.push_event(
+            at,
+            format!("activity: research +{:.0}% for {secs}s", factor * 100.0),
+        );
     }
 
     pub fn storage_cap(&self, kind: ResourceKind) -> f64 {
@@ -1246,6 +1395,7 @@ mod tests {
                 ice: crate::PlanetTypeBonus::ZERO,
                 gas_giant: crate::PlanetTypeBonus::ZERO,
             },
+            activity: crate::ActivityEffectsConfig::default(),
         }
     }
 
@@ -2247,5 +2397,239 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
         assert_eq!(step.colonies, gap.colonies);
         assert_eq!(step.fleet, gap.fleet);
         assert_eq!(step.last_tick_unix, gap.last_tick_unix);
+    }
+
+    fn activity_config() -> BalanceConfig {
+        let mut cfg = test_config();
+        cfg.activity.enabled = true;
+        cfg.activity.pr_merged.cooldown_secs = 60;
+        cfg.activity.pr_merged.daily_cap = 2;
+        cfg.activity.pr_merged.payout_hours = 1.0;
+        cfg.activity.ci_green.cooldown_secs = 0;
+        cfg.activity.ci_green.daily_cap = 10;
+        cfg.activity.ci_green.boost_factor = 1.0;
+        cfg.activity.ci_green.boost_secs = 1800;
+        cfg.activity.ci_red.cooldown_secs = 0;
+        cfg.activity.ci_red.daily_cap = 10;
+        cfg.activity.agent_long.min_duration_secs = 100;
+        cfg.activity.agent_long.boost_factor = 1.0;
+        cfg.activity.agent_long.boost_secs = 3_600;
+        cfg.activity.agent_long.cooldown_secs = 0;
+        cfg.activity.agent_stuck.min_duration_secs = 50;
+        cfg.raid = crate::RaidConfig::inactive();
+        cfg
+    }
+
+    #[test]
+    fn merged_pr_pays_an_hour_of_production_at_the_event_timestamp() {
+        let cfg = activity_config();
+        let mut state = GameState::with_config(0, cfg.clone());
+        assert_eq!(
+            state.apply_activity(ActivityPulse::PrMerged { ts: 1800 }, 10_000),
+            ActivityApply::Applied
+        );
+        close(state.resources.metal, 50.0 + 100.0);
+        close(state.resources.crystal, 25.0 + 50.0);
+        assert_eq!(state.last_tick_unix, 1800);
+        assert!(state.events.iter().any(|e| e.text.contains("merged PR")));
+    }
+
+    #[test]
+    fn historical_events_use_their_own_timestamps_for_cooldowns() {
+        let cfg = activity_config();
+        let mut state = GameState::with_config(0, cfg);
+        assert_eq!(
+            state.apply_activity(ActivityPulse::PrMerged { ts: 100 }, 3600),
+            ActivityApply::Applied
+        );
+        assert_eq!(
+            state.apply_activity(ActivityPulse::PrMerged { ts: 160 }, 3600),
+            ActivityApply::Applied
+        );
+        assert_eq!(state.last_tick_unix, 160);
+    }
+
+    #[test]
+    fn events_before_last_tick_are_skipped() {
+        let cfg = activity_config();
+        let mut state = GameState::with_config(0, cfg);
+        state.catch_up(3600);
+        let metal = state.resources.metal;
+        assert_eq!(
+            state.apply_activity(ActivityPulse::PrMerged { ts: 100 }, 4000),
+            ActivityApply::Skipped
+        );
+        close(state.resources.metal, metal);
+        assert_eq!(state.last_tick_unix, 3600);
+    }
+
+    #[test]
+    fn activity_caps_and_cooldowns_drop_a_burst() {
+        let cfg = activity_config();
+        let mut state = GameState::with_config(0, cfg);
+        let mut applied = 0;
+        for i in 0..10 {
+            if state.apply_activity(ActivityPulse::PrMerged { ts: i }, 10_000)
+                == ActivityApply::Applied
+            {
+                applied += 1;
+            }
+        }
+        assert_eq!(applied, 1);
+        assert_eq!(
+            state.apply_activity(ActivityPulse::PrMerged { ts: 60 }, 10_000),
+            ActivityApply::Applied
+        );
+        assert_eq!(
+            state.apply_activity(ActivityPulse::PrMerged { ts: 120 }, 10_000),
+            ActivityApply::Skipped
+        );
+    }
+
+    #[test]
+    fn disabled_mapping_is_a_no_op() {
+        let mut cfg = activity_config();
+        cfg.activity.pr_merged.enabled = false;
+        let mut state = GameState::with_config(0, cfg);
+        assert_eq!(
+            state.apply_activity(ActivityPulse::PrMerged { ts: 10 }, 10_000),
+            ActivityApply::Skipped
+        );
+        close(state.resources.metal, 0.0);
+    }
+
+    #[test]
+    fn production_boost_splits_catch_up_at_expiry() {
+        let cfg = activity_config();
+        let mut gap = GameState::with_config(0, cfg.clone());
+        gap.apply_activity(
+            ActivityPulse::WorkflowFinished {
+                ts: 0,
+                success: true,
+            },
+            10_000,
+        );
+        gap.catch_up(3600);
+        let mut step = GameState::with_config(0, cfg);
+        step.apply_activity(
+            ActivityPulse::WorkflowFinished {
+                ts: 0,
+                success: true,
+            },
+            10_000,
+        );
+        for t in 1..=3600 {
+            step.catch_up(t);
+        }
+        close(gap.resources.metal, step.resources.metal);
+        close(gap.resources.crystal, step.resources.crystal);
+        // 1800s at 2x then 1800s at 1x: metal 100/h -> 50+50 = 100?
+        // 0.5h * 200 + 0.5h * 100 = 100+50 = 150
+        close(gap.resources.metal, 150.0);
+    }
+
+    #[test]
+    fn long_agent_run_shortens_research() {
+        let mut cfg = research_config();
+        cfg.activity = activity_config().activity;
+        let mut state = GameState::with_config(0, cfg);
+        state.start_research("energy", 0).unwrap();
+        let before = state.research.as_ref().unwrap().completes_at;
+        assert_eq!(
+            state.apply_activity(
+                ActivityPulse::AgentFinished {
+                    ts: 0,
+                    duration_secs: 100,
+                },
+                10_000,
+            ),
+            ActivityApply::Applied
+        );
+        let after = state.research.as_ref().unwrap().completes_at;
+        assert!(after < before);
+        assert_eq!(
+            state.apply_activity(
+                ActivityPulse::AgentFinished {
+                    ts: 1,
+                    duration_secs: 10,
+                },
+                10_000,
+            ),
+            ActivityApply::Skipped
+        );
+    }
+
+    #[test]
+    fn red_ci_does_not_consume_limits_when_raids_are_off() {
+        let cfg = activity_config();
+        let mut state = GameState::with_config(0, cfg);
+        assert_eq!(
+            state.apply_activity(
+                ActivityPulse::WorkflowFinished {
+                    ts: 10,
+                    success: false,
+                },
+                10_000,
+            ),
+            ActivityApply::Skipped
+        );
+        assert!(state.activity.last_applied[ActivityChannel::CiRed.index()].is_none());
+    }
+
+    #[test]
+    fn red_ci_uses_the_raid_api() {
+        let mut cfg = activity_config();
+        cfg.raid = crate::RaidConfig::default_active();
+        cfg.raid.first_delay_secs = 10_000;
+        let mut state = GameState::with_config(0, cfg);
+        let events_before = state.events.len();
+        assert_eq!(
+            state.apply_activity(
+                ActivityPulse::WorkflowFinished {
+                    ts: 10,
+                    success: false,
+                },
+                10_000,
+            ),
+            ActivityApply::Applied
+        );
+        assert!(state.events.len() > events_before);
+        assert!(state.events.iter().any(|e| e.text.starts_with("raid:")));
+    }
+
+    #[test]
+    fn older_day_events_do_not_reset_today_caps() {
+        let mut cfg = activity_config();
+        cfg.activity.pr_merged.cooldown_secs = 0;
+        let mut state = GameState::with_config(0, cfg);
+        assert_eq!(
+            state.apply_activity(ActivityPulse::PrMerged { ts: 100 }, 86_400 * 2),
+            ActivityApply::Applied
+        );
+        let today = 86_400;
+        assert_eq!(
+            state.apply_activity(ActivityPulse::PrMerged { ts: today }, today + 10),
+            ActivityApply::Applied
+        );
+        assert_eq!(
+            state.apply_activity(ActivityPulse::PrMerged { ts: today + 60 }, today + 70),
+            ActivityApply::Applied
+        );
+        assert_eq!(
+            state.apply_activity(ActivityPulse::PrMerged { ts: today + 120 }, today + 130),
+            ActivityApply::Skipped
+        );
+    }
+
+    #[test]
+    fn future_activity_timestamps_are_skipped() {
+        let cfg = activity_config();
+        let mut state = GameState::with_config(0, cfg);
+        assert_eq!(
+            state.apply_activity(ActivityPulse::PrMerged { ts: 50 }, 10),
+            ActivityApply::Skipped
+        );
+        assert_eq!(state.last_tick_unix, 0);
+        close(state.resources.metal, 0.0);
     }
 }

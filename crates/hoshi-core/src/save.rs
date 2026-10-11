@@ -1,5 +1,6 @@
 //! SQLite save file. Schema version is `PRAGMA user_version`.
 
+use crate::activity::{ActivityChannel, ActivityTracker};
 use crate::balance::BalanceConfig;
 use crate::buildings::{BuildJob, BuildingKind, Buildings};
 use crate::fleets::{Coord, Mission, MissionPhase};
@@ -13,7 +14,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 5;
+pub const SCHEMA_VERSION: u32 = 6;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -119,7 +120,9 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM missions;
          DELETE FROM raids;
          DELETE FROM event_log;
-         DELETE FROM colonies;",
+         DELETE FROM colonies;
+         DELETE FROM activity_boosts;
+         DELETE FROM activity_limits;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -249,6 +252,29 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 params![mission.id as i64, kind.as_key(), count],
             )?;
         }
+    }
+    tx.execute(
+        "INSERT INTO activity_boosts (id, prod_until, prod_factor, research_until, research_factor)
+         VALUES (1, ?1, ?2, ?3, ?4)",
+        params![
+            state.activity.prod_boost_until.map(|t| t as i64),
+            state.activity.prod_boost_factor,
+            state.activity.research_boost_until.map(|t| t as i64),
+            state.activity.research_boost_factor,
+        ],
+    )?;
+    for channel in ActivityChannel::ALL {
+        let i = channel.index();
+        tx.execute(
+            "INSERT INTO activity_limits (channel, last_applied, day_start, day_count)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                channel.as_key(),
+                state.activity.last_applied[i].map(|t| t as i64),
+                state.activity.day_start as i64,
+                state.activity.day_count[i] as i64,
+            ],
+        )?;
     }
     tx.execute(
         "INSERT INTO raids (id, next_raid_at) VALUES (1, ?1)",
@@ -678,6 +704,49 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         });
     }
 
+    state.activity = ActivityTracker::default();
+    if let Some((prod_until, prod_factor, research_until, research_factor)) = conn
+        .query_row(
+            "SELECT prod_until, prod_factor, research_until, research_factor FROM activity_boosts WHERE id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, Option<i64>>(0)?,
+                    row.get::<_, f64>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, f64>(3)?,
+                ))
+            },
+        )
+        .optional()?
+    {
+        state.activity.prod_boost_until = prod_until.map(unix_ts).transpose()?;
+        state.activity.prod_boost_factor = prod_factor;
+        state.activity.research_boost_until = research_until.map(unix_ts).transpose()?;
+        state.activity.research_boost_factor = research_factor;
+    }
+    let mut stmt =
+        conn.prepare("SELECT channel, last_applied, day_start, day_count FROM activity_limits")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<i64>>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?,
+        ))
+    })?;
+    for row in rows {
+        let (key, last, day, count) = row?;
+        let Some(channel) = ActivityChannel::from_key(&key) else {
+            continue;
+        };
+        let i = channel.index();
+        state.activity.last_applied[i] = last.map(unix_ts).transpose()?;
+        state.activity.day_start = unix_ts(day)?;
+        state.activity.day_count[i] =
+            u32::try_from(count).map_err(|_| SaveError::Corrupt("activity day count"))?;
+    }
+
     Ok(state)
 }
 
@@ -704,7 +773,9 @@ pub fn load_or_new(
             + count_rows(conn, "mission_ships")?
             + count_rows(conn, "raids")?
             + count_rows(conn, "event_log")?
-            + count_rows(conn, "colonies")?;
+            + count_rows(conn, "colonies")?
+            + count_rows(conn, "activity_boosts")?
+            + count_rows(conn, "activity_limits")?;
         if leftover != 0 {
             return Err(SaveError::Corrupt("missing meta row"));
         }
@@ -738,6 +809,8 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "raids" => "SELECT COUNT(*) FROM raids",
         "event_log" => "SELECT COUNT(*) FROM event_log",
         "colonies" => "SELECT COUNT(*) FROM colonies",
+        "activity_boosts" => "SELECT COUNT(*) FROM activity_boosts",
+        "activity_limits" => "SELECT COUNT(*) FROM activity_limits",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -765,6 +838,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 5 {
         migrate_v5(conn)?;
+    }
+    if found < 6 {
+        migrate_v6(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -913,6 +989,27 @@ fn migrate_v5(conn: &Connection) -> Result<(), SaveError> {
     Ok(())
 }
 
+fn migrate_v6(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS activity_boosts (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            prod_until INTEGER,
+            prod_factor REAL NOT NULL DEFAULT 0,
+            research_until INTEGER,
+            research_factor REAL NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS activity_limits (
+            channel TEXT PRIMARY KEY,
+            last_applied INTEGER,
+            day_start INTEGER NOT NULL DEFAULT 0,
+            day_count INTEGER NOT NULL DEFAULT 0
+        );
+        ",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1010,6 +1107,23 @@ mod tests {
     }
 
     #[test]
+    fn activity_tracker_round_trips() {
+        let mut original = GameState::new(10);
+        original.activity.prod_boost_until = Some(100);
+        original.activity.prod_boost_factor = 0.25;
+        original.activity.research_boost_until = Some(80);
+        original.activity.research_boost_factor = 0.5;
+        original.activity.last_applied[0] = Some(10);
+        original.activity.day_start = 0;
+        original.activity.day_count[0] = 2;
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        save_state(&mut conn, &original).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.activity, original.activity);
+        assert_eq!(loaded, original);
+    }
+
+    #[test]
     fn migrates_schema_v1_fixture_to_current() {
         let path = unique_path("v1");
         let _ = std::fs::remove_file(&path);
@@ -1049,6 +1163,7 @@ mod tests {
         assert_eq!(loaded.resources.metal, 10.0);
         assert_eq!(loaded.buildings.metal_mine, 4);
         assert_eq!(loaded.tech_level("weapons"), 3);
+        assert_eq!(loaded.activity, crate::ActivityTracker::default());
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(format!("{}-wal", path.display()));
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));
