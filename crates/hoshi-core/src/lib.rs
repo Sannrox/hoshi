@@ -52,8 +52,9 @@ pub use research::{
     TechSpec, TechTree, TechTreeError,
 };
 pub use save::{
-    SCHEMA_VERSION, SaveError, SaveLock, default_save_path, load_or_new, load_or_new_with_seed,
-    load_state, lock_save, open_save, resolve_save_path, save_lock_path, save_state,
+    SCHEMA_VERSION, SaveError, SaveGlance, SaveLock, default_save_dir, default_save_path,
+    inspect_save, load_or_new, load_or_new_with_seed, load_state, lock_save, open_save,
+    resolve_save_path, save_is_locked, save_lock_path, save_state,
 };
 pub use ships::{
     Fleet, SHIP_KINDS, ShipCatalog, ShipCatalogError, ShipError, ShipJob, ShipKind, ShipSpec,

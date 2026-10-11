@@ -45,7 +45,7 @@ configured expedition slot.
 
 `prestige` prints score, currency and owned bonuses. `prestige buy` spends unspent currency. `prestige reset` is refused until a wonder is complete or score reaches the configured minimum; it keeps bonuses and run history.
 
-`--save` / `HOSHI_SAVE` and `--balance` / `HOSHI_BALANCE` match the TUI.
+`--save` / `HOSHI_SAVE` and `--balance` / `HOSHI_BALANCE` match the TUI. `hoshi` with no subcommand opens the title screen. `--save PATH` still opens that file directly. `hoshi --continue` resumes the last slot without the menu; locked slots exit 4, corrupt or newer-schema or harness slots exit 5.
 
 ## Bot loop
 

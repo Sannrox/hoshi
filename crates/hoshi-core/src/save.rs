@@ -11,7 +11,7 @@ use crate::research::ResearchJob;
 use crate::ships::{Fleet, ShipJob, ShipKind};
 use crate::state::{GameEvent, GameState, Resources};
 use crate::wonders::WonderJob;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs::{File, OpenOptions};
@@ -72,9 +72,13 @@ pub fn resolve_save_path(flag: Option<&Path>, env_value: Option<&OsStr>) -> Path
 }
 
 pub fn default_save_path() -> PathBuf {
+    default_save_dir().join("save.sqlite")
+}
+
+/// Directory that holds save slots (`*.sqlite`).
+pub fn default_save_dir() -> PathBuf {
     let mut dir = user_data_dir();
     dir.push("hoshi");
-    dir.push("save.sqlite");
     dir
 }
 
@@ -1079,6 +1083,121 @@ pub fn save_lock_path(save: &Path) -> PathBuf {
     PathBuf::from(path)
 }
 
+/// True when another process already holds the exclusive save lock.
+///
+/// Opens the lock file only to probe. The caller does not keep the lock.
+pub fn save_is_locked(path: &Path) -> bool {
+    if path == Path::new(":memory:") {
+        return false;
+    }
+    let lock_path = save_lock_path(&save_identity(path));
+    let mut opts = OpenOptions::new();
+    opts.read(true).write(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // Same exclusive share as lock_save: a held lock fails the open.
+        opts.share_mode(0);
+    }
+    match opts.open(&lock_path) {
+        Ok(file) => {
+            #[cfg(unix)]
+            {
+                let fd = std::os::unix::io::AsRawFd::as_raw_fd(&file);
+                let rc = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
+                if rc == 0 {
+                    unsafe {
+                        libc::flock(fd, libc::LOCK_UN);
+                    }
+                    false
+                } else {
+                    true
+                }
+            }
+            #[cfg(windows)]
+            {
+                let _ = file;
+                false
+            }
+        }
+        Err(err) => is_sharing_violation(&err),
+    }
+}
+
+/// Read-only glance at a save. Does not migrate, create, or take the write lock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SaveGlance {
+    pub schema: u32,
+    pub last_tick_unix: u64,
+    pub deterministic: bool,
+    pub planets: u32,
+    pub fleet_strength: u32,
+}
+
+pub fn inspect_save(path: &Path) -> Result<SaveGlance, SaveError> {
+    if save_is_locked(path) {
+        return Err(SaveError::Locked);
+    }
+    if !path.exists() {
+        return Err(SaveError::Corrupt("missing save"));
+    }
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let schema: u32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if schema > SCHEMA_VERSION {
+        return Err(SaveError::SchemaTooNew {
+            found: schema,
+            current: SCHEMA_VERSION,
+        });
+    }
+    let last_tick: i64 = conn
+        .query_row("SELECT last_tick_unix FROM meta WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .optional()?
+        .ok_or(SaveError::Corrupt("missing meta row"))?;
+    let deterministic = conn
+        .query_row("SELECT deterministic FROM meta WHERE id = 1", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .optional()
+        .ok()
+        .flatten()
+        .unwrap_or(0)
+        != 0;
+    let colonies = if table_exists(&conn, "colonies") {
+        u32::try_from(count_rows(&conn, "colonies")?).unwrap_or(0)
+    } else {
+        0
+    };
+    let fleet = if table_exists(&conn, "ships") {
+        conn.query_row("SELECT COALESCE(SUM(count), 0) FROM ships", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap_or(0)
+    } else {
+        0
+    };
+    Ok(SaveGlance {
+        schema,
+        last_tick_unix: unix_ts(last_tick)?,
+        deterministic,
+        planets: 1 + colonies,
+        fleet_strength: u32::try_from(fleet).unwrap_or(0),
+    })
+}
+
+fn table_exists(conn: &Connection, name: &str) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [name],
+        |_| Ok(()),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .is_some()
+}
+
 /// Non-blocking exclusive lock. [`SaveError::Locked`] when another process holds it.
 pub fn lock_save(path: &Path) -> Result<SaveLock, SaveError> {
     if path == Path::new(":memory:") {
@@ -1162,14 +1281,24 @@ fn open_lock_file(path: &Path) -> Result<File, SaveError> {
 }
 
 fn lock_open_error(err: std::io::Error) -> SaveError {
+    if is_sharing_violation(&err) {
+        SaveError::Locked
+    } else {
+        SaveError::Io(err)
+    }
+}
+
+fn is_sharing_violation(err: &std::io::Error) -> bool {
     #[cfg(windows)]
     {
         // ERROR_SHARING_VIOLATION
-        if err.raw_os_error() == Some(32) {
-            return SaveError::Locked;
-        }
+        err.raw_os_error() == Some(32)
     }
-    SaveError::Io(err)
+    #[cfg(not(windows))]
+    {
+        let _ = err;
+        false
+    }
 }
 
 fn unix_ts(value: i64) -> Result<u64, SaveError> {
@@ -2412,5 +2541,71 @@ mod tests {
         let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
         assert_eq!(loaded.prestige, state.prestige);
         assert_eq!(loaded, state);
+    }
+
+    #[test]
+    fn save_is_locked_is_true_while_held() {
+        let path = unique_path("probe-lock");
+        assert!(!save_is_locked(&path));
+        let holder = lock_save(&path).unwrap();
+        assert!(save_is_locked(&path));
+        drop(holder);
+        assert!(!save_is_locked(&path));
+        let _ = std::fs::remove_file(save_lock_path(&path));
+    }
+
+    #[test]
+    fn inspect_save_reads_without_taking_the_lock() {
+        let path = unique_path("inspect");
+        let mut conn = open_save(&path).unwrap();
+        let mut state = GameState::new(50);
+        state.fleet.add(crate::ShipKind::LightFighter, 4);
+        save_state(&mut conn, &state).unwrap();
+        drop(conn);
+        let holder = lock_save(&path).unwrap();
+        let err = inspect_save(&path).unwrap_err();
+        assert!(matches!(err, SaveError::Locked), "{err:?}");
+        drop(holder);
+        let glance = inspect_save(&path).unwrap();
+        assert_eq!(glance.last_tick_unix, 50);
+        assert!(!glance.deterministic);
+        assert_eq!(glance.planets, 1);
+        assert_eq!(glance.fleet_strength, 4);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(save_lock_path(&path));
+    }
+
+    #[test]
+    fn inspect_save_flags_newer_schema_corrupt_and_harness_saves() {
+        let newer = unique_path("inspect-new");
+        let conn = open_save(&newer).unwrap();
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1)
+            .unwrap();
+        drop(conn);
+        let err = inspect_save(&newer).unwrap_err();
+        assert!(
+            matches!(err, SaveError::SchemaTooNew { found, .. } if found == SCHEMA_VERSION + 1),
+            "{err:?}"
+        );
+
+        let corrupt = unique_path("inspect-corrupt");
+        std::fs::write(&corrupt, b"not a database").unwrap();
+        let err = inspect_save(&corrupt).unwrap_err();
+        assert!(
+            matches!(err, SaveError::Sqlite(_) | SaveError::Corrupt(_)),
+            "{err:?}"
+        );
+
+        let harness = unique_path("inspect-harness");
+        let mut conn = open_save(&harness).unwrap();
+        let state = GameState::with_seed(9, BalanceConfig::default(), 3);
+        save_state(&mut conn, &state).unwrap();
+        drop(conn);
+        let glance = inspect_save(&harness).unwrap();
+        assert!(glance.deterministic);
+
+        let _ = std::fs::remove_file(&newer);
+        let _ = std::fs::remove_file(&corrupt);
+        let _ = std::fs::remove_file(&harness);
     }
 }

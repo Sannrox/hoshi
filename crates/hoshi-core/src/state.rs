@@ -214,6 +214,13 @@ impl GameState {
         state
     }
 
+    /// Live TUI game on a chosen galaxy seed. Wall-clock catch-up stays on.
+    pub fn new_live_galaxy(now_unix: u64, config: BalanceConfig, seed: u64) -> Self {
+        let mut state = Self::with_seed(now_unix, config, seed);
+        state.deterministic = false;
+        state
+    }
+
     /// Advance production, the build queue and research to `now_unix`.
     /// Completions that fall in the gap are applied in timestamp order and
     /// production is recomputed from each completion instant. A backward clock

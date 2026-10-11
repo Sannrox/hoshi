@@ -1,6 +1,7 @@
 //! Overview, planet, shipyard and wonder screens. Core owns the rules; this module
 //! only renders and turns keys into core commands.
 
+use crate::title::AwaySummary;
 use hoshi_core::{BuildingKind, Coord, GameState, ResourceKind, Resources, ShipKind, WonderError};
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
@@ -31,6 +32,8 @@ pub struct App {
     planet_index: usize,
     status: String,
     confirming_prestige: bool,
+    away: Option<AwaySummary>,
+    away_hidden: bool,
 }
 
 impl App {
@@ -42,14 +45,34 @@ impl App {
             planet_index: 0,
             status: String::new(),
             confirming_prestige: false,
+            away: None,
+            away_hidden: false,
         }
+    }
+
+    pub fn set_away(&mut self, summary: AwaySummary) {
+        self.away = Some(summary);
+        self.away_hidden = false;
     }
 
     pub fn handle_key(&mut self, code: KeyCode, now_unix: u64) -> Action {
         self.state.catch_up(now_unix);
         self.clamp_planet();
+        if self.away.is_some() && !self.away_hidden {
+            match code {
+                KeyCode::Enter | KeyCode::Char('x') | KeyCode::Esc => {
+                    self.away_hidden = true;
+                }
+                KeyCode::Char('q') => return Action::Quit,
+                _ => {}
+            }
+            return Action::None;
+        }
         match code {
             KeyCode::Char('q') => return Action::Quit,
+            KeyCode::Char('w') if self.screen == Screen::Overview && self.away.is_some() => {
+                self.away_hidden = false;
+            }
             KeyCode::Tab => {
                 self.screen = match self.screen {
                     Screen::Overview => Screen::Planet,
@@ -133,6 +156,34 @@ impl App {
         let list_h = chunks[1].height as usize;
         frame.render_widget(Paragraph::new(self.list_lines(list_h)), chunks[1]);
         frame.render_widget(Paragraph::new(footer), chunks[2]);
+        if let Some(away) = &self.away
+            && !self.away_hidden
+        {
+            self.draw_away(frame, away);
+        }
+    }
+
+    fn draw_away(&self, frame: &mut Frame<'_>, away: &AwaySummary) {
+        let area = frame.area();
+        let block = Block::bordered().title(" while you were away ");
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let mut lines = vec![
+            Line::from(format!("elapsed {}s", away.elapsed_secs)),
+            Line::from(format!(
+                "resources +{:.0} metal +{:.0} crystal +{:.0} deuterium",
+                away.metal, away.crystal, away.deuterium
+            )),
+            Line::from(format!(
+                "builds {}  research {}  fleets returned {}  expeditions {}  raids {}",
+                away.builds, away.research, away.fleets_returned, away.expeditions, away.raids
+            )),
+        ];
+        for event in away.events.iter().take(8) {
+            lines.push(Line::from(event.clone()));
+        }
+        lines.push(Line::from("Enter dismisses. w on overview reopens."));
+        frame.render_widget(Paragraph::new(lines), inner);
     }
 
     fn activate(&mut self, now_unix: u64) {
@@ -854,6 +905,32 @@ mod tests {
             }
         }
         false
+    }
+
+    #[test]
+    fn away_overlay_dismisses_and_reopens_from_overview() {
+        let mut app = App::new(GameState::new(1_000));
+        app.set_away(crate::title::AwaySummary {
+            elapsed_secs: 120,
+            metal: 10.0,
+            crystal: 0.0,
+            deuterium: 0.0,
+            builds: 1,
+            research: 0,
+            fleets_returned: 0,
+            expeditions: 0,
+            raids: 0,
+            events: vec!["raid: lost".into()],
+        });
+        let text = render_text(&app, 80, 24);
+        assert!(text.contains("while you were away"), "{text}");
+        assert!(text.contains("elapsed 120s"), "{text}");
+        app.handle_key(KeyCode::Enter, 1_000);
+        let text = render_text(&app, 80, 24);
+        assert!(!text.contains("while you were away"), "{text}");
+        app.handle_key(KeyCode::Char('w'), 1_000);
+        let text = render_text(&app, 80, 24);
+        assert!(text.contains("while you were away"), "{text}");
     }
 
     #[test]
