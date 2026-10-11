@@ -2,16 +2,22 @@
 
 mod app;
 mod cli;
+mod config;
+mod title;
 
 use app::{Action, App};
 use hoshi_core::{
-    BalanceConfig, Clock, SystemClock, load_or_new, lock_save, open_save, resolve_save_path,
-    save_state, simulate_greedy,
+    BalanceConfig, Clock, GameState, SaveError, SystemClock, default_save_dir, inspect_save,
+    load_or_new, lock_save, open_save, resolve_save_path, save_state, simulate_greedy,
 };
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use title::{
+    NewGameSpec, Title, TitleAction, apply_difficulty, continue_slot, list_slots, slot_message,
+    snapshot_away, summarize_away,
+};
 
 const SAVE_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -47,9 +53,57 @@ fn main() {
         }
         std::process::exit(out.exit);
     }
-    if let Err(e) = run() {
-        eprintln!("hoshi: {e}");
-        std::process::exit(1);
+    match run() {
+        Ok(()) => {}
+        Err(e) => {
+            eprintln!("hoshi: {e}");
+            std::process::exit(e.exit);
+        }
+    }
+}
+
+#[derive(Debug)]
+struct LaunchError {
+    message: String,
+    exit: i32,
+}
+
+impl std::fmt::Display for LaunchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for LaunchError {}
+
+impl From<Box<dyn std::error::Error>> for LaunchError {
+    fn from(value: Box<dyn std::error::Error>) -> Self {
+        LaunchError {
+            message: value.to_string(),
+            exit: 1,
+        }
+    }
+}
+
+impl From<SaveError> for LaunchError {
+    fn from(value: SaveError) -> Self {
+        let exit = match value {
+            SaveError::Locked => cli::EXIT_LOCKED,
+            _ => cli::EXIT_INTERNAL,
+        };
+        LaunchError {
+            message: value.to_string(),
+            exit,
+        }
+    }
+}
+
+impl From<std::io::Error> for LaunchError {
+    fn from(value: std::io::Error) -> Self {
+        LaunchError {
+            message: value.to_string(),
+            exit: cli::EXIT_INTERNAL,
+        }
     }
 }
 
@@ -172,30 +226,214 @@ fn refuse_deterministic_tui(
     }
 }
 
-fn run() -> Result<(), Box<dyn std::error::Error>> {
+fn run() -> Result<(), LaunchError> {
     let clock = SystemClock;
-    let flag = parse_save_flag(std::env::args());
+    let args: Vec<String> = std::env::args().collect();
+    let flag = parse_save_flag(args.iter());
     let env = std::env::var_os("HOSHI_SAVE");
-    let path = resolve_save_path(flag.as_deref(), env.as_deref());
-    let config =
-        load_balance(balance_override(parse_path_flag(std::env::args(), "--balance")).as_deref())?;
-    let _lock = lock_save(&path)?;
-    let mut conn = open_save(&path)?;
-    let state = load_or_new(&mut conn, clock.now_unix(), config)?;
-    refuse_deterministic_tui(&state)?;
-    let mut app = App::new(state);
-    #[cfg(feature = "bridge")]
-    let mut bridge = {
-        let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-        hoshi_bridge::Bridge::open(hoshi_bridge::config_for_state_dir(dir))?
+    let continue_flag = args.iter().any(|a| a == "--continue");
+    let balance =
+        load_balance(balance_override(parse_path_flag(args.iter(), "--balance")).as_deref())
+            .map_err(|e| LaunchError {
+                message: e.to_string(),
+                exit: cli::EXIT_INTERNAL,
+            })?;
+    if flag.is_some() || env.is_some() {
+        let path = resolve_save_path(flag.as_deref(), env.as_deref());
+        let cfg = config::UserConfig::load(&config_dir_for_save(&path));
+        return play_path(
+            &path,
+            balance,
+            &clock,
+            cfg.away_threshold_secs,
+            None,
+            cfg.bridge,
+        );
+    }
+    let dir = default_save_dir();
+    if continue_flag {
+        let path = resolve_continue(&dir, clock.now_unix())?;
+        let cfg = config::UserConfig::load(&dir);
+        return play_path(
+            &path,
+            balance,
+            &clock,
+            cfg.away_threshold_secs,
+            None,
+            cfg.bridge,
+        );
+    }
+    title_then_play(dir, balance, &clock)
+}
+
+fn config_dir_for_save(path: &Path) -> PathBuf {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => PathBuf::from("."),
+    }
+}
+
+fn resolve_continue(dir: &Path, now_unix: u64) -> Result<PathBuf, LaunchError> {
+    let cfg = config::UserConfig::load(dir);
+    let slots = list_slots(dir, now_unix);
+    let Some(slot) = continue_slot(&slots, cfg.last_slot.as_deref()) else {
+        return Err(LaunchError {
+            message: "no save to continue".into(),
+            exit: cli::EXIT_INTERNAL,
+        });
     };
+    match &slot.status {
+        title::SlotStatus::Ready(_) => Ok(slot.path.clone()),
+        other => Err(LaunchError {
+            message: slot_message(other),
+            exit: match other {
+                title::SlotStatus::Locked => cli::EXIT_LOCKED,
+                _ => cli::EXIT_INTERNAL,
+            },
+        }),
+    }
+}
+
+fn title_then_play(
+    dir: PathBuf,
+    balance: BalanceConfig,
+    clock: &SystemClock,
+) -> Result<(), LaunchError> {
+    let mut title = Title::new(dir, clock.now_unix());
+    let mut terminal = ratatui::init();
+    let result = loop {
+        title.set_now(clock.now_unix());
+        title.tick();
+        if let Err(e) = terminal.draw(|f| title.draw(f)) {
+            break Err(LaunchError {
+                message: e.to_string(),
+                exit: 1,
+            });
+        }
+        match event::poll(Duration::from_secs(1)) {
+            Ok(true) => match event::read() {
+                Ok(Event::Key(k)) if k.kind == KeyEventKind::Press => {
+                    match title.handle_key(k.code) {
+                        TitleAction::Quit => break Ok(None),
+                        TitleAction::Play(_) => {
+                            let path = title
+                                .take_play_path()
+                                .unwrap_or_else(|| title.new_game_spec().path);
+                            let new_spec = if path.exists() {
+                                None
+                            } else {
+                                Some(title.new_game_spec())
+                            };
+                            break Ok(Some((
+                                path,
+                                new_spec,
+                                title.config.away_threshold_secs,
+                                title.config.bridge,
+                            )));
+                        }
+                        TitleAction::None => {}
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    break Err(LaunchError {
+                        message: e.to_string(),
+                        exit: 1,
+                    });
+                }
+            },
+            Ok(false) => {}
+            Err(e) => {
+                break Err(LaunchError {
+                    message: e.to_string(),
+                    exit: 1,
+                });
+            }
+        }
+    };
+    ratatui::restore();
+    match result? {
+        None => Ok(()),
+        Some((path, new_spec, threshold, bridge)) => {
+            play_path(&path, balance, clock, threshold, new_spec, bridge)
+        }
+    }
+}
+
+fn should_open_bridge(user_enabled: bool) -> bool {
+    cfg!(feature = "bridge") && user_enabled
+}
+
+fn play_path(
+    path: &Path,
+    mut config: BalanceConfig,
+    clock: &SystemClock,
+    away_threshold: u64,
+    new_spec: Option<NewGameSpec>,
+    bridge_enabled: bool,
+) -> Result<(), LaunchError> {
+    let now = clock.now_unix();
+    if new_spec.is_none() && path.exists() {
+        match inspect_save(path) {
+            Err(SaveError::Locked) => return Err(SaveError::Locked.into()),
+            Err(e) => return Err(e.into()),
+            Ok(g) if g.deterministic => {
+                return Err(LaunchError {
+                    message: "this save is deterministic; use the JSON CLI instead of the TUI"
+                        .into(),
+                    exit: cli::EXIT_INTERNAL,
+                });
+            }
+            Ok(_) => {}
+        }
+    }
+    let _lock = lock_save(path)?;
+    let mut conn = open_save(path)?;
+    let mut state = if let Some(spec) = new_spec {
+        apply_difficulty(&mut config, &spec.difficulty);
+        let seed = spec.seed.unwrap_or(now.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        let state = GameState::new_live_galaxy(now, config, seed);
+        save_state(&mut conn, &state)?;
+        state
+    } else {
+        load_or_new(&mut conn, now, config)?
+    };
+    refuse_deterministic_tui(&state).map_err(|e| LaunchError {
+        message: e.to_string(),
+        exit: cli::EXIT_INTERNAL,
+    })?;
+    let before = snapshot_away(&state);
+    state.catch_up(now);
+    let mut app = App::new(state);
+    if now.saturating_sub(before.tick) >= away_threshold {
+        app.set_away(summarize_away(&before, &app.state));
+    }
+    let open_bridge = should_open_bridge(bridge_enabled);
+    #[cfg(feature = "bridge")]
+    let mut bridge = if open_bridge {
+        let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        Some(
+            hoshi_bridge::Bridge::open(hoshi_bridge::config_for_state_dir(dir)).map_err(|e| {
+                LaunchError {
+                    message: e.to_string(),
+                    exit: 1,
+                }
+            })?,
+        )
+    } else {
+        None
+    };
+    #[cfg(not(feature = "bridge"))]
+    let _ = open_bridge;
 
     let mut terminal = ratatui::init();
     let mut last_save = Instant::now();
     let result = loop {
         #[cfg(feature = "bridge")]
         {
-            if let Ok(batch) = bridge.poll() {
+            if let Some(bridge) = bridge.as_mut()
+                && let Ok(batch) = bridge.poll()
+            {
                 apply_bridge_events(&mut app.state, batch, clock.now_unix());
             }
         }
@@ -359,6 +597,22 @@ mod tests {
         assert_eq!(
             balance_override(Some(PathBuf::from("/tmp/flag.toml"))),
             Some(PathBuf::from("/tmp/flag.toml"))
+        );
+    }
+
+    #[test]
+    fn launch_keeps_bridge_off_until_the_user_enables_it() {
+        assert!(!should_open_bridge(false));
+        assert_eq!(should_open_bridge(true), cfg!(feature = "bridge"));
+    }
+
+    #[test]
+    fn save_flag_reads_config_beside_the_file() {
+        let path = PathBuf::from("/tmp/custom-slot/game.sqlite");
+        assert_eq!(config_dir_for_save(&path), Path::new("/tmp/custom-slot"));
+        assert_eq!(
+            config_dir_for_save(Path::new("game.sqlite")),
+            Path::new(".")
         );
     }
 
