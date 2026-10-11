@@ -33,7 +33,7 @@ the game state schema and save format, the tick/offline-progression model, the b
 
 ## Compatibility and failure obligations
 
-Save migration and bridge event version pins, partial runs (crash after output written but before it is reported, an adapter losing its claim mid-run), retries owned by the source, cleanup of scratch and processes, and the save database.
+Save format migrations and bridge event versions; a crash mid-tick or mid-write must leave the save database consistent (transactions, no half-applied ticks); offline catch-up after long gaps; bridge events that arrive twice or out of order.
 
 ## Evidence map
 
@@ -44,10 +44,10 @@ Unit tests for pure logic; clock-injected tests for timers and offline catch-up;
 | Surface | Required evidence |
 | --- | --- |
 | game rules, timers, offline progression | deterministic tests with an injected clock; catch-up after long offline gaps matches step-by-step ticking |
-| staging, hashing, cleanup | deterministic tests: identical inputs give identical hashes; scratch removed on success, failure, and timeout |
+| TUI rendering and input | ratatui buffer snapshot tests for affected views; key bindings covered |
 | save format, bridge events | SQLite migration tests from the previous schema; bridge events parsed from fixtures, malformed input rejected |
 | dependency pins (ratatui, rusqlite) | `Cargo.lock` diff reviewed; the pinned tag exists upstream; upstream release notes read |
-| runtime image / Python packages | image builds; package set matches the documented policy |
+| balance config | defaults load; property tests that production and costs stay within the documented curves |
 
 ## Release audit
 
@@ -55,5 +55,5 @@ Unit tests for pure logic; clock-injected tests for timers and offline catch-up;
 - pinned ratatui and rusqlite versions, and their release notes;
 - save format migrations, bridge event format and balance changes;
 - configuration additions, removals, and defaults;
-- runtime image contents and the Python package set;
+- balance changes and their effect on existing saves;
 - packaging, rollback, and upgrade actions.
