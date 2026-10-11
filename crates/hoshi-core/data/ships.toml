@@ -1,29 +1,5 @@
 # Ship types. Loaded and validated by hoshi-core on BalanceConfig::default.
-# Later issues add fields and rows; they do not replace this format.
-
-[[ship]]
-id = "light_fighter"
-name = "Light Fighter"
-metal = 3000.0
-crystal = 1000.0
-deuterium = 0.0
-base_seconds = 30.0
-attack = 50.0
-shield = 10.0
-hull = 400.0
-cargo = 50.0
-
-[[ship]]
-id = "heavy_fighter"
-name = "Heavy Fighter"
-metal = 6000.0
-crystal = 4000.0
-deuterium = 0.0
-base_seconds = 60.0
-attack = 150.0
-shield = 25.0
-hull = 1000.0
-cargo = 100.0
+# Unlock fields and extra rows extend this format; they do not replace it.
 
 [[ship]]
 id = "small_cargo"
@@ -36,3 +12,144 @@ attack = 5.0
 shield = 10.0
 hull = 800.0
 cargo = 5000.0
+speed = 5000.0
+fuel = 20.0
+shipyard = 2
+drive = "combustion_drive"
+prereq_techs = [{ id = "combustion_drive", level = 2 }]
+
+[[ship]]
+id = "large_cargo"
+name = "Large Cargo"
+metal = 6000.0
+crystal = 6000.0
+deuterium = 0.0
+base_seconds = 80.0
+attack = 5.0
+shield = 25.0
+hull = 1200.0
+cargo = 25000.0
+speed = 7500.0
+fuel = 50.0
+shipyard = 4
+drive = "impulse_drive"
+prereq_techs = [{ id = "impulse_drive", level = 4 }]
+
+[[ship]]
+id = "light_fighter"
+name = "Light Fighter"
+metal = 3000.0
+crystal = 1000.0
+deuterium = 0.0
+base_seconds = 30.0
+attack = 50.0
+shield = 10.0
+hull = 400.0
+cargo = 50.0
+speed = 12500.0
+fuel = 20.0
+shipyard = 1
+drive = "combustion_drive"
+prereq_techs = [{ id = "combustion_drive", level = 1 }]
+
+[[ship]]
+id = "heavy_fighter"
+name = "Heavy Fighter"
+metal = 6000.0
+crystal = 4000.0
+deuterium = 0.0
+base_seconds = 60.0
+attack = 150.0
+shield = 25.0
+hull = 1000.0
+cargo = 100.0
+speed = 10000.0
+fuel = 75.0
+shipyard = 3
+drive = "impulse_drive"
+prereq_techs = [{ id = "impulse_drive", level = 2 }, { id = "armour", level = 2 }]
+
+[[ship]]
+id = "cruiser"
+name = "Cruiser"
+metal = 20000.0
+crystal = 7000.0
+deuterium = 2000.0
+base_seconds = 180.0
+attack = 400.0
+shield = 50.0
+hull = 2700.0
+cargo = 800.0
+speed = 15000.0
+fuel = 300.0
+shipyard = 5
+drive = "impulse_drive"
+prereq_techs = [{ id = "impulse_drive", level = 4 }, { id = "ion", level = 2 }]
+
+[[ship]]
+id = "battleship"
+name = "Battleship"
+metal = 45000.0
+crystal = 15000.0
+deuterium = 0.0
+base_seconds = 300.0
+attack = 1000.0
+shield = 200.0
+hull = 6000.0
+cargo = 1500.0
+speed = 10000.0
+fuel = 500.0
+shipyard = 7
+drive = "hyperspace_drive"
+prereq_techs = [{ id = "hyperspace_drive", level = 4 }]
+
+[[ship]]
+id = "recycler"
+name = "Recycler"
+metal = 10000.0
+crystal = 6000.0
+deuterium = 2000.0
+base_seconds = 120.0
+attack = 1.0
+shield = 10.0
+hull = 1600.0
+cargo = 20000.0
+speed = 2000.0
+fuel = 300.0
+shipyard = 4
+drive = "combustion_drive"
+prereq_techs = [{ id = "combustion_drive", level = 6 }, { id = "shields", level = 2 }]
+
+[[ship]]
+id = "espionage_probe"
+name = "Espionage Probe"
+metal = 0.0
+crystal = 1000.0
+deuterium = 0.0
+base_seconds = 10.0
+attack = 0.0
+shield = 1.0
+hull = 100.0
+cargo = 5.0
+speed = 100_000_000.0
+fuel = 1.0
+shipyard = 3
+drive = "combustion_drive"
+prereq_techs = [{ id = "espionage", level = 2 }, { id = "combustion_drive", level = 3 }]
+
+[[ship]]
+id = "explorer"
+name = "Explorer"
+metal = 4000.0
+crystal = 8000.0
+deuterium = 4000.0
+base_seconds = 240.0
+attack = 50.0
+shield = 50.0
+hull = 2000.0
+cargo = 10000.0
+speed = 9000.0
+fuel = 300.0
+shipyard = 5
+drive = "impulse_drive"
+prereq_techs = [{ id = "astrophysics", level = 1 }, { id = "impulse_drive", level = 3 }]

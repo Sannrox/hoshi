@@ -563,6 +563,7 @@ mod tests {
             .unwrap();
         state.start_research("computer", 1_700_000_000).unwrap();
         state.buildings.shipyard = 1;
+        state.tech_levels.insert("combustion_drive".into(), 1);
         state
             .enqueue_ships(crate::ShipKind::LightFighter, 2, 1_700_000_000)
             .unwrap();

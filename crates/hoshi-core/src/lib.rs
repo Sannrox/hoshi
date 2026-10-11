@@ -21,5 +21,7 @@ pub use save::{
     SCHEMA_VERSION, SaveError, default_save_path, load_or_new, load_state, open_save,
     resolve_save_path, save_state,
 };
-pub use ships::{Fleet, ShipCatalog, ShipCatalogError, ShipError, ShipJob, ShipKind, ShipSpec};
+pub use ships::{
+    Fleet, ShipCatalog, ShipCatalogError, ShipError, ShipJob, ShipKind, ShipSpec, ShipStats,
+};
 pub use state::{GameState, ResourceKind, Resources};

@@ -286,18 +286,22 @@ impl GameState {
         if count == 0 {
             return Err(ShipError::ZeroCount);
         }
+        let spec = self.config.ships.get(kind);
         let yard = self.buildings.shipyard;
-        if yard < 1 {
+        if yard < spec.shipyard {
             return Err(ShipError::NeedShipyard {
-                required: 1,
+                required: spec.shipyard,
                 actual: yard,
             });
+        }
+        let gaps = self.missing_ship_prereqs(kind);
+        if !gaps.is_empty() {
+            return Err(ShipError::MissingPrerequisites { gaps });
         }
         let cap = self.config.max_ship_queue;
         if self.ship_queue.len() >= cap {
             return Err(ShipError::QueueFull { cap });
         }
-        let spec = self.config.ships.get(kind);
         let unit = spec.unit_cost();
         let n = f64::from(count);
         let cost = Resources {
@@ -358,6 +362,50 @@ impl GameState {
 
     pub fn ship_time_secs(&self, kind: ShipKind) -> u64 {
         self.config.ships.get(kind).duration_secs()
+    }
+
+    pub fn missing_ship_prereqs(&self, kind: ShipKind) -> Vec<PrereqGap> {
+        let spec = self.config.ships.get(kind);
+        spec.prereq_techs
+            .iter()
+            .filter_map(|pre| {
+                let actual = self.tech_level(&pre.id);
+                (actual < pre.level).then_some(PrereqGap::Tech {
+                    id: pre.id.clone(),
+                    required: pre.level,
+                    actual,
+                })
+            })
+            .collect()
+    }
+
+    /// Config stats scaled by weapons, shields, armour, and the ship's drive.
+    pub fn ship_stats(&self, kind: ShipKind) -> crate::ShipStats {
+        let spec = self.config.ships.get(kind);
+        let attack = spec.attack * (1.0 + self.modifier(ModifierKind::WeaponDamage));
+        let shield = spec.shield * (1.0 + self.modifier(ModifierKind::ShieldStrength));
+        let hull = spec.hull * (1.0 + self.modifier(ModifierKind::Armour));
+        let drive_bonus = self
+            .config
+            .techs
+            .get(&spec.drive)
+            .map(|tech| {
+                let level = f64::from(self.tech_level(&tech.id));
+                tech.modifiers
+                    .iter()
+                    .filter(|m| m.kind == ModifierKind::DriveSpeed)
+                    .map(|m| m.per_level * level)
+                    .sum::<f64>()
+            })
+            .unwrap_or(0.0);
+        crate::ShipStats {
+            attack,
+            shield,
+            hull,
+            cargo: spec.cargo,
+            speed: spec.speed * (1.0 + drive_bonus),
+            fuel: spec.fuel,
+        }
     }
 
     pub fn tech_level(&self, id: &str) -> u32 {
@@ -1260,10 +1308,59 @@ modifiers = []
     fn yard_state(now: u64) -> GameState {
         let mut state = GameState::new(now);
         state.buildings.shipyard = 1;
+        state.tech_levels.insert("combustion_drive".into(), 1);
         state.resources.metal = 100_000.0;
         state.resources.crystal = 100_000.0;
         state.resources.deuterium = 100_000.0;
         state
+    }
+
+    #[test]
+    fn ship_stats_scale_with_research_modifiers() {
+        let mut state = GameState::new(0);
+        let base = state.ship_stats(ShipKind::LightFighter);
+        let spec = state.config.ships.get(ShipKind::LightFighter);
+        close(base.attack, spec.attack);
+        close(base.speed, spec.speed);
+        state.tech_levels.insert("weapons".into(), 2);
+        state.tech_levels.insert("shields".into(), 1);
+        state.tech_levels.insert("armour".into(), 3);
+        state.tech_levels.insert("combustion_drive".into(), 4);
+        let scaled = state.ship_stats(ShipKind::LightFighter);
+        close(scaled.attack, spec.attack * 1.2);
+        close(scaled.shield, spec.shield * 1.1);
+        close(scaled.hull, spec.hull * 1.3);
+        close(scaled.speed, spec.speed * 1.4);
+        close(scaled.cargo, spec.cargo);
+        close(scaled.fuel, spec.fuel);
+    }
+
+    #[test]
+    fn locked_ship_lists_missing_techs() {
+        let mut state = GameState::new(0);
+        state.buildings.shipyard = 5;
+        state.resources.metal = 100_000.0;
+        state.resources.crystal = 100_000.0;
+        state.resources.deuterium = 100_000.0;
+        let gaps = state.missing_ship_prereqs(ShipKind::Cruiser);
+        assert!(
+            gaps.iter().any(|g| matches!(
+                g,
+                PrereqGap::Tech {
+                    id,
+                    required: 4,
+                    ..
+                } if id == "impulse_drive"
+            )),
+            "{gaps:?}"
+        );
+        let err = state.enqueue_ships(ShipKind::Cruiser, 1, 0).unwrap_err();
+        match err {
+            ShipError::MissingPrerequisites { gaps } => {
+                assert!(!gaps.is_empty());
+            }
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]
@@ -1272,7 +1369,7 @@ modifiers = []
         gap.enqueue_ships(ShipKind::LightFighter, 5, 0).unwrap();
         let unit = gap.ship_time_secs(ShipKind::LightFighter);
         gap.catch_up(unit * 2);
-        assert_eq!(gap.fleet.light_fighter, 2);
+        assert_eq!(gap.fleet.get(ShipKind::LightFighter), 2);
         assert_eq!(gap.ship_queue[0].remaining, 3);
 
         let mut step = yard_state(0);
@@ -1290,6 +1387,7 @@ modifiers = []
     fn unaffordable_ship_batch_reports_missing_amounts() {
         let mut state = GameState::new(0);
         state.buildings.shipyard = 1;
+        state.tech_levels.insert("combustion_drive".into(), 1);
         state.resources = Resources::ZERO;
         let err = state
             .enqueue_ships(ShipKind::LightFighter, 2, 0)
@@ -1297,7 +1395,10 @@ modifiers = []
         match err {
             ShipError::InsufficientResources { missing, cost } => {
                 assert!(missing.metal > 0.0);
-                close(cost.metal, state.config.ships.light_fighter.metal * 2.0);
+                close(
+                    cost.metal,
+                    state.config.ships.get(ShipKind::LightFighter).metal * 2.0,
+                );
             }
             other => panic!("unexpected {other:?}"),
         }
@@ -1312,7 +1413,7 @@ modifiers = []
         assert_eq!(
             err,
             ShipError::NeedShipyard {
-                required: 1,
+                required: 2,
                 actual: 0,
             }
         );

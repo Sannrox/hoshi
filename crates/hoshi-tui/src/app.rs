@@ -1,5 +1,5 @@
-//! Overview and planet screens. Core owns the rules; this module only renders
-//! and turns keys into core commands.
+//! Overview, planet and shipyard screens. Core owns the rules; this module
+//! only renders and turns keys into core commands.
 
 use hoshi_core::{BuildingKind, GameState, ResourceKind, Resources, ShipKind};
 use ratatui::Frame;
@@ -13,6 +13,7 @@ use ratatui::widgets::{Block, Paragraph};
 pub enum Screen {
     Overview,
     Planet,
+    Shipyard,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,7 +46,8 @@ impl App {
             KeyCode::Tab => {
                 self.screen = match self.screen {
                     Screen::Overview => Screen::Planet,
-                    Screen::Planet => Screen::Overview,
+                    Screen::Planet => Screen::Shipyard,
+                    Screen::Shipyard => Screen::Overview,
                 };
                 self.selected = 0;
                 self.status.clear();
@@ -71,8 +73,9 @@ impl App {
 
     pub fn draw(&self, frame: &mut Frame<'_>) {
         let title = match self.screen {
-            Screen::Overview => " hoshi  [overview] planet ",
-            Screen::Planet => " hoshi  overview [planet] ",
+            Screen::Overview => " hoshi  [overview] planet shipyard ",
+            Screen::Planet => " hoshi  overview [planet] shipyard ",
+            Screen::Shipyard => " hoshi  overview planet [shipyard] ",
         };
         let block = Block::bordered().title(title);
         let inner = block.inner(frame.area());
@@ -97,19 +100,24 @@ impl App {
 
     fn activate(&mut self, now_unix: u64) {
         match self.screen {
-            Screen::Planet => match self.planet_item(self.selected) {
-                Some(PlanetItem::Building(kind)) => {
-                    match self.state.enqueue_build(kind, now_unix) {
-                        Ok(()) => self.status.clear(),
-                        Err(e) => self.status = e.to_string(),
-                    }
-                }
-                Some(PlanetItem::Ship(kind)) => match self.state.enqueue_ships(kind, 1, now_unix) {
+            Screen::Planet => {
+                let Some(kind) = BuildingKind::ALL.get(self.selected).copied() else {
+                    return;
+                };
+                match self.state.enqueue_build(kind, now_unix) {
                     Ok(()) => self.status.clear(),
                     Err(e) => self.status = e.to_string(),
-                },
-                None => {}
-            },
+                }
+            }
+            Screen::Shipyard => {
+                let Some(kind) = ShipKind::ALL.get(self.selected).copied() else {
+                    return;
+                };
+                match self.state.enqueue_ships(kind, 1, now_unix) {
+                    Ok(()) => self.status.clear(),
+                    Err(e) => self.status = e.to_string(),
+                }
+            }
             Screen::Overview => {
                 let Some(id) = self.tech_id_at(self.selected) else {
                     return;
@@ -124,24 +132,14 @@ impl App {
 
     fn cancel(&mut self, now_unix: u64) {
         match self.screen {
-            Screen::Planet => {
-                let err = match self.planet_item(self.selected) {
-                    Some(PlanetItem::Ship(_)) => self
-                        .state
-                        .cancel_ships(0, now_unix)
-                        .err()
-                        .map(|e| e.to_string()),
-                    _ => self
-                        .state
-                        .cancel_build(0, now_unix)
-                        .err()
-                        .map(|e| e.to_string()),
-                };
-                match err {
-                    None => self.status.clear(),
-                    Some(e) => self.status = e,
-                }
-            }
+            Screen::Planet => match self.state.cancel_build(0, now_unix) {
+                Ok(_) => self.status.clear(),
+                Err(e) => self.status = e.to_string(),
+            },
+            Screen::Shipyard => match self.state.cancel_ships(0, now_unix) {
+                Ok(_) => self.status.clear(),
+                Err(e) => self.status = e.to_string(),
+            },
             Screen::Overview => match self.state.cancel_research(now_unix) {
                 Ok(_) => self.status.clear(),
                 Err(e) => self.status = e.to_string(),
@@ -151,7 +149,8 @@ impl App {
 
     fn list_len(&self) -> usize {
         match self.screen {
-            Screen::Planet => BuildingKind::ALL.len() + ShipKind::ALL.len(),
+            Screen::Planet => BuildingKind::ALL.len(),
+            Screen::Shipyard => ShipKind::ALL.len(),
             Screen::Overview => self.state.config.techs.iter().count(),
         }
     }
@@ -179,10 +178,7 @@ impl App {
             )),
             Line::from(self.build_status()),
             Line::from(self.research_status()),
-            Line::from(format!(
-                "Ships      lf {}  hf {}  cargo {}",
-                s.fleet.light_fighter, s.fleet.heavy_fighter, s.fleet.small_cargo
-            )),
+            Line::from(self.ship_status()),
         ];
         if !self.status.is_empty() {
             lines.push(Line::from(self.status.clone()));
@@ -193,13 +189,15 @@ impl App {
     fn footer_lines(&self) -> Vec<Line<'static>> {
         vec![Line::from(match self.screen {
             Screen::Overview => "tab screens  j/k select  enter research  x cancel  q quit",
-            Screen::Planet => "tab screens  j/k select  enter queue  x cancel queue  q quit",
+            Screen::Planet => "tab screens  j/k select  enter build  x cancel queue  q quit",
+            Screen::Shipyard => "tab screens  j/k select  enter queue  x cancel queue  q quit",
         })]
     }
 
     fn list_lines(&self, height: usize) -> Vec<Line<'static>> {
         match self.screen {
             Screen::Planet => self.planet_lines(height),
+            Screen::Shipyard => self.shipyard_lines(height),
             Screen::Overview => self.research_lines(height),
         }
     }
@@ -226,11 +224,19 @@ impl App {
                 job.from_level + 1
             )));
         }
+        rows.push(Line::from("Buildings"));
+        let entries: Vec<Line<'static>> = BuildingKind::ALL
+            .iter()
+            .enumerate()
+            .map(|(i, &kind)| self.building_row(i, kind))
+            .collect();
+        append_windowed(&mut rows, &entries, self.selected, height)
+    }
+
+    fn shipyard_lines(&self, height: usize) -> Vec<Line<'static>> {
+        let mut rows: Vec<Line<'static>> = Vec::new();
         rows.push(Line::from(format!(
-            "Ships lf {}  hf {}  cargo {}  queue {}/{}",
-            self.state.fleet.light_fighter,
-            self.state.fleet.heavy_fighter,
-            self.state.fleet.small_cargo,
+            "Queue {}/{}",
             self.state.ship_queue.len(),
             self.state.config.max_ship_queue
         )));
@@ -243,39 +249,19 @@ impl App {
                 None => "wait".to_string(),
             };
             rows.push(Line::from(format!(
-                "  s{}. {} x{}  {timer}",
+                "  {}. {} x{}  {timer}",
                 i + 1,
                 job.ship,
                 job.remaining
             )));
         }
-        rows.push(Line::from("Buildings"));
-        let mut entries: Vec<Line<'static>> = BuildingKind::ALL
+        rows.push(Line::from("Ships"));
+        let entries: Vec<Line<'static>> = ShipKind::ALL
             .iter()
             .enumerate()
-            .map(|(i, &kind)| self.building_row(i, kind))
+            .map(|(i, &kind)| self.ship_row(i, kind))
             .collect();
-        let ship_offset = BuildingKind::ALL.len();
-        entries.extend(
-            ShipKind::ALL
-                .iter()
-                .enumerate()
-                .map(|(i, &kind)| self.ship_row(ship_offset + i, kind)),
-        );
         append_windowed(&mut rows, &entries, self.selected, height)
-    }
-
-    fn planet_item(&self, index: usize) -> Option<PlanetItem> {
-        if index < BuildingKind::ALL.len() {
-            return BuildingKind::ALL
-                .get(index)
-                .copied()
-                .map(PlanetItem::Building);
-        }
-        ShipKind::ALL
-            .get(index - BuildingKind::ALL.len())
-            .copied()
-            .map(PlanetItem::Ship)
     }
 
     fn research_lines(&self, height: usize) -> Vec<Line<'static>> {
@@ -304,13 +290,22 @@ impl App {
         let secs = spec.duration_secs();
         let owned = self.state.fleet.get(kind);
         let mark = if index == self.selected { '>' } else { ' ' };
-        let text = format!("{mark} {kind}  x{owned}  {}  {secs}s", cost_label(cost));
-        styled_row(text, self.ship_block_reason(cost))
+        let stats = self.state.ship_stats(kind);
+        let text = format!(
+            "{mark} {kind}  x{owned}  {}  {secs}s  atk {:.0}",
+            cost_label(cost),
+            stats.attack
+        );
+        styled_row(text, self.ship_block_reason(kind, cost))
     }
 
-    fn ship_block_reason(&self, cost: Resources) -> Option<String> {
-        if self.state.buildings.shipyard < 1 {
-            return Some("need shipyard 1".to_string());
+    fn ship_block_reason(&self, kind: ShipKind, cost: Resources) -> Option<String> {
+        let spec = self.state.config.ships.get(kind);
+        if self.state.buildings.shipyard < spec.shipyard {
+            return Some(format!("need shipyard {}", spec.shipyard));
+        }
+        if let Some(gap) = self.state.missing_ship_prereqs(kind).first() {
+            return Some(format!("need {gap}"));
         }
         if !self.state.resources.can_afford(cost) {
             return Some(missing_label(self.state.resources.missing(cost)));
@@ -395,11 +390,30 @@ impl App {
             None => "Research: idle".to_string(),
         }
     }
-}
 
-enum PlanetItem {
-    Building(BuildingKind),
-    Ship(ShipKind),
+    fn ship_status(&self) -> String {
+        match self.state.ship_queue.first() {
+            Some(job) => {
+                let left = job
+                    .completes_at
+                    .unwrap_or(self.state.last_tick_unix)
+                    .saturating_sub(self.state.last_tick_unix);
+                format!(
+                    "Ships      {}  {} x{}  {left}s  ({}/{} queued)",
+                    self.state.fleet.total(),
+                    job.ship,
+                    job.remaining,
+                    self.state.ship_queue.len(),
+                    self.state.config.max_ship_queue
+                )
+            }
+            None => format!(
+                "Ships      {}  idle  (0/{} queued)",
+                self.state.fleet.total(),
+                self.state.config.max_ship_queue
+            ),
+        }
+    }
 }
 
 fn resource_line(name: &str, state: &GameState, kind: ResourceKind) -> Line<'static> {
@@ -575,6 +589,8 @@ mod tests {
         assert!(text.contains(&format!("{build_left_later}s")), "{text}");
 
         app.handle_key(KeyCode::Tab, clock.now_unix());
+        app.handle_key(KeyCode::Tab, clock.now_unix());
+        assert_eq!(app.screen, Screen::Overview);
         let energy = app
             .state
             .config
@@ -639,45 +655,62 @@ mod tests {
         );
     }
 
+    fn open_shipyard(app: &mut App, now: u64) {
+        app.handle_key(KeyCode::Tab, now);
+        app.handle_key(KeyCode::Tab, now);
+        assert_eq!(app.screen, Screen::Shipyard);
+    }
+
     #[test]
-    fn planet_shows_ship_counts_and_enter_queues_a_batch() {
+    fn shipyard_lists_ships_requirements_and_queue() {
         let mut state = GameState::new(1_000);
         state.buildings.shipyard = 1;
+        state.tech_levels.insert("combustion_drive".into(), 1);
         state.resources.metal = 100_000.0;
         state.resources.crystal = 100_000.0;
         state.resources.deuterium = 100_000.0;
-        state.fleet.light_fighter = 4;
-        state.fleet.heavy_fighter = 2;
-        state.fleet.small_cargo = 1;
+        state.fleet.add(ShipKind::LightFighter, 4);
+        state.fleet.add(ShipKind::HeavyFighter, 2);
+        state.fleet.add(ShipKind::SmallCargo, 1);
         let mut app = App::new(state);
-        app.handle_key(KeyCode::Tab, 1_000);
-        let text = render_text(&app, 80, 30);
-        assert!(text.contains("lf 4"), "{text}");
-        assert!(text.contains("hf 2"), "{text}");
-        assert!(text.contains("cargo 1"), "{text}");
+        open_shipyard(&mut app, 1_000);
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("[shipyard]"), "{text}");
         assert!(text.contains("light fighter"), "{text}");
+        assert!(text.contains("battleship"), "{text}");
+        assert!(text.contains("x4"), "{text}");
+        assert!(
+            text.contains("need shipyard") || text.contains("need "),
+            "{text}"
+        );
 
-        app.selected = BuildingKind::ALL.len();
+        app.selected = ShipKind::ALL
+            .iter()
+            .position(|k| *k == ShipKind::LightFighter)
+            .unwrap();
         app.handle_key(KeyCode::Enter, 1_000);
         assert_eq!(app.state.ship_queue.len(), 1);
         assert_eq!(app.state.ship_queue[0].ship, ShipKind::LightFighter);
-        assert_eq!(app.state.ship_queue[0].remaining, 1);
-        let text = render_text(&app, 80, 30);
-        assert!(text.contains("s1. light fighter x1"), "{text}");
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("1. light fighter x1"), "{text}");
+        assert!(text.contains("Queue 1/5"), "{text}");
     }
 
     #[test]
     fn unaffordable_ships_are_dimmed_with_missing_or_shipyard() {
         let mut app = App::new(GameState::new(1_000));
-        app.handle_key(KeyCode::Tab, 1_000);
-        app.selected = BuildingKind::ALL.len();
-        let backend = TestBackend::new(80, 30);
+        open_shipyard(&mut app, 1_000);
+        app.selected = ShipKind::ALL
+            .iter()
+            .position(|k| *k == ShipKind::LightFighter)
+            .unwrap();
+        let backend = TestBackend::new(100, 32);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(terminal.backend());
         assert!(
-            text.contains("need shipyard 1"),
-            "planet ships should require a shipyard: {text}"
+            text.contains("need shipyard"),
+            "shipyard should show shipyard requirement: {text}"
         );
         assert!(
             line_is_dim(terminal.backend(), "light fighter"),
@@ -686,11 +719,15 @@ mod tests {
 
         let mut state = GameState::new(1_000);
         state.buildings.shipyard = 1;
+        state.tech_levels.insert("combustion_drive".into(), 1);
         state.resources = hoshi_core::Resources::ZERO;
         let mut app = App::new(state);
-        app.handle_key(KeyCode::Tab, 1_000);
-        app.selected = BuildingKind::ALL.len();
-        let backend = TestBackend::new(80, 30);
+        open_shipyard(&mut app, 1_000);
+        app.selected = ShipKind::ALL
+            .iter()
+            .position(|k| *k == ShipKind::LightFighter)
+            .unwrap();
+        let backend = TestBackend::new(100, 32);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(terminal.backend());
@@ -705,17 +742,24 @@ mod tests {
     }
 
     #[test]
-    fn planet_x_cancels_the_selected_queue() {
+    fn shipyard_x_cancels_the_ship_queue() {
         let mut state = GameState::new(1_000);
         state.buildings.shipyard = 1;
+        state.tech_levels.insert("combustion_drive".into(), 1);
         state.resources.metal = 100_000.0;
         state.resources.crystal = 100_000.0;
         state.resources.deuterium = 100_000.0;
         let mut app = App::new(state);
         app.handle_key(KeyCode::Tab, 1_000);
+        assert_eq!(app.screen, Screen::Planet);
         app.handle_key(KeyCode::Enter, 1_000);
         assert_eq!(app.state.build_queue.len(), 1);
-        app.selected = BuildingKind::ALL.len();
+        app.handle_key(KeyCode::Tab, 1_000);
+        assert_eq!(app.screen, Screen::Shipyard);
+        app.selected = ShipKind::ALL
+            .iter()
+            .position(|k| *k == ShipKind::LightFighter)
+            .unwrap();
         app.handle_key(KeyCode::Enter, 1_000);
         assert_eq!(app.state.ship_queue.len(), 1);
 
@@ -723,7 +767,9 @@ mod tests {
         assert!(app.state.ship_queue.is_empty());
         assert_eq!(app.state.build_queue.len(), 1);
 
-        app.selected = 0;
+        app.handle_key(KeyCode::Tab, 1_000);
+        app.handle_key(KeyCode::Tab, 1_000);
+        assert_eq!(app.screen, Screen::Planet);
         app.handle_key(KeyCode::Char('x'), 1_000);
         assert!(app.state.build_queue.is_empty());
     }
