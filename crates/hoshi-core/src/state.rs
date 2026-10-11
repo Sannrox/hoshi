@@ -2148,6 +2148,7 @@ mod tests {
             },
             activity: crate::ActivityEffectsConfig::default(),
             expedition: crate::ExpeditionConfig::default(),
+            pacing: crate::PacingTargets::default(),
         }
     }
 

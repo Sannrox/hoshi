@@ -11,6 +11,7 @@ mod planets;
 mod research;
 mod save;
 mod ships;
+mod simulate;
 mod state;
 
 pub use activity::{
@@ -18,8 +19,8 @@ pub use activity::{
     ActivityTracker,
 };
 pub use balance::{
-    BalanceConfig, BuildingCatalog, BuildingSpec, EnergyProducerSpec, ProducerSpec, RaidConfig,
-    StorageSpec,
+    BalanceConfig, BalanceError, BuildingCatalog, BuildingSpec, EnergyProducerSpec, PacingTargets,
+    ProducerSpec, RaidConfig, StorageSpec,
 };
 pub use buildings::{BuildError, BuildJob, BuildingKind, Buildings};
 pub use clock::{Clock, FakeClock, SystemClock};
@@ -47,4 +48,5 @@ pub use ships::{
     Fleet, SHIP_KINDS, ShipCatalog, ShipCatalogError, ShipError, ShipJob, ShipKind, ShipSpec,
     ShipStats,
 };
+pub use simulate::{DaySnapshot, SimReport, simulate_greedy};
 pub use state::{GameEvent, GameState, ResourceKind, Resources};
