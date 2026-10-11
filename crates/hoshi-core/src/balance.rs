@@ -173,6 +173,62 @@ impl Default for BuildingCatalog {
     }
 }
 
+/// Pirate raid schedule and combat knobs. Frequency and strength live here.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RaidConfig {
+    /// When false, no raid is scheduled and catch-up skips combat.
+    pub enabled: bool,
+    /// Seconds between announce and landing. Default 3600.
+    pub min_warning_secs: u64,
+    /// First raid lands this many seconds after a new game. Default 3600.
+    pub first_delay_secs: u64,
+    /// Delay from one landing to the next.
+    pub interval_secs: u64,
+    /// Pirate light-fighter count is `max(min_ships, floor(player_points * this))`.
+    pub strength_factor: f64,
+    pub min_ships: u32,
+    /// Combat rounds cap. Later combat issues keep this resolver and add extras.
+    pub max_rounds: u8,
+    /// Fraction of stored resources taken on a lost raid, then clamped by `plunder_cap`.
+    pub plunder_share: f64,
+    pub plunder_cap: Resources,
+}
+
+impl RaidConfig {
+    /// Production defaults: hourly warning, first landing after one hour, eight-hour gap.
+    pub fn default_active() -> Self {
+        Self {
+            enabled: true,
+            min_warning_secs: 3600,
+            first_delay_secs: 3600,
+            interval_secs: 8 * 3600,
+            strength_factor: 0.4,
+            min_ships: 1,
+            max_rounds: 6,
+            plunder_share: 0.5,
+            plunder_cap: Resources {
+                metal: 10_000.0,
+                crystal: 10_000.0,
+                deuterium: 5_000.0,
+            },
+        }
+    }
+
+    /// Tests that only exercise production or queues keep raids off.
+    pub fn inactive() -> Self {
+        Self {
+            enabled: false,
+            ..Self::default_active()
+        }
+    }
+}
+
+impl Default for RaidConfig {
+    fn default() -> Self {
+        Self::default_active()
+    }
+}
+
 /// Tunable economy. [`GameState`](crate::GameState) reads these fields; it does not
 /// hard-code production or cap numbers.
 #[derive(Debug, Clone, PartialEq)]
@@ -194,6 +250,7 @@ pub struct BalanceConfig {
     /// Maximum shipyard batches waiting or in progress on one planet.
     pub max_ship_queue: usize,
     pub flight: crate::FlightConfig,
+    pub raid: RaidConfig,
     pub starting_resources: Resources,
     pub starting_buildings: Buildings,
 }
@@ -242,6 +299,7 @@ impl Default for BalanceConfig {
             ships: crate::ShipCatalog::default(),
             max_ship_queue: 5,
             flight: crate::FlightConfig::default(),
+            raid: RaidConfig::default(),
             starting_resources: Resources {
                 metal: 500.0,
                 crystal: 500.0,

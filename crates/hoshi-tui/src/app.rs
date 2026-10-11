@@ -179,7 +179,11 @@ impl App {
             Line::from(self.build_status()),
             Line::from(self.research_status()),
             Line::from(self.ship_status()),
+            Line::from(self.raid_status()),
         ];
+        if let Some(event) = s.events.last() {
+            lines.push(Line::from(event.text.clone()));
+        }
         if !self.status.is_empty() {
             lines.push(Line::from(self.status.clone()));
         }
@@ -414,6 +418,13 @@ impl App {
             ),
         }
     }
+
+    fn raid_status(&self) -> String {
+        match self.state.raid_countdown_secs() {
+            Some(secs) => format!("Raid: {secs}s"),
+            None => "Raid: none".to_string(),
+        }
+    }
 }
 
 fn resource_line(name: &str, state: &GameState, kind: ResourceKind) -> Line<'static> {
@@ -549,7 +560,15 @@ mod tests {
             assert!(text.contains("Build:"), "{w}x{h}: {text}");
             assert!(text.contains("Research:"), "{w}x{h}: {text}");
             assert!(text.contains("Ships"), "{w}x{h}: {text}");
+            assert!(text.contains("Raid:"), "{w}x{h}: {text}");
         }
+    }
+
+    #[test]
+    fn overview_shows_raid_countdown() {
+        let app = App::new(GameState::new(1_000));
+        let text = render_text(&app, 80, 24);
+        assert!(text.contains("Raid: 3600s"), "{text}");
     }
 
     #[test]

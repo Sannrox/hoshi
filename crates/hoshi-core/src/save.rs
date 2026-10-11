@@ -5,14 +5,14 @@ use crate::buildings::{BuildJob, BuildingKind, Buildings};
 use crate::fleets::{Coord, Mission, MissionPhase};
 use crate::research::ResearchJob;
 use crate::ships::{Fleet, ShipJob, ShipKind};
-use crate::state::{GameState, Resources};
+use crate::state::{GameEvent, GameState, Resources};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::ffi::OsStr;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -115,7 +115,9 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM ships;
          DELETE FROM ship_queue;
          DELETE FROM mission_ships;
-         DELETE FROM missions;",
+         DELETE FROM missions;
+         DELETE FROM raids;
+         DELETE FROM event_log;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -237,6 +239,16 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 params![mission.id as i64, kind.as_key(), count],
             )?;
         }
+    }
+    tx.execute(
+        "INSERT INTO raids (id, next_raid_at) VALUES (1, ?1)",
+        params![state.next_raid_at.map(|t| t as i64)],
+    )?;
+    for (i, event) in state.events.iter().enumerate() {
+        tx.execute(
+            "INSERT INTO event_log (position, at, text) VALUES (?1, ?2, ?3)",
+            params![i as i64, event.at as i64, event.text],
+        )?;
     }
     tx.commit()?;
     Ok(())
@@ -510,6 +522,35 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         .map(|id| id.saturating_add(1))
         .unwrap_or(0);
 
+    state.next_raid_at = conn
+        .query_row("SELECT next_raid_at FROM raids WHERE id = 1", [], |row| {
+            row.get::<_, Option<i64>>(0)
+        })
+        .optional()?
+        .flatten()
+        .map(unix_ts)
+        .transpose()?;
+    if state.next_raid_at.is_none() && state.config.raid.enabled {
+        state.next_raid_at = Some(
+            state
+                .last_tick_unix
+                .saturating_add(state.config.raid.first_delay_secs),
+        );
+    }
+
+    let mut stmt = conn.prepare("SELECT at, text FROM event_log ORDER BY position")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+    })?;
+    state.events.clear();
+    for row in rows {
+        let (at, text) = row?;
+        state.events.push(GameEvent {
+            at: unix_ts(at)?,
+            text,
+        });
+    }
+
     Ok(state)
 }
 
@@ -533,7 +574,9 @@ pub fn load_or_new(
             + count_rows(conn, "ships")?
             + count_rows(conn, "ship_queue")?
             + count_rows(conn, "missions")?
-            + count_rows(conn, "mission_ships")?;
+            + count_rows(conn, "mission_ships")?
+            + count_rows(conn, "raids")?
+            + count_rows(conn, "event_log")?;
         if leftover != 0 {
             return Err(SaveError::Corrupt("missing meta row"));
         }
@@ -564,6 +607,8 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "ship_queue" => "SELECT COUNT(*) FROM ship_queue",
         "missions" => "SELECT COUNT(*) FROM missions",
         "mission_ships" => "SELECT COUNT(*) FROM mission_ships",
+        "raids" => "SELECT COUNT(*) FROM raids",
+        "event_log" => "SELECT COUNT(*) FROM event_log",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -585,6 +630,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 3 {
         migrate_v3(conn)?;
+    }
+    if found < 4 {
+        migrate_v4(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -696,6 +744,23 @@ fn migrate_v3(conn: &Connection) -> Result<(), SaveError> {
     Ok(())
 }
 
+fn migrate_v4(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS raids (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            next_raid_at INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS event_log (
+            position INTEGER PRIMARY KEY,
+            at INTEGER NOT NULL,
+            text TEXT NOT NULL
+        );
+        ",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -734,6 +799,10 @@ mod tests {
             .unwrap();
         state.fleet.add(crate::ShipKind::HeavyFighter, 3);
         state.fleet.add(crate::ShipKind::LightFighter, 2);
+        state.events.push(crate::GameEvent {
+            at: 1_700_000_000,
+            text: "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder M0 C0 D0".into(),
+        });
         let mut wing = crate::Fleet::default();
         wing.add(crate::ShipKind::LightFighter, 2);
         state
