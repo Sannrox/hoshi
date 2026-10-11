@@ -1,0 +1,16 @@
+[
+  {
+    "id": 1001,
+    "number": 73,
+    "state": "closed",
+    "title": "feat(bridge): add a local agent activity feed",
+    "merged_at": "2026-10-11T11:12:46Z"
+  },
+  {
+    "id": 1002,
+    "number": 8,
+    "state": "closed",
+    "title": "not merged",
+    "merged_at": null
+  }
+]
