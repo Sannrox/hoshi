@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "hoshi CLI response",
+  "type": "object",
+  "required": ["schema_version", "ok"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": { "const": 1, "description": "CLI JSON schema version. Bump on breaking changes." },
+    "ok": { "type": "boolean" },
+    "message": { "type": "string" },
+    "now": { "type": "integer", "minimum": 0 },
+    "deterministic": { "type": "boolean" },
+    "save_schema": { "type": "integer" },
+    "resources": {
+      "type": "object",
+      "required": ["metal", "crystal", "deuterium"],
+      "properties": {
+        "metal": { "type": "number" },
+        "crystal": { "type": "number" },
+        "deuterium": { "type": "number" }
+      }
+    },
+    "rates": { "type": "object" },
+    "energy": { "type": "object" },
+    "buildings": { "type": "object" },
+    "build_queue": { "type": "array" },
+    "research": { "type": "object" },
+    "fleet": { "type": "object" },
+    "missions": { "type": "array" },
+    "planets": { "type": "array" },
+    "events": { "type": "array" },
+    "raid": {
+      "type": ["object", "null"],
+      "description": "Visible raid countdown, matching the TUI overview."
+    },
+    "error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "enum": ["invalid", "refused", "locked", "internal"] },
+        "message": { "type": "string" }
+      }
+    }
+  }
+}
