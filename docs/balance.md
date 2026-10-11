@@ -1,5 +1,8 @@
 # Balance config and pacing
 
+Design constraints for these numbers (energy, mass, travel, heat) live in
+[docs/realism.md](realism.md). This page is the operator manual for the live file.
+
 Production, construction, raids, bridge-effect sizes, expedition weights, flight,
 starting stockpiles, and staged wonders live in `crates/hoshi-core/data/balance.toml`.
 The file is embedded and validated on `BalanceConfig::default()`. Research stays in

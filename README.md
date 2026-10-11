@@ -62,7 +62,8 @@ bash scripts/validate-workflow-skills.sh
 ```
 
 Policy for contributors and agents: [AGENTS.md](AGENTS.md). Decisions:
-[docs/decisions/](docs/decisions/README.md).
+[docs/decisions/](docs/decisions/README.md). Physics and maths for design
+work: [docs/realism.md](docs/realism.md).
 
 ## License
 

@@ -1,0 +1,203 @@
+# Realism guidelines
+
+These rules constrain **physics and maths**: production, energy, heat, travel,
+orbits, combat numbers and the economy. They do not constrain flavour.
+Species, factions, story, characters and technology names stay fictional.
+
+A species with unusual traits is fine. Its mines, drives and energy budget
+still obey the sections below.
+
+New design work and balance changes follow this file. Shape Issues against it.
+Record a departure in the [simplifications](#simplifications) list, with the
+gameplay reason.
+
+## Domain model
+
+hoshi is a fictional game. It is also a place to show a clear domain model:
+named object types, explicit links, moves that go through one governed path,
+and outcomes you can audit.
+
+When adding a feature, name:
+
+| Piece | Meaning |
+| --- | --- |
+| Object types | The nouns (planet, fleet, faction, outpost, route, facility, good). |
+| Links | How those nouns point at each other (fleet at coord, route between owned planets, standing on a faction id). |
+| Actions | Propose, check, apply. The TUI and CLI call the same `hoshi-core` function. They do not write the save. |
+| Outcomes | A typed result plus a log line (`GameEvent`) with a timestamp. Catch-up and live play share that path. |
+
+State changes go through core actions. Offline catch-up replays the same
+actions on an injected clock. The save stores the resulting state, not a
+second copy of the rules. Lineage for a change is the event log plus the
+save schema version.
+
+## Materials
+
+Use matter that can exist. Current chain goods already lean this way: iron
+ore, silicon, rare earths, water ice, helium-3, then steel, purified silicon,
+magnets, propellant, fuel, frames and electronics.
+
+Stockpiles that buildings and ships spend (`metal` / `crystal` / `deuterium`,
+also called frames, electronics and fuel) are construction columns. They
+should stay aliases of refined mass, not unnamed magic. Do not add a resource
+whose origin is unexplained.
+
+Plausible sources:
+
+- metals and silicon from rocky crusts
+- ices and volatiles from cold worlds and comets
+- helium-3 from giant-planet atmospheres or solar wind on airless regolith
+- deuterium from water ice (low natural fraction; enrichment costs energy)
+
+Mass is conserved in process recipes. Extractors need a deposit. See
+[docs/balance.md](balance.md) production chains.
+
+## Energy
+
+Every process has an energy cost. Output is limited by the energy that is
+actually on the planet at that instant (the existing energy factor already
+does this).
+
+Sources, with tradeoffs:
+
+| Source | Sketch | Tradeoff |
+| --- | --- | --- |
+| Solar | Flux falls as `1/r²`. At 1 AU, ~1.36 kW/m² before atmosphere and angle. | Cheap at inner orbits; poor on ice worlds and gas giants. |
+| Fission | Dense, independent of sunlight. | Fuel and waste; finite stock unless bred. |
+| Fusion | High output; deuterium is common in ice, helium-3 is not. | Hard to light; helium-3 wants giant-planet or regolith infrastructure. |
+
+A solar plant that yields the same energy on every planet type is a known
+gap. Distance from the star should matter once travel already uses it.
+
+## Propulsion and travel time
+
+Transit time comes from distance and the ship's drive, not from a narrative
+timer. Drives in increasing exhaust velocity, decreasing thrust:
+
+1. chemical
+2. nuclear thermal
+3. electric / ion
+4. fusion
+
+High thrust shortens burn time and fights gravity wells. High exhaust
+velocity cuts propellant mass (`delta-v = ve * ln(m0/mf)`). Ships pick a
+point on that tradeoff. Fuel paid at launch should scale with delta-v and
+wet mass, not only with a flat distance band.
+
+## Orbital mechanics
+
+Keep orbits simple enough to tick:
+
+- planets sit on fixed circular (or Keplerian) slots in a system
+- a transfer uses a Hohmann-like estimate: two burns, coast, arrive
+- no n-body integration
+- climbing out of a gravity well costs extra delta-v and fuel
+
+Reference: a Hohmann transfer between circular orbits at 1 AU and 1.5 AU is
+on the order of 8–9 months of coast. Game times may compress (see
+simplifications) but the **ordering** stays: inner hops are shorter than
+cross-galaxy hops, and a heavier ship burns more fuel for the same delta-v.
+
+Current `flight` units (`galaxy_unit`, `system_unit`, `position_unit`) are
+abstract lengths. New work should treat them as scaled metres and document
+the scale, not as unitless speed points.
+
+## Heat, waste and pollution
+
+Industry produces waste heat and byproducts. Heat leaves only through
+radiators (or an atmosphere that can dump it). Radiated power is `σ A T⁴`
+(`σ ≈ 5.67e-8 W/m²/K⁴`). Hotter radiators are smaller and more visible.
+Byproducts have mass: slag, effluent and emissions go into storage, recycling
+or the environment. They are not deleted.
+
+Unmanaged heat and waste should hurt habitability and make a world easier to
+spot. Mitigation (radiators, recycling, moving industry to airless moons)
+costs energy and materials. This layer is not in the live rules yet; see
+known gaps.
+
+## Combat maths
+
+Weapon names may be fictional. The numbers should still be physical:
+
+- kinetic: energy scales with `½ m v²`; more mass or more closing speed hits
+  harder
+- directed energy: limited by source power, aperture and waste heat in the
+  firing ship
+- armour is mass that must be accelerated; shields are energy that must be
+  replenished
+- fire rate is limited by heat and reload mass, not by an arbitrary round cap
+  alone
+
+The seeded round resolver can stay. New stats should map onto those
+quantities so a heavier hull is slower and a hotter gun needs more radiator
+or a longer wait.
+
+## Economics maths
+
+Prices live in abstract units today. Formulas should still be explainable:
+
+- a mid price is a scarcity signal, not a random score
+- a trade of A for B converts at `price_A / price_B`
+- fee is a two-sided spread
+- slippage grows with volume relative to a market depth (`impact_unit`)
+- transport adds time and fuel; it does not teleport mass
+
+Mean reversion and shocks are allowed if they have a stated cause (stockpile
+news, story events). They should not print mass from nothing.
+
+## Simplifications
+
+Each row is an allowed departure from physics. New features do not add a
+silent extra departure; they extend this list.
+
+| Simplification | Gameplay reason |
+| --- | --- |
+| Compressed clocks (upgrades in minutes, not months) | The game is meant to run in a spare terminal while other work happens. |
+| Instant communication across the galaxy | No light-lag UI; commands apply on the injected clock as soon as they are legal. |
+| No n-body gravity, no eclipses | Catch-up must stay deterministic and fast. |
+| Abstract flight units and ship `speed` points | Existing fleets already fly; a documented scale can replace the points later. |
+| Construction stockpiles named metal / crystal / deuterium | Three columns keep the TUI and save small; chains already have real material names underneath. |
+| Solar output ignores orbital radius | Energy is already a cap; radius falloff is a follow-up, not a hidden extra. |
+| Round-based combat with rapid-fire tables | Seeded, short, offline-safe fights. Map new stats onto energy and mass rather than replacing the resolver. |
+| No radiator / waste-heat layer yet | Economy loop shipped first; heat is specified here so later work has a target. |
+| FTL, if any | Only through late-game gates or a listed wonder. Default travel is sublight on the flight clock. |
+| Story, species and faction flavour | Out of scope for realism; they must not mint mass or energy. |
+
+## Known gaps in current config
+
+These live values disagree with the rules above. They are follow-up work, not
+silent exceptions. Do not "fix" them in an unrelated PR.
+
+- `metal` / `crystal` / `deuterium` labels on planet bonuses and the market
+  still read as unnamed substances. Chain goods (`iron_ore`, `silicon`,
+  `helium_3`, …) are the physical names.
+- `[solar_plant]` energy does not fall with distance from the star.
+- `[flight]` lengths and `ships.toml` `speed` values are unitless points
+  (`speed = 5000`–`12500`), not metres per second or a documented scale.
+- Fuel is a flat `fuel_distance` band plus a per-ship constant, not
+  `delta-v * mass`.
+- Combat `attack` / `shield` / `hull` are points. They do not yet cite
+  joules, kilograms or radiator load.
+- No radiator capacity, waste heat or pollution fields in `balance.toml`.
+- Empty `[chains]` recipes still allow the legacy mine-to-stockpile path
+  (mass from a building level with no deposit). Bundled config has recipes;
+  overrides that clear them regress.
+- Market mids (`metal_mean = 1`, `crystal_mean = 2`, `deuterium_mean = 3`)
+  are ordinal, not mass- or energy-based.
+
+When a follow-up Issue closes one of these, remove the bullet here.
+
+## Checking a design Issue
+
+1. Physics and maths: does every new rate, cost, or timer have a quantity
+   (mass, energy, time, distance) and a config key?
+2. Flavour: are species, factions and story still free to be fictional?
+3. Domain: are object types, links and the core action named? Does catch-up
+   use that action?
+4. Simplification: if the numbers skip physics, is the skip in the table
+   above?
+5. Gaps: if the work touches a known gap, it either closes it or leaves it
+   listed.
+
+`docs/balance.md` stays the operator manual for the live file. This page is
+the design constraint on what that file may contain.

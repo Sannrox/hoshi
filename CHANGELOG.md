@@ -4,6 +4,7 @@
 
 ### Added
 
+- Realism guidelines in `docs/realism.md`: physics and maths for production, energy, travel, orbits, heat, combat and prices; flavour stays fictional. Design Issues and `AGENTS.md` point at the file. Known gaps in the live config are listed there as follow-up.
 - NPC factions and diplomacy: traders' guild, pirate clans and a dormant ancient empire in `crates/hoshi-core/data/factions.toml`. Standing moves with trades, raids, conquest and story choices, decays toward 0, and maps onto named tiers (market fee, raid delay, production modifiers). The TUI diplomacy screen shows standing, the next tier and a recent log; Enter pays pirate tribute. Save schema v17 stores standing and the log.
 - NPC resource market: metal, crystal and deuterium trade at mean-reverting prices with fees, slippage and optional cargo for large lots. Story choices can shock a price. The TUI market screen shows mids, a sparkline and a trade preview. Catch-up ticks the walk. Save schema v16 stores prices and history.
 - Story events from `crates/hoshi-core/data/story.toml` (twelve to start). A weighted pick offers one pending event after a delay and cooldown; the TUI overlay shows the text and numbered choices. Pending events survive save/load (schema v15). Ignored too long applies the event's default choice. Adding a row needs no code change.

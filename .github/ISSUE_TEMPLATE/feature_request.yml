@@ -29,6 +29,11 @@ body:
       label: Non-goals
       description: What related behavior is intentionally outside this request?
   - type: textarea
+    id: realism
+    attributes:
+      label: Realism and domain
+      description: Physics and maths follow docs/realism.md (energy, mass, travel, heat, combat and prices). Species, factions and story stay fictional. Name the object types, links and core actions. If the numbers skip physics, say which simplification in that file you are using, or propose adding one.
+  - type: textarea
     id: alternatives
     attributes:
       label: Alternatives considered
@@ -62,4 +67,6 @@ body:
         - label: I omitted hostnames, home paths, and other private environment details.
           required: true
         - label: Game rules stay in hoshi-core, or this explains why the boundary should change.
+          required: true
+        - label: I checked docs/realism.md (physics and maths, domain model, simplifications).
           required: true
