@@ -2,6 +2,8 @@
 
 use crate::balance::BalanceConfig;
 use crate::buildings::{BuildError, BuildJob, BuildingKind, Buildings};
+use crate::research::{ModifierKind, PrereqGap, ResearchError, ResearchJob};
+use std::collections::BTreeMap;
 
 /// Stored resources. Energy is a balance, not a stockpile.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -87,6 +89,8 @@ pub struct GameState {
     pub resources: Resources,
     pub buildings: Buildings,
     pub build_queue: Vec<BuildJob>,
+    pub tech_levels: BTreeMap<String, u32>,
+    pub research: Option<ResearchJob>,
     pub last_tick_unix: u64,
     pub config: BalanceConfig,
 }
@@ -101,20 +105,25 @@ impl GameState {
             resources: config.starting_resources,
             buildings: config.starting_buildings,
             build_queue: Vec::new(),
+            tech_levels: BTreeMap::new(),
+            research: None,
             last_tick_unix: now_unix,
             config,
         }
     }
 
-    /// Advance production and the build queue to `now_unix`. Completions that
-    /// fall in the gap are applied in timestamp order and production is
-    /// recomputed from each completion instant. A backward clock is a no-op.
+    /// Advance production, the build queue and research to `now_unix`.
+    /// Completions that fall in the gap are applied in timestamp order and
+    /// production is recomputed from each completion instant. A backward clock
+    /// is a no-op.
     pub fn catch_up(&mut self, now_unix: u64) {
         if now_unix <= self.last_tick_unix {
             return;
         }
         loop {
-            let Some(done_at) = self.build_queue.first().and_then(|job| job.completes_at) else {
+            let build_at = self.build_queue.first().and_then(|job| job.completes_at);
+            let research_at = self.research.as_ref().map(|job| job.completes_at);
+            let Some(done_at) = min_time(build_at, research_at) else {
                 self.produce_until(now_unix);
                 return;
             };
@@ -123,9 +132,17 @@ impl GameState {
                 return;
             }
             self.produce_until(done_at);
-            let job = self.build_queue.remove(0);
-            self.buildings.increment(job.building);
-            self.start_head(done_at);
+            if build_at == Some(done_at) {
+                let job = self.build_queue.remove(0);
+                self.buildings.increment(job.building);
+                self.start_head(done_at);
+            }
+            if research_at == Some(done_at)
+                && let Some(job) = self.research.take()
+            {
+                let level = self.tech_levels.entry(job.tech).or_insert(0);
+                *level = level.saturating_add(1);
+            }
         }
     }
 
@@ -191,6 +208,113 @@ impl GameState {
             self.start_head(now);
         }
         Ok(job.paid)
+    }
+
+    /// Start the single research slot. Fails if another tech is already running.
+    pub fn start_research(&mut self, tech: &str, now_unix: u64) -> Result<(), ResearchError> {
+        self.catch_up(now_unix);
+        let now = self.last_tick_unix;
+        if let Some(current) = &self.research {
+            return Err(ResearchError::Busy {
+                current: current.tech.clone(),
+            });
+        }
+        let from_level = self.tech_level(tech);
+        let (cost, duration, gaps) = {
+            let spec = self
+                .config
+                .techs
+                .get(tech)
+                .ok_or_else(|| ResearchError::UnknownTech {
+                    id: tech.to_string(),
+                })?;
+            (
+                spec.cost(from_level),
+                spec.duration_secs(from_level),
+                self.research_prereq_gaps(spec),
+            )
+        };
+        if !gaps.is_empty() {
+            return Err(ResearchError::MissingPrerequisites { gaps });
+        }
+        if !self.resources.can_afford(cost) {
+            return Err(ResearchError::InsufficientResources {
+                missing: self.resources.missing(cost),
+                cost,
+            });
+        }
+        self.resources = self.resources.saturating_sub(cost);
+        self.research = Some(ResearchJob {
+            tech: tech.to_string(),
+            from_level,
+            paid: cost,
+            started_at: now,
+            completes_at: now.saturating_add(duration),
+        });
+        Ok(())
+    }
+
+    pub fn cancel_research(&mut self, now_unix: u64) -> Result<Resources, ResearchError> {
+        self.catch_up(now_unix);
+        let job = self.research.take().ok_or(ResearchError::Idle)?;
+        self.resources = self.resources.saturating_add(job.paid);
+        Ok(job.paid)
+    }
+
+    pub fn tech_level(&self, id: &str) -> u32 {
+        self.tech_levels.get(id).copied().unwrap_or(0)
+    }
+
+    /// Sum of `per_level * tech_level` for every tech that contributes `kind`.
+    pub fn modifier(&self, kind: ModifierKind) -> f64 {
+        self.config
+            .techs
+            .iter()
+            .map(|spec| {
+                let level = f64::from(self.tech_level(&spec.id));
+                spec.modifiers
+                    .iter()
+                    .filter(|m| m.kind == kind)
+                    .map(|m| m.per_level * level)
+                    .sum::<f64>()
+            })
+            .sum()
+    }
+
+    pub fn missing_research_prereqs(&self, tech: &str) -> Result<Vec<PrereqGap>, ResearchError> {
+        let spec = self
+            .config
+            .techs
+            .get(tech)
+            .ok_or_else(|| ResearchError::UnknownTech {
+                id: tech.to_string(),
+            })?;
+        Ok(self.research_prereq_gaps(spec))
+    }
+
+    fn research_prereq_gaps(&self, spec: &crate::TechSpec) -> Vec<PrereqGap> {
+        let mut gaps = Vec::new();
+        for pre in &spec.prereq_buildings {
+            let actual = self.buildings.get(pre.building);
+            if actual < pre.level {
+                gaps.push(PrereqGap::Building {
+                    building: pre.building,
+                    required: pre.level,
+                    actual,
+                });
+            }
+        }
+        for pre in &spec.prereq_techs {
+            let actual = self.tech_level(&pre.id);
+            if actual < pre.level {
+                gaps.push(PrereqGap::Tech {
+                    id: pre.id.clone(),
+                    required: pre.level,
+                    actual,
+                });
+            }
+        }
+        gaps
     }
 
     pub fn build_cost(&self, kind: BuildingKind) -> Resources {
@@ -362,6 +486,14 @@ impl GameState {
 
 /// Integrate a constant rate for `hours`, stopping exactly at `cap`.
 /// Never lowers `current` (over-cap stockpiles and zero/negative rates stay put).
+fn min_time(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.min(y)),
+        (Some(x), None) | (None, Some(x)) => Some(x),
+        (None, None) => None,
+    }
+}
+
 fn add_capped(current: f64, rate_per_hour: f64, hours: f64, cap: f64) -> f64 {
     if hours <= 0.0 || rate_per_hour <= 0.0 || current >= cap {
         current
@@ -374,8 +506,10 @@ fn add_capped(current: f64, rate_per_hour: f64, hours: f64, cap: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::BalanceConfig;
+    use crate::TechTree;
     use crate::buildings::{BuildError, BuildingKind};
     use crate::clock::{Clock, FakeClock};
+    use crate::research::{ModifierKind, PrereqGap, ResearchError};
 
     const EPS: f64 = 1e-6;
 
@@ -444,6 +578,7 @@ mod tests {
             buildings: crate::BuildingCatalog::default(),
             max_build_queue: 5,
             robotics_speed_per_level: 1.0,
+            techs: TechTree::empty(),
         }
     }
 
@@ -869,5 +1004,122 @@ mod tests {
         assert_eq!(state.last_tick_unix, 100);
         assert_eq!(state.build_queue[0].started_at, Some(100));
         assert_eq!(state.build_queue[0].completes_at, Some(1_900));
+    }
+
+    fn research_config() -> BalanceConfig {
+        let mut cfg = test_config();
+        cfg.starting_resources = Resources {
+            metal: 10_000.0,
+            crystal: 10_000.0,
+            deuterium: 10_000.0,
+        };
+        cfg.starting_buildings.research_lab = 1;
+        cfg.techs = TechTree::parse(
+            r#"
+[[tech]]
+id = "energy"
+name = "Energy"
+metal = 0.0
+crystal = 10.0
+deuterium = 0.0
+cost_growth = 2.0
+base_seconds = 1800.0
+time_growth = 1.0
+prereq_buildings = [{ building = "research_lab", level = 1 }]
+modifiers = []
+
+[[tech]]
+id = "weapons"
+name = "Weapons"
+metal = 10.0
+crystal = 0.0
+deuterium = 0.0
+cost_growth = 1.0
+base_seconds = 60.0
+time_growth = 1.0
+prereq_buildings = [{ building = "research_lab", level = 1 }]
+modifiers = [{ kind = "weapon_damage", per_level = 0.1 }]
+
+[[tech]]
+id = "laser"
+name = "Laser"
+metal = 10.0
+crystal = 0.0
+deuterium = 0.0
+cost_growth = 1.0
+base_seconds = 60.0
+time_growth = 1.0
+prereq_techs = [{ id = "energy", level = 2 }]
+modifiers = []
+"#,
+        )
+        .unwrap();
+        cfg
+    }
+
+    #[test]
+    fn research_completes_during_offline_catch_up() {
+        let mut one_shot = GameState::with_config(0, research_config());
+        one_shot.start_research("energy", 0).unwrap();
+        assert_eq!(one_shot.research.as_ref().unwrap().completes_at, 1_800);
+        one_shot.catch_up(3_600);
+        assert_eq!(one_shot.tech_level("energy"), 1);
+        assert!(one_shot.research.is_none());
+
+        let mut stepped = GameState::with_config(0, research_config());
+        stepped.start_research("energy", 0).unwrap();
+        for t in 1..=3_600 {
+            stepped.catch_up(t);
+        }
+        assert_eq!(stepped.tech_level("energy"), 1);
+        close(one_shot.resources.crystal, stepped.resources.crystal);
+    }
+
+    #[test]
+    fn modifier_lookup_scales_with_tech_level() {
+        let mut state = GameState::with_config(0, research_config());
+        close(state.modifier(ModifierKind::WeaponDamage), 0.0);
+        state.start_research("weapons", 0).unwrap();
+        state.catch_up(60);
+        close(state.modifier(ModifierKind::WeaponDamage), 0.1);
+        state.start_research("weapons", 60).unwrap();
+        state.catch_up(120);
+        close(state.modifier(ModifierKind::WeaponDamage), 0.2);
+    }
+
+    #[test]
+    fn unavailable_tech_lists_missing_prerequisites() {
+        let state = GameState::with_config(0, research_config());
+        let gaps = state.missing_research_prereqs("laser").unwrap();
+        assert_eq!(
+            gaps,
+            vec![PrereqGap::Tech {
+                id: "energy".into(),
+                required: 2,
+                actual: 0,
+            }]
+        );
+        let err = GameState::with_config(0, research_config())
+            .start_research("laser", 0)
+            .unwrap_err();
+        match err {
+            ResearchError::MissingPrerequisites { gaps } => {
+                assert!(gaps[0].to_string().contains("energy level 2"));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn second_research_is_rejected_while_busy() {
+        let mut state = GameState::with_config(0, research_config());
+        state.start_research("energy", 0).unwrap();
+        let err = state.start_research("weapons", 0).unwrap_err();
+        assert_eq!(
+            err,
+            ResearchError::Busy {
+                current: "energy".into(),
+            }
+        );
     }
 }

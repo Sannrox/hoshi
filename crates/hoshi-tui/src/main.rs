@@ -30,6 +30,18 @@ fn main() -> std::io::Result<()> {
             }
             None => "Build: idle\n\n".to_string(),
         };
+        let research_line = match &state.research {
+            Some(job) => {
+                let left = job.completes_at.saturating_sub(state.last_tick_unix);
+                format!(
+                    "Research: {} -> lv{}  {}s\n\n",
+                    job.tech,
+                    job.from_level + 1,
+                    left
+                )
+            }
+            None => "Research: idle\n\n".to_string(),
+        };
         let text = format!(
             "hoshi (pre-alpha)\n\n\
              Metal:      {:>10.0}  (+{:.0}/h)  cap {:.0}\n\
@@ -37,6 +49,7 @@ fn main() -> std::io::Result<()> {
              Deuterium:  {:>10.0}  (+{:.0}/h)  cap {:.0}\n\
              Energy:     {:>10.0} / {:.0}\n\
              {build_line}\
+             {research_line}\
              Press q to quit.",
             state.resources.metal,
             state.production_per_hour(ResourceKind::Metal),
