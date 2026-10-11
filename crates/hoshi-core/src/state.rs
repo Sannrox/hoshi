@@ -199,6 +199,8 @@ pub struct GameState {
     pub last_story_at: u64,
     pub market: crate::MarketState,
     pub last_market_at: u64,
+    pub diplomacy: crate::DiplomacyState,
+    pub last_diplomacy_at: u64,
     pub config: BalanceConfig,
 }
 
@@ -255,6 +257,8 @@ impl GameState {
             last_story_at: 0,
             market: crate::MarketState::from_config(&config.market),
             last_market_at: 0,
+            diplomacy: crate::DiplomacyState::from_config(&config.diplomacy),
+            last_diplomacy_at: 0,
             config,
         };
         state.apply_prestige_start();
@@ -329,6 +333,7 @@ impl GameState {
                 .min();
             let story_at = self.next_story_at();
             let market_at = self.next_market_at();
+            let diplomacy_at = self.next_diplomacy_at();
             let Some(done_at) = min_time(
                 min_time(
                     min_time(
@@ -344,7 +349,10 @@ impl GameState {
                     min_time(prod_boost_at, research_boost_at),
                     min_time(
                         wonder_at,
-                        min_time(rebuild_at, min_time(story_at, market_at)),
+                        min_time(
+                            rebuild_at,
+                            min_time(story_at, min_time(market_at, diplomacy_at)),
+                        ),
                     ),
                 ),
             ) else {
@@ -416,6 +424,9 @@ impl GameState {
             }
             if market_at == Some(done_at) {
                 self.tick_market(done_at);
+            }
+            if diplomacy_at == Some(done_at) {
+                self.tick_diplomacy(done_at);
             }
             self.resolve_story(done_at);
         }
@@ -1940,7 +1951,27 @@ impl GameState {
                     .sum::<f64>()
             })
             .sum::<f64>();
-        techs + self.wonder_modifier(kind) + self.prestige_output(kind)
+        techs
+            + self.wonder_modifier(kind)
+            + self.prestige_output(kind)
+            + self.diplomacy_modifier(kind)
+    }
+
+    fn diplomacy_modifier(&self, kind: ModifierKind) -> f64 {
+        if !self.config.diplomacy.enabled {
+            return 0.0;
+        }
+        self.config
+            .diplomacy
+            .iter()
+            .map(|faction| {
+                let standing = self.diplomacy.standing(&faction.id);
+                faction
+                    .tier(standing)
+                    .map(|tier| tier.modifier(kind))
+                    .unwrap_or(0.0)
+            })
+            .sum()
     }
 
     fn prestige_output(&self, kind: ModifierKind) -> f64 {
@@ -2444,10 +2475,12 @@ impl GameState {
             .ships
             .saturating_sub(ShipKind::TroopTransport, landed);
         report.attacker_after = self.missions[index].ships;
-        self.push_event(done_at, format_outpost_invade(&report, dest));
         if ground.winner != CombatWinner::Attacker {
+            self.push_event(done_at, format_outpost_invade(&report, dest));
             return false;
         }
+        self.apply_faction_delta("pirates", |f| f.conquest_delta, "conquest", done_at);
+        self.push_event(done_at, format_outpost_invade(&report, dest));
         let outpost = self.outposts.remove(outpost_idx);
         let ships = self.missions.remove(index).ships;
         self.colonies.push(Colony {
@@ -2510,8 +2543,16 @@ impl GameState {
         } else {
             Resources::ZERO
         };
+        let delta_fn: fn(&crate::FactionSpec) -> f64 = if report.winner == CombatWinner::Defender {
+            |f| f.raid_win_delta
+        } else {
+            |f| f.raid_loss_delta
+        };
+        self.apply_faction_delta("pirates", delta_fn, "raid", done_at);
         self.push_event(done_at, format_raid_report(&report, plunder));
-        self.next_raid_at = Some(done_at.saturating_add(self.config.raid.interval_secs.max(1)));
+        self.next_raid_at = self
+            .raid_interval_secs()
+            .map(|wait| done_at.saturating_add(wait));
         report
     }
 
@@ -2719,7 +2760,9 @@ impl GameState {
         if !self.config.market.enabled {
             return Err(crate::MarketError::Disabled);
         }
-        self.market.quote(pay, recv, amount, &self.config.market)
+        let mut cfg = self.config.market.clone();
+        cfg.fee = self.effective_market_fee();
+        self.market.quote(pay, recv, amount, &cfg)
     }
 
     /// Spend `amount` of `pay` for `recv` at the current quote, then move the mid.
@@ -2734,7 +2777,9 @@ impl GameState {
         if !self.config.market.enabled {
             return Err(crate::MarketError::Disabled);
         }
-        let quote = self.market.quote(pay, recv, amount, &self.config.market)?;
+        let mut cfg = self.config.market.clone();
+        cfg.fee = self.effective_market_fee();
+        let quote = self.market.quote(pay, recv, amount, &cfg)?;
         let have = self.resources.get(pay);
         if have + 1e-9 < quote.pay_amount {
             return Err(crate::MarketError::Insufficient {
@@ -2757,6 +2802,7 @@ impl GameState {
         self.resources
             .set(recv, (got + quote.recv_amount).min(cap).max(got));
         self.market.apply_trade_impact(&quote, &self.config.market);
+        self.apply_faction_delta("traders", |f| f.trade_delta, "trade", self.last_tick_unix);
         self.push_event(
             self.last_tick_unix,
             format!(
@@ -2768,6 +2814,184 @@ impl GameState {
             ),
         );
         Ok(quote)
+    }
+
+    fn next_diplomacy_at(&self) -> Option<u64> {
+        if !self.config.diplomacy.enabled {
+            return None;
+        }
+        let due = if self.last_diplomacy_at == 0 {
+            self.prestige
+                .current
+                .started_at
+                .saturating_add(self.config.diplomacy.tick_secs)
+        } else {
+            self.last_diplomacy_at
+                .saturating_add(self.config.diplomacy.tick_secs)
+        };
+        if due > self.last_tick_unix {
+            Some(due)
+        } else {
+            Some(self.last_tick_unix.saturating_add(1))
+        }
+    }
+
+    fn tick_diplomacy(&mut self, at: u64) {
+        if !self.config.diplomacy.enabled {
+            return;
+        }
+        let decay = self.config.diplomacy.decay;
+        let ids: Vec<String> = self.config.diplomacy.iter().map(|f| f.id.clone()).collect();
+        for id in ids {
+            let cur = self.diplomacy.standing(&id);
+            let next = cur + decay * (0.0 - cur);
+            self.diplomacy.set_standing(&id, self.clamp_standing(next));
+        }
+        self.last_diplomacy_at = at;
+        self.sync_raid_schedule_after_standing(at);
+    }
+
+    fn clamp_standing(&self, value: f64) -> f64 {
+        value
+            .max(self.config.diplomacy.min_standing)
+            .min(self.config.diplomacy.max_standing)
+    }
+
+    /// Market fee after the traders' current tier overlay.
+    pub fn effective_market_fee(&self) -> f64 {
+        let mut fee = self.config.market.fee;
+        if self.config.diplomacy.enabled
+            && let Some(traders) = self.config.diplomacy.get("traders")
+            && let Some(tier) = traders.tier(self.diplomacy.standing("traders"))
+        {
+            fee += tier.market_fee;
+        }
+        fee.clamp(0.0, 0.95)
+    }
+
+    fn raid_interval_secs(&self) -> Option<u64> {
+        if !self.config.raid.enabled {
+            return None;
+        }
+        let base = self.config.raid.interval_secs.max(1);
+        if self.config.diplomacy.enabled
+            && let Some(pirates) = self.config.diplomacy.get("pirates")
+            && let Some(tier) = pirates.tier(self.diplomacy.standing("pirates"))
+        {
+            if tier.raid_delay_mult == 0.0 {
+                return None;
+            }
+            return Some(((base as f64) * tier.raid_delay_mult).round().max(1.0) as u64);
+        }
+        Some(base)
+    }
+
+    fn apply_faction_delta(
+        &mut self,
+        id: &str,
+        delta: fn(&crate::FactionSpec) -> f64,
+        reason: &str,
+        at: u64,
+    ) {
+        let Some(spec) = self.config.diplomacy.get(id) else {
+            return;
+        };
+        let amount = delta(spec);
+        self.adjust_standing(id, amount, reason, at);
+    }
+
+    fn adjust_standing(&mut self, id: &str, delta: f64, reason: &str, at: u64) {
+        if !self.config.diplomacy.enabled || delta == 0.0 || !delta.is_finite() {
+            return;
+        }
+        let Some(spec) = self.config.diplomacy.get(id).cloned() else {
+            return;
+        };
+        let before = self.diplomacy.standing(id);
+        let after = self.clamp_standing(before + delta);
+        if (after - before).abs() < 1e-12 {
+            return;
+        }
+        let old_tier = spec.tier(before).map(|t| t.id.clone());
+        let new_tier = spec.tier(after).map(|t| t.id.clone());
+        self.diplomacy.set_standing(id, after);
+        self.diplomacy.log.push(crate::StandingChange {
+            at,
+            faction: id.to_string(),
+            delta: after - before,
+            reason: reason.to_string(),
+        });
+        let cap = self.config.diplomacy.history_len.max(1);
+        if self.diplomacy.log.len() > cap {
+            let drop = self.diplomacy.log.len() - cap;
+            self.diplomacy.log.drain(..drop);
+        }
+        self.push_event(
+            at,
+            format!(
+                "standing: {} {before:.0} -> {after:.0} ({reason})",
+                spec.name
+            ),
+        );
+        if old_tier != new_tier
+            && let Some(tier) = spec.tier(after)
+            && tier.schedule_raid
+            && self.config.raid.enabled
+        {
+            let soon = at.saturating_add(60);
+            self.next_raid_at = Some(match self.next_raid_at {
+                Some(existing) => existing.min(soon),
+                None => soon,
+            });
+        }
+        self.sync_raid_schedule_after_standing(at);
+    }
+
+    pub(crate) fn sync_raid_schedule_after_standing(&mut self, at: u64) {
+        if !self.config.raid.enabled {
+            return;
+        }
+        match (self.next_raid_at, self.raid_interval_secs()) {
+            (_, None) => self.next_raid_at = None,
+            (None, Some(wait)) => {
+                self.next_raid_at = Some(at.saturating_add(wait));
+            }
+            _ => {}
+        }
+    }
+
+    /// Pay configured tribute to raise standing with `faction`.
+    pub fn pay_tribute(
+        &mut self,
+        faction: &str,
+        now_unix: u64,
+    ) -> Result<(), crate::DiplomacyError> {
+        self.catch_up(now_unix);
+        if !self.config.diplomacy.enabled {
+            return Err(crate::DiplomacyError::Disabled);
+        }
+        let spec = self
+            .config
+            .diplomacy
+            .get(faction)
+            .cloned()
+            .ok_or_else(|| crate::DiplomacyError::UnknownFaction(faction.to_string()))?;
+        if spec.tribute_metal <= 0.0 || spec.tribute_delta == 0.0 {
+            return Err(crate::DiplomacyError::NoTribute(spec.name));
+        }
+        let before = self.diplomacy.standing(&spec.id);
+        let after = self.clamp_standing(before + spec.tribute_delta);
+        if (after - before).abs() < 1e-12 {
+            return Err(crate::DiplomacyError::NoStandingChange(spec.name));
+        }
+        if self.resources.metal + 1e-9 < spec.tribute_metal {
+            return Err(crate::DiplomacyError::Insufficient {
+                missing: spec.tribute_metal - self.resources.metal,
+            });
+        }
+        self.resources.metal -= spec.tribute_metal;
+        self.adjust_standing(&spec.id, spec.tribute_delta, "tribute", self.last_tick_unix);
+        Ok(())
     }
 
     fn apply_story_choice(
@@ -2796,7 +3020,7 @@ impl GameState {
                 self.fleet.saturating_sub(kind, delta.unsigned_abs());
             }
         }
-        if choice.schedule_raid && self.config.raid.enabled {
+        if choice.schedule_raid && self.config.raid.enabled && self.raid_interval_secs().is_some() {
             let soon = at.saturating_add(60);
             self.next_raid_at = Some(match self.next_raid_at {
                 Some(existing) => existing.min(soon),
@@ -2816,6 +3040,9 @@ impl GameState {
                 choice.deuterium_price,
                 &self.config.market,
             );
+        }
+        for (faction, delta) in choice.standing {
+            self.adjust_standing(&faction, delta, "story", at);
         }
         self.last_story_at = at;
         self.story_pending = None;
@@ -3584,6 +3811,7 @@ mod tests {
             chains: crate::ChainConfig::default(),
             story: crate::StoryCatalog::empty(),
             market: crate::MarketConfig::inactive(),
+            diplomacy: crate::DiplomacyConfig::inactive(),
         }
     }
 
@@ -4502,9 +4730,12 @@ modifiers = []
         assert!(state.events.is_empty());
         assert_eq!(state.fleet.total(), 0);
         state.catch_up(3600);
-        assert_eq!(state.events.len(), 1);
-        assert!(state.events[0].text.contains("raid:"));
-        assert!(state.events[0].text.contains("plunder"));
+        assert!(state.events.iter().any(|e| e.text.contains("raid:")));
+        assert!(
+            state.events.iter().any(|e| e.text.contains("plunder")),
+            "{:?}",
+            state.events
+        );
         assert!(state.resources.metal > 0.0);
         assert!(state.resources.crystal > 0.0);
         assert_eq!(state.next_raid_at, Some(3600 + 8 * 3600));
@@ -4515,9 +4746,15 @@ modifiers = []
         let mut bridged = GameState::new(0);
         let report = bridged.trigger_raid(0);
         assert_eq!(report.winner, CombatWinner::Attacker);
-        assert_eq!(bridged.events.len(), 1);
-        assert!(bridged.events[0].text.contains("lost"));
-        assert!(bridged.events[0].text.contains("pirates lost"));
+        assert!(bridged.events.iter().any(|e| e.text.contains("lost")));
+        assert!(
+            bridged
+                .events
+                .iter()
+                .any(|e| e.text.contains("pirates lost")),
+            "{:?}",
+            bridged.events
+        );
         assert_eq!(bridged.next_raid_at, Some(8 * 3600));
         let mut again = GameState::new(0);
         again.trigger_raid(0);
@@ -4530,8 +4767,8 @@ modifiers = []
     fn trigger_raid_at_the_scheduled_instant_resolves_once() {
         let mut state = GameState::new(0);
         state.trigger_raid(3600);
-        assert_eq!(state.events.len(), 1);
         assert_eq!(state.events[0].at, 3600);
+        assert!(state.events.iter().any(|e| e.text.contains("raid:")));
         assert_eq!(state.next_raid_at, Some(3600 + 8 * 3600));
     }
 
@@ -4572,7 +4809,7 @@ modifiers = []
         assert!(state.events.is_empty());
         assert_eq!(state.raid_countdown_secs(), Some(1800));
         state.catch_up(7300);
-        assert_eq!(state.events.len(), 1);
+        assert!(state.events.iter().any(|e| e.text.contains("raid:")));
         assert_eq!(state.events[0].at, 7300);
     }
 
@@ -4600,7 +4837,14 @@ modifiers = []
         close(state.resources.metal, 460.0);
         close(state.resources.crystal, 470.0);
         close(state.resources.deuterium, 95.0);
-        assert!(state.events[0].text.contains("plunder M40 C30 D5"));
+        assert!(
+            state
+                .events
+                .iter()
+                .any(|e| e.text.contains("plunder M40 C30 D5")),
+            "{:?}",
+            state.events
+        );
     }
 
     fn colony_config() -> BalanceConfig {
@@ -6030,6 +6274,7 @@ id = "take"
 label = "Take it"
 metal = 40.0
 deuterium_price = -0.12
+standing = { traders = 6.0, pirates = -8.0 }
 [[event.choices]]
 id = "leave"
 label = "Leave it"
@@ -6266,5 +6511,268 @@ label = "Pass"
             "before {before} after {}",
             state.market.deuterium
         );
+    }
+
+    fn diplomacy_config() -> BalanceConfig {
+        let mut cfg = test_config();
+        cfg.diplomacy = crate::DiplomacyConfig::default();
+        cfg.diplomacy.tick_secs = 10;
+        cfg
+    }
+
+    #[test]
+    fn diplomacy_decay_gap_matches_step_by_step() {
+        let cfg = diplomacy_config();
+        let mut gap = GameState::with_config(0, cfg.clone());
+        gap.diplomacy.set_standing("traders", 20.0);
+        gap.diplomacy.set_standing("pirates", -40.0);
+        let mut step = GameState::with_config(0, cfg);
+        step.diplomacy.set_standing("traders", 20.0);
+        step.diplomacy.set_standing("pirates", -40.0);
+        gap.catch_up(100);
+        for t in 1..=100 {
+            step.catch_up(t);
+        }
+        assert_eq!(gap.diplomacy, step.diplomacy);
+        assert_eq!(gap.last_diplomacy_at, step.last_diplomacy_at);
+        assert!(gap.diplomacy.standing("traders") < 20.0);
+        assert!(gap.diplomacy.standing("traders") > 0.0);
+        assert!(gap.diplomacy.standing("pirates") > -40.0);
+        assert!(gap.diplomacy.standing("pirates") < 0.0);
+        assert_eq!(gap.events, step.events);
+        assert!(
+            gap.events.iter().all(|e| !e.text.starts_with("standing:")),
+            "{:?}",
+            gap.events
+        );
+    }
+
+    #[test]
+    fn overdue_first_diplomacy_tick_matches_step_by_step() {
+        let cfg = diplomacy_config();
+        let mut gap = GameState::with_config(0, cfg.clone());
+        gap.last_tick_unix = 20;
+        gap.diplomacy.set_standing("traders", 20.0);
+        let mut step = GameState::with_config(0, cfg);
+        step.last_tick_unix = 20;
+        step.diplomacy.set_standing("traders", 20.0);
+        gap.catch_up(40);
+        for t in 21..=40 {
+            step.catch_up(t);
+        }
+        assert_eq!(gap.diplomacy, step.diplomacy);
+        assert_eq!(gap.last_diplomacy_at, step.last_diplomacy_at);
+        assert_eq!(gap.last_diplomacy_at, 31);
+    }
+
+    #[test]
+    fn traders_tier_sets_market_fee_and_output_modifiers() {
+        let mut cfg = diplomacy_config();
+        cfg.market = crate::MarketConfig {
+            enabled: true,
+            tick_secs: 10_000,
+            cargo_free: 1_000.0,
+            ..crate::MarketConfig::default_active()
+        };
+        let mut state = GameState::with_config(0, cfg);
+        close(state.modifier(ModifierKind::MetalOutput), 0.0);
+        close(state.effective_market_fee(), 0.04);
+        state.diplomacy.set_standing("traders", 20.0);
+        close(state.modifier(ModifierKind::MetalOutput), 0.05);
+        close(state.effective_market_fee(), 0.02);
+        state.diplomacy.set_standing("traders", 50.0);
+        close(state.modifier(ModifierKind::MetalOutput), 0.10);
+        close(state.modifier(ModifierKind::CrystalOutput), 0.05);
+        close(state.effective_market_fee(), 0.01);
+        state.diplomacy.set_standing("traders", -100.0);
+        close(state.modifier(ModifierKind::MetalOutput), 0.0);
+        close(state.effective_market_fee(), 0.08);
+    }
+
+    #[test]
+    fn pirate_tiers_change_raid_delay_and_pact_stops_raids() {
+        let mut cfg = diplomacy_config();
+        cfg.raid.enabled = true;
+        cfg.raid.interval_secs = 100;
+        cfg.raid.first_delay_secs = 100;
+        let mut state = GameState::with_config(0, cfg);
+        assert_eq!(state.raid_interval_secs(), Some(100));
+        state.diplomacy.set_standing("pirates", -100.0);
+        assert_eq!(state.raid_interval_secs(), Some(50));
+        state.diplomacy.set_standing("pirates", 25.0);
+        assert_eq!(state.raid_interval_secs(), Some(200));
+        state.diplomacy.set_standing("pirates", 60.0);
+        assert_eq!(state.raid_interval_secs(), None);
+        state.sync_raid_schedule_after_standing(0);
+        assert_eq!(state.next_raid_at, None);
+        state.diplomacy.set_standing("pirates", 0.0);
+        state.sync_raid_schedule_after_standing(10);
+        assert_eq!(state.next_raid_at, Some(110));
+    }
+
+    #[test]
+    fn ancient_tiers_apply_modifiers_and_awakened_schedules_a_raid() {
+        let mut cfg = diplomacy_config();
+        cfg.raid.enabled = true;
+        cfg.raid.first_delay_secs = 10_000;
+        let mut state = GameState::with_config(0, cfg);
+        assert_eq!(state.next_raid_at, Some(10_000));
+        close(state.modifier(ModifierKind::WeaponDamage), 0.0);
+        state.adjust_standing("ancients", -50.0, "story", 0);
+        close(state.modifier(ModifierKind::WeaponDamage), -0.05);
+        assert_eq!(state.next_raid_at, Some(60));
+        state.diplomacy.set_standing("ancients", 50.0);
+        close(state.modifier(ModifierKind::Espionage), 2.0);
+        close(state.modifier(ModifierKind::EnergyOutput), 0.10);
+    }
+
+    #[test]
+    fn market_trade_changes_trader_standing() {
+        let mut cfg = diplomacy_config();
+        cfg.market = crate::MarketConfig {
+            enabled: true,
+            tick_secs: 10_000,
+            cargo_free: 1_000.0,
+            ..crate::MarketConfig::default_active()
+        };
+        let mut state = GameState::with_config(0, cfg);
+        state.resources.metal = 500.0;
+        state
+            .trade_market(ResourceKind::Metal, ResourceKind::Crystal, 100.0, 0)
+            .unwrap();
+        close(state.diplomacy.standing("traders"), 1.0);
+        assert!(
+            state
+                .diplomacy
+                .log
+                .iter()
+                .any(|c| c.faction == "traders" && c.reason == "trade"),
+            "{:?}",
+            state.diplomacy.log
+        );
+    }
+
+    #[test]
+    fn raid_outcome_changes_pirate_standing() {
+        let mut cfg = diplomacy_config();
+        cfg.raid.enabled = true;
+        cfg.raid.min_ships = 1;
+        cfg.raid.strength_factor = 0.0;
+        let mut loss = GameState::with_config(0, cfg.clone());
+        loss.trigger_raid(0);
+        close(loss.diplomacy.standing("pirates"), -4.0);
+        let mut win = GameState::with_config(0, cfg);
+        win.fleet.add(ShipKind::Battleship, 20);
+        win.trigger_raid(0);
+        close(win.diplomacy.standing("pirates"), -8.0);
+        assert!(
+            win.diplomacy
+                .log
+                .iter()
+                .any(|c| c.faction == "pirates" && c.reason == "raid"),
+            "{:?}",
+            win.diplomacy.log
+        );
+    }
+
+    #[test]
+    fn conquering_an_outpost_changes_pirate_standing() {
+        let mut cfg = outpost_config();
+        cfg.diplomacy = crate::DiplomacyConfig::default();
+        cfg.diplomacy.tick_secs = 10_000;
+        let mut state = GameState::with_config(0, cfg);
+        state.resources.deuterium = 10_000.0;
+        state.tech_levels.insert("colonization".into(), 1);
+        let dest = state.outposts[0].coord;
+        state.outposts[0].defences = Fleet::default();
+        state.fleet.add(ShipKind::TroopTransport, 2);
+        state.launch_invasion(troops(2), dest, 100, 0).unwrap();
+        fly_home(&mut state);
+        close(state.diplomacy.standing("pirates"), -15.0);
+        assert!(
+            state.diplomacy.log.iter().any(|c| c.reason == "conquest"),
+            "{:?}",
+            state.diplomacy.log
+        );
+    }
+
+    #[test]
+    fn story_choice_changes_faction_standing() {
+        let mut cfg = story_config();
+        cfg.diplomacy = crate::DiplomacyConfig::default();
+        let mut state = GameState::with_config(0, cfg);
+        state.rng_seed = 1;
+        state.catch_up(10);
+        state.choose_story("take", 12).unwrap();
+        close(state.diplomacy.standing("traders"), 6.0);
+        close(state.diplomacy.standing("pirates"), -8.0);
+        assert!(
+            state.diplomacy.log.iter().any(|c| c.reason == "story"),
+            "{:?}",
+            state.diplomacy.log
+        );
+    }
+
+    #[test]
+    fn tribute_pays_metal_for_pirate_standing() {
+        let mut state = GameState::with_config(0, diplomacy_config());
+        state.resources.metal = 250.0;
+        state.pay_tribute("pirates", 0).unwrap();
+        close(state.resources.metal, 50.0);
+        close(state.diplomacy.standing("pirates"), 12.0);
+        let err = state.pay_tribute("traders", 0).unwrap_err();
+        assert!(matches!(err, crate::DiplomacyError::NoTribute(_)), "{err}");
+        state.resources.metal = 0.0;
+        let err = state.pay_tribute("pirates", 0).unwrap_err();
+        assert!(
+            matches!(err, crate::DiplomacyError::Insufficient { .. }),
+            "{err}"
+        );
+        state.resources.metal = 500.0;
+        state.diplomacy.set_standing("pirates", 100.0);
+        let err = state.pay_tribute("pirates", 0).unwrap_err();
+        assert!(
+            matches!(err, crate::DiplomacyError::NoStandingChange(_)),
+            "{err}"
+        );
+        close(state.resources.metal, 500.0);
+        close(state.diplomacy.standing("pirates"), 100.0);
+    }
+
+    #[test]
+    fn story_schedule_raid_respects_pirate_pact() {
+        let mut cfg = story_config();
+        cfg.diplomacy = crate::DiplomacyConfig::default();
+        cfg.raid.enabled = true;
+        cfg.raid.first_delay_secs = 10_000;
+        cfg.story = crate::StoryCatalog::parse(
+            r#"
+first_delay_secs = 10
+cooldown_secs = 50
+[[event]]
+id = "alpha"
+title = "Alpha"
+text = "First pick."
+weight = 1
+timeout_secs = 20
+timeout_choice = "leave"
+[[event.choices]]
+id = "take"
+label = "Take it"
+schedule_raid = true
+[[event.choices]]
+id = "leave"
+label = "Leave it"
+"#,
+        )
+        .expect("story pact catalog");
+        let mut state = GameState::with_config(0, cfg);
+        state.rng_seed = 1;
+        state.diplomacy.set_standing("pirates", 60.0);
+        state.sync_raid_schedule_after_standing(0);
+        assert_eq!(state.next_raid_at, None);
+        state.catch_up(10);
+        state.choose_story("take", 12).unwrap();
+        assert_eq!(state.next_raid_at, None);
     }
 }

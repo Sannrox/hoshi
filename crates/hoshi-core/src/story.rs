@@ -67,6 +67,7 @@ pub struct StoryChoice {
     pub metal_price: f64,
     pub crystal_price: f64,
     pub deuterium_price: f64,
+    pub standing: BTreeMap<String, f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -191,6 +192,8 @@ struct FileChoice {
     crystal_price: f64,
     #[serde(default)]
     deuterium_price: f64,
+    #[serde(default)]
+    standing: BTreeMap<String, f64>,
 }
 
 impl FileEvent {
@@ -232,6 +235,7 @@ impl FileEvent {
                 metal_price: raw.metal_price,
                 crystal_price: raw.crystal_price,
                 deuterium_price: raw.deuterium_price,
+                standing: raw.standing,
             });
         }
         if !choice_ids.contains(&self.timeout_choice) {

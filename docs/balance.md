@@ -54,7 +54,11 @@ comparison). `troop_strength` is the landing power of one troop transport.
 
 ## Market
 
-`[market]` is the NPC resource exchange. Each of metal, crystal and deuterium has a mid price in abstract units. A trade of A for B converts at `price_A / price_B`, then a fee and volume slippage. Prices walk toward their means with noise, occasional shocks, and clamps at `min_mult`/`max_mult` of the mean. Story choice fields `metal_price`, `crystal_price` and `deuterium_price` apply a relative shock when the market is on. Trades larger than `cargo_free` need home cargo capacity at least the pay amount. `tick_secs` is the catch-up interval. Set `enabled = false` to freeze the walk.
+`[market]` is the NPC resource exchange. Each of metal, crystal and deuterium has a mid price in abstract units. A trade of A for B converts at `price_A / price_B`, then a fee and volume slippage. Prices walk toward their means with noise, occasional shocks, and clamps at `min_mult`/`max_mult` of the mean. Story choice fields `metal_price`, `crystal_price` and `deuterium_price` apply a relative shock when the market is on. Trades larger than `cargo_free` need home cargo capacity at least the pay amount. `tick_secs` is the catch-up interval. Set `enabled = false` to freeze the walk. The traders' current diplomacy tier adds to `fee` (clamped to `[0, 0.95]`).
+
+## Diplomacy
+
+Factions live in `crates/hoshi-core/data/factions.toml`, not in `balance.toml`. `tick_secs` is the catch-up interval. Each tick moves standing toward 0 by `decay` (`next = standing * (1 - decay)`), clamped to `min_standing`/`max_standing`. A faction's current tier is the highest `min` that standing still meets. Tier rows may add `market_fee`, `raid_delay_mult` (0 stops pirate raids), `schedule_raid`, and the same `modifiers` kinds as research. Trades apply `trade_delta` to traders; a raid win or loss applies `raid_win_delta` / `raid_loss_delta` to pirates; a conquered outpost applies `conquest_delta`. Story choices may set `standing = { traders = 6.0, pirates = -8.0 }`. `tribute_metal` / `tribute_delta` is the diplomacy-screen tribute. Set `enabled = false` to freeze standing.
 
 ## Simulator
 

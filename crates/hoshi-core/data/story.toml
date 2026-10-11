@@ -40,6 +40,7 @@ deuterium = 80.0
 metal = -60.0
 schedule_raid = true
 deuterium_price = -0.12
+standing = { traders = 6.0, pirates = -8.0 }
 
 [[event.choices]]
 id = "refuse"
