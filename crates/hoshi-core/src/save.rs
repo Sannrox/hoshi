@@ -19,7 +19,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 14;
+pub const SCHEMA_VERSION: u32 = 15;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -150,12 +150,13 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM prestige_owned;
          DELETE FROM prestige_runs;
          DELETE FROM prestige;
-         DELETE FROM goods;",
+         DELETE FROM goods;
+         DELETE FROM story_pending;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
-        "INSERT INTO meta (id, last_tick_unix, rng_seed, galaxy_seed, home_kind, home_size, deterministic, outposts_seeded, generator_version)
-         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, 1, ?7)",
+        "INSERT INTO meta (id, last_tick_unix, rng_seed, galaxy_seed, home_kind, home_size, deterministic, outposts_seeded, generator_version, last_story_at)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8)",
         params![
             state.last_tick_unix as i64,
             state.rng_seed as i64,
@@ -164,6 +165,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
             state.home_size as i64,
             i64::from(state.deterministic),
             state.generator_version as i64,
+            state.last_story_at as i64,
         ],
     )?;
     tx.execute(
@@ -340,6 +342,16 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
         tx.execute(
             "INSERT INTO event_log (position, at, text) VALUES (?1, ?2, ?3)",
             params![i as i64, event.at as i64, event.text],
+        )?;
+    }
+    if let Some(pending) = &state.story_pending {
+        tx.execute(
+            "INSERT INTO story_pending (id, event_id, offered_at, timeout_at) VALUES (1, ?1, ?2, ?3)",
+            params![
+                pending.event_id,
+                pending.offered_at as i64,
+                pending.timeout_at as i64,
+            ],
         )?;
     }
     for (i, colony) in state.colonies.iter().enumerate() {
@@ -533,7 +545,7 @@ fn insert_build_queue(
 /// Reconstruct player state. `config` is the caller's rules; it is not stored in the save.
 pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState, SaveError> {
     let mut state = GameState::with_config(0, config);
-    let (last_tick, rng_seed, galaxy_seed, home_kind, home_size, deterministic, outposts_seeded, generator_version): (
+    let (last_tick, rng_seed, galaxy_seed, home_kind, home_size, deterministic, outposts_seeded, generator_version, last_story_at): (
         i64,
         i64,
         i64,
@@ -542,17 +554,19 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         i64,
         i64,
         i64,
+        i64,
     ) = conn
         .query_row(
-            "SELECT last_tick_unix, rng_seed, galaxy_seed, home_kind, home_size, deterministic, outposts_seeded, generator_version FROM meta WHERE id = 1",
+            "SELECT last_tick_unix, rng_seed, galaxy_seed, home_kind, home_size, deterministic, outposts_seeded, generator_version, last_story_at FROM meta WHERE id = 1",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?)),
         )
         .optional()?
         .ok_or(SaveError::Corrupt("missing meta row"))?;
     state.last_tick_unix = unix_ts(last_tick)?;
     state.rng_seed = rng_seed as u64;
     state.galaxy_seed = galaxy_seed as u64;
+    state.last_story_at = unix_ts(last_story_at)?;
     state.generator_version = u32_field(generator_version, "generator version")?;
     if !crate::supports_galaxy_generator(state.generator_version) {
         return Err(SaveError::GeneratorTooNew {
@@ -855,6 +869,28 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             text,
         });
     }
+
+    state.story_pending = match conn
+        .query_row(
+            "SELECT event_id, offered_at, timeout_at FROM story_pending WHERE id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .optional()?
+    {
+        Some((event_id, offered_at, timeout_at)) => Some(crate::PendingStory {
+            event_id,
+            offered_at: unix_ts(offered_at)?,
+            timeout_at: unix_ts(timeout_at)?,
+        }),
+        None => None,
+    };
 
     let mut stmt = conn.prepare(
         "SELECT planet_id, galaxy, system, position, kind, size, rare FROM colonies ORDER BY planet_id",
@@ -1407,6 +1443,7 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "prestige_owned" => "SELECT COUNT(*) FROM prestige_owned",
         "prestige_runs" => "SELECT COUNT(*) FROM prestige_runs",
         "goods" => "SELECT COUNT(*) FROM goods",
+        "story_pending" => "SELECT COUNT(*) FROM story_pending",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -1436,7 +1473,8 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "prestige")?
         + count_rows(conn, "prestige_owned")?
         + count_rows(conn, "prestige_runs")?
-        + count_rows(conn, "goods")?)
+        + count_rows(conn, "goods")?
+        + count_rows(conn, "story_pending")?)
 }
 
 fn migrate(conn: &Connection) -> Result<(), SaveError> {
@@ -1488,6 +1526,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 14 {
         migrate_v14(conn)?;
+    }
+    if found < 15 {
+        migrate_v15(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -1879,6 +1920,26 @@ fn migrate_v14(conn: &Connection) -> Result<(), SaveError> {
             [],
         )?;
     }
+    Ok(())
+}
+
+fn migrate_v15(conn: &Connection) -> Result<(), SaveError> {
+    if !meta_has_column(conn, "last_story_at")? {
+        conn.execute(
+            "ALTER TABLE meta ADD COLUMN last_story_at INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS story_pending (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            event_id TEXT NOT NULL,
+            offered_at INTEGER NOT NULL,
+            timeout_at INTEGER NOT NULL
+        );
+        ",
+    )?;
     Ok(())
 }
 
@@ -2286,6 +2347,8 @@ mod tests {
         assert_eq!(loaded.resources.metal, 10.0);
         assert!(loaded.goods.is_empty());
         assert_eq!(loaded.generator_version, 1);
+        assert_eq!(loaded.last_story_at, 0);
+        assert!(loaded.story_pending.is_none());
         assert_eq!(loaded.buildings.metal_mine, 4);
         assert_eq!(loaded.tech_level("weapons"), 3);
         assert_eq!(loaded.activity, crate::ActivityTracker::default());
@@ -2694,6 +2757,27 @@ mod tests {
         assert_eq!(loaded.generator_version, 1);
         assert_eq!(loaded, state);
         assert!(meta_has_column(&conn, "generator_version").unwrap());
+    }
+
+    #[test]
+    fn migrate_v15_retries_and_round_trips_pending_story() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v15(&conn).unwrap();
+        migrate_v15(&conn).unwrap();
+        let mut state = GameState::new(3);
+        state.last_story_at = 11;
+        state.story_pending = Some(crate::PendingStory {
+            event_id: "derelict".into(),
+            offered_at: 5,
+            timeout_at: 90,
+        });
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.last_story_at, 11);
+        assert_eq!(loaded.story_pending, state.story_pending);
+        assert_eq!(loaded, state);
+        assert!(meta_has_column(&conn, "last_story_at").unwrap());
+        assert_eq!(count_rows(&conn, "story_pending").unwrap(), 1);
     }
 
     #[test]

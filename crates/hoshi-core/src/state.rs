@@ -170,6 +170,8 @@ pub struct GameState {
     pub completed_wonders: Vec<String>,
     pub outposts: Vec<Outpost>,
     pub prestige: Prestige,
+    pub story_pending: Option<crate::PendingStory>,
+    pub last_story_at: u64,
     pub config: BalanceConfig,
 }
 
@@ -222,6 +224,8 @@ impl GameState {
             completed_wonders: Vec::new(),
             outposts,
             prestige: Prestige::new(now_unix),
+            story_pending: None,
+            last_story_at: 0,
             config,
         };
         state.apply_prestige_start();
@@ -294,6 +298,7 @@ impl GameState {
                 .iter()
                 .map(|o| o.next_rebuild_at(self.config.outposts.rebuild_secs))
                 .min();
+            let story_at = self.next_story_at();
             let Some(done_at) = min_time(
                 min_time(
                     min_time(
@@ -307,14 +312,16 @@ impl GameState {
                 ),
                 min_time(
                     min_time(prod_boost_at, research_boost_at),
-                    min_time(wonder_at, rebuild_at),
+                    min_time(wonder_at, min_time(rebuild_at, story_at)),
                 ),
             ) else {
                 self.produce_until(now_unix);
+                self.resolve_story(now_unix);
                 return;
             };
             if done_at > now_unix {
                 self.produce_until(now_unix);
+                self.resolve_story(now_unix);
                 return;
             }
             self.produce_until(done_at);
@@ -374,6 +381,7 @@ impl GameState {
             if rebuild_at == Some(done_at) {
                 self.rebuild_outposts_at(done_at);
             }
+            self.resolve_story(done_at);
         }
     }
 
@@ -2515,6 +2523,168 @@ impl GameState {
         }
     }
 
+    /// Next timeout or first eligible offer after `last_tick_unix`.
+    fn next_story_at(&self) -> Option<u64> {
+        if self.config.story.is_empty() {
+            return None;
+        }
+        let at = if let Some(pending) = &self.story_pending {
+            pending.timeout_at
+        } else {
+            self.story_next_offer_at()?
+        };
+        if at > self.last_tick_unix {
+            Some(at)
+        } else {
+            Some(self.last_tick_unix.saturating_add(1))
+        }
+    }
+
+    /// Earliest time an event can be offered with the current fighter count.
+    fn story_next_offer_at(&self) -> Option<u64> {
+        let started = self.prestige.current.started_at;
+        let gate = if self.last_story_at == 0 {
+            started.saturating_add(self.config.story.first_delay_secs)
+        } else {
+            self.last_story_at
+                .saturating_add(self.config.story.cooldown_secs)
+        };
+        let fighters = self.fleet.get(ShipKind::LightFighter);
+        let mut soonest: Option<u64> = None;
+        for event in self.config.story.iter() {
+            if fighters < event.min_fighters {
+                continue;
+            }
+            let ready = gate.max(started.saturating_add(event.min_elapsed_secs));
+            soonest = Some(match soonest {
+                Some(t) => t.min(ready),
+                None => ready,
+            });
+        }
+        soonest
+    }
+
+    /// Apply a timed-out default, then offer at most one pending event.
+    fn resolve_story(&mut self, now: u64) {
+        if let Some(pending) = self.story_pending.clone()
+            && now >= pending.timeout_at
+        {
+            let choice = self
+                .config
+                .story
+                .get(&pending.event_id)
+                .map(|e| e.timeout_choice.clone());
+            if let Some(choice) = choice {
+                let _ = self.apply_story_choice(&pending.event_id, &choice, pending.timeout_at);
+            } else {
+                self.story_pending = None;
+            }
+        }
+        if self.story_pending.is_some() {
+            return;
+        }
+        self.offer_story(now);
+    }
+
+    fn offer_story(&mut self, now: u64) {
+        let started = self.prestige.current.started_at;
+        if now < started.saturating_add(self.config.story.first_delay_secs) {
+            return;
+        }
+        if self.last_story_at > 0
+            && now
+                < self
+                    .last_story_at
+                    .saturating_add(self.config.story.cooldown_secs)
+        {
+            return;
+        }
+        let fighters = self.fleet.get(ShipKind::LightFighter);
+        let elapsed = now.saturating_sub(started);
+        let eligible: Vec<(String, u32, u64)> = self
+            .config
+            .story
+            .iter()
+            .filter(|e| elapsed >= e.min_elapsed_secs && fighters >= e.min_fighters)
+            .map(|e| (e.id.clone(), e.weight, e.timeout_secs))
+            .collect();
+        if eligible.is_empty() {
+            return;
+        }
+        let total: u64 = eligible.iter().map(|(_, w, _)| u64::from(*w)).sum();
+        if total == 0 {
+            return;
+        }
+        let mut pick = next_u64(&mut self.rng_seed) % total;
+        let mut chosen = &eligible[0];
+        for row in &eligible {
+            let w = u64::from(row.1);
+            if pick < w {
+                chosen = row;
+                break;
+            }
+            pick -= w;
+        }
+        self.story_pending = Some(crate::PendingStory {
+            event_id: chosen.0.clone(),
+            offered_at: now,
+            timeout_at: now.saturating_add(chosen.2),
+        });
+    }
+
+    /// Resolve the pending event with `choice_id`. Offline timeouts use the event's default.
+    pub fn choose_story(
+        &mut self,
+        choice_id: &str,
+        now_unix: u64,
+    ) -> Result<(), crate::StoryError> {
+        self.catch_up(now_unix);
+        let pending = self
+            .story_pending
+            .clone()
+            .ok_or(crate::StoryError::NoPending)?;
+        self.apply_story_choice(&pending.event_id, choice_id, self.last_tick_unix)
+    }
+
+    fn apply_story_choice(
+        &mut self,
+        event_id: &str,
+        choice_id: &str,
+        at: u64,
+    ) -> Result<(), crate::StoryError> {
+        let event = self
+            .config
+            .story
+            .get(event_id)
+            .ok_or_else(|| crate::StoryError::UnknownChoice(event_id.to_string()))?;
+        let choice = event
+            .choice(choice_id)
+            .ok_or_else(|| crate::StoryError::UnknownChoice(choice_id.to_string()))?
+            .clone();
+        let title = event.title.clone();
+        self.resources.metal = (self.resources.metal + choice.metal).max(0.0);
+        self.resources.crystal = (self.resources.crystal + choice.crystal).max(0.0);
+        self.resources.deuterium = (self.resources.deuterium + choice.deuterium).max(0.0);
+        for (kind, delta) in choice.ships {
+            if delta >= 0 {
+                self.fleet.add(kind, delta as u32);
+            } else {
+                self.fleet.saturating_sub(kind, delta.unsigned_abs());
+            }
+        }
+        if choice.schedule_raid && self.config.raid.enabled {
+            let soon = at.saturating_add(60);
+            self.next_raid_at = Some(match self.next_raid_at {
+                Some(existing) => existing.min(soon),
+                None => soon,
+            });
+        }
+        self.last_story_at = at;
+        self.story_pending = None;
+        self.push_event(at, format!("story: {title} → {}", choice.label));
+        Ok(())
+    }
+
     fn complete_one_ship(&mut self, done_at: u64) {
         let Some(job) = self.ship_queue.first() else {
             return;
@@ -3274,6 +3444,7 @@ mod tests {
             outposts: crate::OutpostConfig::default(),
             prestige: crate::PrestigeConfig::default(),
             chains: crate::ChainConfig::default(),
+            story: crate::StoryCatalog::empty(),
         }
     }
 
@@ -5697,5 +5868,159 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         });
         state.completed_wonders.push("stellar_gate".into());
         assert_eq!(state.prestige_score(), base + 5 + 11);
+    }
+
+    fn story_config() -> BalanceConfig {
+        let mut cfg = test_config();
+        cfg.starting_buildings.metal_mine = 0;
+        cfg.starting_buildings.crystal_mine = 0;
+        cfg.starting_buildings.solar_plant = 0;
+        cfg.story = crate::StoryCatalog::parse(
+            r#"
+first_delay_secs = 10
+cooldown_secs = 50
+[[event]]
+id = "alpha"
+title = "Alpha"
+text = "First pick."
+weight = 1
+timeout_secs = 20
+timeout_choice = "leave"
+[[event.choices]]
+id = "take"
+label = "Take it"
+metal = 40.0
+[[event.choices]]
+id = "leave"
+label = "Leave it"
+[[event]]
+id = "beta"
+title = "Beta"
+text = "Needs fighters."
+weight = 1
+timeout_secs = 20
+timeout_choice = "pass"
+min_fighters = 4
+[[event.choices]]
+id = "hire"
+label = "Hire"
+ships = { light_fighter = 1 }
+[[event.choices]]
+id = "pass"
+label = "Pass"
+"#,
+        )
+        .expect("story test catalog");
+        cfg
+    }
+
+    #[test]
+    fn same_seed_offers_the_same_story_after_the_first_delay() {
+        let cfg = story_config();
+        let mut a = GameState::with_config(0, cfg.clone());
+        a.rng_seed = 42;
+        let mut b = GameState::with_config(0, cfg);
+        b.rng_seed = 42;
+        a.catch_up(10);
+        b.catch_up(10);
+        let pending = a.story_pending.clone().expect("offered");
+        assert_eq!(pending.event_id, "alpha");
+        assert_eq!(pending.offered_at, 10);
+        assert_eq!(pending.timeout_at, 30);
+        assert_eq!(a.story_pending, b.story_pending);
+        assert_eq!(a.rng_seed, b.rng_seed);
+    }
+
+    #[test]
+    fn ignored_story_applies_the_timeout_choice() {
+        let mut state = GameState::with_config(0, story_config());
+        state.rng_seed = 1;
+        state.catch_up(10);
+        assert_eq!(
+            state.story_pending.as_ref().map(|p| p.event_id.as_str()),
+            Some("alpha")
+        );
+        state.catch_up(30);
+        assert!(state.story_pending.is_none());
+        close(state.resources.metal, 0.0);
+        assert_eq!(state.last_story_at, 30);
+        assert!(
+            state
+                .events
+                .iter()
+                .any(|e| e.text == "story: Alpha → Leave it"),
+            "{:?}",
+            state.events
+        );
+    }
+
+    #[test]
+    fn choose_story_applies_the_selected_effect() {
+        let mut state = GameState::with_config(0, story_config());
+        state.rng_seed = 1;
+        state.catch_up(10);
+        state.choose_story("take", 12).unwrap();
+        close(state.resources.metal, 40.0);
+        assert!(state.story_pending.is_none());
+        assert_eq!(state.last_story_at, 12);
+        assert!(
+            state
+                .events
+                .iter()
+                .any(|e| e.text == "story: Alpha → Take it"),
+            "{:?}",
+            state.events
+        );
+    }
+
+    #[test]
+    fn story_offer_and_timeout_match_step_by_step_catch_up() {
+        let cfg = story_config();
+        let mut gap = GameState::with_config(0, cfg.clone());
+        gap.rng_seed = 7;
+        gap.catch_up(45);
+        let mut step = GameState::with_config(0, cfg);
+        step.rng_seed = 7;
+        for t in 1..=45 {
+            step.catch_up(t);
+        }
+        assert_eq!(gap.story_pending, step.story_pending);
+        assert_eq!(gap.last_story_at, step.last_story_at);
+        assert_eq!(gap.events, step.events);
+        assert_eq!(gap.rng_seed, step.rng_seed);
+        assert_eq!(gap.resources, step.resources);
+    }
+
+    #[test]
+    fn overdue_first_story_offers_on_the_next_tick_matching_step_by_step() {
+        let cfg = story_config();
+        let mut gap = GameState::with_config(0, cfg.clone());
+        gap.rng_seed = 9;
+        gap.last_tick_unix = 20;
+        let mut step = GameState::with_config(0, cfg);
+        step.rng_seed = 9;
+        step.last_tick_unix = 20;
+        gap.catch_up(40);
+        for t in 21..=40 {
+            step.catch_up(t);
+        }
+        let pending = gap.story_pending.clone().expect("offered");
+        assert_eq!(pending.offered_at, 21);
+        assert_eq!(gap.story_pending, step.story_pending);
+        assert_eq!(gap.rng_seed, step.rng_seed);
+        assert_eq!(gap.last_story_at, step.last_story_at);
+    }
+
+    #[test]
+    fn prestige_reset_clears_a_pending_story() {
+        let mut state = GameState::with_config(0, story_config());
+        state.rng_seed = 1;
+        state.catch_up(10);
+        assert!(state.story_pending.is_some());
+        let config = state.config.clone();
+        let mut next = GameState::with_config(50, config);
+        next.prestige = state.prestige.clone();
+        assert!(next.story_pending.is_none());
+        assert_eq!(next.last_story_at, 0);
     }
 }

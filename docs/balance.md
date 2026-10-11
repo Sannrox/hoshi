@@ -3,7 +3,8 @@
 Production, construction, raids, bridge-effect sizes, expedition weights, flight,
 starting stockpiles, and staged wonders live in `crates/hoshi-core/data/balance.toml`.
 The file is embedded and validated on `BalanceConfig::default()`. Research stays in
-`research.toml`; ships stay in `ships.toml`. Wonder ids must be unique; each wonder
+`research.toml`; ships stay in `ships.toml`; story events stay in `story.toml`.
+Wonder ids must be unique; each wonder
 needs at least one stage with `duration_secs > 0` and a positive resource cost.
 
 Override the bundled file at runtime:
