@@ -141,6 +141,57 @@ max_build_queue = 5
 max_ship_queue = 5
 robotics_speed_per_level = 1.0
 
+[prestige]
+# Reset is allowed with a completed wonder, or when score reaches min_score.
+min_score = 80
+colony_weight = 8
+wonder_weight = 40
+points_per_currency = 20
+
+[[prestige.bonuses]]
+id = "starter_cache"
+name = "Starter cache"
+cost = 1
+starting_metal = 250.0
+starting_crystal = 100.0
+starting_deuterium = 50.0
+production = 0.0
+research = 0.0
+queue_slots = 0
+
+[[prestige.bonuses]]
+id = "mine_focus"
+name = "Mine focus"
+cost = 2
+starting_metal = 0.0
+starting_crystal = 0.0
+starting_deuterium = 0.0
+production = 0.08
+research = 0.0
+queue_slots = 0
+
+[[prestige.bonuses]]
+id = "lab_focus"
+name = "Lab focus"
+cost = 2
+starting_metal = 0.0
+starting_crystal = 0.0
+starting_deuterium = 0.0
+production = 0.0
+research = 0.08
+queue_slots = 0
+
+[[prestige.bonuses]]
+id = "extra_queue"
+name = "Extra queue"
+cost = 3
+starting_metal = 0.0
+starting_crystal = 0.0
+starting_deuterium = 0.0
+production = 0.0
+research = 0.0
+queue_slots = 1
+
 [starting_resources]
 metal = 500.0
 crystal = 500.0

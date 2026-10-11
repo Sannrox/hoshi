@@ -7,6 +7,7 @@ use crate::expedition::{ExpeditionConfig, ExpeditionWeights};
 use crate::fleets::FlightConfig;
 use crate::outposts::{OutpostConfig, RarePlanetBonus};
 use crate::planets::{PlanetTypeBonus, PlanetTypeCatalog};
+use crate::prestige::{PrestigeBonusSpec, PrestigeConfig};
 use crate::research::{ModifierKind, TechPrereq};
 use crate::ships::ShipKind;
 use crate::state::Resources;
@@ -314,6 +315,7 @@ pub struct BalanceConfig {
     pub pacing: PacingTargets,
     pub wonders: Vec<WonderSpec>,
     pub outposts: OutpostConfig,
+    pub prestige: PrestigeConfig,
 }
 
 impl BalanceConfig {
@@ -363,6 +365,8 @@ struct File {
     wonders: Vec<FileWonder>,
     #[serde(default)]
     outposts: FileOutposts,
+    #[serde(default)]
+    prestige: FilePrestige,
 }
 
 #[derive(Deserialize)]
@@ -415,6 +419,64 @@ fn default_outpost_troop_strength() -> u32 {
 }
 fn default_outpost_rare_chance() -> f64 {
     0.25
+}
+
+#[derive(Deserialize)]
+struct FilePrestige {
+    #[serde(default = "default_prestige_min_score")]
+    min_score: u32,
+    #[serde(default = "default_prestige_colony_weight")]
+    colony_weight: u32,
+    #[serde(default = "default_prestige_wonder_weight")]
+    wonder_weight: u32,
+    #[serde(default = "default_prestige_points")]
+    points_per_currency: u32,
+    #[serde(default)]
+    bonuses: Vec<FilePrestigeBonus>,
+}
+
+fn default_prestige_min_score() -> u32 {
+    80
+}
+fn default_prestige_colony_weight() -> u32 {
+    8
+}
+fn default_prestige_wonder_weight() -> u32 {
+    40
+}
+fn default_prestige_points() -> u32 {
+    20
+}
+
+impl Default for FilePrestige {
+    fn default() -> Self {
+        Self {
+            min_score: default_prestige_min_score(),
+            colony_weight: default_prestige_colony_weight(),
+            wonder_weight: default_prestige_wonder_weight(),
+            points_per_currency: default_prestige_points(),
+            bonuses: Vec::new(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct FilePrestigeBonus {
+    id: String,
+    name: String,
+    cost: u32,
+    #[serde(default)]
+    starting_metal: f64,
+    #[serde(default)]
+    starting_crystal: f64,
+    #[serde(default)]
+    starting_deuterium: f64,
+    #[serde(default)]
+    production: f64,
+    #[serde(default)]
+    research: f64,
+    #[serde(default)]
+    queue_slots: u32,
 }
 
 impl Default for FileOutposts {
@@ -873,6 +935,34 @@ impl File {
                         .collect(),
                 })
                 .collect(),
+            prestige: {
+                let bonuses = if self.prestige.bonuses.is_empty() {
+                    PrestigeConfig::default().bonuses
+                } else {
+                    self.prestige
+                        .bonuses
+                        .into_iter()
+                        .map(|row| PrestigeBonusSpec {
+                            id: row.id,
+                            name: row.name,
+                            cost: row.cost,
+                            starting_metal: row.starting_metal,
+                            starting_crystal: row.starting_crystal,
+                            starting_deuterium: row.starting_deuterium,
+                            production: row.production,
+                            research: row.research,
+                            queue_slots: row.queue_slots,
+                        })
+                        .collect()
+                };
+                PrestigeConfig {
+                    min_score: self.prestige.min_score,
+                    colony_weight: self.prestige.colony_weight,
+                    wonder_weight: self.prestige.wonder_weight,
+                    points_per_currency: self.prestige.points_per_currency,
+                    bonuses,
+                }
+            },
         };
         config.validate()?;
         Ok(config)
@@ -1097,6 +1187,67 @@ impl BalanceConfig {
         }
         nonneg_finite("outposts.strength_factor", self.outposts.strength_factor)?;
         nonneg_finite("outposts.garrison_factor", self.outposts.garrison_factor)?;
+        if self.prestige.min_score < 1 {
+            return Err(BalanceError::Invalid(
+                "prestige.min_score must be >= 1".into(),
+            ));
+        }
+        if self.prestige.points_per_currency < 1 {
+            return Err(BalanceError::Invalid(
+                "prestige.points_per_currency must be >= 1".into(),
+            ));
+        }
+        let mut seen_bonus = std::collections::HashSet::new();
+        if self.prestige.bonuses.is_empty() {
+            return Err(BalanceError::Invalid(
+                "prestige needs at least one bonus".into(),
+            ));
+        }
+        for spec in &self.prestige.bonuses {
+            if spec.id.is_empty() {
+                return Err(BalanceError::Invalid(
+                    "prestige bonus id must not be empty".into(),
+                ));
+            }
+            if !seen_bonus.insert(&spec.id) {
+                return Err(BalanceError::Invalid(format!(
+                    "duplicate prestige bonus id {}",
+                    spec.id
+                )));
+            }
+            if spec.cost < 1 {
+                return Err(BalanceError::Invalid(format!(
+                    "prestige bonus {} cost must be >= 1",
+                    spec.id
+                )));
+            }
+            nonneg_finite(
+                &format!("prestige.{} starting_metal", spec.id),
+                spec.starting_metal,
+            )?;
+            nonneg_finite(
+                &format!("prestige.{} starting_crystal", spec.id),
+                spec.starting_crystal,
+            )?;
+            nonneg_finite(
+                &format!("prestige.{} starting_deuterium", spec.id),
+                spec.starting_deuterium,
+            )?;
+            nonneg_finite(&format!("prestige.{} production", spec.id), spec.production)?;
+            nonneg_finite(&format!("prestige.{} research", spec.id), spec.research)?;
+            if spec.production <= 0.0
+                && spec.research <= 0.0
+                && spec.queue_slots == 0
+                && spec.starting_metal <= 0.0
+                && spec.starting_crystal <= 0.0
+                && spec.starting_deuterium <= 0.0
+            {
+                return Err(BalanceError::Invalid(format!(
+                    "prestige bonus {} needs an effect",
+                    spec.id
+                )));
+            }
+        }
         nonneg_finite("outposts.variance", self.outposts.variance)?;
         if self.outposts.variance > 1.0 {
             return Err(BalanceError::Invalid(
@@ -1217,6 +1368,7 @@ mod tests {
             vec![(BuildingKind::RoboticsFactory, 1)]
         );
         assert_eq!(cfg.outposts, crate::OutpostConfig::default());
+        assert_eq!(cfg.prestige, crate::PrestigeConfig::default());
         assert_eq!(cfg.wonders.len(), 3);
         assert_eq!(cfg.wonders[0].id, "dyson_ring");
         assert_eq!(cfg.wonders[0].prereq_techs[0].id, "energy");

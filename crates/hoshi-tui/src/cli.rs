@@ -42,6 +42,11 @@ enum Command {
     Tick {
         advance: u64,
     },
+    Prestige,
+    PrestigeBuy {
+        id: String,
+    },
+    PrestigeReset,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -276,6 +281,24 @@ fn apply(state: &mut GameState, now: u64, command: &Command) -> Result<Value, Cl
             state.catch_up(clock.now_unix());
             Ok(ok_state(state, "advanced"))
         }
+        Command::Prestige => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            Ok(ok_state(state, "prestige"))
+        }
+        Command::PrestigeBuy { id } => {
+            state
+                .buy_prestige_bonus(id, now)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, "bought prestige bonus"))
+        }
+        Command::PrestigeReset => {
+            state
+                .prestige_reset(now)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, "prestiged"))
+        }
     }
 }
 
@@ -380,6 +403,14 @@ fn state_value(state: &GameState) -> Value {
         })).collect::<Vec<_>>(),
         "events": events,
         "raid": raid,
+        "prestige": {
+            "currency": state.prestige.currency,
+            "lifetime": state.prestige.lifetime,
+            "run": state.prestige.current.index,
+            "score": state.prestige_score(),
+            "eligible": state.can_prestige(),
+            "owned": state.prestige.owned,
+        },
     })
 }
 
@@ -490,6 +521,24 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
                 ships,
             })
         }
+        "prestige" => match args.get(1).map(String::as_str) {
+            None => {
+                expect_end(args, 1)?;
+                Ok(Command::Prestige)
+            }
+            Some("buy") => {
+                let id = nth(args, 2, "prestige buy <id>")?.to_string();
+                expect_end(args, 3)?;
+                Ok(Command::PrestigeBuy { id })
+            }
+            Some("reset") => {
+                expect_end(args, 2)?;
+                Ok(Command::PrestigeReset)
+            }
+            Some(other) => Err(CliError::Invalid(format!(
+                "unknown prestige command {other}"
+            ))),
+        },
         "tick" => {
             let mut advance = None;
             let mut i = 1;

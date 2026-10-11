@@ -17,12 +17,23 @@ use crate::outposts::{
     Outpost, RarePlanetBonus, generate_outposts, scaled_defence, scaled_garrison,
 };
 use crate::planets::{Colony, PlanetType, planet_profile};
+use crate::prestige::{
+    PRESTIGE_KEPT, PRESTIGE_LOST, Prestige, PrestigeError, PrestigePreview, RunStats,
+};
 use crate::research::{ModifierKind, PrereqGap, ResearchError, ResearchJob};
 use crate::ships::{Fleet, ShipError, ShipJob, ShipKind, ShipStats};
 use crate::wonders::{WonderError, WonderJob};
 use std::collections::BTreeMap;
 
 const EVENT_LOG_CAP: usize = 32;
+
+struct BuildTarget<'a> {
+    buildings: Buildings,
+    resources: &'a mut Resources,
+    queue: &'a mut Vec<BuildJob>,
+    robotics: u32,
+    cap: usize,
+}
 
 /// A timestamped line for the TUI and save. Combat reports land here.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,6 +151,7 @@ pub struct GameState {
     pub wonder: Option<WonderJob>,
     pub completed_wonders: Vec<String>,
     pub outposts: Vec<Outpost>,
+    pub prestige: Prestige,
     pub config: BalanceConfig,
 }
 
@@ -152,7 +164,7 @@ impl GameState {
         let galaxy_seed = 0;
         let (home_kind, home_size) = planet_profile(galaxy_seed, Coord::HOME);
         let outposts = generate_outposts(galaxy_seed, now_unix, &config.outposts, &[Coord::HOME]);
-        Self {
+        let mut state = Self {
             resources: config.starting_resources,
             buildings: config.starting_buildings,
             build_queue: Vec::new(),
@@ -182,8 +194,11 @@ impl GameState {
             wonder: None,
             completed_wonders: Vec::new(),
             outposts,
+            prestige: Prestige::new(now_unix),
             config,
-        }
+        };
+        state.apply_prestige_start();
+        state
     }
 
     /// New game whose RNG and planet rolls follow `seed`. Marks the save deterministic.
@@ -304,10 +319,13 @@ impl GameState {
                 self.activity.prod_boost_factor = 0.0;
             }
             if research_boost_at == Some(done_at) {
-                let old = (1.0 + self.activity.research_boost_factor).max(1.0);
+                // last_tick already equals `until`, so research_speed() has dropped
+                // the activity term. Reconstruct the composed speed that was in effect.
+                let old = self
+                    .compose_research_speed((1.0 + self.activity.research_boost_factor).max(1.0));
                 self.activity.research_boost_until = None;
                 self.activity.research_boost_factor = 0.0;
-                self.rescale_research(done_at, old, 1.0);
+                self.rescale_research(done_at, old, self.research_speed());
             }
             if wonder_at == Some(done_at) {
                 self.complete_wonder_stage(done_at);
@@ -377,16 +395,20 @@ impl GameState {
     ) -> Result<(), BuildError> {
         self.catch_up(now_unix);
         let now = self.last_tick_unix;
+        let cap = self.build_queue_cap();
         if coord == self.home {
             let buildings = self.buildings;
             let robotics = buildings.robotics_factory;
             return Self::push_build_job_parts(
                 kind,
                 now,
-                buildings,
-                &mut self.resources,
-                &mut self.build_queue,
-                robotics,
+                BuildTarget {
+                    buildings,
+                    resources: &mut self.resources,
+                    queue: &mut self.build_queue,
+                    robotics,
+                    cap,
+                },
                 &self.config,
             );
         }
@@ -401,10 +423,13 @@ impl GameState {
         Self::push_build_job_parts(
             kind,
             now,
-            buildings,
-            &mut colony.resources,
-            &mut colony.build_queue,
-            robotics,
+            BuildTarget {
+                buildings,
+                resources: &mut colony.resources,
+                queue: &mut colony.build_queue,
+                robotics,
+                cap,
+            },
             &self.config,
         )
     }
@@ -412,19 +437,15 @@ impl GameState {
     fn push_build_job_parts(
         kind: BuildingKind,
         now: u64,
-        buildings: Buildings,
-        resources: &mut Resources,
-        queue: &mut Vec<BuildJob>,
-        robotics: u32,
+        target: BuildTarget<'_>,
         config: &BalanceConfig,
     ) -> Result<(), BuildError> {
-        let cap = config.max_build_queue;
-        if queue.len() >= cap {
-            return Err(BuildError::QueueFull { cap });
+        if target.queue.len() >= target.cap {
+            return Err(BuildError::QueueFull { cap: target.cap });
         }
         let prereqs = config.buildings.get(kind).prerequisites.clone();
         for &(req, required) in &prereqs {
-            let actual = projected_on(&buildings, queue, req, queue.len());
+            let actual = projected_on(&target.buildings, target.queue, req, target.queue.len());
             if actual < required {
                 return Err(BuildError::MissingPrerequisite {
                     building: req,
@@ -433,24 +454,24 @@ impl GameState {
                 });
             }
         }
-        let from_level = projected_on(&buildings, queue, kind, queue.len());
+        let from_level = projected_on(&target.buildings, target.queue, kind, target.queue.len());
         let cost = config.buildings.get(kind).cost(from_level);
-        if !resources.can_afford(cost) {
+        if !target.resources.can_afford(cost) {
             return Err(BuildError::InsufficientResources {
-                missing: resources.missing(cost),
+                missing: target.resources.missing(cost),
                 cost,
             });
         }
-        *resources = resources.saturating_sub(cost);
-        queue.push(BuildJob {
+        *target.resources = target.resources.saturating_sub(cost);
+        target.queue.push(BuildJob {
             building: kind,
             from_level,
             paid: cost,
             started_at: None,
             completes_at: None,
         });
-        if queue.len() == 1 {
-            start_queue_head(queue, robotics, config, now);
+        if target.queue.len() == 1 {
+            start_queue_head(target.queue, target.robotics, config, now);
         }
         Ok(())
     }
@@ -1623,6 +1644,159 @@ impl GameState {
         self.tech_levels.get(id).copied().unwrap_or(0)
     }
 
+    /// Build queue length including purchased extra slots.
+    pub fn build_queue_cap(&self) -> usize {
+        self.config
+            .max_build_queue
+            .saturating_add(self.prestige.queue_slots(&self.config.prestige) as usize)
+    }
+
+    fn apply_prestige_start(&mut self) {
+        let (metal, crystal, deuterium) = self.prestige.starting_bonus(&self.config.prestige);
+        self.resources.metal += metal;
+        self.resources.crystal += crystal;
+        self.resources.deuterium += deuterium;
+    }
+
+    fn building_levels(&self) -> u32 {
+        let home: u32 = BuildingKind::ALL
+            .iter()
+            .map(|&k| self.buildings.get(k))
+            .sum();
+        let colonies: u32 = self
+            .colonies
+            .iter()
+            .map(|c| {
+                BuildingKind::ALL
+                    .iter()
+                    .map(|&k| c.buildings.get(k))
+                    .sum::<u32>()
+            })
+            .sum();
+        home + colonies
+    }
+
+    fn research_levels(&self) -> u32 {
+        self.tech_levels.values().copied().sum()
+    }
+
+    /// Idle-game score used by the prestige formula in config.
+    pub fn prestige_score(&self) -> u32 {
+        let cfg = &self.config.prestige;
+        let colonies = self.colonies.len() as u32;
+        let wonders = self.completed_wonders.len() as u32;
+        self.building_levels()
+            .saturating_add(self.research_levels())
+            .saturating_add(colonies.saturating_mul(cfg.colony_weight))
+            .saturating_add(wonders.saturating_mul(cfg.wonder_weight))
+    }
+
+    pub fn can_prestige(&self) -> bool {
+        !self.completed_wonders.is_empty()
+            || self.prestige_score() >= self.config.prestige.min_score
+    }
+
+    fn prestige_earned_for(&self, score: u32) -> u32 {
+        let per = self.config.prestige.points_per_currency.max(1);
+        (score / per).max(1)
+    }
+
+    pub fn prestige_preview(&self) -> PrestigePreview {
+        let score = self.prestige_score();
+        let eligible = self.can_prestige();
+        let earned = if eligible {
+            self.prestige_earned_for(score)
+        } else {
+            0
+        };
+        let mut run = self.prestige.current.clone();
+        run.score = score;
+        run.prestige_earned = earned;
+        run.wonders = self.completed_wonders.len() as u32;
+        run.colonies = self.colonies.len() as u32;
+        run.building_levels = self.building_levels();
+        run.research_levels = self.research_levels();
+        PrestigePreview {
+            eligible,
+            score,
+            earned,
+            currency_after: self.prestige.currency.saturating_add(earned),
+            kept: PRESTIGE_KEPT,
+            lost: PRESTIGE_LOST,
+            run,
+        }
+    }
+
+    pub fn buy_prestige_bonus(&mut self, id: &str, now_unix: u64) -> Result<(), PrestigeError> {
+        self.catch_up(now_unix);
+        let spec = self
+            .config
+            .prestige
+            .bonus(id)
+            .cloned()
+            .ok_or_else(|| PrestigeError::UnknownBonus { id: id.to_string() })?;
+        if self.prestige.currency < spec.cost {
+            return Err(PrestigeError::CannotAfford {
+                cost: spec.cost,
+                have: self.prestige.currency,
+            });
+        }
+        let old_speed = self.research_speed();
+        self.prestige.currency -= spec.cost;
+        *self.prestige.owned.entry(spec.id).or_insert(0) += 1;
+        self.rescale_research(self.last_tick_unix, old_speed, self.research_speed());
+        Ok(())
+    }
+
+    /// Wipe the run, keep meta progress, start a new galaxy from a derived seed.
+    pub fn prestige_reset(&mut self, now_unix: u64) -> Result<PrestigePreview, PrestigeError> {
+        self.catch_up(now_unix);
+        let preview = self.prestige_preview();
+        if !preview.eligible {
+            return Err(PrestigeError::NotEligible {
+                score: preview.score,
+                min_score: self.config.prestige.min_score,
+            });
+        }
+        let now = now_unix.max(self.last_tick_unix);
+        let mut closed = preview.run.clone();
+        closed.ended_at = Some(now);
+        self.prestige.currency = self.prestige.currency.saturating_add(preview.earned);
+        self.prestige.lifetime = self.prestige.lifetime.saturating_add(preview.earned);
+        self.prestige.runs.push(closed);
+        let next_index = self.prestige.current.index.saturating_add(1);
+        self.prestige.current = RunStats::new(next_index, now);
+
+        let config = self.config.clone();
+        let prestige = self.prestige.clone();
+        let deterministic = self.deterministic;
+        let next_seed = self
+            .galaxy_seed
+            .wrapping_add(u64::from(next_index))
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15);
+
+        let mut next = Self::with_config(now, config);
+        next.prestige = prestige;
+        next.deterministic = deterministic;
+        next.galaxy_seed = next_seed;
+        next.rng_seed = next_seed;
+        let (home_kind, home_size) = planet_profile(next_seed, Coord::HOME);
+        next.home_kind = home_kind;
+        next.home_size = home_size;
+        next.outposts = generate_outposts(next_seed, now, &next.config.outposts, &[Coord::HOME]);
+        next.resources = next.config.starting_resources;
+        next.apply_prestige_start();
+        next.push_event(
+            now,
+            format!(
+                "prestige: run {} score {}. earned {}. new galaxy",
+                preview.run.index, preview.score, preview.earned
+            ),
+        );
+        *self = next;
+        Ok(preview)
+    }
+
     /// Tech modifiers plus the home planet's type bonus.
     pub fn modifier(&self, kind: ModifierKind) -> f64 {
         self.modifier_for(self.home_kind, kind)
@@ -1647,7 +1821,18 @@ impl GameState {
                     .sum::<f64>()
             })
             .sum::<f64>();
-        techs + self.wonder_modifier(kind)
+        techs + self.wonder_modifier(kind) + self.prestige_output(kind)
+    }
+
+    fn prestige_output(&self, kind: ModifierKind) -> f64 {
+        match kind {
+            ModifierKind::MetalOutput
+            | ModifierKind::CrystalOutput
+            | ModifierKind::DeuteriumOutput => {
+                self.prestige.production_bonus(&self.config.prestige)
+            }
+            _ => 0.0,
+        }
     }
 
     fn wonder_modifier(&self, kind: ModifierKind) -> f64 {
@@ -2391,12 +2576,17 @@ impl GameState {
     }
 
     fn research_speed(&self) -> f64 {
-        match self.activity.research_boost_until {
+        let activity = match self.activity.research_boost_until {
             Some(until) if self.last_tick_unix < until => {
                 (1.0 + self.activity.research_boost_factor).max(1.0)
             }
             _ => 1.0,
-        }
+        };
+        self.compose_research_speed(activity)
+    }
+
+    fn compose_research_speed(&self, activity: f64) -> f64 {
+        activity.max(1.0) * (1.0 + self.prestige.research_bonus(&self.config.prestige)).max(1.0)
     }
 
     fn rescale_research(&mut self, at: u64, old_speed: f64, new_speed: f64) {
@@ -2448,7 +2638,7 @@ impl GameState {
         let old = self.research_speed();
         self.activity.research_boost_factor = factor;
         self.activity.research_boost_until = Some(at.saturating_add(secs));
-        self.rescale_research(at, old, 1.0 + factor);
+        self.rescale_research(at, old, self.research_speed());
         self.push_event(
             at,
             format!("activity: research +{:.0}% for {secs}s", factor * 100.0),
@@ -2711,6 +2901,7 @@ mod tests {
             pacing: crate::PacingTargets::default(),
             wonders: Vec::new(),
             outposts: crate::OutpostConfig::default(),
+            prestige: crate::PrestigeConfig::default(),
         }
     }
 
@@ -4753,5 +4944,206 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
             rebuilt > start_ships,
             "rebuilt={rebuilt} start={start_ships}"
         );
+    }
+
+    fn prestige_test_config() -> BalanceConfig {
+        let mut cfg = test_config();
+        cfg.prestige.min_score = 4;
+        cfg.prestige.points_per_currency = 4;
+        cfg.prestige.colony_weight = 8;
+        cfg.prestige.wonder_weight = 40;
+        cfg
+    }
+
+    #[test]
+    fn prestige_is_refused_until_the_configured_score() {
+        let mut cfg = prestige_test_config();
+        cfg.prestige.min_score = 50;
+        let mut state = GameState::with_config(0, cfg);
+        assert!(state.prestige_score() < 50);
+        let err = state.prestige_reset(0).unwrap_err();
+        assert!(
+            matches!(err, crate::PrestigeError::NotEligible { .. }),
+            "{err}"
+        );
+        state.completed_wonders.push("dyson_ring".into());
+        assert!(state.can_prestige());
+        let before = state.building_levels();
+        state.resources.metal = 10_000.0;
+        state.resources.crystal = 10_000.0;
+        state.enqueue_build(BuildingKind::SolarPlant, 0).unwrap();
+        state.prestige_reset(10_000).unwrap();
+        assert!(state.build_queue.is_empty());
+        assert!(state.completed_wonders.is_empty());
+        assert_eq!(state.prestige.current.index, 2);
+        assert_eq!(state.prestige.runs.len(), 1);
+        assert!(
+            state.prestige.runs[0].building_levels > before,
+            "reset should count buildings that finished during catch-up"
+        );
+    }
+
+    #[test]
+    fn prestige_bonuses_survive_reset_and_run_state_does_not() {
+        let mut state = GameState::with_config(0, prestige_test_config());
+        state.resources.metal = 9_000.0;
+        state.buildings.metal_mine = 6;
+        state.tech_levels.insert("energy".into(), 3);
+        state.fleet.add(ShipKind::LightFighter, 4);
+        state.completed_wonders.push("observatory".into());
+        state.prestige.currency = 5;
+        state.buy_prestige_bonus("mine_focus", 0).unwrap();
+        state.buy_prestige_bonus("starter_cache", 0).unwrap();
+        let owned = state.prestige.owned.clone();
+        let preview = state.prestige_preview();
+        assert!(preview.eligible);
+        assert!(preview.kept.contains(&"purchased bonuses"));
+        assert!(preview.lost.contains(&"resources"));
+        let score = preview.score;
+        state.prestige_reset(20).unwrap();
+        assert_eq!(state.prestige.owned, owned);
+        assert!(state.prestige.currency >= 1);
+        assert_eq!(state.buildings.metal_mine, 1);
+        assert!(state.tech_levels.is_empty());
+        assert_eq!(state.fleet.total(), 0);
+        assert!(state.completed_wonders.is_empty());
+        assert!(state.resources.metal > state.config.starting_resources.metal);
+        assert_eq!(state.prestige.runs[0].score, score);
+        assert_eq!(state.prestige.runs[0].ended_at, Some(20));
+        assert_eq!(state.prestige.current.index, 2);
+        let with_bonus = state.production_per_hour(ResourceKind::Metal);
+        let mut plain = GameState::with_config(20, prestige_test_config());
+        plain.resources = state.resources;
+        assert!(
+            with_bonus > plain.production_per_hour(ResourceKind::Metal),
+            "bonus {with_bonus} plain {}",
+            plain.production_per_hour(ResourceKind::Metal)
+        );
+    }
+
+    #[test]
+    fn extra_queue_slot_comes_from_a_purchased_bonus() {
+        let mut state = GameState::with_config(0, prestige_test_config());
+        let base = state.build_queue_cap();
+        state.prestige.currency = 3;
+        state.buy_prestige_bonus("extra_queue", 0).unwrap();
+        assert_eq!(state.build_queue_cap(), base + 1);
+    }
+
+    #[test]
+    fn research_boost_composes_with_lab_focus() {
+        let mut cfg = research_config();
+        cfg.activity = activity_config().activity;
+        cfg.activity.agent_long.boost_secs = 100;
+        let mut state = GameState::with_config(0, cfg);
+        state.prestige.currency = 2;
+        state.buy_prestige_bonus("lab_focus", 0).unwrap();
+        state.start_research("energy", 0).unwrap();
+        // 1800s / 1.08 lab-focus, ceiled.
+        assert_eq!(state.research.as_ref().unwrap().completes_at, 1_667);
+        assert_eq!(
+            state.apply_activity(
+                ActivityPulse::AgentFinished {
+                    ts: 0,
+                    duration_secs: 100,
+                },
+                10_000,
+            ),
+            ActivityApply::Applied
+        );
+        // remaining 1667 * 1.08 / (1.08 * 2) = 833.5, ceiled.
+        assert_eq!(state.research.as_ref().unwrap().completes_at, 834);
+        state.catch_up(100);
+        // remaining 734 * 2.16 / 1.08 = 1468; completes at 100 + 1468.
+        assert_eq!(state.research.as_ref().unwrap().completes_at, 1_568);
+        assert!(state.tech_level("energy") == 0);
+        state.catch_up(1_568);
+        assert_eq!(state.tech_level("energy"), 1);
+    }
+
+    #[test]
+    fn buying_lab_focus_rescales_an_open_research_job() {
+        let mut state = GameState::with_config(0, research_config());
+        state.start_research("energy", 0).unwrap();
+        assert_eq!(state.research.as_ref().unwrap().completes_at, 1_800);
+        state.prestige.currency = 2;
+        state.buy_prestige_bonus("lab_focus", 0).unwrap();
+        // 1800 * 1.0 / 1.08 = 1666.66, ceiled.
+        assert_eq!(state.research.as_ref().unwrap().completes_at, 1_667);
+    }
+
+    #[test]
+    fn mine_focus_raises_colony_metal_over_an_hour() {
+        fn with_colony(bonus: bool) -> GameState {
+            let mut state = GameState::with_config(0, prestige_test_config());
+            state.buildings.metal_mine = 0;
+            state.buildings.crystal_mine = 0;
+            state.resources = Resources::ZERO;
+            if bonus {
+                state.prestige.currency = 2;
+                state.buy_prestige_bonus("mine_focus", 0).unwrap();
+            }
+            state.colonies.push(Colony {
+                coord: Coord {
+                    galaxy: 1,
+                    system: 1,
+                    position: 2,
+                },
+                kind: PlanetType::Rocky,
+                size: 100,
+                resources: Resources::ZERO,
+                buildings: Buildings {
+                    metal_mine: 1,
+                    crystal_mine: 0,
+                    deuterium_synthesizer: 0,
+                    solar_plant: 1,
+                    metal_storage: 0,
+                    crystal_storage: 0,
+                    deuterium_storage: 0,
+                    robotics_factory: 0,
+                    research_lab: 0,
+                    shipyard: 0,
+                },
+                fleet: Fleet::default(),
+                build_queue: Vec::new(),
+                rare: None,
+            });
+            state
+        }
+        let mut plain = with_colony(false);
+        let mut boosted = with_colony(true);
+        plain.catch_up(3600);
+        boosted.catch_up(3600);
+        assert!(
+            boosted.colonies[0].resources.metal > plain.colonies[0].resources.metal,
+            "boosted {} plain {}",
+            boosted.colonies[0].resources.metal,
+            plain.colonies[0].resources.metal
+        );
+    }
+
+    #[test]
+    fn prestige_formula_reads_weights_from_config() {
+        let mut cfg = prestige_test_config();
+        cfg.prestige.colony_weight = 5;
+        cfg.prestige.wonder_weight = 11;
+        let mut state = GameState::with_config(0, cfg);
+        let base = state.prestige_score();
+        state.colonies.push(Colony {
+            coord: Coord {
+                galaxy: 1,
+                system: 1,
+                position: 2,
+            },
+            kind: PlanetType::Rocky,
+            size: 100,
+            resources: Resources::ZERO,
+            buildings: Buildings::default(),
+            fleet: Fleet::default(),
+            build_queue: Vec::new(),
+            rare: None,
+        });
+        state.completed_wonders.push("stellar_gate".into());
+        assert_eq!(state.prestige_score(), base + 5 + 11);
     }
 }

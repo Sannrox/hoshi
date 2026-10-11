@@ -33,6 +33,10 @@
       "type": ["object", "null"],
       "description": "Visible raid countdown, matching the TUI overview."
     },
+    "prestige": {
+      "type": "object",
+      "description": "Meta currency, current run and owned bonuses."
+    },
     "error": {
       "type": "object",
       "required": ["code", "message"],

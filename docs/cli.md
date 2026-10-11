@@ -23,6 +23,9 @@ hoshi --save PATH research <tech>
 hoshi --save PATH cancel <queue-item>
 hoshi --save PATH fleet send <from> <to> <mission> <ships...>
 hoshi --save PATH tick --advance <dur>
+hoshi --save PATH prestige
+hoshi --save PATH prestige buy <id>
+hoshi --save PATH prestige reset
 ```
 
 Planet is `home` or `galaxy:system:position`. Building and ship ids match the
@@ -39,6 +42,8 @@ a deterministic save so wall-clock catch-up cannot run on it. JSON never
 includes RNG state or galaxy seed. Unknown commands and CLI-only flags print
 JSON with exit 2; they do not open the TUI. `expedition` dest must be the
 configured expedition slot.
+
+`prestige` prints score, currency and owned bonuses. `prestige buy` spends unspent currency. `prestige reset` is refused until a wonder is complete or score reaches the configured minimum; it keeps bonuses and run history.
 
 `--save` / `HOSHI_SAVE` and `--balance` / `HOSHI_BALANCE` match the TUI.
 

@@ -39,6 +39,10 @@ comparison). `troop_strength` is the landing power of one troop transport.
 `[[outposts.rare]]` rows are the rare-planet bonuses shown on the planet screen.
 `shipyard_speed` speeds the empire shipyard (ships queue at home).
 
+## Prestige
+
+`[prestige]` is the late-game reset. Score is building levels plus research levels plus `colony_weight` per colony plus `wonder_weight` per completed wonder. Reset is allowed with a completed wonder or when score reaches `min_score`. Currency earned is `score / points_per_currency`, at least 1. `[[prestige.bonuses]]` rows are permanent purchases: extra starting resources, production and research speed, extra build-queue slots. They live in the save apart from the run. `hoshi simulate` reports three runs with 0, 1 and 2 mine-focus bonuses so later runs produce more without skipping construction time.
+
 ## Simulator
 
 ```sh
