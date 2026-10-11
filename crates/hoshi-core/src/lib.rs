@@ -16,7 +16,9 @@ pub use balance::{
 };
 pub use buildings::{BuildError, BuildJob, BuildingKind, Buildings};
 pub use clock::{Clock, FakeClock, SystemClock};
-pub use combat::{CombatReport, CombatWinner, next_u64, plunder_from, resolve_combat};
+pub use combat::{
+    CombatReport, CombatWinner, next_u64, plunder_from, rapid_fire_table, resolve_combat,
+};
 pub use fleets::{
     Coord, FleetError, FlightConfig, Mission, MissionPhase, distance, flight_secs, fuel_cost,
 };

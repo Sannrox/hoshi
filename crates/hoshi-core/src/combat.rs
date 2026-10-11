@@ -1,4 +1,4 @@
-//! Round-based fleet combat. Raids use this resolver; later combat issues extend it.
+//! Round-based fleet combat. Raids use this resolver; rapid-fire extra shots live here.
 
 use crate::ships::{Fleet, ShipKind, ShipStats};
 use crate::state::Resources;
@@ -88,25 +88,43 @@ fn living(units: &[Unit]) -> Vec<usize> {
         .collect()
 }
 
-fn shoot(firers: &[Unit], fire: &[usize], targets: &mut [Unit], rng: &mut u64) {
+fn shoot(
+    firers: &[Unit],
+    fire: &[usize],
+    targets: &mut [Unit],
+    rapid_fire: &[[u32; 9]; 9],
+    rng: &mut u64,
+) {
     for &i in fire {
-        let live = living(targets);
-        if live.is_empty() {
-            return;
+        loop {
+            let live = living(targets);
+            if live.is_empty() {
+                return;
+            }
+            let pick = live[(next_u64(rng) as usize) % live.len()];
+            let target_kind = targets[pick].kind;
+            targets[pick].hit(firers[i].attack);
+            let value = rapid_fire[firers[i].kind.index()][target_kind.index()];
+            if value < 2 {
+                break;
+            }
+            // Keep firing with probability (value-1)/value.
+            if next_u64(rng).is_multiple_of(u64::from(value)) {
+                break;
+            }
         }
-        let pick = live[(next_u64(rng) as usize) % live.len()];
-        targets[pick].hit(firers[i].attack);
     }
 }
 
 /// Up to `max_rounds` of simultaneous fire. Shields refill each round; hull does not.
-/// Rapid-fire is omitted so a later issue can add it on this same loop.
+/// Rapid-fire rolls extra shots against the kind just hit.
 pub fn resolve_combat(
     attacker: Fleet,
     defender: Fleet,
     attacker_stats: &[ShipStats; 9],
     defender_stats: &[ShipStats; 9],
     max_rounds: u8,
+    rapid_fire: &[[u32; 9]; 9],
     rng: &mut u64,
 ) -> CombatReport {
     let mut attackers = expand(attacker, attacker_stats);
@@ -124,8 +142,8 @@ pub fn resolve_combat(
             }
             let atk_fire = living(&attackers);
             let def_fire = living(&defenders);
-            shoot(&attackers, &atk_fire, &mut defenders, rng);
-            shoot(&defenders, &def_fire, &mut attackers, rng);
+            shoot(&attackers, &atk_fire, &mut defenders, rapid_fire, rng);
+            shoot(&defenders, &def_fire, &mut attackers, rapid_fire, rng);
             rounds += 1;
         }
     }
@@ -156,6 +174,16 @@ pub fn plunder_from(stock: Resources, share: f64, cap: Resources) -> Resources {
         crystal: take(stock.crystal, cap.crystal),
         deuterium: take(stock.deuterium, cap.deuterium),
     }
+}
+
+pub fn rapid_fire_table(catalog: &crate::ShipCatalog) -> [[u32; 9]; 9] {
+    let mut table = [[0u32; 9]; 9];
+    for kind in ShipKind::ALL {
+        for &(target, value) in &catalog.get(kind).rapid_fire {
+            table[kind.index()][target.index()] = value;
+        }
+    }
+    table
 }
 
 pub fn stats_from_catalog(catalog: &crate::ShipCatalog) -> [ShipStats; 9] {
@@ -200,7 +228,7 @@ mod tests {
     fn one_light_fighter_each_lasts_all_six_rounds() {
         // LF hull 400, shield 10, attack 50 → 40 hull per shot, 240 over 6 rounds.
         let mut rng = 1;
-        let report = resolve_combat(lf(1), lf(1), &stats(), &stats(), 6, &mut rng);
+        let report = resolve_combat(lf(1), lf(1), &stats(), &stats(), 6, &[[0; 9]; 9], &mut rng);
         assert_eq!(report.rounds, 6);
         assert_eq!(report.attacker_after.get(ShipKind::LightFighter), 1);
         assert_eq!(report.defender_after.get(ShipKind::LightFighter), 1);
@@ -210,7 +238,15 @@ mod tests {
     #[test]
     fn empty_defender_is_an_attacker_win_with_no_rounds() {
         let mut rng = 7;
-        let report = resolve_combat(lf(3), Fleet::default(), &stats(), &stats(), 6, &mut rng);
+        let report = resolve_combat(
+            lf(3),
+            Fleet::default(),
+            &stats(),
+            &stats(),
+            6,
+            &[[0; 9]; 9],
+            &mut rng,
+        );
         assert_eq!(report.rounds, 0);
         assert_eq!(report.attacker_after.get(ShipKind::LightFighter), 3);
         assert!(report.defender_after.is_empty());
@@ -227,8 +263,8 @@ mod tests {
         b.add(ShipKind::Battleship, 1);
         let mut rng_a = 0xC0FFEE;
         let mut rng_b = 0xC0FFEE;
-        let left = resolve_combat(a, b, &stats(), &stats(), 6, &mut rng_a);
-        let right = resolve_combat(a, b, &stats(), &stats(), 6, &mut rng_b);
+        let left = resolve_combat(a, b, &stats(), &stats(), 6, &[[0; 9]; 9], &mut rng_a);
+        let right = resolve_combat(a, b, &stats(), &stats(), 6, &[[0; 9]; 9], &mut rng_b);
         assert_eq!(left, right);
         assert_eq!(rng_a, rng_b);
     }
@@ -249,5 +285,46 @@ mod tests {
         assert!((taken.metal - 200.0).abs() < 1e-9);
         assert!((taken.crystal - 200.0).abs() < 1e-9);
         assert!((taken.deuterium - 25.0).abs() < 1e-9);
+    }
+
+    fn probes(n: u32) -> Fleet {
+        let mut f = Fleet::default();
+        f.add(ShipKind::EspionageProbe, n);
+        f
+    }
+
+    fn cruiser(n: u32) -> Fleet {
+        let mut f = Fleet::default();
+        f.add(ShipKind::Cruiser, n);
+        f
+    }
+
+    #[test]
+    fn rapid_fire_against_probes_destroys_more_than_one_shot_per_round() {
+        let none = [[0u32; 9]; 9];
+        let mut with = [[0u32; 9]; 9];
+        with[ShipKind::Cruiser.index()][ShipKind::EspionageProbe.index()] = 5;
+        let mut rng_none = 1;
+        let mut rng_rf = 1;
+        let without = resolve_combat(
+            cruiser(1),
+            probes(10),
+            &stats(),
+            &stats(),
+            6,
+            &none,
+            &mut rng_none,
+        );
+        let extra = resolve_combat(
+            cruiser(1),
+            probes(10),
+            &stats(),
+            &stats(),
+            6,
+            &with,
+            &mut rng_rf,
+        );
+        assert_eq!(without.defender_after.get(ShipKind::EspionageProbe), 4);
+        assert_eq!(extra.defender_after.get(ShipKind::EspionageProbe), 0);
     }
 }

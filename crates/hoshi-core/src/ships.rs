@@ -111,6 +111,8 @@ pub struct ShipSpec {
     pub shipyard: u32,
     pub drive: String,
     pub prereq_techs: Vec<TechPrereq>,
+    /// Extra shots against a target kind. `value` 5 means four-in-five chance to fire again.
+    pub rapid_fire: Vec<(ShipKind, u32)>,
 }
 
 impl ShipSpec {
@@ -157,6 +159,16 @@ impl ShipCatalog {
             if raw.drive.is_empty() {
                 return Err(ShipCatalogError::MissingDrive(raw.id));
             }
+            let mut rapid_fire = Vec::new();
+            for entry in raw.rapid_fire {
+                let target = ShipKind::from_key(&entry.target).ok_or_else(|| {
+                    ShipCatalogError::UnknownRapidFireTarget {
+                        ship: raw.id.clone(),
+                        target: entry.target.clone(),
+                    }
+                })?;
+                rapid_fire.push((target, entry.value));
+            }
             specs.insert(
                 kind,
                 ShipSpec {
@@ -182,6 +194,7 @@ impl ShipCatalog {
                             level: p.level,
                         })
                         .collect(),
+                    rapid_fire,
                 },
             );
         }
@@ -303,6 +316,7 @@ pub enum ShipCatalogError {
     DuplicateId(String),
     MissingId(&'static str),
     MissingDrive(String),
+    UnknownRapidFireTarget { ship: String, target: String },
 }
 
 impl fmt::Display for ShipCatalogError {
@@ -313,6 +327,9 @@ impl fmt::Display for ShipCatalogError {
             ShipCatalogError::DuplicateId(id) => write!(f, "duplicate ship id {id}"),
             ShipCatalogError::MissingId(id) => write!(f, "ships.toml missing {id}"),
             ShipCatalogError::MissingDrive(id) => write!(f, "ships.toml {id} missing drive"),
+            ShipCatalogError::UnknownRapidFireTarget { ship, target } => {
+                write!(f, "ships.toml {ship} rapid_fire unknown target {target}")
+            }
         }
     }
 }
@@ -342,12 +359,20 @@ struct RawShip {
     drive: String,
     #[serde(default)]
     prereq_techs: Vec<RawPrereq>,
+    #[serde(default)]
+    rapid_fire: Vec<RawRapidFire>,
 }
 
 #[derive(Deserialize)]
 struct RawPrereq {
     id: String,
     level: u32,
+}
+
+#[derive(Deserialize)]
+struct RawRapidFire {
+    target: String,
+    value: u32,
 }
 
 #[cfg(test)]
@@ -369,6 +394,13 @@ mod tests {
         assert!(catalog.get(ShipKind::Cruiser).attack < catalog.get(ShipKind::Battleship).attack);
         assert!(
             catalog.get(ShipKind::EspionageProbe).speed > catalog.get(ShipKind::LightFighter).speed
+        );
+        assert!(
+            catalog
+                .get(ShipKind::Cruiser)
+                .rapid_fire
+                .iter()
+                .any(|&(kind, value)| kind == ShipKind::LightFighter && value == 6)
         );
     }
 }

@@ -182,7 +182,9 @@ impl App {
             Line::from(self.raid_status()),
         ];
         if let Some(event) = s.events.last() {
-            lines.push(Line::from(event.text.clone()));
+            for piece in event.text.split(". ") {
+                lines.push(Line::from(piece.to_string()));
+            }
         }
         if !self.status.is_empty() {
             lines.push(Line::from(self.status.clone()));
@@ -569,6 +571,16 @@ mod tests {
         let app = App::new(GameState::new(1_000));
         let text = render_text(&app, 80, 24);
         assert!(text.contains("Raid: 3600s"), "{text}");
+    }
+
+    #[test]
+    fn overview_shows_combat_losses_on_both_sides() {
+        let mut state = GameState::new(1_000);
+        state.trigger_raid(1_000);
+        let app = App::new(state);
+        let text = render_text(&app, 100, 28);
+        assert!(text.contains("lost"), "{text}");
+        assert!(text.contains("pirates lost"), "{text}");
     }
 
     #[test]

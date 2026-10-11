@@ -4,6 +4,7 @@
 
 ### Added
 
+- Combat rapid-fire extra shots from `ships.toml`. `GameState::trigger_raid` is the shared raid API for the scheduler and a later bridge. The overview splits the combat report so both sides' losses are visible.
 - Pirate raids: a countdown (default one hour) then a six-round fight against a pirate fleet scaled to the player. Shields refill each round; hull does not. A lost fight takes a capped share of stored resources. The combat report goes in the event log and the overview shows the countdown. Save schema v4 stores the next raid and the log.
 - Fleets launch to `galaxy:system:position` with flight time from distance, slowest ship speed and a speed percent. Deuterium fuel is paid at launch. Missions run outbound, action and return phases during `catch_up`; recall mid-outbound returns in the elapsed time. Computer technology adds fleet slots. Save schema v3 stores missions.
 - Nine ship types in `crates/hoshi-core/data/ships.toml` (fighters, cargos, cruiser, battleship, recycler, probe, explorer) with cost, time, combat stats, cargo, speed, fuel, shipyard level and research unlocks. `GameState::ship_stats` applies weapons, shields, armour and the ship's drive. Batches complete one ship at a time during `catch_up`. Counts persist in save schema v2. The TUI shipyard screen lists ships, requirements and the queue.
