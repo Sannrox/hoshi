@@ -1,0 +1,16 @@
+{
+  "workflow_runs": [
+    {
+      "id": 2001,
+      "name": "CI",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 2002,
+      "name": "CI",
+      "status": "in_progress",
+      "conclusion": null
+    }
+  ]
+}

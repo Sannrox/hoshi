@@ -3,6 +3,12 @@
 //! Readers do not execute event content and do not treat payload strings as paths.
 //! The feed is inactive until [`BridgeConfig::enabled`] is true.
 
+mod github;
+
+pub use github::{
+    GithubPoller, events_from_pulls_json, events_from_runs_json, events_from_webhook,
+};
+
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Seek, SeekFrom, Write};
@@ -22,6 +28,10 @@ pub enum ActivityKind {
     AgentFinished,
     #[serde(rename = "agent_failed")]
     AgentFailed,
+    #[serde(rename = "pr_merged")]
+    PrMerged,
+    #[serde(rename = "workflow_finished")]
+    WorkflowFinished,
 }
 
 impl ActivityKind {
@@ -31,6 +41,8 @@ impl ActivityKind {
             ActivityKind::AgentWaitingForInput => "agent_waiting_for_input",
             ActivityKind::AgentFinished => "agent_finished",
             ActivityKind::AgentFailed => "agent_failed",
+            ActivityKind::PrMerged => "pr_merged",
+            ActivityKind::WorkflowFinished => "workflow_finished",
         }
     }
 
@@ -40,6 +52,8 @@ impl ActivityKind {
             "agent_waiting_for_input" => ActivityKind::AgentWaitingForInput,
             "agent_finished" => ActivityKind::AgentFinished,
             "agent_failed" => ActivityKind::AgentFailed,
+            "pr_merged" => ActivityKind::PrMerged,
+            "workflow_finished" => ActivityKind::WorkflowFinished,
             _ => return None,
         })
     }
@@ -63,6 +77,9 @@ pub struct BridgeConfig {
     pub max_line_bytes: usize,
     pub feed_path: PathBuf,
     pub socket_path: Option<PathBuf>,
+    pub github_repos: Vec<String>,
+    pub poll_secs: u64,
+    pub webhook_bind: Option<String>,
 }
 
 impl Default for BridgeConfig {
@@ -72,6 +89,9 @@ impl Default for BridgeConfig {
             max_line_bytes: DEFAULT_MAX_LINE_BYTES,
             feed_path: default_feed_path(),
             socket_path: None,
+            github_repos: Vec::new(),
+            poll_secs: 60,
+            webhook_bind: None,
         }
     }
 }
@@ -91,15 +111,34 @@ pub fn feed_path_for_save(save: &Path) -> PathBuf {
 /// Config for a state directory: feed beside the save, off unless `bridge.toml`
 /// has `enabled = true` or `HOSHI_BRIDGE` is set.
 pub fn config_for_state_dir(dir: &Path) -> BridgeConfig {
+    let text = fs::read_to_string(dir.join("bridge.toml")).unwrap_or_default();
     let enabled = std::env::var_os("HOSHI_BRIDGE").is_some()
-        || fs::read_to_string(dir.join("bridge.toml"))
-            .map(|s| s.lines().any(|line| line.trim() == "enabled = true"))
-            .unwrap_or(false);
+        || text.lines().any(|line| line.trim() == "enabled = true");
+    let mut github_repos = Vec::new();
+    let mut poll_secs = 60;
+    let mut webhook_bind = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(repo) = line.strip_prefix("github_repo = ") {
+            github_repos.push(repo.trim().trim_matches('"').to_string());
+        }
+        if let Some(secs) = line.strip_prefix("poll_secs = ")
+            && let Ok(n) = secs.trim().parse()
+        {
+            poll_secs = n;
+        }
+        if let Some(bind) = line.strip_prefix("webhook_bind = ") {
+            webhook_bind = Some(bind.trim().trim_matches('"').to_string());
+        }
+    }
     BridgeConfig {
         enabled,
         max_line_bytes: DEFAULT_MAX_LINE_BYTES,
         feed_path: dir.join("feed.jsonl"),
         socket_path: enabled.then(|| dir.join("feed.sock")),
+        github_repos,
+        poll_secs,
+        webhook_bind,
     }
 }
 
@@ -264,6 +303,7 @@ impl FileFeed {
 /// File feed plus an optional Unix socket. Both stay off when `enabled` is false.
 pub struct Bridge {
     file: FileFeed,
+    github: GithubPoller,
     #[cfg(unix)]
     socket: Option<std::os::unix::net::UnixListener>,
     #[cfg(unix)]
@@ -281,6 +321,7 @@ struct SocketConn {
 
 impl Bridge {
     pub fn open(config: BridgeConfig) -> Result<Self, FeedError> {
+        let github = GithubPoller::open(&config)?;
         #[cfg(unix)]
         let max_line_bytes = config.max_line_bytes;
         #[cfg(unix)]
@@ -294,6 +335,7 @@ impl Bridge {
         };
         Ok(Self {
             file: FileFeed::open(config)?,
+            github,
             #[cfg(unix)]
             socket,
             #[cfg(unix)]
@@ -301,6 +343,10 @@ impl Bridge {
             #[cfg(unix)]
             max_line_bytes,
         })
+    }
+
+    pub fn status(&self) -> &str {
+        self.github.status()
     }
 
     pub fn poll(&mut self) -> Result<ReadBatch, FeedError> {
@@ -340,6 +386,10 @@ impl Bridge {
                 }
             }
         }
+        let extra = self.github.poll(github::now_unix())?;
+        batch.events.extend(extra.events);
+        batch.rejected.extend(extra.rejected);
+        batch.ignored_unknown += extra.ignored_unknown;
         Ok(batch)
     }
 }
@@ -542,7 +592,7 @@ fn read_offset(path: &Path) -> Result<u64, FeedError> {
     }
 }
 
-fn ensure_parent(path: &Path) -> io::Result<()> {
+pub(crate) fn ensure_parent(path: &Path) -> io::Result<()> {
     match path.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => fs::create_dir_all(parent),
         _ => Ok(()),
@@ -676,9 +726,8 @@ mod tests {
     fn enabled(feed: PathBuf) -> BridgeConfig {
         BridgeConfig {
             enabled: true,
-            max_line_bytes: DEFAULT_MAX_LINE_BYTES,
             feed_path: feed,
-            socket_path: None,
+            ..BridgeConfig::default()
         }
     }
 
@@ -781,6 +830,7 @@ mod tests {
             max_line_bytes: max,
             feed_path: dir.join("feed.jsonl"),
             socket_path: Some(sock.clone()),
+            ..BridgeConfig::default()
         })
         .unwrap();
         let mut client = UnixStream::connect(&sock).unwrap();
@@ -822,6 +872,24 @@ mod tests {
         assert!(!trap.exists());
         let _ = fs::remove_file(&feed);
         let _ = fs::remove_file(default_offset_path(&feed));
+    }
+
+    #[test]
+    fn config_reads_github_repos_from_bridge_toml() {
+        let dir = std::env::temp_dir().join(format!("h{}c", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("bridge.toml"),
+            "enabled = true\ngithub_repo = \"acme/game\"\npoll_secs = 15\nwebhook_bind = \"127.0.0.1:0\"\n",
+        )
+        .unwrap();
+        let cfg = config_for_state_dir(&dir);
+        assert!(cfg.enabled);
+        assert_eq!(cfg.github_repos, ["acme/game"]);
+        assert_eq!(cfg.poll_secs, 15);
+        assert_eq!(cfg.webhook_bind.as_deref(), Some("127.0.0.1:0"));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -991,6 +1059,7 @@ mod tests {
             max_line_bytes: DEFAULT_MAX_LINE_BYTES,
             feed_path: dir.join("feed.jsonl"),
             socket_path: Some(sock.clone()),
+            ..BridgeConfig::default()
         })
         .unwrap();
         let mut client = UnixStream::connect(&sock).unwrap();
@@ -1029,6 +1098,7 @@ mod tests {
             max_line_bytes: DEFAULT_MAX_LINE_BYTES,
             feed_path: dir.join("feed.jsonl"),
             socket_path: Some(sock.clone()),
+            ..BridgeConfig::default()
         })
         .unwrap();
         let mut still = UnixStream::connect(&sock).unwrap();
@@ -1052,6 +1122,7 @@ mod tests {
             max_line_bytes: DEFAULT_MAX_LINE_BYTES,
             feed_path: dir.join("feed.jsonl"),
             socket_path: Some(occupied.clone()),
+            ..BridgeConfig::default()
         })
         .unwrap();
         drop(opened);

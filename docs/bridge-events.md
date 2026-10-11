@@ -6,6 +6,13 @@ Events are line-delimited JSON in the state directory (`feed.jsonl` next to the 
 
 Enable the reader with `enabled = true` in `bridge.toml` next to the save, or by setting `HOSHI_BRIDGE`. The default is off.
 
+```toml
+enabled = true
+github_repo = "owner/name"
+poll_secs = 60
+webhook_bind = "127.0.0.1:8765"
+```
+
 ## Line format
 
 Each line is one JSON object:
@@ -18,6 +25,8 @@ Each line is one JSON object:
 | `payload` | no | JSON object. Never executed; never used as a filesystem path |
 
 Unknown `type` values are ignored. Malformed lines are rejected and skipped. Lines longer than 8192 bytes are rejected.
+
+GitHub merged pull requests and finished workflow runs use `pr_merged` and `workflow_finished` with `source` `github`. They enter the same stream. The reader polls `gh api` for each `github_repo` line (ETag / 304) and follows full pages (`per_page=30`, then `page=2` …) until a short page or ten pages, whichever comes first. New events land on page 1; the ten-page cap is a burst window, not a full-history backfill. It can bind `webhook_bind` for HTTP POST on a loopback address only; a bind failure stays in status and the rest of the bridge still opens. Dedup ids live in `github-seen.json` next to the save. No token is stored. Polling is off when the bridge is off or no repos are listed. If `github_repo` lines are set, webhook events for other repos are dropped.
 
 ## Shell
 

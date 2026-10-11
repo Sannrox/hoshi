@@ -1,0 +1,13 @@
+{
+  "action": "closed",
+  "pull_request": {
+    "id": 3001,
+    "number": 12,
+    "title": "merged via hook",
+    "merged": true,
+    "merged_at": "2026-10-11T11:00:00Z"
+  },
+  "repository": {
+    "full_name": "acme/game"
+  }
+}
