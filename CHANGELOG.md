@@ -4,6 +4,7 @@
 
 ### Added
 
+- Fleets launch to `galaxy:system:position` with flight time from distance, slowest ship speed and a speed percent. Deuterium fuel is paid at launch. Missions run outbound, action and return phases during `catch_up`; recall mid-outbound returns in the elapsed time. Computer technology adds fleet slots. Save schema v3 stores missions.
 - Nine ship types in `crates/hoshi-core/data/ships.toml` (fighters, cargos, cruiser, battleship, recycler, probe, explorer) with cost, time, combat stats, cargo, speed, fuel, shipyard level and research unlocks. `GameState::ship_stats` applies weapons, shields, armour and the ship's drive. Batches complete one ship at a time during `catch_up`. Counts persist in save schema v2. The TUI shipyard screen lists ships, requirements and the queue.
 - Overview and planet screens in the TUI: resources with rates and caps, energy balance, build and research countdowns, a building list with queue management, and a research list. Tab switches screens; enter starts the selected item; unaffordable rows are dimmed with the missing amount. Quit still writes the save.
 - SQLite save in the user data directory (`hoshi/save.sqlite`). Schema v1 stores resources, buildings, the build queue, research, timestamps and the RNG seed. Override the path with `--save` or `HOSHI_SAVE`. Writes run in one transaction and use WAL, so a crash mid-write keeps the previous save.

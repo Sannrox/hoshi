@@ -2,6 +2,7 @@
 
 use crate::balance::BalanceConfig;
 use crate::buildings::{BuildJob, BuildingKind, Buildings};
+use crate::fleets::{Coord, Mission, MissionPhase};
 use crate::research::ResearchJob;
 use crate::ships::{Fleet, ShipJob, ShipKind};
 use crate::state::{GameState, Resources};
@@ -11,7 +12,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -112,7 +113,9 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM tech_levels;
          DELETE FROM research;
          DELETE FROM ships;
-         DELETE FROM ship_queue;",
+         DELETE FROM ship_queue;
+         DELETE FROM mission_ships;
+         DELETE FROM missions;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -199,6 +202,41 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 job.completes_at.map(|t| t as i64),
             ],
         )?;
+    }
+    for mission in state.missions.iter() {
+        tx.execute(
+            "INSERT INTO missions (
+                id, origin_g, origin_s, origin_p, dest_g, dest_s, dest_p,
+                speed_percent, phase, launched_at, outbound_secs, hold_secs,
+                phase_ends_at, fuel_paid
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            params![
+                mission.id as i64,
+                mission.origin.galaxy as i64,
+                mission.origin.system as i64,
+                mission.origin.position as i64,
+                mission.dest.galaxy as i64,
+                mission.dest.system as i64,
+                mission.dest.position as i64,
+                mission.speed_percent as i64,
+                mission.phase.as_key(),
+                mission.launched_at as i64,
+                mission.outbound_secs as i64,
+                mission.hold_secs as i64,
+                mission.phase_ends_at as i64,
+                mission.fuel_paid,
+            ],
+        )?;
+        for kind in ShipKind::ALL {
+            let count = mission.ships.get(kind);
+            if count == 0 {
+                continue;
+            }
+            tx.execute(
+                "INSERT INTO mission_ships (mission_id, kind, count) VALUES (?1, ?2, ?3)",
+                params![mission.id as i64, kind.as_key(), count],
+            )?;
+        }
     }
     tx.commit()?;
     Ok(())
@@ -386,7 +424,97 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     }
     state.ship_queue = queue;
 
+    let mut stmt = conn.prepare(
+        "SELECT id, origin_g, origin_s, origin_p, dest_g, dest_s, dest_p,
+                speed_percent, phase, launched_at, outbound_secs, hold_secs,
+                phase_ends_at, fuel_paid
+         FROM missions ORDER BY id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, i64>(5)?,
+            row.get::<_, i64>(6)?,
+            row.get::<_, i64>(7)?,
+            row.get::<_, String>(8)?,
+            row.get::<_, i64>(9)?,
+            row.get::<_, i64>(10)?,
+            row.get::<_, i64>(11)?,
+            row.get::<_, i64>(12)?,
+            row.get::<_, f64>(13)?,
+        ))
+    })?;
+    let mut missions = Vec::new();
+    for row in rows {
+        let (
+            id,
+            og,
+            os,
+            op,
+            dg,
+            ds,
+            dp,
+            speed,
+            phase,
+            launched_at,
+            outbound_secs,
+            hold_secs,
+            phase_ends_at,
+            fuel_paid,
+        ) = row?;
+        let phase =
+            MissionPhase::from_key(&phase).ok_or(SaveError::Corrupt("unknown mission phase"))?;
+        let mut ships = Fleet::default();
+        let mut ship_stmt =
+            conn.prepare("SELECT kind, count FROM mission_ships WHERE mission_id = ?1")?;
+        let ship_rows = ship_stmt.query_map(params![id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
+        })?;
+        for ship_row in ship_rows {
+            let (kind, count) = ship_row?;
+            let kind = ShipKind::from_key(&kind).ok_or(SaveError::Corrupt("unknown ship kind"))?;
+            ships.add(kind, count);
+        }
+        missions.push(Mission {
+            id: unix_ts(id)?,
+            ships,
+            origin: Coord {
+                galaxy: u16_coord(og)?,
+                system: u16_coord(os)?,
+                position: u16_coord(op)?,
+            },
+            dest: Coord {
+                galaxy: u16_coord(dg)?,
+                system: u16_coord(ds)?,
+                position: u16_coord(dp)?,
+            },
+            speed_percent: u8::try_from(speed).map_err(|_| SaveError::Corrupt("speed percent"))?,
+            phase,
+            launched_at: unix_ts(launched_at)?,
+            outbound_secs: unix_ts(outbound_secs)?,
+            hold_secs: unix_ts(hold_secs)?,
+            phase_ends_at: unix_ts(phase_ends_at)?,
+            fuel_paid,
+        });
+    }
+    state.missions = missions;
+    state.next_mission_id = state
+        .missions
+        .iter()
+        .map(|m| m.id)
+        .max()
+        .map(|id| id.saturating_add(1))
+        .unwrap_or(0);
+
     Ok(state)
+}
+
+fn u16_coord(value: i64) -> Result<u16, SaveError> {
+    u16::try_from(value).map_err(|_| SaveError::Corrupt("coordinate out of range"))
 }
 
 /// Load an existing save, or write a new game when the file has no meta row yet.
@@ -403,7 +531,9 @@ pub fn load_or_new(
             + count_rows(conn, "tech_levels")?
             + count_rows(conn, "research")?
             + count_rows(conn, "ships")?
-            + count_rows(conn, "ship_queue")?;
+            + count_rows(conn, "ship_queue")?
+            + count_rows(conn, "missions")?
+            + count_rows(conn, "mission_ships")?;
         if leftover != 0 {
             return Err(SaveError::Corrupt("missing meta row"));
         }
@@ -432,6 +562,8 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "research" => "SELECT COUNT(*) FROM research",
         "ships" => "SELECT COUNT(*) FROM ships",
         "ship_queue" => "SELECT COUNT(*) FROM ship_queue",
+        "missions" => "SELECT COUNT(*) FROM missions",
+        "mission_ships" => "SELECT COUNT(*) FROM mission_ships",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -450,6 +582,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 2 {
         migrate_v2(conn)?;
+    }
+    if found < 3 {
+        migrate_v3(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -531,6 +666,36 @@ fn migrate_v2(conn: &Connection) -> Result<(), SaveError> {
     Ok(())
 }
 
+fn migrate_v3(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS missions (
+            id INTEGER PRIMARY KEY,
+            origin_g INTEGER NOT NULL,
+            origin_s INTEGER NOT NULL,
+            origin_p INTEGER NOT NULL,
+            dest_g INTEGER NOT NULL,
+            dest_s INTEGER NOT NULL,
+            dest_p INTEGER NOT NULL,
+            speed_percent INTEGER NOT NULL,
+            phase TEXT NOT NULL,
+            launched_at INTEGER NOT NULL,
+            outbound_secs INTEGER NOT NULL,
+            hold_secs INTEGER NOT NULL,
+            phase_ends_at INTEGER NOT NULL,
+            fuel_paid REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS mission_ships (
+            mission_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            count INTEGER NOT NULL,
+            PRIMARY KEY (mission_id, kind)
+        );
+        ",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -568,6 +733,22 @@ mod tests {
             .enqueue_ships(crate::ShipKind::LightFighter, 2, 1_700_000_000)
             .unwrap();
         state.fleet.add(crate::ShipKind::HeavyFighter, 3);
+        state.fleet.add(crate::ShipKind::LightFighter, 2);
+        let mut wing = crate::Fleet::default();
+        wing.add(crate::ShipKind::LightFighter, 2);
+        state
+            .launch_fleet(
+                wing,
+                crate::Coord {
+                    galaxy: 2,
+                    system: 1,
+                    position: 1,
+                },
+                100,
+                0,
+                1_700_000_000,
+            )
+            .unwrap();
         state
     }
 
