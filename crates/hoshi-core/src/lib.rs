@@ -3,6 +3,7 @@
 mod balance;
 mod buildings;
 mod clock;
+mod research;
 mod state;
 
 pub use balance::{
@@ -10,6 +11,10 @@ pub use balance::{
 };
 pub use buildings::{BuildError, BuildJob, BuildingKind, Buildings};
 pub use clock::{Clock, FakeClock, SystemClock};
+pub use research::{
+    BuildingPrereq, ModifierKind, PrereqGap, ResearchError, ResearchJob, TechModifier, TechPrereq,
+    TechSpec, TechTree, TechTreeError,
+};
 pub use state::{GameState, ResourceKind, Resources};
 
 /// Open (or create) the SQLite save at `path`. Schema arrives with the save/load issue.

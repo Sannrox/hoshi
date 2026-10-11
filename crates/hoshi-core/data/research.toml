@@ -1,0 +1,170 @@
+# Research tree. Loaded and validated by hoshi-core on BalanceConfig::default.
+
+[[tech]]
+id = "energy"
+name = "Energy Technology"
+metal = 0.0
+crystal = 800.0
+deuterium = 400.0
+cost_growth = 2.0
+base_seconds = 240.0
+time_growth = 2.0
+prereq_buildings = [{ building = "research_lab", level = 1 }]
+prereq_techs = []
+modifiers = []
+
+[[tech]]
+id = "laser"
+name = "Laser Technology"
+metal = 200.0
+crystal = 100.0
+deuterium = 0.0
+cost_growth = 2.0
+base_seconds = 240.0
+time_growth = 2.0
+prereq_buildings = [{ building = "research_lab", level = 1 }]
+prereq_techs = [{ id = "energy", level = 2 }]
+modifiers = []
+
+[[tech]]
+id = "ion"
+name = "Ion Technology"
+metal = 1000.0
+crystal = 300.0
+deuterium = 100.0
+cost_growth = 2.0
+base_seconds = 480.0
+time_growth = 2.0
+prereq_buildings = [{ building = "research_lab", level = 4 }]
+prereq_techs = [{ id = "laser", level = 5 }, { id = "energy", level = 4 }]
+modifiers = []
+
+[[tech]]
+id = "hyperspace"
+name = "Hyperspace Technology"
+metal = 0.0
+crystal = 4000.0
+deuterium = 2000.0
+cost_growth = 2.0
+base_seconds = 600.0
+time_growth = 2.0
+prereq_buildings = [{ building = "research_lab", level = 7 }]
+prereq_techs = [{ id = "energy", level = 5 }, { id = "laser", level = 10 }]
+modifiers = []
+
+[[tech]]
+id = "combustion_drive"
+name = "Combustion Drive"
+metal = 400.0
+crystal = 0.0
+deuterium = 600.0
+cost_growth = 2.0
+base_seconds = 240.0
+time_growth = 2.0
+prereq_buildings = [{ building = "research_lab", level = 1 }]
+prereq_techs = [{ id = "energy", level = 1 }]
+modifiers = [{ kind = "drive_speed", per_level = 0.1 }]
+
+[[tech]]
+id = "impulse_drive"
+name = "Impulse Drive"
+metal = 2000.0
+crystal = 4000.0
+deuterium = 600.0
+cost_growth = 2.0
+base_seconds = 480.0
+time_growth = 2.0
+prereq_buildings = [{ building = "research_lab", level = 2 }]
+prereq_techs = [{ id = "energy", level = 1 }]
+modifiers = [{ kind = "drive_speed", per_level = 0.2 }]
+
+[[tech]]
+id = "hyperspace_drive"
+name = "Hyperspace Drive"
+metal = 10000.0
+crystal = 20000.0
+deuterium = 6000.0
+cost_growth = 2.0
+base_seconds = 720.0
+time_growth = 2.0
+prereq_buildings = [{ building = "research_lab", level = 7 }]
+prereq_techs = [{ id = "hyperspace", level = 3 }]
+modifiers = [{ kind = "drive_speed", per_level = 0.3 }]
+
+[[tech]]
+id = "espionage"
+name = "Espionage Technology"
+metal = 200.0
+crystal = 1000.0
+deuterium = 200.0
+cost_growth = 2.0
+base_seconds = 240.0
+time_growth = 2.0
+prereq_buildings = [{ building = "research_lab", level = 3 }]
+prereq_techs = []
+modifiers = [{ kind = "espionage", per_level = 1.0 }]
+
+[[tech]]
+id = "computer"
+name = "Computer Technology"
+metal = 0.0
+crystal = 400.0
+deuterium = 600.0
+cost_growth = 2.0
+base_seconds = 240.0
+time_growth = 2.0
+prereq_buildings = [{ building = "research_lab", level = 1 }]
+prereq_techs = []
+modifiers = [{ kind = "fleet_slots", per_level = 1.0 }]
+
+[[tech]]
+id = "weapons"
+name = "Weapons Technology"
+metal = 800.0
+crystal = 200.0
+deuterium = 0.0
+cost_growth = 2.0
+base_seconds = 240.0
+time_growth = 2.0
+prereq_buildings = [{ building = "research_lab", level = 4 }]
+prereq_techs = []
+modifiers = [{ kind = "weapon_damage", per_level = 0.1 }]
+
+[[tech]]
+id = "shields"
+name = "Shielding Technology"
+metal = 200.0
+crystal = 600.0
+deuterium = 0.0
+cost_growth = 2.0
+base_seconds = 240.0
+time_growth = 2.0
+prereq_buildings = [{ building = "research_lab", level = 6 }]
+prereq_techs = [{ id = "energy", level = 3 }]
+modifiers = [{ kind = "shield_strength", per_level = 0.1 }]
+
+[[tech]]
+id = "armour"
+name = "Armour Technology"
+metal = 1000.0
+crystal = 0.0
+deuterium = 0.0
+cost_growth = 2.0
+base_seconds = 240.0
+time_growth = 2.0
+prereq_buildings = [{ building = "research_lab", level = 2 }]
+prereq_techs = []
+modifiers = [{ kind = "armour", per_level = 0.1 }]
+
+[[tech]]
+id = "astrophysics"
+name = "Astrophysics"
+metal = 4000.0
+crystal = 8000.0
+deuterium = 4000.0
+cost_growth = 1.75
+base_seconds = 480.0
+time_growth = 1.75
+prereq_buildings = [{ building = "research_lab", level = 3 }]
+prereq_techs = [{ id = "impulse_drive", level = 3 }]
+modifiers = [{ kind = "expedition_slots", per_level = 1.0 }]

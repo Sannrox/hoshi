@@ -189,6 +189,7 @@ pub struct BalanceConfig {
     pub max_build_queue: usize,
     /// Build time is divided by `1 + robotics_level * this`.
     pub robotics_speed_per_level: f64,
+    pub techs: crate::TechTree,
     pub starting_resources: Resources,
     pub starting_buildings: Buildings,
 }
@@ -233,6 +234,7 @@ impl Default for BalanceConfig {
             buildings: BuildingCatalog::default(),
             max_build_queue: 5,
             robotics_speed_per_level: 1.0,
+            techs: crate::TechTree::default(),
             starting_resources: Resources {
                 metal: 500.0,
                 crystal: 500.0,
