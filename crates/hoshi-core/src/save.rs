@@ -8,6 +8,7 @@ use crate::planets::{Colony, PlanetType};
 use crate::research::ResearchJob;
 use crate::ships::{Fleet, ShipJob, ShipKind};
 use crate::state::{GameEvent, GameState, Resources};
+use crate::wonders::WonderJob;
 use rusqlite::{Connection, OptionalExtension, params};
 use std::ffi::OsStr;
 use std::fmt;
@@ -15,7 +16,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 9;
+pub const SCHEMA_VERSION: u32 = 10;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -127,7 +128,9 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM activity_boosts;
          DELETE FROM activity_limits;
          DELETE FROM route_ships;
-         DELETE FROM routes;",
+         DELETE FROM routes;
+         DELETE FROM wonder_job;
+         DELETE FROM wonder_done;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -351,6 +354,27 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
             )?;
         }
         insert_build_queue(&tx, planet_id, &colony.build_queue)?;
+    }
+    if let Some(job) = &state.wonder {
+        tx.execute(
+            "INSERT INTO wonder_job (
+                id, wonder_id, stage, metal, crystal, deuterium, completes_at
+             ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                job.id,
+                job.stage as i64,
+                job.contributed.metal,
+                job.contributed.crystal,
+                job.contributed.deuterium,
+                job.completes_at.map(|t| t as i64),
+            ],
+        )?;
+    }
+    for (i, id) in state.completed_wonders.iter().enumerate() {
+        tx.execute(
+            "INSERT INTO wonder_done (position, wonder_id) VALUES (?1, ?2)",
+            params![i as i64, id],
+        )?;
     }
     tx.commit()?;
     Ok(())
@@ -806,6 +830,43 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             u32::try_from(count).map_err(|_| SaveError::Corrupt("activity day count"))?;
     }
 
+    state.wonder = match conn
+        .query_row(
+            "SELECT wonder_id, stage, metal, crystal, deuterium, completes_at
+             FROM wonder_job WHERE id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, f64>(2)?,
+                    row.get::<_, f64>(3)?,
+                    row.get::<_, f64>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
+                ))
+            },
+        )
+        .optional()?
+    {
+        None => None,
+        Some((id, stage, metal, crystal, deuterium, completes_at)) => Some(WonderJob {
+            id,
+            stage: usize::try_from(stage).map_err(|_| SaveError::Corrupt("wonder stage"))?,
+            contributed: Resources {
+                metal,
+                crystal,
+                deuterium,
+            },
+            completes_at: unix_ts_opt(completes_at)?,
+        }),
+    };
+    let mut stmt = conn.prepare("SELECT wonder_id FROM wonder_done ORDER BY position")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    state.completed_wonders.clear();
+    for row in rows {
+        state.completed_wonders.push(row?);
+    }
+
     Ok(state)
 }
 
@@ -821,22 +882,7 @@ pub fn load_or_new(
 ) -> Result<GameState, SaveError> {
     let meta: i64 = count_rows(conn, "meta")?;
     if meta == 0 {
-        let leftover = count_rows(conn, "resources")?
-            + count_rows(conn, "buildings")?
-            + count_rows(conn, "build_queue")?
-            + count_rows(conn, "tech_levels")?
-            + count_rows(conn, "research")?
-            + count_rows(conn, "ships")?
-            + count_rows(conn, "ship_queue")?
-            + count_rows(conn, "missions")?
-            + count_rows(conn, "mission_ships")?
-            + count_rows(conn, "raids")?
-            + count_rows(conn, "event_log")?
-            + count_rows(conn, "colonies")?
-            + count_rows(conn, "activity_boosts")?
-            + count_rows(conn, "activity_limits")?
-            + count_rows(conn, "routes")?
-            + count_rows(conn, "route_ships")?;
+        let leftover = leftover_rows(conn)?;
         if leftover != 0 {
             return Err(SaveError::Corrupt("missing meta row"));
         }
@@ -856,22 +902,7 @@ pub fn load_or_new_with_seed(
 ) -> Result<GameState, SaveError> {
     let meta: i64 = count_rows(conn, "meta")?;
     if meta == 0 {
-        let leftover = count_rows(conn, "resources")?
-            + count_rows(conn, "buildings")?
-            + count_rows(conn, "build_queue")?
-            + count_rows(conn, "tech_levels")?
-            + count_rows(conn, "research")?
-            + count_rows(conn, "ships")?
-            + count_rows(conn, "ship_queue")?
-            + count_rows(conn, "missions")?
-            + count_rows(conn, "mission_ships")?
-            + count_rows(conn, "raids")?
-            + count_rows(conn, "event_log")?
-            + count_rows(conn, "colonies")?
-            + count_rows(conn, "activity_boosts")?
-            + count_rows(conn, "activity_limits")?
-            + count_rows(conn, "routes")?
-            + count_rows(conn, "route_ships")?;
+        let leftover = leftover_rows(conn)?;
         if leftover != 0 {
             return Err(SaveError::Corrupt("missing meta row"));
         }
@@ -1014,9 +1045,32 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "activity_limits" => "SELECT COUNT(*) FROM activity_limits",
         "routes" => "SELECT COUNT(*) FROM routes",
         "route_ships" => "SELECT COUNT(*) FROM route_ships",
+        "wonder_job" => "SELECT COUNT(*) FROM wonder_job",
+        "wonder_done" => "SELECT COUNT(*) FROM wonder_done",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
+}
+
+fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
+    Ok(count_rows(conn, "resources")?
+        + count_rows(conn, "buildings")?
+        + count_rows(conn, "build_queue")?
+        + count_rows(conn, "tech_levels")?
+        + count_rows(conn, "research")?
+        + count_rows(conn, "ships")?
+        + count_rows(conn, "ship_queue")?
+        + count_rows(conn, "missions")?
+        + count_rows(conn, "mission_ships")?
+        + count_rows(conn, "raids")?
+        + count_rows(conn, "event_log")?
+        + count_rows(conn, "colonies")?
+        + count_rows(conn, "activity_boosts")?
+        + count_rows(conn, "activity_limits")?
+        + count_rows(conn, "routes")?
+        + count_rows(conn, "route_ships")?
+        + count_rows(conn, "wonder_job")?
+        + count_rows(conn, "wonder_done")?)
 }
 
 fn migrate(conn: &Connection) -> Result<(), SaveError> {
@@ -1053,6 +1107,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 9 {
         migrate_v9(conn)?;
+    }
+    if found < 10 {
+        migrate_v10(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -1323,6 +1380,27 @@ fn migrate_v9(conn: &Connection) -> Result<(), SaveError> {
     Ok(())
 }
 
+fn migrate_v10(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS wonder_job (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            wonder_id TEXT NOT NULL,
+            stage INTEGER NOT NULL,
+            metal REAL NOT NULL,
+            crystal REAL NOT NULL,
+            deuterium REAL NOT NULL,
+            completes_at INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS wonder_done (
+            position INTEGER PRIMARY KEY,
+            wonder_id TEXT NOT NULL
+        );
+        ",
+    )?;
+    Ok(())
+}
+
 fn read_build_queue(conn: &Connection, planet_id: i64) -> Result<Vec<BuildJob>, SaveError> {
     let mut stmt = conn.prepare(
         "SELECT kind, from_level, paid_metal, paid_crystal, paid_deuterium, started_at, completes_at
@@ -1560,6 +1638,17 @@ mod tests {
                 deuterium: 1.0,
             };
         }
+        state.completed_wonders.push("observatory".into());
+        state.wonder = Some(crate::WonderJob {
+            id: "dyson_ring".into(),
+            stage: 0,
+            contributed: Resources {
+                metal: 100.0,
+                crystal: 50.0,
+                deuterium: 10.0,
+            },
+            completes_at: Some(1_700_000_100),
+        });
         state
     }
 
@@ -1897,6 +1986,30 @@ mod tests {
         save_state(&mut conn, &state).unwrap();
         let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
         assert!(loaded.deterministic);
+    }
+
+    #[test]
+    fn migrate_v10_retries_and_round_trips_wonder_progress() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v10(&conn).unwrap();
+        migrate_v10(&conn).unwrap();
+        let mut state = GameState::new(3);
+        state.completed_wonders.push("observatory".into());
+        state.wonder = Some(crate::WonderJob {
+            id: "dyson_ring".into(),
+            stage: 1,
+            contributed: Resources {
+                metal: 5.0,
+                crystal: 4.0,
+                deuterium: 3.0,
+            },
+            completes_at: None,
+        });
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.wonder, state.wonder);
+        assert_eq!(loaded.completed_wonders, state.completed_wonders);
+        assert_eq!(loaded, state);
     }
 
     #[test]

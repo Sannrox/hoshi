@@ -13,6 +13,7 @@ mod save;
 mod ships;
 mod simulate;
 mod state;
+mod wonders;
 
 pub use activity::{
     ActivityApply, ActivityChannel, ActivityChannelConfig, ActivityEffectsConfig, ActivityPulse,
@@ -50,3 +51,4 @@ pub use ships::{
 };
 pub use simulate::{DaySnapshot, SimReport, simulate_greedy};
 pub use state::{GameEvent, GameState, ResourceKind, Resources};
+pub use wonders::{WonderError, WonderJob, WonderModifier, WonderSpec, WonderStage};

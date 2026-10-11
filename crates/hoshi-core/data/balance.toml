@@ -255,3 +255,32 @@ metal = 0.0
 crystal = 0.0
 deuterium = 0.50
 energy = 0.0
+
+[[wonders]]
+id = "dyson_ring"
+name = "Dyson ring"
+prereq_techs = [{ id = "energy", level = 8 }]
+stages = [
+  { metal = 20000.0, crystal = 10000.0, deuterium = 2000.0, duration_secs = 86400 },
+  { metal = 40000.0, crystal = 20000.0, deuterium = 4000.0, duration_secs = 172800 },
+]
+modifiers = [{ kind = "energy_output", value = 0.25 }]
+
+[[wonders]]
+id = "stellar_gate"
+name = "Stellar gate"
+prereq_techs = [{ id = "hyperspace_drive", level = 4 }]
+stages = [
+  { metal = 15000.0, crystal = 15000.0, deuterium = 8000.0, duration_secs = 86400 },
+  { metal = 30000.0, crystal = 30000.0, deuterium = 16000.0, duration_secs = 172800 },
+]
+modifiers = [{ kind = "drive_speed", value = 0.20 }]
+
+[[wonders]]
+id = "observatory"
+name = "Deep-space observatory"
+prereq_techs = [{ id = "espionage", level = 4 }]
+stages = [
+  { metal = 8000.0, crystal = 16000.0, deuterium = 2000.0, duration_secs = 86400 },
+]
+modifiers = [{ kind = "espionage", value = 2.0 }]
