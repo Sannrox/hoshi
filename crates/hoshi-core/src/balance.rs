@@ -6,8 +6,10 @@ use crate::buildings::{BuildingKind, Buildings};
 use crate::expedition::{ExpeditionConfig, ExpeditionWeights};
 use crate::fleets::FlightConfig;
 use crate::planets::{PlanetTypeBonus, PlanetTypeCatalog};
+use crate::research::{ModifierKind, TechPrereq};
 use crate::ships::ShipKind;
 use crate::state::Resources;
+use crate::wonders::{WonderModifier, WonderSpec, WonderStage};
 use serde::Deserialize;
 use std::fmt;
 use std::path::Path;
@@ -309,6 +311,7 @@ pub struct BalanceConfig {
     pub starting_resources: Resources,
     pub starting_buildings: Buildings,
     pub pacing: PacingTargets,
+    pub wonders: Vec<WonderSpec>,
 }
 
 impl BalanceConfig {
@@ -354,6 +357,39 @@ struct File {
     expedition: FileExpedition,
     flight: FileFlight,
     planet_types: FilePlanetTypes,
+    #[serde(default)]
+    wonders: Vec<FileWonder>,
+}
+
+#[derive(Deserialize)]
+struct FileWonder {
+    id: String,
+    name: String,
+    #[serde(default)]
+    prereq_techs: Vec<FileTechPrereq>,
+    stages: Vec<FileWonderStage>,
+    #[serde(default)]
+    modifiers: Vec<FileWonderModifier>,
+}
+
+#[derive(Deserialize)]
+struct FileTechPrereq {
+    id: String,
+    level: u32,
+}
+
+#[derive(Deserialize)]
+struct FileWonderStage {
+    metal: f64,
+    crystal: f64,
+    deuterium: f64,
+    duration_secs: u64,
+}
+
+#[derive(Deserialize)]
+struct FileWonderModifier {
+    kind: ModifierKind,
+    value: f64,
 }
 
 #[derive(Deserialize)]
@@ -671,6 +707,42 @@ impl File {
                 min_metal_mine_per_day: self.pacing.min_metal_mine_per_day,
                 max_bridge_metal_ratio: self.pacing.max_bridge_metal_ratio,
             },
+            wonders: self
+                .wonders
+                .into_iter()
+                .map(|w| WonderSpec {
+                    id: w.id,
+                    name: w.name,
+                    prereq_techs: w
+                        .prereq_techs
+                        .into_iter()
+                        .map(|p| TechPrereq {
+                            id: p.id,
+                            level: p.level,
+                        })
+                        .collect(),
+                    stages: w
+                        .stages
+                        .into_iter()
+                        .map(|s| WonderStage {
+                            cost: Resources {
+                                metal: s.metal,
+                                crystal: s.crystal,
+                                deuterium: s.deuterium,
+                            },
+                            duration_secs: s.duration_secs,
+                        })
+                        .collect(),
+                    modifiers: w
+                        .modifiers
+                        .into_iter()
+                        .map(|m| WonderModifier {
+                            kind: m.kind,
+                            value: m.value,
+                        })
+                        .collect(),
+                })
+                .collect(),
         };
         config.validate()?;
         Ok(config)
@@ -807,6 +879,69 @@ impl BalanceConfig {
             "starting_resources.deuterium",
             self.starting_resources.deuterium,
         )?;
+        let mut seen = std::collections::HashSet::new();
+        for spec in &self.wonders {
+            if spec.id.is_empty() {
+                return Err(BalanceError::Invalid("wonder id must not be empty".into()));
+            }
+            if !seen.insert(&spec.id) {
+                return Err(BalanceError::Invalid(format!(
+                    "duplicate wonder id {}",
+                    spec.id
+                )));
+            }
+            if spec.stages.is_empty() {
+                return Err(BalanceError::Invalid(format!(
+                    "wonder {} needs at least one stage",
+                    spec.id
+                )));
+            }
+            for (i, stage) in spec.stages.iter().enumerate() {
+                if stage.duration_secs == 0 {
+                    return Err(BalanceError::Invalid(format!(
+                        "wonder {} stage {i} duration_secs must be > 0",
+                        spec.id
+                    )));
+                }
+                nonneg_finite(
+                    &format!("wonder {} stage {i} metal", spec.id),
+                    stage.cost.metal,
+                )?;
+                nonneg_finite(
+                    &format!("wonder {} stage {i} crystal", spec.id),
+                    stage.cost.crystal,
+                )?;
+                nonneg_finite(
+                    &format!("wonder {} stage {i} deuterium", spec.id),
+                    stage.cost.deuterium,
+                )?;
+                if stage.cost.metal <= 0.0
+                    && stage.cost.crystal <= 0.0
+                    && stage.cost.deuterium <= 0.0
+                {
+                    return Err(BalanceError::Invalid(format!(
+                        "wonder {} stage {i} needs a positive cost",
+                        spec.id
+                    )));
+                }
+            }
+            for prereq in &spec.prereq_techs {
+                if self.techs.get(&prereq.id).is_none() {
+                    return Err(BalanceError::Invalid(format!(
+                        "wonder {} unknown tech {}",
+                        spec.id, prereq.id
+                    )));
+                }
+            }
+            for modifier in &spec.modifiers {
+                if !modifier.value.is_finite() {
+                    return Err(BalanceError::Invalid(format!(
+                        "wonder {} modifier must be finite",
+                        spec.id
+                    )));
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -889,6 +1024,52 @@ mod tests {
             cfg.buildings.shipyard.prerequisites,
             vec![(BuildingKind::RoboticsFactory, 1)]
         );
+        assert_eq!(cfg.wonders.len(), 3);
+        assert_eq!(cfg.wonders[0].id, "dyson_ring");
+        assert_eq!(cfg.wonders[0].prereq_techs[0].id, "energy");
+        assert_eq!(cfg.wonders[0].prereq_techs[0].level, 8);
+    }
+
+    #[test]
+    fn rejects_duplicate_wonder_id() {
+        let text = format!(
+            "{DEFAULT_BALANCE}
+[[wonders]]
+id = \"dyson_ring\"
+name = \"Dup\"
+stages = [{{ metal = 1.0, crystal = 0.0, deuterium = 0.0, duration_secs = 1 }}]
+"
+        );
+        let err = BalanceConfig::parse(&text).unwrap_err();
+        assert!(err.to_string().contains("duplicate wonder"), "{err}");
+    }
+
+    #[test]
+    fn rejects_zero_cost_wonder_stage() {
+        let text = format!(
+            "{DEFAULT_BALANCE}
+[[wonders]]
+id = \"free\"
+name = \"Free\"
+stages = [{{ metal = 0.0, crystal = 0.0, deuterium = 0.0, duration_secs = 1 }}]
+"
+        );
+        let err = BalanceConfig::parse(&text).unwrap_err();
+        assert!(err.to_string().contains("positive cost"), "{err}");
+    }
+
+    #[test]
+    fn rejects_wonder_with_empty_stages() {
+        let text = format!(
+            "{DEFAULT_BALANCE}
+[[wonders]]
+id = \"hollow\"
+name = \"Hollow\"
+stages = []
+"
+        );
+        let err = BalanceConfig::parse(&text).unwrap_err();
+        assert!(err.to_string().contains("at least one stage"), "{err}");
     }
 
     #[test]

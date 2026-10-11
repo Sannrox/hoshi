@@ -16,6 +16,7 @@ use crate::fleets::{
 use crate::planets::{Colony, PlanetType, planet_profile};
 use crate::research::{ModifierKind, PrereqGap, ResearchError, ResearchJob};
 use crate::ships::{Fleet, ShipError, ShipJob, ShipKind, ShipStats};
+use crate::wonders::{WonderError, WonderJob};
 use std::collections::BTreeMap;
 
 const EVENT_LOG_CAP: usize = 32;
@@ -133,6 +134,8 @@ pub struct GameState {
     pub galaxy_seed: u64,
     /// When true, `tick --advance` may move the clock. Wall-clock saves stay false.
     pub deterministic: bool,
+    pub wonder: Option<WonderJob>,
+    pub completed_wonders: Vec<String>,
     pub config: BalanceConfig,
 }
 
@@ -171,6 +174,8 @@ impl GameState {
             rng_seed: 0,
             galaxy_seed,
             deterministic: false,
+            wonder: None,
+            completed_wonders: Vec::new(),
             config,
         }
     }
@@ -220,6 +225,7 @@ impl GameState {
                 .activity
                 .research_boost_until
                 .filter(|&t| t > self.last_tick_unix);
+            let wonder_at = self.wonder.as_ref().and_then(|job| job.completes_at);
             let Some(done_at) = min_time(
                 min_time(
                     min_time(
@@ -231,7 +237,7 @@ impl GameState {
                     ),
                     route_at,
                 ),
-                min_time(prod_boost_at, research_boost_at),
+                min_time(min_time(prod_boost_at, research_boost_at), wonder_at),
             ) else {
                 self.produce_until(now_unix);
                 return;
@@ -287,6 +293,9 @@ impl GameState {
                 self.activity.research_boost_until = None;
                 self.activity.research_boost_factor = 0.0;
                 self.rescale_research(done_at, old, 1.0);
+            }
+            if wonder_at == Some(done_at) {
+                self.complete_wonder_stage(done_at);
             }
         }
     }
@@ -1168,6 +1177,217 @@ impl GameState {
         1 + self.modifier(ModifierKind::ColonySlots).floor().max(0.0) as u32
     }
 
+    fn expedition_astro(&self) -> u32 {
+        self.tech_level("astrophysics")
+            .saturating_add(self.modifier(ModifierKind::Espionage).floor().max(0.0) as u32)
+    }
+
+    /// Begin a wonder. One at a time; stages are paid with [`Self::contribute_wonder`].
+    pub fn start_wonder(&mut self, id: &str, now_unix: u64) -> Result<(), WonderError> {
+        self.catch_up(now_unix);
+        if let Some(job) = &self.wonder {
+            return Err(WonderError::Busy { id: job.id.clone() });
+        }
+        if self.completed_wonders.iter().any(|done| done == id) {
+            return Err(WonderError::AlreadyComplete { id: id.into() });
+        }
+        let spec = self
+            .config
+            .wonders
+            .iter()
+            .find(|s| s.id == id)
+            .ok_or_else(|| WonderError::Unknown { id: id.into() })?;
+        if spec.stages.is_empty() {
+            return Err(WonderError::EmptyStages { id: id.into() });
+        }
+        for prereq in &spec.prereq_techs {
+            let actual = self.tech_level(&prereq.id);
+            if actual < prereq.level {
+                return Err(WonderError::MissingTech {
+                    id: prereq.id.clone(),
+                    required: prereq.level,
+                    actual,
+                });
+            }
+        }
+        self.wonder = Some(WonderJob {
+            id: spec.id.clone(),
+            stage: 0,
+            contributed: Resources::ZERO,
+            completes_at: None,
+        });
+        Ok(())
+    }
+
+    /// Move stockpile from `coord` onto the current stage. Starts the stage timer when paid.
+    pub fn contribute_wonder(
+        &mut self,
+        coord: Coord,
+        now_unix: u64,
+    ) -> Result<Resources, WonderError> {
+        self.catch_up(now_unix);
+        let now = self.last_tick_unix;
+        let (job_id, stage_idx, contributed) = match &self.wonder {
+            Some(job) => (job.id.clone(), job.stage, job.contributed),
+            None => return Err(WonderError::NothingToContribute),
+        };
+        let spec = self
+            .config
+            .wonders
+            .iter()
+            .find(|s| s.id == job_id)
+            .ok_or_else(|| WonderError::Unknown { id: job_id.clone() })?;
+        let stage = spec
+            .stage(stage_idx)
+            .ok_or_else(|| WonderError::EmptyStages { id: job_id.clone() })?;
+        let cost = stage.cost;
+        let duration = stage.duration_secs;
+        let remaining = Resources {
+            metal: (cost.metal - contributed.metal).max(0.0),
+            crystal: (cost.crystal - contributed.crystal).max(0.0),
+            deuterium: (cost.deuterium - contributed.deuterium).max(0.0),
+        };
+        let planet = self
+            .resources_at_mut(coord)
+            .map_err(|_| WonderError::UnknownPlanet)?;
+        let take = Resources {
+            metal: planet.metal.min(remaining.metal),
+            crystal: planet.crystal.min(remaining.crystal),
+            deuterium: planet.deuterium.min(remaining.deuterium),
+        };
+        if take.metal <= 0.0 && take.crystal <= 0.0 && take.deuterium <= 0.0 {
+            return Err(WonderError::NothingToContribute);
+        }
+        *planet = planet.saturating_sub(take);
+        let job = self
+            .wonder
+            .as_mut()
+            .ok_or(WonderError::NothingToContribute)?;
+        job.contributed = job.contributed.saturating_add(take);
+        if job.contributed.metal + 1e-9 >= cost.metal
+            && job.contributed.crystal + 1e-9 >= cost.crystal
+            && job.contributed.deuterium + 1e-9 >= cost.deuterium
+            && job.completes_at.is_none()
+        {
+            job.completes_at = Some(now.saturating_add(duration));
+        }
+        Ok(take)
+    }
+
+    pub fn wonder_remaining(&self) -> Option<Resources> {
+        let job = self.wonder.as_ref()?;
+        let spec = self.config.wonders.iter().find(|s| s.id == job.id)?;
+        let stage = spec.stage(job.stage)?;
+        Some(Resources {
+            metal: (stage.cost.metal - job.contributed.metal).max(0.0),
+            crystal: (stage.cost.crystal - job.contributed.crystal).max(0.0),
+            deuterium: (stage.cost.deuterium - job.contributed.deuterium).max(0.0),
+        })
+    }
+
+    /// Seconds until the current stage finishes at current income, or the running timer.
+    pub fn wonder_eta_secs(&self) -> Option<u64> {
+        let job = self.wonder.as_ref()?;
+        if let Some(at) = job.completes_at {
+            return Some(at.saturating_sub(self.last_tick_unix));
+        }
+        let remaining = self.wonder_remaining()?;
+        let mut secs = 0_u64;
+        for kind in ResourceKind::ALL {
+            let need = remaining.get(kind);
+            if need <= 1e-9 {
+                continue;
+            }
+            let rate = self.empire_production_per_hour(kind);
+            if rate <= 1e-9 {
+                return None;
+            }
+            let wait = (need / rate * 3600.0).ceil() as u64;
+            secs = secs.max(wait);
+        }
+        Some(secs)
+    }
+
+    fn empire_production_per_hour(&self, kind: ResourceKind) -> f64 {
+        self.production_per_hour(kind)
+            + self
+                .colonies
+                .iter()
+                .map(|colony| self.colony_production_per_hour(colony, kind))
+                .sum::<f64>()
+    }
+
+    fn colony_production_per_hour(&self, colony: &Colony, kind: ResourceKind) -> f64 {
+        let bonus = self.config.planet_types.get(colony.kind);
+        let energy_t = self.tech_modifier(ModifierKind::EnergyOutput);
+        let produced = self
+            .config
+            .solar_plant
+            .energy_output(colony.buildings.solar_plant)
+            * (1.0 + energy_t + bonus.energy).max(0.0);
+        let consumed = self
+            .config
+            .metal_mine
+            .energy_use(colony.buildings.metal_mine)
+            + self
+                .config
+                .crystal_mine
+                .energy_use(colony.buildings.crystal_mine)
+            + self
+                .config
+                .deuterium_synthesizer
+                .energy_use(colony.buildings.deuterium_synthesizer);
+        let factor = if consumed <= 0.0 {
+            1.0
+        } else {
+            (produced / consumed).clamp(0.0, 1.0)
+        };
+        let boost = self.prod_boost_mult();
+        let (raw, output, planet_bonus) = match kind {
+            ResourceKind::Metal => (
+                self.config
+                    .metal_mine
+                    .production_per_hour(colony.buildings.metal_mine),
+                ModifierKind::MetalOutput,
+                bonus.metal,
+            ),
+            ResourceKind::Crystal => (
+                self.config
+                    .crystal_mine
+                    .production_per_hour(colony.buildings.crystal_mine),
+                ModifierKind::CrystalOutput,
+                bonus.crystal,
+            ),
+            ResourceKind::Deuterium => (
+                self.config
+                    .deuterium_synthesizer
+                    .production_per_hour(colony.buildings.deuterium_synthesizer),
+                ModifierKind::DeuteriumOutput,
+                bonus.deuterium,
+            ),
+        };
+        raw * (1.0 + self.tech_modifier(output) + planet_bonus) * factor * boost
+    }
+
+    fn complete_wonder_stage(&mut self, now: u64) {
+        let Some(mut job) = self.wonder.take() else {
+            return;
+        };
+        let Some(spec) = self.config.wonders.iter().find(|s| s.id == job.id) else {
+            return;
+        };
+        if job.stage + 1 >= spec.stages.len() {
+            self.push_event(now, format!("{} complete", spec.name));
+            self.completed_wonders.push(job.id);
+        } else {
+            job.stage += 1;
+            job.contributed = Resources::ZERO;
+            job.completes_at = None;
+            self.push_event(now, format!("{} stage {} complete", spec.name, job.stage));
+            self.wonder = Some(job);
+        }
+    }
+
     fn occupied(&self, coord: Coord) -> bool {
         coord == self.home || self.colonies.iter().any(|c| c.coord == coord)
     }
@@ -1238,7 +1458,8 @@ impl GameState {
             shield,
             hull,
             cargo: spec.cargo,
-            speed: spec.speed * (1.0 + drive_bonus),
+            speed: spec.speed
+                * (1.0 + drive_bonus + self.wonder_modifier(ModifierKind::DriveSpeed)),
             fuel: spec.fuel,
         }
     }
@@ -1258,7 +1479,8 @@ impl GameState {
     }
 
     fn tech_modifier(&self, kind: ModifierKind) -> f64 {
-        self.config
+        let techs = self
+            .config
             .techs
             .iter()
             .map(|spec| {
@@ -1269,6 +1491,17 @@ impl GameState {
                     .map(|m| m.per_level * level)
                     .sum::<f64>()
             })
+            .sum::<f64>();
+        techs + self.wonder_modifier(kind)
+    }
+
+    fn wonder_modifier(&self, kind: ModifierKind) -> f64 {
+        self.completed_wonders
+            .iter()
+            .filter_map(|id| self.config.wonders.iter().find(|spec| spec.id == *id))
+            .flat_map(|spec| spec.modifiers.iter())
+            .filter(|m| m.kind == kind)
+            .map(|m| m.value)
             .sum()
     }
 
@@ -1514,7 +1747,7 @@ impl GameState {
         self.missions[index].expedition_applied = true;
         let ships = self.missions[index].ships;
         let hold = self.missions[index].hold_secs;
-        let astro = self.tech_level("astrophysics");
+        let astro = self.expedition_astro();
         let result = roll_expedition(
             seed,
             &ships,
@@ -2164,6 +2397,7 @@ mod tests {
             activity: crate::ActivityEffectsConfig::default(),
             expedition: crate::ExpeditionConfig::default(),
             pacing: crate::PacingTargets::default(),
+            wonders: Vec::new(),
         }
     }
 
@@ -3806,5 +4040,204 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         );
         assert_eq!(state.build_queue.len(), 1);
         assert!(state.colonies[0].build_queue.is_empty());
+    }
+
+    fn wonder_config() -> BalanceConfig {
+        let mut cfg = test_config();
+        cfg.starting_resources = Resources {
+            metal: 1_000.0,
+            crystal: 1_000.0,
+            deuterium: 1_000.0,
+        };
+        cfg.wonders = vec![crate::WonderSpec {
+            id: "test_ring".into(),
+            name: "Test ring".into(),
+            prereq_techs: vec![crate::TechPrereq {
+                id: "energy".into(),
+                level: 1,
+            }],
+            stages: vec![
+                crate::WonderStage {
+                    cost: Resources {
+                        metal: 100.0,
+                        crystal: 40.0,
+                        deuterium: 10.0,
+                    },
+                    duration_secs: 10,
+                },
+                crate::WonderStage {
+                    cost: Resources {
+                        metal: 200.0,
+                        crystal: 80.0,
+                        deuterium: 20.0,
+                    },
+                    duration_secs: 20,
+                },
+            ],
+            modifiers: vec![crate::WonderModifier {
+                kind: ModifierKind::EnergyOutput,
+                value: 0.25,
+            }],
+        }];
+        cfg
+    }
+
+    #[test]
+    fn start_wonder_needs_research_and_blocks_a_second_job() {
+        let mut state = GameState::with_config(0, wonder_config());
+        assert!(matches!(
+            state.start_wonder("missing", 0),
+            Err(WonderError::Unknown { .. })
+        ));
+        assert!(matches!(
+            state.start_wonder("test_ring", 0),
+            Err(WonderError::MissingTech {
+                required: 1,
+                actual: 0,
+                ..
+            })
+        ));
+        state.tech_levels.insert("energy".into(), 1);
+        state.start_wonder("test_ring", 0).unwrap();
+        assert!(matches!(
+            state.start_wonder("test_ring", 0),
+            Err(WonderError::Busy { .. })
+        ));
+    }
+
+    #[test]
+    fn several_planets_pay_a_stage_and_offline_catch_up_matches_step_by_step() {
+        let mut gap = GameState::with_config(0, wonder_config());
+        gap.tech_levels.insert("energy".into(), 1);
+        plant_colony(&mut gap, neighbor());
+        gap.resources = Resources {
+            metal: 60.0,
+            crystal: 20.0,
+            deuterium: 4.0,
+        };
+        gap.colonies[0].resources = Resources {
+            metal: 60.0,
+            crystal: 20.0,
+            deuterium: 6.0,
+        };
+        gap.start_wonder("test_ring", 0).unwrap();
+        let from_home = gap.contribute_wonder(gap.home, 0).unwrap();
+        close(from_home.metal, 60.0);
+        close(from_home.crystal, 20.0);
+        close(from_home.deuterium, 4.0);
+        let from_colony = gap.contribute_wonder(neighbor(), 0).unwrap();
+        close(from_colony.metal, 40.0);
+        close(from_colony.crystal, 20.0);
+        close(from_colony.deuterium, 6.0);
+        assert_eq!(gap.wonder.as_ref().unwrap().completes_at, Some(10));
+        close(gap.resources.metal, 0.0);
+        close(gap.colonies[0].resources.metal, 20.0);
+
+        let mut step = gap.clone();
+        gap.catch_up(10);
+        for t in 1..=10 {
+            step.catch_up(t);
+        }
+        assert_eq!(gap.wonder.as_ref().unwrap().stage, 1);
+        assert_eq!(step.wonder.as_ref().unwrap().stage, 1);
+        assert_eq!(gap.wonder.as_ref().unwrap().completes_at, None);
+        assert_eq!(gap.last_tick_unix, step.last_tick_unix);
+        close(gap.resources.metal, step.resources.metal);
+        close(
+            gap.colonies[0].resources.metal,
+            step.colonies[0].resources.metal,
+        );
+        assert!(
+            gap.events
+                .iter()
+                .any(|e| e.text.contains("stage 1 complete"))
+        );
+    }
+
+    #[test]
+    fn completed_wonder_feeds_modifier_lookup() {
+        let mut state = GameState::with_config(0, wonder_config());
+        state.tech_levels.insert("energy".into(), 1);
+        state.resources = Resources {
+            metal: 400.0,
+            crystal: 200.0,
+            deuterium: 50.0,
+        };
+        let before = state.modifier(ModifierKind::EnergyOutput);
+        state.start_wonder("test_ring", 0).unwrap();
+        state.contribute_wonder(state.home, 0).unwrap();
+        state.catch_up(10);
+        state.contribute_wonder(state.home, 10).unwrap();
+        state.catch_up(30);
+        assert!(state.wonder.is_none());
+        assert_eq!(state.completed_wonders, vec!["test_ring".to_string()]);
+        close(state.modifier(ModifierKind::EnergyOutput), before + 0.25);
+        close(
+            state.energy_produced(),
+            state
+                .config
+                .solar_plant
+                .energy_output(state.buildings.solar_plant)
+                * (1.0 + before + 0.25),
+        );
+        assert!(matches!(
+            state.start_wonder("test_ring", 30),
+            Err(WonderError::AlreadyComplete { .. })
+        ));
+    }
+
+    #[test]
+    fn wonder_eta_includes_colony_income() {
+        let mut cfg = wonder_config();
+        cfg.starting_buildings.metal_mine = 0;
+        cfg.starting_buildings.crystal_mine = 0;
+        cfg.starting_buildings.solar_plant = 0;
+        let mut state = GameState::with_config(0, cfg);
+        state.tech_levels.insert("energy".into(), 1);
+        plant_colony(&mut state, neighbor());
+        state.colonies[0].buildings.metal_mine = 1;
+        state.colonies[0].buildings.crystal_mine = 1;
+        state.colonies[0].buildings.solar_plant = 1;
+        state.resources = Resources {
+            metal: 50.0,
+            crystal: 20.0,
+            deuterium: 10.0,
+        };
+        state.start_wonder("test_ring", 0).unwrap();
+        state.contribute_wonder(state.home, 0).unwrap();
+        close(state.production_per_hour(ResourceKind::Metal), 0.0);
+        assert!(
+            state.wonder_eta_secs().is_some(),
+            "colony mines should fund the unpaid remainder"
+        );
+    }
+
+    #[test]
+    fn observatory_espionage_feeds_expedition_astro() {
+        let mut cfg = wonder_config();
+        cfg.wonders[0].modifiers = vec![crate::WonderModifier {
+            kind: ModifierKind::Espionage,
+            value: 2.0,
+        }];
+        let mut state = GameState::with_config(0, cfg);
+        assert_eq!(state.expedition_astro(), 0);
+        state.completed_wonders.push("test_ring".into());
+        assert_eq!(state.expedition_astro(), 2);
+    }
+
+    #[test]
+    fn wonder_drive_speed_applies_to_ship_stats() {
+        let mut cfg = wonder_config();
+        cfg.wonders[0].modifiers = vec![crate::WonderModifier {
+            kind: ModifierKind::DriveSpeed,
+            value: 0.20,
+        }];
+        let mut state = GameState::with_config(0, cfg);
+        let before = state.ship_stats(ShipKind::LightFighter).speed;
+        state.completed_wonders.push("test_ring".into());
+        close(
+            state.ship_stats(ShipKind::LightFighter).speed,
+            before * 1.20,
+        );
     }
 }

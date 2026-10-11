@@ -1,7 +1,7 @@
-//! Overview, planet and shipyard screens. Core owns the rules; this module
+//! Overview, planet, shipyard and wonder screens. Core owns the rules; this module
 //! only renders and turns keys into core commands.
 
-use hoshi_core::{BuildingKind, Coord, GameState, ResourceKind, Resources, ShipKind};
+use hoshi_core::{BuildingKind, Coord, GameState, ResourceKind, Resources, ShipKind, WonderError};
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Layout};
@@ -14,6 +14,7 @@ pub enum Screen {
     Overview,
     Planet,
     Shipyard,
+    Wonder,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,7 +51,8 @@ impl App {
                 self.screen = match self.screen {
                     Screen::Overview => Screen::Planet,
                     Screen::Planet => Screen::Shipyard,
-                    Screen::Shipyard => Screen::Overview,
+                    Screen::Shipyard => Screen::Wonder,
+                    Screen::Wonder => Screen::Overview,
                 };
                 self.selected = 0;
                 self.status.clear();
@@ -101,9 +103,10 @@ impl App {
 
     pub fn draw(&self, frame: &mut Frame<'_>) {
         let title = match self.screen {
-            Screen::Overview => " hoshi  [overview] planet shipyard ",
-            Screen::Planet => " hoshi  overview [planet] shipyard ",
-            Screen::Shipyard => " hoshi  overview planet [shipyard] ",
+            Screen::Overview => " hoshi  [overview] planet shipyard wonder ",
+            Screen::Planet => " hoshi  overview [planet] shipyard wonder ",
+            Screen::Shipyard => " hoshi  overview planet [shipyard] wonder ",
+            Screen::Wonder => " hoshi  overview planet shipyard [wonder] ",
         };
         let block = Block::bordered().title(title);
         let inner = block.inner(frame.area());
@@ -156,6 +159,43 @@ impl App {
                     Err(e) => self.status = e.to_string(),
                 }
             }
+            Screen::Wonder => self.activate_wonder(now_unix),
+        }
+    }
+
+    fn activate_wonder(&mut self, now_unix: u64) {
+        let Some(spec) = self.state.config.wonders.get(self.selected) else {
+            return;
+        };
+        let id = spec.id.clone();
+        if let Some(job) = &self.state.wonder
+            && job.id != id
+        {
+            self.status = format!("wonder {} is already under construction", job.id);
+            return;
+        }
+        if self.state.wonder.is_none() {
+            match self.state.start_wonder(&id, now_unix) {
+                Ok(()) => {}
+                Err(e) => {
+                    self.status = e.to_string();
+                    return;
+                }
+            }
+        }
+        let coord = self.selected_coord();
+        match self.state.contribute_wonder(coord, now_unix) {
+            Ok(_) => self.status.clear(),
+            Err(WonderError::NothingToContribute)
+                if self
+                    .state
+                    .wonder
+                    .as_ref()
+                    .is_some_and(|job| job.completes_at.is_some()) =>
+            {
+                self.status.clear();
+            }
+            Err(e) => self.status = e.to_string(),
         }
     }
 
@@ -176,6 +216,7 @@ impl App {
                 Ok(_) => self.status.clear(),
                 Err(e) => self.status = e.to_string(),
             },
+            Screen::Wonder => {}
         }
     }
 
@@ -184,6 +225,7 @@ impl App {
             Screen::Planet => BuildingKind::ALL.len(),
             Screen::Shipyard => ShipKind::ALL.len(),
             Screen::Overview => self.state.config.techs.iter().count(),
+            Screen::Wonder => self.state.config.wonders.len(),
         }
     }
 
@@ -212,6 +254,7 @@ impl App {
             Line::from(self.research_status()),
             Line::from(self.ship_status()),
             Line::from(self.raid_status()),
+            Line::from(self.wonder_status()),
         ];
         lines.extend(self.planet_glance_lines());
         if let Some(event) = s.events.last() {
@@ -236,6 +279,7 @@ impl App {
             Screen::Shipyard => {
                 "tab screens  [/] planet  j/k select  enter queue  x cancel queue  q quit"
             }
+            Screen::Wonder => "tab screens  [/] planet  j/k select  enter start/contribute  q quit",
         })]
     }
 
@@ -244,6 +288,7 @@ impl App {
             Screen::Planet => self.planet_lines(height),
             Screen::Shipyard => self.shipyard_lines(height),
             Screen::Overview => self.research_lines(height),
+            Screen::Wonder => self.wonder_lines(height),
         }
     }
 
@@ -320,6 +365,65 @@ impl App {
             .map(|(i, spec)| self.tech_row(i, spec))
             .collect();
         append_windowed(&mut rows, &entries, self.selected, height)
+    }
+
+    fn wonder_lines(&self, height: usize) -> Vec<Line<'static>> {
+        let mut rows = Vec::new();
+        match &self.state.wonder {
+            Some(job) => {
+                let spec = self.state.config.wonders.iter().find(|s| s.id == job.id);
+                let name = spec.map(|s| s.name.as_str()).unwrap_or(job.id.as_str());
+                let total = spec.map(|s| s.stages.len()).unwrap_or(0);
+                let remaining = self.state.wonder_remaining().unwrap_or(Resources::ZERO);
+                let eta = match self.state.wonder_eta_secs() {
+                    Some(secs) => format!("{secs}s"),
+                    None => "?".into(),
+                };
+                rows.push(Line::from(format!(
+                    "Active {name}  stage {}/{total}  need M{:.0} C{:.0} D{:.0}  eta {eta}",
+                    job.stage + 1,
+                    remaining.metal,
+                    remaining.crystal,
+                    remaining.deuterium
+                )));
+            }
+            None => rows.push(Line::from("Active none")),
+        }
+        rows.push(Line::from("Wonders"));
+        let entries: Vec<Line<'static>> = self
+            .state
+            .config
+            .wonders
+            .iter()
+            .enumerate()
+            .map(|(i, spec)| self.wonder_row(i, spec))
+            .collect();
+        append_windowed(&mut rows, &entries, self.selected, height)
+    }
+
+    fn wonder_row(&self, index: usize, spec: &hoshi_core::WonderSpec) -> Line<'static> {
+        let mark = if index == self.selected { '>' } else { ' ' };
+        let text = format!("{mark} {}  {} stages", spec.name, spec.stages.len());
+        styled_row(text, self.wonder_block_reason(spec))
+    }
+
+    fn wonder_block_reason(&self, spec: &hoshi_core::WonderSpec) -> Option<String> {
+        if self.state.completed_wonders.iter().any(|id| id == &spec.id) {
+            return Some("done".into());
+        }
+        if let Some(job) = &self.state.wonder {
+            if job.id == spec.id {
+                return None;
+            }
+            return Some(format!("busy {}", job.id));
+        }
+        for pre in &spec.prereq_techs {
+            let actual = self.state.tech_level(&pre.id);
+            if actual < pre.level {
+                return Some(format!("need {} {}", pre.id, pre.level));
+            }
+        }
+        None
     }
 
     fn building_row(&self, index: usize, kind: BuildingKind) -> Line<'static> {
@@ -477,6 +581,22 @@ impl App {
         match self.state.raid_countdown_secs() {
             Some(secs) => format!("Raid: {secs}s"),
             None => "Raid: none".to_string(),
+        }
+    }
+
+    fn wonder_status(&self) -> String {
+        match &self.state.wonder {
+            Some(job) => {
+                let spec = self.state.config.wonders.iter().find(|s| s.id == job.id);
+                let name = spec.map(|s| s.name.as_str()).unwrap_or(job.id.as_str());
+                let total = spec.map(|s| s.stages.len()).unwrap_or(0);
+                let eta = match self.state.wonder_eta_secs() {
+                    Some(secs) => format!("{secs}s"),
+                    None => "?".into(),
+                };
+                format!("Wonder: {name}  stage {}/{total}  {eta}", job.stage + 1)
+            }
+            None => "Wonder: idle".to_string(),
         }
     }
 
@@ -646,6 +766,7 @@ mod tests {
             assert!(text.contains("Research:"), "{w}x{h}: {text}");
             assert!(text.contains("Ships"), "{w}x{h}: {text}");
             assert!(text.contains("Raid:"), "{w}x{h}: {text}");
+            assert!(text.contains("Wonder:"), "{w}x{h}: {text}");
         }
     }
 
@@ -702,6 +823,7 @@ mod tests {
         let text = render_text(&app, 80, 24);
         assert!(text.contains(&format!("{build_left_later}s")), "{text}");
 
+        app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
         assert_eq!(app.screen, Screen::Overview);
@@ -883,6 +1005,7 @@ mod tests {
 
         app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
+        app.handle_key(KeyCode::Tab, 1_000);
         assert_eq!(app.screen, Screen::Planet);
         app.handle_key(KeyCode::Char('x'), 1_000);
         assert!(app.state.build_queue.is_empty());
@@ -957,5 +1080,33 @@ mod tests {
         assert!(text.contains("metal mine"), "{text}");
         app.handle_key(KeyCode::Char('['), 1_000);
         assert_eq!(app.selected_coord(), Coord::HOME);
+    }
+
+    #[test]
+    fn wonder_screen_shows_remaining_and_eta_on_small_terminals() {
+        let mut state = GameState::new(1_000);
+        state.tech_levels.insert("energy".into(), 8);
+        state.resources.metal = 1_000.0;
+        state.resources.crystal = 500.0;
+        state.resources.deuterium = 2_000.0;
+        let mut app = App::new(state);
+        app.handle_key(KeyCode::Tab, 1_000);
+        app.handle_key(KeyCode::Tab, 1_000);
+        app.handle_key(KeyCode::Tab, 1_000);
+        assert_eq!(app.screen, Screen::Wonder);
+        let _ = render_text(&app, 40, 12);
+        app.selected = 0;
+        app.handle_key(KeyCode::Enter, 1_000);
+        let remaining = app.state.wonder_remaining().expect("stage remaining");
+        let eta = app.state.wonder_eta_secs().expect("eta");
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("[wonder]"), "{text}");
+        assert!(text.contains("Dyson ring"), "{text}");
+        assert!(
+            text.contains(&format!("need M{:.0}", remaining.metal)),
+            "{text}"
+        );
+        assert!(text.contains(&format!("eta {eta}s")), "{text}");
+        assert!(text.contains("stage 1/"), "{text}");
     }
 }
