@@ -3,6 +3,7 @@
 use crate::balance::BalanceConfig;
 use crate::buildings::{BuildError, BuildJob, BuildingKind, Buildings};
 use crate::research::{ModifierKind, PrereqGap, ResearchError, ResearchJob};
+use crate::ships::{Fleet, ShipError, ShipJob, ShipKind};
 use std::collections::BTreeMap;
 
 /// Stored resources. Energy is a balance, not a stockpile.
@@ -91,6 +92,8 @@ pub struct GameState {
     pub build_queue: Vec<BuildJob>,
     pub tech_levels: BTreeMap<String, u32>,
     pub research: Option<ResearchJob>,
+    pub fleet: Fleet,
+    pub ship_queue: Vec<ShipJob>,
     pub last_tick_unix: u64,
     /// Seeded RNG state for later combat and expeditions. Unused by catch-up.
     pub rng_seed: u64,
@@ -109,6 +112,8 @@ impl GameState {
             build_queue: Vec::new(),
             tech_levels: BTreeMap::new(),
             research: None,
+            fleet: Fleet::default(),
+            ship_queue: Vec::new(),
             last_tick_unix: now_unix,
             rng_seed: 0,
             config,
@@ -126,7 +131,8 @@ impl GameState {
         loop {
             let build_at = self.build_queue.first().and_then(|job| job.completes_at);
             let research_at = self.research.as_ref().map(|job| job.completes_at);
-            let Some(done_at) = min_time(build_at, research_at) else {
+            let ship_at = self.ship_queue.first().and_then(|job| job.completes_at);
+            let Some(done_at) = min_time(min_time(build_at, research_at), ship_at) else {
                 self.produce_until(now_unix);
                 return;
             };
@@ -145,6 +151,9 @@ impl GameState {
             {
                 let level = self.tech_levels.entry(job.tech).or_insert(0);
                 *level = level.saturating_add(1);
+            }
+            if ship_at == Some(done_at) {
+                self.complete_one_ship(done_at);
             }
         }
     }
@@ -262,6 +271,93 @@ impl GameState {
         let job = self.research.take().ok_or(ResearchError::Idle)?;
         self.resources = self.resources.saturating_add(job.paid);
         Ok(job.paid)
+    }
+
+    /// Pay for a batch and append it to the shipyard queue. Each remaining ship
+    /// in the head batch completes on its own timestamp.
+    pub fn enqueue_ships(
+        &mut self,
+        kind: ShipKind,
+        count: u32,
+        now_unix: u64,
+    ) -> Result<(), ShipError> {
+        self.catch_up(now_unix);
+        let now = self.last_tick_unix;
+        if count == 0 {
+            return Err(ShipError::ZeroCount);
+        }
+        let yard = self.buildings.shipyard;
+        if yard < 1 {
+            return Err(ShipError::NeedShipyard {
+                required: 1,
+                actual: yard,
+            });
+        }
+        let cap = self.config.max_ship_queue;
+        if self.ship_queue.len() >= cap {
+            return Err(ShipError::QueueFull { cap });
+        }
+        let spec = self.config.ships.get(kind);
+        let unit = spec.unit_cost();
+        let n = f64::from(count);
+        let cost = Resources {
+            metal: unit.metal * n,
+            crystal: unit.crystal * n,
+            deuterium: unit.deuterium * n,
+        };
+        if !self.resources.can_afford(cost) {
+            return Err(ShipError::InsufficientResources {
+                missing: self.resources.missing(cost),
+                cost,
+            });
+        }
+        self.resources = self.resources.saturating_sub(cost);
+        self.ship_queue.push(ShipJob {
+            ship: kind,
+            remaining: count,
+            unit_paid: unit,
+            started_at: None,
+            completes_at: None,
+        });
+        if self.ship_queue.len() == 1 {
+            self.start_ship_head(now);
+        }
+        Ok(())
+    }
+
+    pub fn cancel_ships(&mut self, index: usize, now_unix: u64) -> Result<Resources, ShipError> {
+        self.catch_up(now_unix);
+        let now = self.last_tick_unix;
+        let len = self.ship_queue.len();
+        if index >= len {
+            return Err(ShipError::EmptySlot { index, len });
+        }
+        let job = self.ship_queue.remove(index);
+        let n = f64::from(job.remaining);
+        let refund = Resources {
+            metal: job.unit_paid.metal * n,
+            crystal: job.unit_paid.crystal * n,
+            deuterium: job.unit_paid.deuterium * n,
+        };
+        self.resources = self.resources.saturating_add(refund);
+        if index == 0 {
+            self.start_ship_head(now);
+        }
+        Ok(refund)
+    }
+
+    pub fn ship_cost(&self, kind: ShipKind, count: u32) -> Resources {
+        let unit = self.config.ships.get(kind).unit_cost();
+        let n = f64::from(count);
+        Resources {
+            metal: unit.metal * n,
+            crystal: unit.crystal * n,
+            deuterium: unit.deuterium * n,
+        }
+    }
+
+    pub fn ship_time_secs(&self, kind: ShipKind) -> u64 {
+        self.config.ships.get(kind).duration_secs()
     }
 
     pub fn tech_level(&self, id: &str) -> u32 {
@@ -399,6 +495,38 @@ impl GameState {
         job.completes_at = Some(now.saturating_add(duration));
     }
 
+    fn start_ship_head(&mut self, now_unix: u64) {
+        let Some(job) = self.ship_queue.first() else {
+            return;
+        };
+        if job.completes_at.is_some() {
+            return;
+        }
+        let duration = self.ship_time_secs(job.ship);
+        let now = now_unix.max(self.last_tick_unix);
+        let job = &mut self.ship_queue[0];
+        job.started_at = Some(now);
+        job.completes_at = Some(now.saturating_add(duration));
+    }
+
+    fn complete_one_ship(&mut self, done_at: u64) {
+        let Some(job) = self.ship_queue.first() else {
+            return;
+        };
+        let kind = job.ship;
+        let duration = self.ship_time_secs(kind);
+        self.fleet.add(kind, 1);
+        let job = &mut self.ship_queue[0];
+        job.remaining = job.remaining.saturating_sub(1);
+        if job.remaining == 0 {
+            self.ship_queue.remove(0);
+            self.start_ship_head(done_at);
+            return;
+        }
+        job.started_at = Some(done_at);
+        job.completes_at = Some(done_at.saturating_add(duration));
+    }
+
     fn produce_until(&mut self, now_unix: u64) {
         if now_unix <= self.last_tick_unix {
             return;
@@ -513,6 +641,7 @@ mod tests {
     use crate::buildings::{BuildError, BuildingKind};
     use crate::clock::{Clock, FakeClock};
     use crate::research::{ModifierKind, PrereqGap, ResearchError};
+    use crate::ships::{ShipError, ShipKind};
 
     const EPS: f64 = 1e-6;
 
@@ -582,6 +711,8 @@ mod tests {
             max_build_queue: 5,
             robotics_speed_per_level: 1.0,
             techs: TechTree::empty(),
+            ships: crate::ShipCatalog::default(),
+            max_ship_queue: 5,
         }
     }
 
@@ -1122,6 +1253,67 @@ modifiers = []
             err,
             ResearchError::Busy {
                 current: "energy".into(),
+            }
+        );
+    }
+
+    fn yard_state(now: u64) -> GameState {
+        let mut state = GameState::new(now);
+        state.buildings.shipyard = 1;
+        state.resources.metal = 100_000.0;
+        state.resources.crystal = 100_000.0;
+        state.resources.deuterium = 100_000.0;
+        state
+    }
+
+    #[test]
+    fn ship_batch_completes_one_ship_at_a_time_across_an_offline_gap() {
+        let mut gap = yard_state(0);
+        gap.enqueue_ships(ShipKind::LightFighter, 5, 0).unwrap();
+        let unit = gap.ship_time_secs(ShipKind::LightFighter);
+        gap.catch_up(unit * 2);
+        assert_eq!(gap.fleet.light_fighter, 2);
+        assert_eq!(gap.ship_queue[0].remaining, 3);
+
+        let mut step = yard_state(0);
+        step.enqueue_ships(ShipKind::LightFighter, 5, 0).unwrap();
+        for t in 1..=unit * 2 {
+            step.catch_up(t);
+        }
+        assert_eq!(step.fleet, gap.fleet);
+        assert_eq!(step.ship_queue, gap.ship_queue);
+        assert_eq!(step.resources, gap.resources);
+        assert_eq!(step.last_tick_unix, gap.last_tick_unix);
+    }
+
+    #[test]
+    fn unaffordable_ship_batch_reports_missing_amounts() {
+        let mut state = GameState::new(0);
+        state.buildings.shipyard = 1;
+        state.resources = Resources::ZERO;
+        let err = state
+            .enqueue_ships(ShipKind::LightFighter, 2, 0)
+            .unwrap_err();
+        match err {
+            ShipError::InsufficientResources { missing, cost } => {
+                assert!(missing.metal > 0.0);
+                close(cost.metal, state.config.ships.light_fighter.metal * 2.0);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shipyard_is_required_to_queue_ships() {
+        let mut state = GameState::new(0);
+        state.resources.metal = 100_000.0;
+        state.resources.crystal = 100_000.0;
+        let err = state.enqueue_ships(ShipKind::SmallCargo, 1, 0).unwrap_err();
+        assert_eq!(
+            err,
+            ShipError::NeedShipyard {
+                required: 1,
+                actual: 0,
             }
         );
     }
