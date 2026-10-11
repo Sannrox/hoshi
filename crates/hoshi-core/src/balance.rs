@@ -5,6 +5,7 @@ use crate::activity::{ActivityChannelConfig, ActivityEffectsConfig};
 use crate::buildings::{BuildingKind, Buildings};
 use crate::expedition::{ExpeditionConfig, ExpeditionWeights};
 use crate::fleets::FlightConfig;
+use crate::outposts::{OutpostConfig, RarePlanetBonus};
 use crate::planets::{PlanetTypeBonus, PlanetTypeCatalog};
 use crate::research::{ModifierKind, TechPrereq};
 use crate::ships::ShipKind;
@@ -312,6 +313,7 @@ pub struct BalanceConfig {
     pub starting_buildings: Buildings,
     pub pacing: PacingTargets,
     pub wonders: Vec<WonderSpec>,
+    pub outposts: OutpostConfig,
 }
 
 impl BalanceConfig {
@@ -359,6 +361,101 @@ struct File {
     planet_types: FilePlanetTypes,
     #[serde(default)]
     wonders: Vec<FileWonder>,
+    #[serde(default)]
+    outposts: FileOutposts,
+}
+
+#[derive(Deserialize)]
+struct FileOutposts {
+    #[serde(default = "default_outpost_count")]
+    count: u32,
+    #[serde(default = "default_outpost_min_ships")]
+    min_ships: u32,
+    #[serde(default = "default_outpost_strength")]
+    strength_factor: f64,
+    #[serde(default = "default_outpost_min_garrison")]
+    min_garrison: u32,
+    #[serde(default = "default_outpost_garrison_factor")]
+    garrison_factor: f64,
+    #[serde(default = "default_outpost_rebuild")]
+    rebuild_secs: u64,
+    #[serde(default = "default_outpost_variance")]
+    variance: f64,
+    #[serde(default = "default_outpost_troop_strength")]
+    troop_strength: u32,
+    #[serde(default = "default_outpost_rare_chance")]
+    rare_chance: f64,
+    #[serde(default)]
+    rare: Vec<FileRarePlanet>,
+}
+
+fn default_outpost_count() -> u32 {
+    8
+}
+fn default_outpost_min_ships() -> u32 {
+    1
+}
+fn default_outpost_strength() -> f64 {
+    0.4
+}
+fn default_outpost_min_garrison() -> u32 {
+    2
+}
+fn default_outpost_garrison_factor() -> f64 {
+    0.5
+}
+fn default_outpost_rebuild() -> u64 {
+    86_400
+}
+fn default_outpost_variance() -> f64 {
+    0.2
+}
+fn default_outpost_troop_strength() -> u32 {
+    5
+}
+fn default_outpost_rare_chance() -> f64 {
+    0.25
+}
+
+impl Default for FileOutposts {
+    fn default() -> Self {
+        Self {
+            count: default_outpost_count(),
+            min_ships: default_outpost_min_ships(),
+            strength_factor: default_outpost_strength(),
+            min_garrison: default_outpost_min_garrison(),
+            garrison_factor: default_outpost_garrison_factor(),
+            rebuild_secs: default_outpost_rebuild(),
+            variance: default_outpost_variance(),
+            troop_strength: default_outpost_troop_strength(),
+            rare_chance: default_outpost_rare_chance(),
+            rare: Vec::new(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct FileRarePlanet {
+    id: String,
+    name: String,
+    #[serde(default = "default_rare_weight")]
+    weight: u32,
+    #[serde(default)]
+    metal: f64,
+    #[serde(default)]
+    crystal: f64,
+    #[serde(default)]
+    deuterium: f64,
+    #[serde(default)]
+    energy: f64,
+    #[serde(default)]
+    shipyard_speed: f64,
+    #[serde(default)]
+    fields: u8,
+}
+
+fn default_rare_weight() -> u32 {
+    1
 }
 
 #[derive(Deserialize)]
@@ -707,6 +804,39 @@ impl File {
                 min_metal_mine_per_day: self.pacing.min_metal_mine_per_day,
                 max_bridge_metal_ratio: self.pacing.max_bridge_metal_ratio,
             },
+            outposts: {
+                let rare = if self.outposts.rare.is_empty() {
+                    OutpostConfig::default().rare
+                } else {
+                    self.outposts
+                        .rare
+                        .into_iter()
+                        .map(|row| RarePlanetBonus {
+                            id: row.id,
+                            name: row.name,
+                            weight: row.weight,
+                            metal: row.metal,
+                            crystal: row.crystal,
+                            deuterium: row.deuterium,
+                            energy: row.energy,
+                            shipyard_speed: row.shipyard_speed,
+                            fields: row.fields,
+                        })
+                        .collect()
+                };
+                OutpostConfig {
+                    count: self.outposts.count,
+                    min_ships: self.outposts.min_ships,
+                    strength_factor: self.outposts.strength_factor,
+                    min_garrison: self.outposts.min_garrison,
+                    garrison_factor: self.outposts.garrison_factor,
+                    rebuild_secs: self.outposts.rebuild_secs,
+                    variance: self.outposts.variance,
+                    troop_strength: self.outposts.troop_strength,
+                    rare_chance: self.outposts.rare_chance,
+                    rare,
+                }
+            },
             wonders: self
                 .wonders
                 .into_iter()
@@ -942,6 +1072,68 @@ impl BalanceConfig {
                 }
             }
         }
+        if self.outposts.count < 1 {
+            return Err(BalanceError::Invalid("outposts.count must be >= 1".into()));
+        }
+        if self.outposts.min_ships < 1 {
+            return Err(BalanceError::Invalid(
+                "outposts.min_ships must be >= 1".into(),
+            ));
+        }
+        if self.outposts.min_garrison < 1 {
+            return Err(BalanceError::Invalid(
+                "outposts.min_garrison must be >= 1".into(),
+            ));
+        }
+        if self.outposts.rebuild_secs < 1 {
+            return Err(BalanceError::Invalid(
+                "outposts.rebuild_secs must be >= 1".into(),
+            ));
+        }
+        if self.outposts.troop_strength < 1 {
+            return Err(BalanceError::Invalid(
+                "outposts.troop_strength must be >= 1".into(),
+            ));
+        }
+        nonneg_finite("outposts.strength_factor", self.outposts.strength_factor)?;
+        nonneg_finite("outposts.garrison_factor", self.outposts.garrison_factor)?;
+        nonneg_finite("outposts.variance", self.outposts.variance)?;
+        if self.outposts.variance > 1.0 {
+            return Err(BalanceError::Invalid(
+                "outposts.variance must be <= 1".into(),
+            ));
+        }
+        nonneg_finite("outposts.rare_chance", self.outposts.rare_chance)?;
+        if self.outposts.rare_chance > 1.0 {
+            return Err(BalanceError::Invalid(
+                "outposts.rare_chance must be <= 1".into(),
+            ));
+        }
+        let mut rare_ids = std::collections::HashSet::new();
+        for row in &self.outposts.rare {
+            if row.id.is_empty() {
+                return Err(BalanceError::Invalid(
+                    "outposts.rare id must not be empty".into(),
+                ));
+            }
+            if !rare_ids.insert(&row.id) {
+                return Err(BalanceError::Invalid(format!(
+                    "duplicate rare planet id {}",
+                    row.id
+                )));
+            }
+            nonneg_finite(&format!("outposts.rare {}.metal", row.id), row.metal)?;
+            nonneg_finite(&format!("outposts.rare {}.crystal", row.id), row.crystal)?;
+            nonneg_finite(
+                &format!("outposts.rare {}.deuterium", row.id),
+                row.deuterium,
+            )?;
+            nonneg_finite(&format!("outposts.rare {}.energy", row.id), row.energy)?;
+            nonneg_finite(
+                &format!("outposts.rare {}.shipyard_speed", row.id),
+                row.shipyard_speed,
+            )?;
+        }
         Ok(())
     }
 }
@@ -1024,6 +1216,7 @@ mod tests {
             cfg.buildings.shipyard.prerequisites,
             vec![(BuildingKind::RoboticsFactory, 1)]
         );
+        assert_eq!(cfg.outposts, crate::OutpostConfig::default());
         assert_eq!(cfg.wonders.len(), 3);
         assert_eq!(cfg.wonders[0].id, "dyson_ring");
         assert_eq!(cfg.wonders[0].prereq_techs[0].id, "energy");

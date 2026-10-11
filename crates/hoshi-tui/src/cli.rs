@@ -53,6 +53,7 @@ enum CancelItem {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MissionKind {
     Attack,
+    Invade,
     Colonize,
     Expedition,
 }
@@ -232,9 +233,16 @@ fn apply(state: &mut GameState, now: u64, command: &Command) -> Result<Value, Cl
                 ));
             }
             match mission {
-                MissionKind::Attack => state
-                    .launch_fleet(*ships, *to, 100, 0, now)
-                    .map_err(|e| CliError::Refused(e.to_string()))?,
+                MissionKind::Attack => {
+                    let _ = state
+                        .launch_attack(*ships, *to, 100, now)
+                        .map_err(|e| CliError::Refused(e.to_string()))?;
+                }
+                MissionKind::Invade => {
+                    let _ = state
+                        .launch_invasion(*ships, *to, 100, now)
+                        .map_err(|e| CliError::Refused(e.to_string()))?;
+                }
                 MissionKind::Colonize => {
                     if ships.get(ShipKind::ColonyShip) != 1 || ships.total() != 1 {
                         return Err(CliError::Invalid(
@@ -315,6 +323,7 @@ fn state_value(state: &GameState) -> Value {
             json!({
                 "coord": coord.to_string(),
                 "home": coord == state.home,
+                "rare": state.rare_bonus_at(coord).map(|row| row.id.clone()),
             })
         })
         .collect();
@@ -363,6 +372,12 @@ fn state_value(state: &GameState) -> Value {
             "phase_ends_at": m.phase_ends_at,
         })).collect::<Vec<_>>(),
         "planets": planets,
+        "outposts": state.outposts.iter().map(|o| json!({
+            "coord": o.coord.to_string(),
+            "defences": o.defences.total(),
+            "garrison": o.garrison,
+            "rare": o.rare,
+        })).collect::<Vec<_>>(),
         "events": events,
         "raid": raid,
     })
@@ -551,6 +566,7 @@ fn parse_cancel(text: &str) -> Result<CancelItem, CliError> {
 fn parse_mission(text: &str) -> Result<MissionKind, CliError> {
     match text {
         "attack" => Ok(MissionKind::Attack),
+        "invade" => Ok(MissionKind::Invade),
         "colonize" => Ok(MissionKind::Colonize),
         "expedition" => Ok(MissionKind::Expedition),
         other => Err(CliError::Invalid(format!("unknown mission {other}"))),

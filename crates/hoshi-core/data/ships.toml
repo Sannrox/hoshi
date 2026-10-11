@@ -185,3 +185,20 @@ fuel = 1000.0
 shipyard = 4
 drive = "impulse_drive"
 prereq_techs = [{ id = "colonization", level = 1 }, { id = "impulse_drive", level = 3 }]
+
+[[ship]]
+id = "troop_transport"
+name = "Troop Transport"
+metal = 4000.0
+crystal = 4000.0
+deuterium = 1000.0
+base_seconds = 80.0
+attack = 1.0
+shield = 10.0
+hull = 800.0
+cargo = 100.0
+speed = 4000.0
+fuel = 40.0
+shipyard = 2
+drive = "combustion_drive"
+prereq_techs = [{ id = "combustion_drive", level = 2 }]

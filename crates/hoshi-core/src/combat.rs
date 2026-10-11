@@ -20,6 +20,16 @@ pub enum CombatWinner {
     Draw,
 }
 
+impl CombatWinner {
+    pub fn as_key(self) -> &'static str {
+        match self {
+            CombatWinner::Attacker => "attacker",
+            CombatWinner::Defender => "defender",
+            CombatWinner::Draw => "draw",
+        }
+    }
+}
+
 /// One resolved fight. `max_rounds` is the cap; fewer rounds if a side dies first.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CombatReport {
@@ -29,6 +39,53 @@ pub struct CombatReport {
     pub attacker_after: Fleet,
     pub defender_after: Fleet,
     pub winner: CombatWinner,
+    /// Ground assault, when this report is an invasion.
+    pub ground: Option<GroundReport>,
+}
+
+/// Strength comparison with seeded variance. Same seed replays the same rolls.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroundReport {
+    pub attacker_strength: u32,
+    pub defender_strength: u32,
+    pub attacker_roll: u32,
+    pub defender_roll: u32,
+    pub winner: CombatWinner,
+}
+
+/// Scale `base` by `1 ± variance` from `rng`. Variance 0 is an exact comparison.
+pub fn resolve_ground(
+    attacker_strength: u32,
+    defender_strength: u32,
+    variance: f64,
+    rng: &mut u64,
+) -> GroundReport {
+    let attacker_roll = vary(attacker_strength, variance, rng);
+    let defender_roll = vary(defender_strength, variance, rng);
+    let winner = if attacker_roll > defender_roll {
+        CombatWinner::Attacker
+    } else if defender_roll > attacker_roll {
+        CombatWinner::Defender
+    } else {
+        CombatWinner::Draw
+    };
+    GroundReport {
+        attacker_strength,
+        defender_strength,
+        attacker_roll,
+        defender_roll,
+        winner,
+    }
+}
+
+fn vary(base: u32, variance: f64, rng: &mut u64) -> u32 {
+    let v = variance.clamp(0.0, 1.0);
+    if v <= 0.0 {
+        return base;
+    }
+    let u = (next_u64(rng) as f64) / (u64::MAX as f64);
+    let mult = (1.0 - v) + 2.0 * v * u;
+    (f64::from(base) * mult).floor() as u32
 }
 
 struct Unit {
@@ -163,6 +220,7 @@ pub fn resolve_combat(
         attacker_after,
         defender_after,
         winner,
+        ground: None,
     }
 }
 
@@ -350,5 +408,22 @@ mod tests {
         );
         assert_eq!(without.defender_after.get(ShipKind::EspionageProbe), 4);
         assert_eq!(extra.defender_after.get(ShipKind::EspionageProbe), 0);
+    }
+
+    #[test]
+    fn ground_combat_replays_for_a_fixed_seed() {
+        let mut a = 0xC0FFEE;
+        let mut b = 0xC0FFEE;
+        let left = resolve_ground(10, 4, 0.2, &mut a);
+        let right = resolve_ground(10, 4, 0.2, &mut b);
+        assert_eq!(left, right);
+        assert_eq!(a, b);
+        assert_eq!(left.attacker_strength, 10);
+        assert_eq!(left.defender_strength, 4);
+        let mut exact = 1;
+        let report = resolve_ground(8, 3, 0.0, &mut exact);
+        assert_eq!(report.attacker_roll, 8);
+        assert_eq!(report.defender_roll, 3);
+        assert_eq!(report.winner, CombatWinner::Attacker);
     }
 }

@@ -256,6 +256,61 @@ crystal = 0.0
 deuterium = 0.50
 energy = 0.0
 
+[outposts]
+count = 8
+min_ships = 1
+strength_factor = 0.4
+min_garrison = 2
+garrison_factor = 0.5
+rebuild_secs = 86400
+variance = 0.2
+troop_strength = 5
+rare_chance = 0.25
+
+[[outposts.rare]]
+id = "rich_vein"
+name = "Rich vein"
+weight = 3
+metal = 0.25
+crystal = 0.0
+deuterium = 0.0
+energy = 0.0
+shipyard_speed = 0.0
+fields = 0
+
+[[outposts.rare]]
+id = "crystal_garden"
+name = "Crystal garden"
+weight = 2
+metal = 0.0
+crystal = 0.30
+deuterium = 0.0
+energy = 0.0
+shipyard_speed = 0.0
+fields = 0
+
+[[outposts.rare]]
+id = "shipyard_world"
+name = "Shipyard world"
+weight = 1
+metal = 0.0
+crystal = 0.0
+deuterium = 0.0
+energy = 0.0
+shipyard_speed = 0.25
+fields = 0
+
+[[outposts.rare]]
+id = "wide_fields"
+name = "Wide fields"
+weight = 2
+metal = 0.0
+crystal = 0.0
+deuterium = 0.0
+energy = 0.0
+shipyard_speed = 0.0
+fields = 20
+
 [[wonders]]
 id = "dyson_ring"
 name = "Dyson ring"

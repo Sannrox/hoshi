@@ -29,6 +29,16 @@ factors must be `> 0`, bases `>= 0`, build and ship queues at least 1.
 Defaults: first upgrade in 5 minutes, at least one metal mine level per day, and
 bridge pulses must not multiply stored metal by more than 8.
 
+## Outposts
+
+`[outposts]` places pirate worlds from the galaxy seed. `min_ships` and
+`min_garrison` are the early-game floor; `strength_factor` and `garrison_factor`
+scale later rebuilds with the player's fighter-equivalent fleet. `rebuild_secs` is the
+catch-up interval. `variance` is the ground-combat spread (`0` is an exact
+comparison). `troop_strength` is the landing power of one troop transport.
+`[[outposts.rare]]` rows are the rare-planet bonuses shown on the planet screen.
+`shipyard_speed` speeds the empire shipyard (ships queue at home).
+
 ## Simulator
 
 ```sh

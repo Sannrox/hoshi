@@ -7,6 +7,7 @@ mod clock;
 mod combat;
 mod expedition;
 mod fleets;
+mod outposts;
 mod planets;
 mod research;
 mod save;
@@ -26,7 +27,8 @@ pub use balance::{
 pub use buildings::{BuildError, BuildJob, BuildingKind, Buildings};
 pub use clock::{Clock, FakeClock, SystemClock};
 pub use combat::{
-    CombatReport, CombatWinner, next_u64, plunder_from, rapid_fire_table, resolve_combat,
+    CombatReport, CombatWinner, GroundReport, next_u64, plunder_from, rapid_fire_table,
+    resolve_combat, resolve_ground,
 };
 pub use expedition::{
     ExpeditionConfig, ExpeditionKind, ExpeditionResult, ExpeditionWeights, fleet_points,
@@ -35,6 +37,9 @@ pub use expedition::{
 pub use fleets::{
     Coord, FleetError, FlightConfig, Mission, MissionPhase, TradeRoute, distance, flight_secs,
     fuel_cost,
+};
+pub use outposts::{
+    Outpost, OutpostConfig, RarePlanetBonus, generate_outposts, scaled_defence, scaled_garrison,
 };
 pub use planets::{Colony, PlanetType, PlanetTypeBonus, PlanetTypeCatalog, planet_profile};
 pub use research::{
