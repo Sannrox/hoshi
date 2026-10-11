@@ -51,6 +51,7 @@ fuel = 20.0
 shipyard = 1
 drive = "combustion_drive"
 prereq_techs = [{ id = "combustion_drive", level = 1 }]
+rapid_fire = [{ target = "espionage_probe", value = 5 }]
 
 [[ship]]
 id = "heavy_fighter"
@@ -68,6 +69,10 @@ fuel = 75.0
 shipyard = 3
 drive = "impulse_drive"
 prereq_techs = [{ id = "impulse_drive", level = 2 }, { id = "armour", level = 2 }]
+rapid_fire = [
+    { target = "small_cargo", value = 3 },
+    { target = "espionage_probe", value = 5 },
+]
 
 [[ship]]
 id = "cruiser"
@@ -85,6 +90,11 @@ fuel = 300.0
 shipyard = 5
 drive = "impulse_drive"
 prereq_techs = [{ id = "impulse_drive", level = 4 }, { id = "ion", level = 2 }]
+rapid_fire = [
+    { target = "light_fighter", value = 6 },
+    { target = "small_cargo", value = 3 },
+    { target = "espionage_probe", value = 5 },
+]
 
 [[ship]]
 id = "battleship"
@@ -102,6 +112,11 @@ fuel = 500.0
 shipyard = 7
 drive = "hyperspace_drive"
 prereq_techs = [{ id = "hyperspace_drive", level = 4 }]
+rapid_fire = [
+    { target = "small_cargo", value = 3 },
+    { target = "large_cargo", value = 3 },
+    { target = "espionage_probe", value = 5 },
+]
 
 [[ship]]
 id = "recycler"

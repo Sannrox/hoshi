@@ -2,7 +2,9 @@
 
 use crate::balance::BalanceConfig;
 use crate::buildings::{BuildError, BuildJob, BuildingKind, Buildings};
-use crate::combat::{CombatWinner, plunder_from, resolve_combat, stats_from_catalog};
+use crate::combat::{
+    CombatReport, CombatWinner, plunder_from, rapid_fire_table, resolve_combat, stats_from_catalog,
+};
 use crate::fleets::{Coord, FleetError, Mission, MissionPhase, distance, flight_secs, fuel_cost};
 use crate::research::{ModifierKind, PrereqGap, ResearchError, ResearchJob};
 use crate::ships::{Fleet, ShipError, ShipJob, ShipKind, ShipStats};
@@ -761,16 +763,26 @@ impl GameState {
         Some(lands.saturating_sub(self.last_tick_unix))
     }
 
-    fn resolve_raid_at(&mut self, done_at: u64) {
+    /// Run a raid now. The bridge and the scheduler share this path.
+    /// Clears a pending schedule first so `catch_up` does not also resolve it.
+    pub fn trigger_raid(&mut self, now_unix: u64) -> CombatReport {
+        self.next_raid_at = None;
+        self.catch_up(now_unix);
+        self.resolve_raid_at(self.last_tick_unix)
+    }
+
+    fn resolve_raid_at(&mut self, done_at: u64) -> CombatReport {
         let pirates = self.pirate_fleet();
         let atk_stats = stats_from_catalog(&self.config.ships);
         let def_stats = self.player_combat_stats();
+        let rf = rapid_fire_table(&self.config.ships);
         let report = resolve_combat(
             pirates,
             self.fleet,
             &atk_stats,
             &def_stats,
             self.config.raid.max_rounds,
+            &rf,
             &mut self.rng_seed,
         );
         self.fleet = report.defender_after;
@@ -787,6 +799,7 @@ impl GameState {
         };
         self.push_event(done_at, format_raid_report(&report, plunder));
         self.next_raid_at = Some(done_at.saturating_add(self.config.raid.interval_secs.max(1)));
+        report
     }
 
     fn pirate_fleet(&self) -> Fleet {
@@ -1840,6 +1853,31 @@ modifiers = []
         assert!(state.events[0].text.contains("plunder"));
         assert!(state.resources.metal > 0.0);
         assert!(state.resources.crystal > 0.0);
+        assert_eq!(state.next_raid_at, Some(3600 + 8 * 3600));
+    }
+
+    #[test]
+    fn trigger_raid_uses_the_same_resolver_as_the_scheduler() {
+        let mut bridged = GameState::new(0);
+        let report = bridged.trigger_raid(0);
+        assert_eq!(report.winner, CombatWinner::Attacker);
+        assert_eq!(bridged.events.len(), 1);
+        assert!(bridged.events[0].text.contains("lost"));
+        assert!(bridged.events[0].text.contains("pirates lost"));
+        assert_eq!(bridged.next_raid_at, Some(8 * 3600));
+        let mut again = GameState::new(0);
+        again.trigger_raid(0);
+        assert_eq!(again.fleet, bridged.fleet);
+        assert_eq!(again.events, bridged.events);
+        assert_eq!(again.rng_seed, bridged.rng_seed);
+    }
+
+    #[test]
+    fn trigger_raid_at_the_scheduled_instant_resolves_once() {
+        let mut state = GameState::new(0);
+        state.trigger_raid(3600);
+        assert_eq!(state.events.len(), 1);
+        assert_eq!(state.events[0].at, 3600);
         assert_eq!(state.next_raid_at, Some(3600 + 8 * 3600));
     }
 
