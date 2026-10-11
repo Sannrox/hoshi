@@ -1,6 +1,6 @@
 //! Round-based fleet combat. Raids use this resolver; rapid-fire extra shots live here.
 
-use crate::ships::{Fleet, ShipKind, ShipStats};
+use crate::ships::{Fleet, SHIP_KINDS, ShipKind, ShipStats};
 use crate::state::Resources;
 
 /// Splitmix64. Mutates `seed` so combat and raids stay reproducible across saves.
@@ -51,7 +51,7 @@ impl Unit {
     }
 }
 
-fn expand(fleet: Fleet, stats: &[ShipStats; 9]) -> Vec<Unit> {
+fn expand(fleet: Fleet, stats: &[ShipStats; SHIP_KINDS]) -> Vec<Unit> {
     let mut units = Vec::new();
     for kind in ShipKind::ALL {
         let n = fleet.get(kind);
@@ -92,7 +92,7 @@ fn shoot(
     firers: &[Unit],
     fire: &[usize],
     targets: &mut [Unit],
-    rapid_fire: &[[u32; 9]; 9],
+    rapid_fire: &[[u32; SHIP_KINDS]; SHIP_KINDS],
     rng: &mut u64,
 ) {
     for &i in fire {
@@ -121,10 +121,10 @@ fn shoot(
 pub fn resolve_combat(
     attacker: Fleet,
     defender: Fleet,
-    attacker_stats: &[ShipStats; 9],
-    defender_stats: &[ShipStats; 9],
+    attacker_stats: &[ShipStats; SHIP_KINDS],
+    defender_stats: &[ShipStats; SHIP_KINDS],
     max_rounds: u8,
-    rapid_fire: &[[u32; 9]; 9],
+    rapid_fire: &[[u32; SHIP_KINDS]; SHIP_KINDS],
     rng: &mut u64,
 ) -> CombatReport {
     let mut attackers = expand(attacker, attacker_stats);
@@ -176,8 +176,8 @@ pub fn plunder_from(stock: Resources, share: f64, cap: Resources) -> Resources {
     }
 }
 
-pub fn rapid_fire_table(catalog: &crate::ShipCatalog) -> [[u32; 9]; 9] {
-    let mut table = [[0u32; 9]; 9];
+pub fn rapid_fire_table(catalog: &crate::ShipCatalog) -> [[u32; SHIP_KINDS]; SHIP_KINDS] {
+    let mut table = [[0u32; SHIP_KINDS]; SHIP_KINDS];
     for kind in ShipKind::ALL {
         for &(target, value) in &catalog.get(kind).rapid_fire {
             table[kind.index()][target.index()] = value;
@@ -186,7 +186,7 @@ pub fn rapid_fire_table(catalog: &crate::ShipCatalog) -> [[u32; 9]; 9] {
     table
 }
 
-pub fn stats_from_catalog(catalog: &crate::ShipCatalog) -> [ShipStats; 9] {
+pub fn stats_from_catalog(catalog: &crate::ShipCatalog) -> [ShipStats; SHIP_KINDS] {
     let mut out = [ShipStats {
         attack: 0.0,
         shield: 0.0,
@@ -194,7 +194,7 @@ pub fn stats_from_catalog(catalog: &crate::ShipCatalog) -> [ShipStats; 9] {
         cargo: 0.0,
         speed: 0.0,
         fuel: 0.0,
-    }; 9];
+    }; SHIP_KINDS];
     for kind in ShipKind::ALL {
         let spec = catalog.get(kind);
         out[kind.index()] = ShipStats {
@@ -220,7 +220,7 @@ mod tests {
         f
     }
 
-    fn stats() -> [ShipStats; 9] {
+    fn stats() -> [ShipStats; SHIP_KINDS] {
         stats_from_catalog(&ShipCatalog::default())
     }
 
@@ -228,7 +228,15 @@ mod tests {
     fn one_light_fighter_each_lasts_all_six_rounds() {
         // LF hull 400, shield 10, attack 50 → 40 hull per shot, 240 over 6 rounds.
         let mut rng = 1;
-        let report = resolve_combat(lf(1), lf(1), &stats(), &stats(), 6, &[[0; 9]; 9], &mut rng);
+        let report = resolve_combat(
+            lf(1),
+            lf(1),
+            &stats(),
+            &stats(),
+            6,
+            &[[0; SHIP_KINDS]; SHIP_KINDS],
+            &mut rng,
+        );
         assert_eq!(report.rounds, 6);
         assert_eq!(report.attacker_after.get(ShipKind::LightFighter), 1);
         assert_eq!(report.defender_after.get(ShipKind::LightFighter), 1);
@@ -244,7 +252,7 @@ mod tests {
             &stats(),
             &stats(),
             6,
-            &[[0; 9]; 9],
+            &[[0; SHIP_KINDS]; SHIP_KINDS],
             &mut rng,
         );
         assert_eq!(report.rounds, 0);
@@ -263,8 +271,24 @@ mod tests {
         b.add(ShipKind::Battleship, 1);
         let mut rng_a = 0xC0FFEE;
         let mut rng_b = 0xC0FFEE;
-        let left = resolve_combat(a, b, &stats(), &stats(), 6, &[[0; 9]; 9], &mut rng_a);
-        let right = resolve_combat(a, b, &stats(), &stats(), 6, &[[0; 9]; 9], &mut rng_b);
+        let left = resolve_combat(
+            a,
+            b,
+            &stats(),
+            &stats(),
+            6,
+            &[[0; SHIP_KINDS]; SHIP_KINDS],
+            &mut rng_a,
+        );
+        let right = resolve_combat(
+            a,
+            b,
+            &stats(),
+            &stats(),
+            6,
+            &[[0; SHIP_KINDS]; SHIP_KINDS],
+            &mut rng_b,
+        );
         assert_eq!(left, right);
         assert_eq!(rng_a, rng_b);
     }
@@ -301,8 +325,8 @@ mod tests {
 
     #[test]
     fn rapid_fire_against_probes_destroys_more_than_one_shot_per_round() {
-        let none = [[0u32; 9]; 9];
-        let mut with = [[0u32; 9]; 9];
+        let none = [[0u32; SHIP_KINDS]; SHIP_KINDS];
+        let mut with = [[0u32; SHIP_KINDS]; SHIP_KINDS];
         with[ShipKind::Cruiser.index()][ShipKind::EspionageProbe.index()] = 5;
         let mut rng_none = 1;
         let mut rng_rf = 1;

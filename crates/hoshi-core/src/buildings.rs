@@ -82,7 +82,7 @@ impl fmt::Display for BuildingKind {
 }
 
 /// Completed building levels on one planet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Buildings {
     pub metal_mine: u32,
     pub crystal_mine: u32,

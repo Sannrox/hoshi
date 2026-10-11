@@ -6,6 +6,7 @@ use crate::combat::{
     CombatReport, CombatWinner, plunder_from, rapid_fire_table, resolve_combat, stats_from_catalog,
 };
 use crate::fleets::{Coord, FleetError, Mission, MissionPhase, distance, flight_secs, fuel_cost};
+use crate::planets::{Colony, PlanetType, planet_profile};
 use crate::research::{ModifierKind, PrereqGap, ResearchError, ResearchJob};
 use crate::ships::{Fleet, ShipError, ShipJob, ShipKind, ShipStats};
 use std::collections::BTreeMap;
@@ -108,6 +109,9 @@ pub struct GameState {
     pub fleet: Fleet,
     pub ship_queue: Vec<ShipJob>,
     pub home: Coord,
+    pub home_kind: PlanetType,
+    pub home_size: u8,
+    pub colonies: Vec<Colony>,
     pub missions: Vec<Mission>,
     pub next_mission_id: u64,
     pub next_raid_at: Option<u64>,
@@ -115,6 +119,8 @@ pub struct GameState {
     pub last_tick_unix: u64,
     /// Seeded RNG state. Combat and raids consume it; the save stores the current value.
     pub rng_seed: u64,
+    /// Stable seed for planet type and size. Does not change when combat consumes `rng_seed`.
+    pub galaxy_seed: u64,
     pub config: BalanceConfig,
 }
 
@@ -124,6 +130,8 @@ impl GameState {
     }
 
     pub fn with_config(now_unix: u64, config: BalanceConfig) -> Self {
+        let galaxy_seed = 0;
+        let (home_kind, home_size) = planet_profile(galaxy_seed, Coord::HOME);
         Self {
             resources: config.starting_resources,
             buildings: config.starting_buildings,
@@ -133,6 +141,9 @@ impl GameState {
             fleet: Fleet::default(),
             ship_queue: Vec::new(),
             home: Coord::HOME,
+            home_kind,
+            home_size,
+            colonies: Vec::new(),
             missions: Vec::new(),
             next_mission_id: 0,
             next_raid_at: if config.raid.enabled {
@@ -143,6 +154,7 @@ impl GameState {
             events: Vec::new(),
             last_tick_unix: now_unix,
             rng_seed: 0,
+            galaxy_seed,
             config,
         }
     }
@@ -497,8 +509,38 @@ impl GameState {
             hold_secs,
             phase_ends_at: now.saturating_add(outbound_secs),
             fuel_paid: fuel,
+            colonize: false,
         });
         Ok(())
+    }
+
+    /// Send one colony ship. Settlement is attempted on Action; failure returns the ship.
+    pub fn launch_colony(
+        &mut self,
+        dest: Coord,
+        speed_percent: u8,
+        now_unix: u64,
+    ) -> Result<u64, FleetError> {
+        self.catch_up(now_unix);
+        if self.fleet.get(ShipKind::ColonyShip) == 0 {
+            return Err(FleetError::NeedColonyShip);
+        }
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::ColonyShip, 1);
+        self.launch_fleet(ships, dest, speed_percent, 0, now_unix)?;
+        let Some(mission) = self.missions.last_mut() else {
+            return Err(FleetError::EmptyFleet);
+        };
+        mission.colonize = true;
+        Ok(mission.id)
+    }
+
+    pub fn colony_cap(&self) -> u32 {
+        1 + self.modifier(ModifierKind::ColonySlots).floor().max(0.0) as u32
+    }
+
+    fn occupied(&self, coord: Coord) -> bool {
+        coord == self.home || self.colonies.iter().any(|c| c.coord == coord)
     }
 
     /// Turn a fleet around. Outbound recall uses elapsed time as the return.
@@ -576,8 +618,17 @@ impl GameState {
         self.tech_levels.get(id).copied().unwrap_or(0)
     }
 
-    /// Sum of `per_level * tech_level` for every tech that contributes `kind`.
+    /// Tech modifiers plus the home planet's type bonus.
     pub fn modifier(&self, kind: ModifierKind) -> f64 {
+        self.modifier_for(self.home_kind, kind)
+    }
+
+    /// Tech modifiers plus this planet type's production bonus.
+    pub fn modifier_for(&self, planet: PlanetType, kind: ModifierKind) -> f64 {
+        self.tech_modifier(kind) + self.planet_bonus(planet, kind)
+    }
+
+    fn tech_modifier(&self, kind: ModifierKind) -> f64 {
         self.config
             .techs
             .iter()
@@ -590,6 +641,17 @@ impl GameState {
                     .sum::<f64>()
             })
             .sum()
+    }
+
+    fn planet_bonus(&self, planet: PlanetType, kind: ModifierKind) -> f64 {
+        let bonus = self.config.planet_types.get(planet);
+        match kind {
+            ModifierKind::MetalOutput => bonus.metal,
+            ModifierKind::CrystalOutput => bonus.crystal,
+            ModifierKind::DeuteriumOutput => bonus.deuterium,
+            ModifierKind::EnergyOutput => bonus.energy,
+            _ => 0.0,
+        }
     }
 
     pub fn missing_research_prereqs(&self, tech: &str) -> Result<Vec<PrereqGap>, ResearchError> {
@@ -737,6 +799,9 @@ impl GameState {
                     self.missions[index].phase_ends_at = done_at.saturating_add(hold);
                 }
                 MissionPhase::Action => {
+                    if self.try_colonize_at(index, done_at) {
+                        continue;
+                    }
                     let ret = self.missions[index].outbound_secs;
                     self.missions[index].phase = MissionPhase::Return;
                     self.missions[index].phase_ends_at = done_at.saturating_add(ret);
@@ -749,6 +814,31 @@ impl GameState {
                 }
             }
         }
+    }
+
+    /// Found a colony at Action, or leave the mission to return.
+    fn try_colonize_at(&mut self, index: usize, _done_at: u64) -> bool {
+        if !self.missions[index].colonize {
+            return false;
+        }
+        let dest = self.missions[index].dest;
+        let planets = 1 + self.colonies.len() as u32;
+        let no_ship = self.missions[index].ships.get(ShipKind::ColonyShip) == 0;
+        if self.occupied(dest) || planets >= self.colony_cap() || no_ship {
+            return false;
+        }
+        let mut ships = self.missions.remove(index).ships;
+        ships.saturating_sub(ShipKind::ColonyShip, 1);
+        let (kind, size) = planet_profile(self.galaxy_seed, dest);
+        self.colonies.push(Colony {
+            coord: dest,
+            kind,
+            size,
+            resources: Resources::ZERO,
+            buildings: Buildings::default(),
+            fleet: ships,
+        });
+        true
     }
 
     /// Seconds until the next raid when it has been announced, else `None`.
@@ -823,7 +913,7 @@ impl GameState {
             .sum()
     }
 
-    fn player_combat_stats(&self) -> [ShipStats; 9] {
+    fn player_combat_stats(&self) -> [ShipStats; crate::SHIP_KINDS] {
         let mut out = [ShipStats {
             attack: 0.0,
             shield: 0.0,
@@ -831,7 +921,7 @@ impl GameState {
             cargo: 0.0,
             speed: 0.0,
             fuel: 0.0,
-        }; 9];
+        }; crate::SHIP_KINDS];
         for kind in ShipKind::ALL {
             out[kind.index()] = self.ship_stats(kind);
         }
@@ -877,6 +967,60 @@ impl GameState {
             self.resources
                 .set(kind, add_capped(current, rate, hours, cap));
         }
+        let config = self.config.clone();
+        let metal_t = self.tech_modifier(ModifierKind::MetalOutput);
+        let crystal_t = self.tech_modifier(ModifierKind::CrystalOutput);
+        let deut_t = self.tech_modifier(ModifierKind::DeuteriumOutput);
+        let energy_t = self.tech_modifier(ModifierKind::EnergyOutput);
+        for colony in &mut self.colonies {
+            let bonus = config.planet_types.get(colony.kind);
+            let produced = config
+                .solar_plant
+                .energy_output(colony.buildings.solar_plant)
+                * (1.0 + energy_t + bonus.energy).max(0.0);
+            let consumed = config.metal_mine.energy_use(colony.buildings.metal_mine)
+                + config
+                    .crystal_mine
+                    .energy_use(colony.buildings.crystal_mine)
+                + config
+                    .deuterium_synthesizer
+                    .energy_use(colony.buildings.deuterium_synthesizer);
+            let factor = if consumed <= 0.0 {
+                1.0
+            } else {
+                (produced / consumed).clamp(0.0, 1.0)
+            };
+            let metal_rate = config
+                .metal_mine
+                .production_per_hour(colony.buildings.metal_mine)
+                * (1.0 + metal_t + bonus.metal)
+                * factor;
+            let crystal_rate = config
+                .crystal_mine
+                .production_per_hour(colony.buildings.crystal_mine)
+                * (1.0 + crystal_t + bonus.crystal)
+                * factor;
+            let deut_rate = config
+                .deuterium_synthesizer
+                .production_per_hour(colony.buildings.deuterium_synthesizer)
+                * (1.0 + deut_t + bonus.deuterium)
+                * factor;
+            let metal_cap = config
+                .metal_storage
+                .capacity(colony.buildings.metal_storage);
+            let crystal_cap = config
+                .crystal_storage
+                .capacity(colony.buildings.crystal_storage);
+            let deut_cap = config
+                .deuterium_storage
+                .capacity(colony.buildings.deuterium_storage);
+            colony.resources.metal =
+                add_capped(colony.resources.metal, metal_rate, hours, metal_cap);
+            colony.resources.crystal =
+                add_capped(colony.resources.crystal, crystal_rate, hours, crystal_cap);
+            colony.resources.deuterium =
+                add_capped(colony.resources.deuterium, deut_rate, hours, deut_cap);
+        }
         self.last_tick_unix = now_unix;
     }
 
@@ -884,6 +1028,7 @@ impl GameState {
         self.config
             .solar_plant
             .energy_output(self.buildings.solar_plant)
+            * (1.0 + self.modifier(ModifierKind::EnergyOutput)).max(0.0)
     }
 
     pub fn energy_consumed(&self) -> f64 {
@@ -935,7 +1080,7 @@ impl GameState {
     }
 
     fn base_production_per_hour(&self, kind: ResourceKind) -> f64 {
-        match kind {
+        let raw = match kind {
             ResourceKind::Metal => self
                 .config
                 .metal_mine
@@ -948,12 +1093,16 @@ impl GameState {
                 .config
                 .deuterium_synthesizer
                 .production_per_hour(self.buildings.deuterium_synthesizer),
-        }
+        };
+        let output = match kind {
+            ResourceKind::Metal => ModifierKind::MetalOutput,
+            ResourceKind::Crystal => ModifierKind::CrystalOutput,
+            ResourceKind::Deuterium => ModifierKind::DeuteriumOutput,
+        };
+        raw * (1.0 + self.modifier_for(self.home_kind, output))
     }
 }
 
-/// Integrate a constant rate for `hours`, stopping exactly at `cap`.
-/// Never lowers `current` (over-cap stockpiles and zero/negative rates stay put).
 fn fleet_label(fleet: Fleet) -> String {
     let parts: Vec<String> = ShipKind::ALL
         .iter()
@@ -999,6 +1148,8 @@ fn min_time(a: Option<u64>, b: Option<u64>) -> Option<u64> {
     }
 }
 
+/// Integrate a constant rate for `hours`, stopping exactly at `cap`.
+/// Never lowers `current` (over-cap stockpiles and zero/negative rates stay put).
 fn add_capped(current: f64, rate_per_hour: f64, hours: f64, cap: f64) -> f64 {
     if hours <= 0.0 || rate_per_hour <= 0.0 || current >= cap {
         current
@@ -1090,6 +1241,11 @@ mod tests {
             max_ship_queue: 5,
             flight: crate::FlightConfig::default(),
             raid: crate::RaidConfig::inactive(),
+            planet_types: crate::PlanetTypeCatalog {
+                rocky: crate::PlanetTypeBonus::ZERO,
+                ice: crate::PlanetTypeBonus::ZERO,
+                gas_giant: crate::PlanetTypeBonus::ZERO,
+            },
         }
     }
 
@@ -1883,9 +2039,17 @@ modifiers = []
 
     #[test]
     fn raid_during_offline_gap_matches_step_by_step() {
-        let mut gap = GameState::new(0);
+        let cfg = BalanceConfig {
+            planet_types: crate::PlanetTypeCatalog {
+                rocky: crate::PlanetTypeBonus::ZERO,
+                ice: crate::PlanetTypeBonus::ZERO,
+                gas_giant: crate::PlanetTypeBonus::ZERO,
+            },
+            ..BalanceConfig::default()
+        };
+        let mut gap = GameState::with_config(0, cfg.clone());
         gap.catch_up(7200);
-        let mut step = GameState::new(0);
+        let mut step = GameState::with_config(0, cfg);
         for t in 1..=7200 {
             step.catch_up(t);
         }
@@ -1939,5 +2103,149 @@ modifiers = []
         close(state.resources.crystal, 470.0);
         close(state.resources.deuterium, 95.0);
         assert!(state.events[0].text.contains("plunder M40 C30 D5"));
+    }
+
+    fn colony_config() -> BalanceConfig {
+        let mut cfg = test_config();
+        cfg.techs = TechTree::parse(
+            r#"
+[[tech]]
+id = "colonization"
+name = "Colonization"
+metal = 1000.0
+crystal = 4000.0
+deuterium = 2000.0
+cost_growth = 2.0
+base_seconds = 600.0
+time_growth = 2.0
+prereq_buildings = []
+prereq_techs = []
+modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
+"#,
+        )
+        .expect("test colonization tech");
+        cfg
+    }
+
+    fn colony_ready(now: u64) -> GameState {
+        let mut state = GameState::with_config(now, colony_config());
+        state.resources.deuterium = 10_000.0;
+        state.fleet.add(ShipKind::ColonyShip, 1);
+        state
+    }
+
+    fn empty_slot() -> Coord {
+        Coord {
+            galaxy: 1,
+            system: 1,
+            position: 14,
+        }
+    }
+
+    #[test]
+    fn colony_ship_and_colonization_tech_are_in_config() {
+        let mut state = GameState::new(0);
+        let spec = state.config.ships.get(ShipKind::ColonyShip);
+        assert_eq!(spec.kind, ShipKind::ColonyShip);
+        assert!(spec.shipyard >= 1);
+        let tech = state.config.techs.get("colonization").unwrap();
+        assert!(
+            tech.modifiers
+                .iter()
+                .any(|m| m.kind == ModifierKind::ColonySlots && m.per_level == 1.0)
+        );
+        assert_eq!(state.colony_cap(), 1);
+        state.tech_levels.insert("colonization".into(), 2);
+        assert_eq!(state.colony_cap(), 3);
+        let mut empty = GameState::with_config(0, colony_config());
+        empty.resources.deuterium = 10_000.0;
+        assert_eq!(
+            empty.launch_colony(empty_slot(), 100, 0),
+            Err(FleetError::NeedColonyShip)
+        );
+    }
+
+    #[test]
+    fn over_cap_or_occupied_returns_the_colony_ship() {
+        let mut state = colony_ready(0);
+        assert_eq!(state.colony_cap(), 1);
+        state.launch_colony(empty_slot(), 100, 0).unwrap();
+        let outbound = state.missions[0].outbound_secs;
+        state.catch_up(outbound * 2);
+        assert!(state.colonies.is_empty());
+        assert_eq!(state.fleet.get(ShipKind::ColonyShip), 1);
+        assert!(state.missions.is_empty());
+
+        state.tech_levels.insert("colonization".into(), 1);
+        let now = state.last_tick_unix;
+        state.launch_colony(empty_slot(), 100, now).unwrap();
+        let outbound = state.missions[0].outbound_secs;
+        state.catch_up(now + outbound * 2);
+        assert_eq!(state.colonies.len(), 1);
+        assert_eq!(state.fleet.get(ShipKind::ColonyShip), 0);
+
+        state.fleet.add(ShipKind::ColonyShip, 1);
+        state.launch_colony(empty_slot(), 100, 0).unwrap();
+        let outbound = state.missions[0].outbound_secs;
+        state.catch_up(state.last_tick_unix + outbound * 2);
+        assert_eq!(state.colonies.len(), 1);
+        assert_eq!(state.fleet.get(ShipKind::ColonyShip), 1);
+    }
+
+    #[test]
+    fn planet_type_and_size_follow_the_galaxy_seed() {
+        let mut a = colony_ready(0);
+        a.galaxy_seed = 11;
+        a.tech_levels.insert("colonization".into(), 1);
+        a.launch_colony(empty_slot(), 100, 0).unwrap();
+        let outbound = a.missions[0].outbound_secs;
+        a.catch_up(outbound * 2);
+        let expected = planet_profile(11, empty_slot());
+        assert_eq!(a.colonies[0].kind, expected.0);
+        assert_eq!(a.colonies[0].size, expected.1);
+        let mut b = colony_ready(0);
+        b.galaxy_seed = 11;
+        b.tech_levels.insert("colonization".into(), 1);
+        b.launch_colony(empty_slot(), 100, 0).unwrap();
+        b.catch_up(outbound * 2);
+        assert_eq!(a.colonies[0].kind, b.colonies[0].kind);
+        assert_eq!(a.colonies[0].size, b.colonies[0].size);
+    }
+
+    #[test]
+    fn type_bonuses_go_through_modifier_lookup() {
+        let mut cfg = test_config();
+        cfg.planet_types.gas_giant.deuterium = 0.5;
+        cfg.planet_types.gas_giant.energy = 0.0;
+        let state = GameState::with_config(0, cfg);
+        close(
+            state.modifier_for(PlanetType::GasGiant, ModifierKind::DeuteriumOutput),
+            0.5,
+        );
+        close(
+            state.modifier_for(PlanetType::Rocky, ModifierKind::DeuteriumOutput),
+            0.0,
+        );
+    }
+
+    #[test]
+    fn offline_arrival_founds_the_colony_at_the_landing_time() {
+        let mut gap = colony_ready(0);
+        gap.tech_levels.insert("colonization".into(), 1);
+        gap.launch_colony(empty_slot(), 100, 0).unwrap();
+        let outbound = gap.missions[0].outbound_secs;
+        gap.catch_up(outbound * 10);
+        assert_eq!(gap.colonies.len(), 1);
+        assert_eq!(gap.colonies[0].coord, empty_slot());
+
+        let mut step = colony_ready(0);
+        step.tech_levels.insert("colonization".into(), 1);
+        step.launch_colony(empty_slot(), 100, 0).unwrap();
+        for t in 1..=outbound * 10 {
+            step.catch_up(t);
+        }
+        assert_eq!(step.colonies, gap.colonies);
+        assert_eq!(step.fleet, gap.fleet);
+        assert_eq!(step.last_tick_unix, gap.last_tick_unix);
     }
 }

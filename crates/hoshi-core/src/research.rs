@@ -19,6 +19,11 @@ pub enum ModifierKind {
     ExpeditionSlots,
     Espionage,
     DriveSpeed,
+    ColonySlots,
+    MetalOutput,
+    CrystalOutput,
+    DeuteriumOutput,
+    EnergyOutput,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
