@@ -4,6 +4,7 @@
 
 ### Added
 
+- Optional local agent activity feed: line-delimited JSON in the state directory (`feed.jsonl`) and an optional Unix socket. Unknown types are ignored; malformed and oversize lines are skipped. Reading resumes from a stored byte offset. Off unless the `bridge` cargo feature is on and config enables it. `hoshi post` appends a line. See `docs/bridge-events.md`.
 - Colony ships and colonization research. An empty slot can be settled on arrival; occupied or over-cap landings send the ship home. Planet type and size come from the galaxy seed and the slot, survive save/load, and feed the same modifier lookup as research. Save schema v5 stores colonies and the colonize mission flag.
 - Combat rapid-fire extra shots from `ships.toml`. `GameState::trigger_raid` is the shared raid API for the scheduler and a later bridge. The overview splits the combat report so both sides' losses are visible.
 - Pirate raids: a countdown (default one hour) then a six-round fight against a pirate fleet scaled to the player. Shields refill each round; hull does not. A lost fight takes a capped share of stored resources. The combat report goes in the event log and the overview shows the countdown. Save schema v4 stores the next raid and the log.

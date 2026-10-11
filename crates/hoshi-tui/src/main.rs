@@ -13,9 +13,32 @@ use std::time::{Duration, Instant};
 const SAVE_INTERVAL: Duration = Duration::from_secs(5);
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("post") {
+        match run_post(&args[2..]) {
+            Ok(()) => return,
+            Err(e) => {
+                eprintln!("hoshi: {e}");
+                std::process::exit(2);
+            }
+        }
+    }
     if let Err(e) = run() {
         eprintln!("hoshi: {e}");
         std::process::exit(1);
+    }
+}
+
+fn run_post(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(feature = "bridge")]
+    {
+        hoshi_bridge::run_post(args)?;
+        Ok(())
+    }
+    #[cfg(not(feature = "bridge"))]
+    {
+        let _ = args;
+        Err("post requires a build with --features bridge".into())
     }
 }
 
@@ -27,11 +50,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut conn = open_save(&path)?;
     let state = load_or_new(&mut conn, clock.now_unix(), BalanceConfig::default())?;
     let mut app = App::new(state);
+    #[cfg(feature = "bridge")]
+    let mut bridge = {
+        let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        hoshi_bridge::Bridge::open(hoshi_bridge::config_for_state_dir(dir))?
+    };
 
     let mut terminal = ratatui::init();
     let mut last_save = Instant::now();
     let result = loop {
         app.state.catch_up(clock.now_unix());
+        #[cfg(feature = "bridge")]
+        {
+            // Advance the feed offset. Applying events to game state is a later issue.
+            let _ = bridge.poll();
+        }
         if last_save.elapsed() >= SAVE_INTERVAL {
             if let Err(e) = save_state(&mut conn, &app.state) {
                 break Err(std::io::Error::other(e.to_string()));
@@ -104,5 +137,14 @@ mod tests {
         assert_eq!(path, Path::new("/tmp/flag.sqlite"));
         let path = resolve_save_path(None, Some(std::ffi::OsStr::new("/tmp/env.sqlite")));
         assert_eq!(path, Path::new("/tmp/env.sqlite"));
+    }
+
+    #[test]
+    fn post_without_bridge_feature_explains() {
+        #[cfg(not(feature = "bridge"))]
+        {
+            let err = run_post(&[]).unwrap_err();
+            assert!(err.to_string().contains("bridge"));
+        }
     }
 }

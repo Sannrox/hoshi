@@ -7,8 +7,13 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+default = []
+bridge = ["dep:hoshi-bridge"]
+
 [dependencies]
 hoshi-core = { path = "../hoshi-core" }
+hoshi-bridge = { path = "../hoshi-bridge", optional = true }
 ratatui = "0.29"
 
 [[bin]]

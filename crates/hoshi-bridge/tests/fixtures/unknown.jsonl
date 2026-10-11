@@ -1,0 +1,5 @@
+{"type":"agent_started","source":"shell","ts":1}
+{"type":"not_a_real_type","source":"shell","ts":2}
+{"type":"future_event"}
+{"type":"future_event","extra":true}
+{"type":"agent_finished","source":"shell","ts":3}
