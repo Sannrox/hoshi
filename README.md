@@ -31,7 +31,13 @@ An optional bridge turns your development activity into game events:
 cargo run -p hoshi-tui
 ```
 
-The save file lives in the user data directory (`hoshi/save.sqlite`). Override the path with `--save PATH` or `HOSHI_SAVE`. Keys: tab (screens), j/k (select), enter (build or research), x (cancel), q (quit and save).
+The save file lives in the user data directory (`hoshi/save.sqlite`). Override the path with `--save PATH` or `HOSHI_SAVE`. Balance numbers load from the bundled `balance.toml`; override with `--balance PATH` or `HOSHI_BALANCE`. Keys: tab (screens), j/k (select), enter (build or research), x (cancel), q (quit and save).
+
+```sh
+hoshi simulate --days 3
+```
+
+prints a pacing report (first upgrade time, daily mine levels, bridge-effect ratio). Targets live in `docs/balance.md`.
 
 ## Develop
 

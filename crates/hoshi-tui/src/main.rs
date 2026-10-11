@@ -5,9 +5,10 @@ mod app;
 use app::{Action, App};
 use hoshi_core::{
     BalanceConfig, Clock, SystemClock, load_or_new, open_save, resolve_save_path, save_state,
+    simulate_greedy,
 };
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 const SAVE_INTERVAL: Duration = Duration::from_secs(5);
@@ -16,6 +17,15 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("post") {
         match run_post(&args[2..]) {
+            Ok(()) => return,
+            Err(e) => {
+                eprintln!("hoshi: {e}");
+                std::process::exit(2);
+            }
+        }
+    }
+    if args.get(1).map(String::as_str) == Some("simulate") {
+        match run_simulate(&args[2..]) {
             Ok(()) => return,
             Err(e) => {
                 eprintln!("hoshi: {e}");
@@ -42,13 +52,111 @@ fn run_post(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+fn run_simulate(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let opts = parse_simulate_args(args)?;
+    let config = load_balance(balance_override(opts.balance).as_deref())?;
+    let report = simulate_greedy(config, opts.days);
+    let markdown = report.to_markdown();
+    if let Some(path) = opts.report {
+        std::fs::write(&path, &markdown)?;
+    }
+    print!("{markdown}");
+    if !report.passed() {
+        return Err("pacing targets failed".into());
+    }
+    Ok(())
+}
+
+fn load_balance(path: Option<&Path>) -> Result<BalanceConfig, Box<dyn std::error::Error>> {
+    match path {
+        Some(path) => Ok(BalanceConfig::load_file(path)?),
+        None => Ok(BalanceConfig::default()),
+    }
+}
+
+fn balance_override(flag: Option<PathBuf>) -> Option<PathBuf> {
+    flag.or_else(|| std::env::var_os("HOSHI_BALANCE").map(PathBuf::from))
+}
+
+#[derive(Debug)]
+struct SimulateOpts {
+    days: u32,
+    balance: Option<PathBuf>,
+    report: Option<PathBuf>,
+}
+
+fn parse_simulate_args(args: &[String]) -> Result<SimulateOpts, Box<dyn std::error::Error>> {
+    let mut days = 3_u32;
+    let mut balance = None;
+    let mut report = None;
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        if let Some(rest) = arg.strip_prefix("--days=") {
+            days = parse_days(rest)?;
+            i += 1;
+            continue;
+        }
+        if arg == "--days" {
+            let value = args.get(i + 1).ok_or("simulate --days needs a number")?;
+            days = parse_days(value)?;
+            i += 2;
+            continue;
+        }
+        if let Some(path) = named_path(arg, "--balance") {
+            balance = Some(path);
+            i += 1;
+            continue;
+        }
+        if arg == "--balance" {
+            let value = args.get(i + 1).ok_or("simulate --balance needs a path")?;
+            balance = Some(PathBuf::from(value));
+            i += 2;
+            continue;
+        }
+        if let Some(path) = named_path(arg, "--report") {
+            report = Some(path);
+            i += 1;
+            continue;
+        }
+        if arg == "--report" {
+            let value = args.get(i + 1).ok_or("simulate --report needs a path")?;
+            report = Some(PathBuf::from(value));
+            i += 2;
+            continue;
+        }
+        return Err(format!("unknown simulate flag {arg}").into());
+    }
+    Ok(SimulateOpts {
+        days,
+        balance,
+        report,
+    })
+}
+
+fn parse_days(value: &str) -> Result<u32, Box<dyn std::error::Error>> {
+    let days: u32 = value
+        .parse()
+        .map_err(|_| format!("invalid --days {value}"))?;
+    if days == 0 || days > 30 {
+        return Err("--days must be between 1 and 30".into());
+    }
+    Ok(days)
+}
+
+fn named_path(arg: &str, flag: &str) -> Option<PathBuf> {
+    arg.strip_prefix(&format!("{flag}=")).map(PathBuf::from)
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let clock = SystemClock;
     let flag = parse_save_flag(std::env::args());
     let env = std::env::var_os("HOSHI_SAVE");
     let path = resolve_save_path(flag.as_deref(), env.as_deref());
+    let config =
+        load_balance(balance_override(parse_path_flag(std::env::args(), "--balance")).as_deref())?;
     let mut conn = open_save(&path)?;
-    let state = load_or_new(&mut conn, clock.now_unix(), BalanceConfig::default())?;
+    let state = load_or_new(&mut conn, clock.now_unix(), config)?;
     let mut app = App::new(state);
     #[cfg(feature = "bridge")]
     let mut bridge = {
@@ -147,13 +255,18 @@ fn payload_secs(event: &hoshi_bridge::ActivityEvent, keys: &[&str]) -> u64 {
 }
 
 fn parse_save_flag(args: impl IntoIterator<Item = impl AsRef<str>>) -> Option<PathBuf> {
+    parse_path_flag(args, "--save")
+}
+
+fn parse_path_flag(args: impl IntoIterator<Item = impl AsRef<str>>, flag: &str) -> Option<PathBuf> {
     let mut args = args.into_iter();
+    let eq = format!("{flag}=");
     while let Some(arg) = args.next() {
         let arg = arg.as_ref();
-        if let Some(rest) = arg.strip_prefix("--save=") {
+        if let Some(rest) = arg.strip_prefix(&eq) {
             return Some(PathBuf::from(rest));
         }
-        if arg == "--save" {
+        if arg == flag {
             return args.next().map(|path| PathBuf::from(path.as_ref()));
         }
     }
@@ -177,6 +290,50 @@ mod tests {
             Some(PathBuf::from("/tmp/eq.sqlite"))
         );
         assert_eq!(parse_save_flag(["hoshi"]), None);
+    }
+
+    #[test]
+    fn parse_balance_flag_reads_space_and_equals_forms() {
+        assert_eq!(
+            parse_path_flag(["hoshi", "--balance", "/tmp/b.toml"], "--balance"),
+            Some(PathBuf::from("/tmp/b.toml"))
+        );
+        assert_eq!(
+            parse_path_flag(["hoshi", "--balance=/tmp/eq.toml"], "--balance"),
+            Some(PathBuf::from("/tmp/eq.toml"))
+        );
+    }
+
+    #[test]
+    fn parse_simulate_args_reads_days_balance_and_report() {
+        let opts = parse_simulate_args(&[
+            "--days".into(),
+            "7".into(),
+            "--balance=crates/hoshi-core/data/balance.toml".into(),
+            "--report".into(),
+            "out.md".into(),
+        ])
+        .unwrap();
+        assert_eq!(opts.days, 7);
+        assert_eq!(
+            opts.balance.as_deref(),
+            Some(Path::new("crates/hoshi-core/data/balance.toml"))
+        );
+        assert_eq!(opts.report.as_deref(), Some(Path::new("out.md")));
+    }
+
+    #[test]
+    fn parse_simulate_args_rejects_zero_days() {
+        let err = parse_simulate_args(&["--days".into(), "0".into()]).unwrap_err();
+        assert!(err.to_string().contains("days"), "{err}");
+    }
+
+    #[test]
+    fn balance_override_prefers_the_flag() {
+        assert_eq!(
+            balance_override(Some(PathBuf::from("/tmp/flag.toml"))),
+            Some(PathBuf::from("/tmp/flag.toml"))
+        );
     }
 
     #[test]
