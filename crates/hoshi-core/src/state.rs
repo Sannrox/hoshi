@@ -5,6 +5,7 @@ use crate::activity::{
 };
 use crate::balance::BalanceConfig;
 use crate::buildings::{BuildError, BuildJob, BuildingKind, Buildings};
+use crate::chains::{RecipeRun, apply_recipes};
 use crate::combat::{
     CombatReport, CombatWinner, next_u64, plunder_from, rapid_fire_table, resolve_combat,
     resolve_ground, stats_from_catalog,
@@ -120,10 +121,25 @@ impl ResourceKind {
     ];
 }
 
+struct ChainSite<'a> {
+    buildings: Buildings,
+    planet: PlanetType,
+    coord: Coord,
+    extra_metal: f64,
+    extra_crystal: f64,
+    extra_deut: f64,
+    energy_factor: f64,
+    boost: f64,
+    resources: &'a Resources,
+    goods: &'a BTreeMap<String, f64>,
+}
+
 /// Game state. All time advancement goes through [`GameState::catch_up`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct GameState {
     pub resources: Resources,
+    /// Intermediate goods on the home planet. Construction parts stay in `resources`.
+    pub goods: BTreeMap<String, f64>,
     pub buildings: Buildings,
     pub build_queue: Vec<BuildJob>,
     pub tech_levels: BTreeMap<String, u32>,
@@ -166,6 +182,7 @@ impl GameState {
         let outposts = generate_outposts(galaxy_seed, now_unix, &config.outposts, &[Coord::HOME]);
         let mut state = Self {
             resources: config.starting_resources,
+            goods: BTreeMap::new(),
             buildings: config.starting_buildings,
             build_queue: Vec::new(),
             tech_levels: BTreeMap::new(),
@@ -1328,6 +1345,16 @@ impl GameState {
         }
     }
 
+    /// Deposit richness for a owned planet, from type, galaxy seed and coord.
+    pub fn deposits_at(&self, coord: Coord) -> BTreeMap<String, f64> {
+        let Some(kind) = self.planet_kind(coord) else {
+            return BTreeMap::new();
+        };
+        self.config
+            .chains
+            .deposits_for(kind, self.galaxy_seed, coord)
+    }
+
     pub fn colony_cap(&self) -> u32 {
         1 + self.modifier(ModifierKind::ColonySlots).floor().max(0.0) as u32
     }
@@ -1499,6 +1526,23 @@ impl GameState {
             (produced / consumed).clamp(0.0, 1.0)
         };
         let boost = self.prod_boost_mult();
+        if self.config.chains.enabled() {
+            return self.chain_net_per_hour(
+                ChainSite {
+                    buildings: colony.buildings,
+                    planet: colony.kind,
+                    coord: colony.coord,
+                    extra_metal: rare.metal,
+                    extra_crystal: rare.crystal,
+                    extra_deut: rare.deuterium,
+                    energy_factor: factor,
+                    boost,
+                    resources: &colony.resources,
+                    goods: &colony.goods,
+                },
+                kind,
+            );
+        }
         let (raw, output, planet_bonus) = match kind {
             ResourceKind::Metal => (
                 self.config
@@ -2225,6 +2269,7 @@ impl GameState {
             fleet: ships,
             build_queue: Vec::new(),
             rare: None,
+            goods: BTreeMap::new(),
         });
         true
     }
@@ -2346,6 +2391,7 @@ impl GameState {
             fleet: ships,
             build_queue: Vec::new(),
             rare: outpost.rare,
+            goods: BTreeMap::new(),
         });
         true
     }
@@ -2470,71 +2516,289 @@ impl GameState {
         let hours = (now_unix - self.last_tick_unix) as f64 / 3600.0;
         let factor = self.energy_factor();
         let boost = self.prod_boost_mult();
-        for kind in ResourceKind::ALL {
-            let rate = self.base_production_per_hour(kind) * factor * boost;
-            let cap = self.storage_cap(kind);
-            let current = self.resources.get(kind);
-            self.resources
-                .set(kind, add_capped(current, rate, hours, cap));
-        }
-        let config = self.config.clone();
-        let metal_t = self.tech_modifier(ModifierKind::MetalOutput);
-        let crystal_t = self.tech_modifier(ModifierKind::CrystalOutput);
-        let deut_t = self.tech_modifier(ModifierKind::DeuteriumOutput);
-        let energy_t = self.tech_modifier(ModifierKind::EnergyOutput);
-        for colony in &mut self.colonies {
-            let bonus = config.planet_types.get(colony.kind);
-            let produced = config
-                .solar_plant
-                .energy_output(colony.buildings.solar_plant)
-                * (1.0 + energy_t + bonus.energy).max(0.0);
-            let consumed = config.metal_mine.energy_use(colony.buildings.metal_mine)
-                + config
+        if self.config.chains.enabled() {
+            self.produce_chains(hours, factor, boost);
+        } else {
+            for kind in ResourceKind::ALL {
+                let rate = self.base_production_per_hour(kind) * factor * boost;
+                let cap = self.storage_cap(kind);
+                let current = self.resources.get(kind);
+                self.resources
+                    .set(kind, add_capped(current, rate, hours, cap));
+            }
+            let config = self.config.clone();
+            let metal_t = self.tech_modifier(ModifierKind::MetalOutput);
+            let crystal_t = self.tech_modifier(ModifierKind::CrystalOutput);
+            let deut_t = self.tech_modifier(ModifierKind::DeuteriumOutput);
+            let energy_t = self.tech_modifier(ModifierKind::EnergyOutput);
+            for colony in &mut self.colonies {
+                let bonus = config.planet_types.get(colony.kind);
+                let produced = config
+                    .solar_plant
+                    .energy_output(colony.buildings.solar_plant)
+                    * (1.0 + energy_t + bonus.energy).max(0.0);
+                let consumed = config.metal_mine.energy_use(colony.buildings.metal_mine)
+                    + config
+                        .crystal_mine
+                        .energy_use(colony.buildings.crystal_mine)
+                    + config
+                        .deuterium_synthesizer
+                        .energy_use(colony.buildings.deuterium_synthesizer);
+                let factor = if consumed <= 0.0 {
+                    1.0
+                } else {
+                    (produced / consumed).clamp(0.0, 1.0)
+                };
+                let metal_rate = config
+                    .metal_mine
+                    .production_per_hour(colony.buildings.metal_mine)
+                    * (1.0 + metal_t + bonus.metal)
+                    * factor
+                    * boost;
+                let crystal_rate = config
                     .crystal_mine
-                    .energy_use(colony.buildings.crystal_mine)
-                + config
+                    .production_per_hour(colony.buildings.crystal_mine)
+                    * (1.0 + crystal_t + bonus.crystal)
+                    * factor
+                    * boost;
+                let deut_rate = config
                     .deuterium_synthesizer
-                    .energy_use(colony.buildings.deuterium_synthesizer);
-            let factor = if consumed <= 0.0 {
-                1.0
-            } else {
-                (produced / consumed).clamp(0.0, 1.0)
-            };
-            let metal_rate = config
-                .metal_mine
-                .production_per_hour(colony.buildings.metal_mine)
-                * (1.0 + metal_t + bonus.metal)
-                * factor
-                * boost;
-            let crystal_rate = config
-                .crystal_mine
-                .production_per_hour(colony.buildings.crystal_mine)
-                * (1.0 + crystal_t + bonus.crystal)
-                * factor
-                * boost;
-            let deut_rate = config
-                .deuterium_synthesizer
-                .production_per_hour(colony.buildings.deuterium_synthesizer)
-                * (1.0 + deut_t + bonus.deuterium)
-                * factor
-                * boost;
-            let metal_cap = config
-                .metal_storage
-                .capacity(colony.buildings.metal_storage);
-            let crystal_cap = config
-                .crystal_storage
-                .capacity(colony.buildings.crystal_storage);
-            let deut_cap = config
-                .deuterium_storage
-                .capacity(colony.buildings.deuterium_storage);
-            colony.resources.metal =
-                add_capped(colony.resources.metal, metal_rate, hours, metal_cap);
-            colony.resources.crystal =
-                add_capped(colony.resources.crystal, crystal_rate, hours, crystal_cap);
-            colony.resources.deuterium =
-                add_capped(colony.resources.deuterium, deut_rate, hours, deut_cap);
+                    .production_per_hour(colony.buildings.deuterium_synthesizer)
+                    * (1.0 + deut_t + bonus.deuterium)
+                    * factor
+                    * boost;
+                let metal_cap = config
+                    .metal_storage
+                    .capacity(colony.buildings.metal_storage);
+                let crystal_cap = config
+                    .crystal_storage
+                    .capacity(colony.buildings.crystal_storage);
+                let deut_cap = config
+                    .deuterium_storage
+                    .capacity(colony.buildings.deuterium_storage);
+                colony.resources.metal =
+                    add_capped(colony.resources.metal, metal_rate, hours, metal_cap);
+                colony.resources.crystal =
+                    add_capped(colony.resources.crystal, crystal_rate, hours, crystal_cap);
+                colony.resources.deuterium =
+                    add_capped(colony.resources.deuterium, deut_rate, hours, deut_cap);
+            }
         }
         self.last_tick_unix = now_unix;
+    }
+
+    fn produce_chains(&mut self, hours: f64, home_factor: f64, boost: f64) {
+        let chains = self.config.chains.clone();
+        let home_deposits = chains.deposits_for(self.home_kind, self.galaxy_seed, self.home);
+        let home_buildings = self.buildings;
+        let home_kind = self.home_kind;
+        let metal_cap = self.storage_cap(ResourceKind::Metal);
+        let crystal_cap = self.storage_cap(ResourceKind::Crystal);
+        let deut_cap = self.storage_cap(ResourceKind::Deuterium);
+        let home_metal = self.recipe_building_scale(
+            home_buildings,
+            home_kind,
+            0.0,
+            0.0,
+            0.0,
+            BuildingKind::MetalMine,
+        );
+        let home_crystal = self.recipe_building_scale(
+            home_buildings,
+            home_kind,
+            0.0,
+            0.0,
+            0.0,
+            BuildingKind::CrystalMine,
+        );
+        let home_deut = self.recipe_building_scale(
+            home_buildings,
+            home_kind,
+            0.0,
+            0.0,
+            0.0,
+            BuildingKind::DeuteriumSynthesizer,
+        );
+        let home_yard = home_buildings.shipyard as f64;
+        apply_recipes(
+            RecipeRun {
+                config: &chains,
+                buildings: home_buildings,
+                deposits: &home_deposits,
+                hours,
+                energy_factor: home_factor,
+                boost,
+            },
+            |kind| match kind {
+                BuildingKind::MetalMine => home_metal,
+                BuildingKind::CrystalMine => home_crystal,
+                BuildingKind::DeuteriumSynthesizer => home_deut,
+                BuildingKind::Shipyard => home_yard,
+                _ => 0.0,
+            },
+            &mut self.resources,
+            &mut self.goods,
+            |kind| match kind {
+                ResourceKind::Metal => metal_cap,
+                ResourceKind::Crystal => crystal_cap,
+                ResourceKind::Deuterium => deut_cap,
+            },
+        );
+
+        let n = self.colonies.len();
+        for i in 0..n {
+            let snapshot = {
+                let colony = &self.colonies[i];
+                let rare = self.rare_bonus_for(colony);
+                let bonus = self.config.planet_types.get(colony.kind);
+                let energy_t = self.tech_modifier(ModifierKind::EnergyOutput);
+                let produced = self
+                    .config
+                    .solar_plant
+                    .energy_output(colony.buildings.solar_plant)
+                    * (1.0 + energy_t + bonus.energy + rare.energy).max(0.0);
+                let consumed = self
+                    .config
+                    .metal_mine
+                    .energy_use(colony.buildings.metal_mine)
+                    + self
+                        .config
+                        .crystal_mine
+                        .energy_use(colony.buildings.crystal_mine)
+                    + self
+                        .config
+                        .deuterium_synthesizer
+                        .energy_use(colony.buildings.deuterium_synthesizer);
+                let factor = if consumed <= 0.0 {
+                    1.0
+                } else {
+                    (produced / consumed).clamp(0.0, 1.0)
+                };
+                (
+                    colony.coord,
+                    colony.kind,
+                    colony.buildings,
+                    rare.metal,
+                    rare.crystal,
+                    rare.deuterium,
+                    factor,
+                    self.config
+                        .metal_storage
+                        .capacity(colony.buildings.metal_storage),
+                    self.config
+                        .crystal_storage
+                        .capacity(colony.buildings.crystal_storage),
+                    self.config
+                        .deuterium_storage
+                        .capacity(colony.buildings.deuterium_storage),
+                )
+            };
+            let (
+                coord,
+                kind,
+                buildings,
+                rare_m,
+                rare_c,
+                rare_d,
+                factor,
+                metal_cap,
+                crystal_cap,
+                deut_cap,
+            ) = snapshot;
+            let deposits = chains.deposits_for(kind, self.galaxy_seed, coord);
+            let metal_s = self.recipe_building_scale(
+                buildings,
+                kind,
+                rare_m,
+                rare_c,
+                rare_d,
+                BuildingKind::MetalMine,
+            );
+            let crystal_s = self.recipe_building_scale(
+                buildings,
+                kind,
+                rare_m,
+                rare_c,
+                rare_d,
+                BuildingKind::CrystalMine,
+            );
+            let deut_s = self.recipe_building_scale(
+                buildings,
+                kind,
+                rare_m,
+                rare_c,
+                rare_d,
+                BuildingKind::DeuteriumSynthesizer,
+            );
+            let yard_s = buildings.shipyard as f64;
+            let colony = &mut self.colonies[i];
+            apply_recipes(
+                RecipeRun {
+                    config: &chains,
+                    buildings,
+                    deposits: &deposits,
+                    hours,
+                    energy_factor: factor,
+                    boost,
+                },
+                |b| match b {
+                    BuildingKind::MetalMine => metal_s,
+                    BuildingKind::CrystalMine => crystal_s,
+                    BuildingKind::DeuteriumSynthesizer => deut_s,
+                    BuildingKind::Shipyard => yard_s,
+                    _ => 0.0,
+                },
+                &mut colony.resources,
+                &mut colony.goods,
+                |res| match res {
+                    ResourceKind::Metal => metal_cap,
+                    ResourceKind::Crystal => crystal_cap,
+                    ResourceKind::Deuterium => deut_cap,
+                },
+            );
+        }
+    }
+
+    fn recipe_building_scale(
+        &self,
+        buildings: Buildings,
+        planet: PlanetType,
+        extra_metal: f64,
+        extra_crystal: f64,
+        extra_deut: f64,
+        building: BuildingKind,
+    ) -> f64 {
+        match building {
+            BuildingKind::MetalMine => {
+                self.config
+                    .metal_mine
+                    .production_per_hour(buildings.metal_mine)
+                    * (1.0
+                        + self.tech_modifier(ModifierKind::MetalOutput)
+                        + self.planet_bonus(planet, ModifierKind::MetalOutput)
+                        + extra_metal)
+            }
+            BuildingKind::CrystalMine => {
+                self.config
+                    .crystal_mine
+                    .production_per_hour(buildings.crystal_mine)
+                    * (1.0
+                        + self.tech_modifier(ModifierKind::CrystalOutput)
+                        + self.planet_bonus(planet, ModifierKind::CrystalOutput)
+                        + extra_crystal)
+            }
+            BuildingKind::DeuteriumSynthesizer => {
+                self.config
+                    .deuterium_synthesizer
+                    .production_per_hour(buildings.deuterium_synthesizer)
+                    * (1.0
+                        + self.tech_modifier(ModifierKind::DeuteriumOutput)
+                        + self.planet_bonus(planet, ModifierKind::DeuteriumOutput)
+                        + extra_deut)
+            }
+            BuildingKind::Shipyard => buildings.shipyard as f64,
+            _ => 0.0,
+        }
     }
 
     pub fn energy_produced(&self) -> f64 {
@@ -2572,7 +2836,83 @@ impl GameState {
     }
 
     pub fn production_per_hour(&self, kind: ResourceKind) -> f64 {
-        self.base_production_per_hour(kind) * self.energy_factor() * self.prod_boost_mult()
+        let factor = self.energy_factor();
+        let boost = self.prod_boost_mult();
+        if self.config.chains.enabled() {
+            self.chain_net_per_hour(
+                ChainSite {
+                    buildings: self.buildings,
+                    planet: self.home_kind,
+                    coord: self.home,
+                    extra_metal: 0.0,
+                    extra_crystal: 0.0,
+                    extra_deut: 0.0,
+                    energy_factor: factor,
+                    boost,
+                    resources: &self.resources,
+                    goods: &self.goods,
+                },
+                kind,
+            )
+        } else {
+            self.base_production_per_hour(kind) * factor * boost
+        }
+    }
+
+    fn chain_net_per_hour(&self, site: ChainSite<'_>, kind: ResourceKind) -> f64 {
+        let mut stock = *site.resources;
+        let mut bag = site.goods.clone();
+        let before = stock.get(kind);
+        let deposits = self
+            .config
+            .chains
+            .deposits_for(site.planet, self.galaxy_seed, site.coord);
+        let metal_s = self.recipe_building_scale(
+            site.buildings,
+            site.planet,
+            site.extra_metal,
+            site.extra_crystal,
+            site.extra_deut,
+            BuildingKind::MetalMine,
+        );
+        let crystal_s = self.recipe_building_scale(
+            site.buildings,
+            site.planet,
+            site.extra_metal,
+            site.extra_crystal,
+            site.extra_deut,
+            BuildingKind::CrystalMine,
+        );
+        let deut_s = self.recipe_building_scale(
+            site.buildings,
+            site.planet,
+            site.extra_metal,
+            site.extra_crystal,
+            site.extra_deut,
+            BuildingKind::DeuteriumSynthesizer,
+        );
+        let yard_s = site.buildings.shipyard as f64;
+        apply_recipes(
+            RecipeRun {
+                config: &self.config.chains,
+                buildings: site.buildings,
+                deposits: &deposits,
+                hours: 1.0,
+                energy_factor: site.energy_factor,
+                boost: site.boost,
+            },
+            |b| match b {
+                BuildingKind::MetalMine => metal_s,
+                BuildingKind::CrystalMine => crystal_s,
+                BuildingKind::DeuteriumSynthesizer => deut_s,
+                BuildingKind::Shipyard => yard_s,
+                _ => 0.0,
+            },
+            &mut stock,
+            &mut bag,
+            |_| f64::MAX,
+        );
+        stock.get(kind) - before
     }
 
     fn prod_boost_mult(&self) -> f64 {
@@ -2909,6 +3249,7 @@ mod tests {
             wonders: Vec::new(),
             outposts: crate::OutpostConfig::default(),
             prestige: crate::PrestigeConfig::default(),
+            chains: crate::ChainConfig::default(),
         }
     }
 
@@ -2956,6 +3297,86 @@ mod tests {
             cfg.crystal_mine.base_per_hour * 0.5,
         );
         close(state.resources.deuterium, 0.0);
+    }
+
+    #[test]
+    fn production_chains_stop_when_an_input_runs_out() {
+        let mut cfg = test_config();
+        let mut deposits = BTreeMap::new();
+        deposits.insert(
+            PlanetType::Rocky,
+            BTreeMap::from([("iron_ore".into(), 0.0)]),
+        );
+        cfg.chains = crate::ChainConfig {
+            goods: vec![
+                crate::GoodSpec {
+                    id: "iron_ore".into(),
+                    kind: crate::GoodKind::Raw,
+                },
+                crate::GoodSpec {
+                    id: "steel".into(),
+                    kind: crate::GoodKind::Refined,
+                },
+                crate::GoodSpec {
+                    id: "frames".into(),
+                    kind: crate::GoodKind::Component,
+                },
+            ],
+            recipes: vec![
+                crate::Recipe {
+                    id: "extract".into(),
+                    building: BuildingKind::MetalMine,
+                    deposit: Some("iron_ore".into()),
+                    inputs: BTreeMap::new(),
+                    outputs: BTreeMap::from([("iron_ore".into(), 1.0)]),
+                },
+                crate::Recipe {
+                    id: "smelt".into(),
+                    building: BuildingKind::MetalMine,
+                    deposit: None,
+                    inputs: BTreeMap::from([("iron_ore".into(), 1.0)]),
+                    outputs: BTreeMap::from([("steel".into(), 1.0)]),
+                },
+                crate::Recipe {
+                    id: "forge".into(),
+                    building: BuildingKind::MetalMine,
+                    deposit: None,
+                    inputs: BTreeMap::from([("steel".into(), 1.0)]),
+                    outputs: BTreeMap::from([("frames".into(), 1.0)]),
+                },
+            ],
+            deposits,
+            deposit_jitter: 0.0,
+        };
+        cfg.starting_buildings.crystal_mine = 0;
+        let mut state = GameState::with_config(0, cfg);
+        state.goods.insert("iron_ore".into(), 5.0);
+        close(state.production_per_hour(ResourceKind::Metal), 5.0);
+        state.catch_up(3600);
+        close(state.resources.metal, 5.0);
+        close(state.goods.get("iron_ore").copied().unwrap_or(0.0), 0.0);
+        close(state.goods.get("steel").copied().unwrap_or(0.0), 0.0);
+        state.catch_up(7200);
+        close(state.resources.metal, 5.0);
+    }
+
+    #[test]
+    fn bundled_chains_fill_component_stockpiles() {
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.enabled = false;
+        let mut state = GameState::with_config(0, cfg);
+        let start = state.resources.metal;
+        state.catch_up(3600);
+        assert!(
+            state.resources.metal > start,
+            "frames {} start {start}",
+            state.resources.metal
+        );
+        assert!(
+            state.goods.values().any(|v| *v > 0.0),
+            "intermediates {:?}",
+            state.goods
+        );
     }
 
     #[test]
@@ -3044,6 +3465,86 @@ mod tests {
         let mut state = GameState::with_config(0, cfg);
         state.catch_up(3600);
         close(state.resources.metal, 80.0);
+        let mut chained = test_config();
+        chained.metal_storage.base = 50.0;
+        chained.starting_resources.metal = 80.0;
+        chained.chains = crate::ChainConfig {
+            goods: vec![crate::GoodSpec {
+                id: "frames".into(),
+                kind: crate::GoodKind::Component,
+            }],
+            recipes: vec![crate::Recipe {
+                id: "forge".into(),
+                building: BuildingKind::MetalMine,
+                deposit: None,
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::from([("frames".into(), 1.0)]),
+            }],
+            deposits: BTreeMap::new(),
+            deposit_jitter: 0.0,
+        };
+        let mut state = GameState::with_config(0, chained);
+        state.catch_up(3600);
+        close(state.resources.metal, 80.0);
+    }
+
+    #[test]
+    fn full_frames_stockpile_does_not_consume_steel() {
+        let mut cfg = test_config();
+        cfg.metal_storage.base = 50.0;
+        cfg.starting_resources.metal = 50.0;
+        cfg.starting_buildings.crystal_mine = 0;
+        let mut deposits = BTreeMap::new();
+        deposits.insert(
+            PlanetType::Rocky,
+            BTreeMap::from([("iron_ore".into(), 0.0)]),
+        );
+        cfg.chains = crate::ChainConfig {
+            goods: vec![
+                crate::GoodSpec {
+                    id: "iron_ore".into(),
+                    kind: crate::GoodKind::Raw,
+                },
+                crate::GoodSpec {
+                    id: "steel".into(),
+                    kind: crate::GoodKind::Refined,
+                },
+                crate::GoodSpec {
+                    id: "frames".into(),
+                    kind: crate::GoodKind::Component,
+                },
+            ],
+            recipes: vec![
+                crate::Recipe {
+                    id: "extract".into(),
+                    building: BuildingKind::MetalMine,
+                    deposit: Some("iron_ore".into()),
+                    inputs: BTreeMap::new(),
+                    outputs: BTreeMap::from([("iron_ore".into(), 1.0)]),
+                },
+                crate::Recipe {
+                    id: "smelt".into(),
+                    building: BuildingKind::MetalMine,
+                    deposit: None,
+                    inputs: BTreeMap::from([("iron_ore".into(), 1.0)]),
+                    outputs: BTreeMap::from([("steel".into(), 1.0)]),
+                },
+                crate::Recipe {
+                    id: "forge".into(),
+                    building: BuildingKind::MetalMine,
+                    deposit: None,
+                    inputs: BTreeMap::from([("steel".into(), 1.0)]),
+                    outputs: BTreeMap::from([("frames".into(), 1.0)]),
+                },
+            ],
+            deposits,
+            deposit_jitter: 0.0,
+        };
+        let mut state = GameState::with_config(0, cfg);
+        state.goods.insert("steel".into(), 20.0);
+        state.catch_up(3600);
+        close(state.resources.metal, 50.0);
+        close(state.goods.get("steel").copied().unwrap_or(0.0), 20.0);
     }
 
     #[test]
@@ -4264,6 +4765,7 @@ modifiers = [{ kind = "expedition_slots", per_level = 1.0 }]
             fleet: Fleet::default(),
             build_queue: Vec::new(),
             rare: None,
+            goods: BTreeMap::new(),
         });
     }
 
@@ -4912,6 +5414,7 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
             fleet: Fleet::default(),
             build_queue: Vec::new(),
             rare: Some("shipyard_world".into()),
+            goods: BTreeMap::new(),
         });
         let sped = world.ship_time_secs(ShipKind::LightFighter);
         assert!(sped < base, "sped={sped} base={base}");
@@ -5114,6 +5617,7 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
                 fleet: Fleet::default(),
                 build_queue: Vec::new(),
                 rare: None,
+                goods: BTreeMap::new(),
             });
             state
         }
@@ -5149,6 +5653,7 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
             fleet: Fleet::default(),
             build_queue: Vec::new(),
             rare: None,
+            goods: BTreeMap::new(),
         });
         state.completed_wonders.push("stellar_gate".into());
         assert_eq!(state.prestige_score(), base + 5 + 11);

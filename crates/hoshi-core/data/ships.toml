@@ -4,9 +4,9 @@
 [[ship]]
 id = "small_cargo"
 name = "Small Cargo"
-metal = 2000.0
-crystal = 2000.0
-deuterium = 0.0
+frames = 2000.0
+electronics = 2000.0
+propellant = 0.0
 base_seconds = 40.0
 attack = 5.0
 shield = 10.0
@@ -21,9 +21,9 @@ prereq_techs = [{ id = "combustion_drive", level = 2 }]
 [[ship]]
 id = "large_cargo"
 name = "Large Cargo"
-metal = 6000.0
-crystal = 6000.0
-deuterium = 0.0
+frames = 6000.0
+electronics = 6000.0
+propellant = 0.0
 base_seconds = 80.0
 attack = 5.0
 shield = 25.0
@@ -38,9 +38,9 @@ prereq_techs = [{ id = "impulse_drive", level = 4 }]
 [[ship]]
 id = "light_fighter"
 name = "Light Fighter"
-metal = 3000.0
-crystal = 1000.0
-deuterium = 0.0
+frames = 3000.0
+electronics = 1000.0
+propellant = 0.0
 base_seconds = 30.0
 attack = 50.0
 shield = 10.0
@@ -56,9 +56,9 @@ rapid_fire = [{ target = "espionage_probe", value = 5 }]
 [[ship]]
 id = "heavy_fighter"
 name = "Heavy Fighter"
-metal = 6000.0
-crystal = 4000.0
-deuterium = 0.0
+frames = 6000.0
+electronics = 4000.0
+propellant = 0.0
 base_seconds = 60.0
 attack = 150.0
 shield = 25.0
@@ -77,9 +77,9 @@ rapid_fire = [
 [[ship]]
 id = "cruiser"
 name = "Cruiser"
-metal = 20000.0
-crystal = 7000.0
-deuterium = 2000.0
+frames = 20000.0
+electronics = 7000.0
+propellant = 2000.0
 base_seconds = 180.0
 attack = 400.0
 shield = 50.0
@@ -99,9 +99,9 @@ rapid_fire = [
 [[ship]]
 id = "battleship"
 name = "Battleship"
-metal = 45000.0
-crystal = 15000.0
-deuterium = 0.0
+frames = 45000.0
+electronics = 15000.0
+propellant = 0.0
 base_seconds = 300.0
 attack = 1000.0
 shield = 200.0
@@ -121,9 +121,9 @@ rapid_fire = [
 [[ship]]
 id = "recycler"
 name = "Recycler"
-metal = 10000.0
-crystal = 6000.0
-deuterium = 2000.0
+frames = 10000.0
+electronics = 6000.0
+propellant = 2000.0
 base_seconds = 120.0
 attack = 1.0
 shield = 10.0
@@ -138,9 +138,9 @@ prereq_techs = [{ id = "combustion_drive", level = 6 }, { id = "shields", level 
 [[ship]]
 id = "espionage_probe"
 name = "Espionage Probe"
-metal = 0.0
-crystal = 1000.0
-deuterium = 0.0
+frames = 0.0
+electronics = 1000.0
+propellant = 0.0
 base_seconds = 10.0
 attack = 0.0
 shield = 1.0
@@ -155,9 +155,9 @@ prereq_techs = [{ id = "espionage", level = 2 }, { id = "combustion_drive", leve
 [[ship]]
 id = "explorer"
 name = "Explorer"
-metal = 4000.0
-crystal = 8000.0
-deuterium = 4000.0
+frames = 4000.0
+electronics = 8000.0
+propellant = 4000.0
 base_seconds = 240.0
 attack = 50.0
 shield = 50.0
@@ -172,9 +172,9 @@ prereq_techs = [{ id = "astrophysics", level = 1 }, { id = "impulse_drive", leve
 [[ship]]
 id = "colony_ship"
 name = "Colony Ship"
-metal = 10000.0
-crystal = 20000.0
-deuterium = 10000.0
+frames = 10000.0
+electronics = 20000.0
+propellant = 10000.0
 base_seconds = 400.0
 attack = 0.0
 shield = 100.0
@@ -189,9 +189,9 @@ prereq_techs = [{ id = "colonization", level = 1 }, { id = "impulse_drive", leve
 [[ship]]
 id = "troop_transport"
 name = "Troop Transport"
-metal = 4000.0
-crystal = 4000.0
-deuterium = 1000.0
+frames = 4000.0
+electronics = 4000.0
+propellant = 1000.0
 base_seconds = 80.0
 attack = 1.0
 shield = 10.0

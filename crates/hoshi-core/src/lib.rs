@@ -3,6 +3,7 @@
 mod activity;
 mod balance;
 mod buildings;
+mod chains;
 mod clock;
 mod combat;
 mod expedition;
@@ -26,6 +27,7 @@ pub use balance::{
     ProducerSpec, RaidConfig, StorageSpec,
 };
 pub use buildings::{BuildError, BuildJob, BuildingKind, Buildings};
+pub use chains::{ChainConfig, GoodKind, GoodSpec, Recipe, component_kind};
 pub use clock::{Clock, FakeClock, SystemClock};
 pub use combat::{
     CombatReport, CombatWinner, GroundReport, next_u64, plunder_from, rapid_fire_table,

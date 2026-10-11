@@ -12,13 +12,14 @@ use crate::ships::{Fleet, ShipJob, ShipKind};
 use crate::state::{GameEvent, GameState, Resources};
 use crate::wonders::WonderJob;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 12;
+pub const SCHEMA_VERSION: u32 = 13;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -141,7 +142,8 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM outposts;
          DELETE FROM prestige_owned;
          DELETE FROM prestige_runs;
-         DELETE FROM prestige;",
+         DELETE FROM prestige;
+         DELETE FROM goods;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -164,6 +166,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
             state.resources.deuterium
         ],
     )?;
+    insert_goods(&tx, 1, &state.goods)?;
     for kind in BuildingKind::ALL {
         tx.execute(
             "INSERT INTO buildings (planet_id, kind, level) VALUES (1, ?1, ?2)",
@@ -355,6 +358,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 colony.resources.deuterium
             ],
         )?;
+        insert_goods(&tx, planet_id, &colony.goods)?;
         for kind in BuildingKind::ALL {
             tx.execute(
                 "INSERT INTO buildings (planet_id, kind, level) VALUES (?1, ?2, ?3)",
@@ -460,6 +464,36 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
     Ok(())
 }
 
+fn insert_goods(
+    conn: &Connection,
+    planet_id: i64,
+    goods: &BTreeMap<String, f64>,
+) -> Result<(), SaveError> {
+    for (good, amount) in goods {
+        if !amount.is_finite() || *amount <= 0.0 {
+            continue;
+        }
+        conn.execute(
+            "INSERT INTO goods (planet_id, good, amount) VALUES (?1, ?2, ?3)",
+            params![planet_id, good, amount],
+        )?;
+    }
+    Ok(())
+}
+
+fn read_goods(conn: &Connection, planet_id: i64) -> Result<BTreeMap<String, f64>, SaveError> {
+    let mut stmt = conn.prepare("SELECT good, amount FROM goods WHERE planet_id = ?1")?;
+    let rows = stmt.query_map(params![planet_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+    })?;
+    let mut goods = BTreeMap::new();
+    for row in rows {
+        let (good, amount) = row?;
+        goods.insert(good, amount);
+    }
+    Ok(goods)
+}
+
 fn insert_build_queue(
     conn: &Connection,
     planet_id: i64,
@@ -530,6 +564,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         .optional()?
         .ok_or(SaveError::Corrupt("missing resources row"))?;
     state.resources = resources;
+    state.goods = read_goods(conn, 1)?;
 
     let mut buildings = Buildings {
         metal_mine: 0,
@@ -873,6 +908,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             fleet,
             build_queue: read_build_queue(conn, planet_id)?,
             rare,
+            goods: read_goods(conn, planet_id)?,
         });
     }
 
@@ -1335,6 +1371,7 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "prestige" => "SELECT COUNT(*) FROM prestige",
         "prestige_owned" => "SELECT COUNT(*) FROM prestige_owned",
         "prestige_runs" => "SELECT COUNT(*) FROM prestige_runs",
+        "goods" => "SELECT COUNT(*) FROM goods",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -1363,7 +1400,8 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "outpost_ships")?
         + count_rows(conn, "prestige")?
         + count_rows(conn, "prestige_owned")?
-        + count_rows(conn, "prestige_runs")?)
+        + count_rows(conn, "prestige_runs")?
+        + count_rows(conn, "goods")?)
 }
 
 fn migrate(conn: &Connection) -> Result<(), SaveError> {
@@ -1409,6 +1447,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 12 {
         migrate_v12(conn)?;
+    }
+    if found < 13 {
+        migrate_v13(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -1779,6 +1820,20 @@ fn migrate_v12(conn: &Connection) -> Result<(), SaveError> {
     Ok(())
 }
 
+fn migrate_v13(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS goods (
+            planet_id INTEGER NOT NULL,
+            good TEXT NOT NULL,
+            amount REAL NOT NULL,
+            PRIMARY KEY (planet_id, good)
+        );
+        ",
+    )?;
+    Ok(())
+}
+
 fn read_prestige(conn: &Connection, fallback_started: u64) -> Result<Prestige, SaveError> {
     let row = conn
         .query_row(
@@ -2045,6 +2100,7 @@ mod tests {
             },
             fleet: colony_fleet,
             rare: None,
+            goods: BTreeMap::new(),
             build_queue: vec![BuildJob {
                 building: BuildingKind::SolarPlant,
                 from_level: 0,
@@ -2180,6 +2236,7 @@ mod tests {
         assert_eq!(loaded.last_tick_unix, 99);
         assert_eq!(loaded.rng_seed, 7);
         assert_eq!(loaded.resources.metal, 10.0);
+        assert!(loaded.goods.is_empty());
         assert_eq!(loaded.buildings.metal_mine, 4);
         assert_eq!(loaded.tech_level("weapons"), 3);
         assert_eq!(loaded.activity, crate::ActivityTracker::default());
@@ -2540,6 +2597,37 @@ mod tests {
         save_state(&mut conn, &state).unwrap();
         let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
         assert_eq!(loaded.prestige, state.prestige);
+        assert_eq!(loaded, state);
+    }
+
+    #[test]
+    fn migrate_v13_retries_and_round_trips_goods() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v13(&conn).unwrap();
+        migrate_v13(&conn).unwrap();
+        let mut state = GameState::new(3);
+        state.goods.insert("iron_ore".into(), 12.5);
+        state.goods.insert("steel".into(), 4.0);
+        state.colonies.push(crate::Colony {
+            coord: crate::Coord {
+                galaxy: 1,
+                system: 1,
+                position: 2,
+            },
+            kind: crate::PlanetType::Ice,
+            size: 80,
+            resources: Resources::ZERO,
+            buildings: crate::Buildings::default(),
+            fleet: crate::Fleet::default(),
+            build_queue: Vec::new(),
+            rare: None,
+            goods: BTreeMap::from([("water_ice".into(), 7.0)]),
+        });
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.goods, state.goods);
+        assert_eq!(loaded.colonies[0].goods, state.colonies[0].goods);
+        assert_eq!(loaded.resources, state.resources);
         assert_eq!(loaded, state);
     }
 

@@ -5,9 +5,10 @@ use crate::combat::next_u64;
 use crate::fleets::Coord;
 use crate::ships::Fleet;
 use crate::state::Resources;
+use std::collections::BTreeMap;
 
 /// Slot class in a system. Inner slots are rocky; outer slots ice or gas.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PlanetType {
     Rocky,
     Ice,
@@ -105,6 +106,8 @@ pub struct Colony {
     pub build_queue: Vec<BuildJob>,
     /// Rare-planet bonus id from config, when this world was a special outpost.
     pub rare: Option<String>,
+    /// Intermediate goods. Construction parts stay in `resources`.
+    pub goods: BTreeMap<String, f64>,
 }
 
 /// Type from the slot band, size from a seeded roll. Gas giants stay small.
