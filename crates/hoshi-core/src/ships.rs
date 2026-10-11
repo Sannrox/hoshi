@@ -1,49 +1,95 @@
 //! Ship types and the per-planet shipyard queue.
 
+use crate::research::TechPrereq;
 use crate::state::Resources;
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::fmt;
 
 const DEFAULT_SHIPS: &str = include_str!("../data/ships.toml");
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ShipKind {
+    SmallCargo,
+    LargeCargo,
     LightFighter,
     HeavyFighter,
-    SmallCargo,
+    Cruiser,
+    Battleship,
+    Recycler,
+    EspionageProbe,
+    Explorer,
 }
 
 impl ShipKind {
-    pub const ALL: [ShipKind; 3] = [
+    pub const ALL: [ShipKind; 9] = [
+        ShipKind::SmallCargo,
+        ShipKind::LargeCargo,
         ShipKind::LightFighter,
         ShipKind::HeavyFighter,
-        ShipKind::SmallCargo,
+        ShipKind::Cruiser,
+        ShipKind::Battleship,
+        ShipKind::Recycler,
+        ShipKind::EspionageProbe,
+        ShipKind::Explorer,
     ];
 
     pub fn as_key(self) -> &'static str {
         match self {
+            ShipKind::SmallCargo => "small_cargo",
+            ShipKind::LargeCargo => "large_cargo",
             ShipKind::LightFighter => "light_fighter",
             ShipKind::HeavyFighter => "heavy_fighter",
-            ShipKind::SmallCargo => "small_cargo",
+            ShipKind::Cruiser => "cruiser",
+            ShipKind::Battleship => "battleship",
+            ShipKind::Recycler => "recycler",
+            ShipKind::EspionageProbe => "espionage_probe",
+            ShipKind::Explorer => "explorer",
         }
     }
 
     pub fn from_key(key: &str) -> Option<Self> {
         Some(match key {
+            "small_cargo" => ShipKind::SmallCargo,
+            "large_cargo" => ShipKind::LargeCargo,
             "light_fighter" => ShipKind::LightFighter,
             "heavy_fighter" => ShipKind::HeavyFighter,
-            "small_cargo" => ShipKind::SmallCargo,
+            "cruiser" => ShipKind::Cruiser,
+            "battleship" => ShipKind::Battleship,
+            "recycler" => ShipKind::Recycler,
+            "espionage_probe" => ShipKind::EspionageProbe,
+            "explorer" => ShipKind::Explorer,
             _ => return None,
         })
+    }
+
+    pub fn index(self) -> usize {
+        match self {
+            ShipKind::SmallCargo => 0,
+            ShipKind::LargeCargo => 1,
+            ShipKind::LightFighter => 2,
+            ShipKind::HeavyFighter => 3,
+            ShipKind::Cruiser => 4,
+            ShipKind::Battleship => 5,
+            ShipKind::Recycler => 6,
+            ShipKind::EspionageProbe => 7,
+            ShipKind::Explorer => 8,
+        }
     }
 }
 
 impl fmt::Display for ShipKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
+            ShipKind::SmallCargo => "small cargo",
+            ShipKind::LargeCargo => "large cargo",
             ShipKind::LightFighter => "light fighter",
             ShipKind::HeavyFighter => "heavy fighter",
-            ShipKind::SmallCargo => "small cargo",
+            ShipKind::Cruiser => "cruiser",
+            ShipKind::Battleship => "battleship",
+            ShipKind::Recycler => "recycler",
+            ShipKind::EspionageProbe => "espionage probe",
+            ShipKind::Explorer => "explorer",
         })
     }
 }
@@ -60,6 +106,11 @@ pub struct ShipSpec {
     pub shield: f64,
     pub hull: f64,
     pub cargo: f64,
+    pub speed: f64,
+    pub fuel: f64,
+    pub shipyard: u32,
+    pub drive: String,
+    pub prereq_techs: Vec<TechPrereq>,
 }
 
 impl ShipSpec {
@@ -76,69 +127,80 @@ impl ShipSpec {
     }
 }
 
+/// Combat and flight numbers after research modifiers.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShipStats {
+    pub attack: f64,
+    pub shield: f64,
+    pub hull: f64,
+    pub cargo: f64,
+    pub speed: f64,
+    pub fuel: f64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShipCatalog {
-    pub light_fighter: ShipSpec,
-    pub heavy_fighter: ShipSpec,
-    pub small_cargo: ShipSpec,
+    specs: BTreeMap<ShipKind, ShipSpec>,
 }
 
 impl ShipCatalog {
     pub fn parse(toml: &str) -> Result<Self, ShipCatalogError> {
         let file: File =
             toml::from_str(toml).map_err(|e| ShipCatalogError::Parse(e.to_string()))?;
-        let mut light = None;
-        let mut heavy = None;
-        let mut cargo = None;
+        let mut specs = BTreeMap::new();
         for raw in file.ship {
             let kind = ShipKind::from_key(&raw.id)
                 .ok_or_else(|| ShipCatalogError::UnknownId(raw.id.clone()))?;
-            let spec = ShipSpec {
+            if specs.contains_key(&kind) {
+                return Err(ShipCatalogError::DuplicateId(raw.id));
+            }
+            if raw.drive.is_empty() {
+                return Err(ShipCatalogError::MissingDrive(raw.id));
+            }
+            specs.insert(
                 kind,
-                name: raw.name,
-                metal: raw.metal,
-                crystal: raw.crystal,
-                deuterium: raw.deuterium,
-                base_seconds: raw.base_seconds,
-                attack: raw.attack,
-                shield: raw.shield,
-                hull: raw.hull,
-                cargo: raw.cargo,
-            };
-            match kind {
-                ShipKind::LightFighter => {
-                    if light.is_some() {
-                        return Err(ShipCatalogError::DuplicateId(raw.id));
-                    }
-                    light = Some(spec);
-                }
-                ShipKind::HeavyFighter => {
-                    if heavy.is_some() {
-                        return Err(ShipCatalogError::DuplicateId(raw.id));
-                    }
-                    heavy = Some(spec);
-                }
-                ShipKind::SmallCargo => {
-                    if cargo.is_some() {
-                        return Err(ShipCatalogError::DuplicateId(raw.id));
-                    }
-                    cargo = Some(spec);
-                }
+                ShipSpec {
+                    kind,
+                    name: raw.name,
+                    metal: raw.metal,
+                    crystal: raw.crystal,
+                    deuterium: raw.deuterium,
+                    base_seconds: raw.base_seconds,
+                    attack: raw.attack,
+                    shield: raw.shield,
+                    hull: raw.hull,
+                    cargo: raw.cargo,
+                    speed: raw.speed,
+                    fuel: raw.fuel,
+                    shipyard: raw.shipyard,
+                    drive: raw.drive,
+                    prereq_techs: raw
+                        .prereq_techs
+                        .into_iter()
+                        .map(|p| TechPrereq {
+                            id: p.id,
+                            level: p.level,
+                        })
+                        .collect(),
+                },
+            );
+        }
+        for kind in ShipKind::ALL {
+            if !specs.contains_key(&kind) {
+                return Err(ShipCatalogError::MissingId(kind.as_key()));
             }
         }
-        Ok(Self {
-            light_fighter: light.ok_or(ShipCatalogError::MissingId("light_fighter"))?,
-            heavy_fighter: heavy.ok_or(ShipCatalogError::MissingId("heavy_fighter"))?,
-            small_cargo: cargo.ok_or(ShipCatalogError::MissingId("small_cargo"))?,
-        })
+        Ok(Self { specs })
     }
 
     pub fn get(&self, kind: ShipKind) -> &ShipSpec {
-        match kind {
-            ShipKind::LightFighter => &self.light_fighter,
-            ShipKind::HeavyFighter => &self.heavy_fighter,
-            ShipKind::SmallCargo => &self.small_cargo,
-        }
+        self.specs
+            .get(&kind)
+            .expect("catalog always contains every ShipKind")
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &ShipSpec> {
+        ShipKind::ALL.iter().map(|&kind| self.get(kind))
     }
 }
 
@@ -150,26 +212,21 @@ impl Default for ShipCatalog {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Fleet {
-    pub light_fighter: u32,
-    pub heavy_fighter: u32,
-    pub small_cargo: u32,
+    counts: [u32; 9],
 }
 
 impl Fleet {
     pub fn get(self, kind: ShipKind) -> u32 {
-        match kind {
-            ShipKind::LightFighter => self.light_fighter,
-            ShipKind::HeavyFighter => self.heavy_fighter,
-            ShipKind::SmallCargo => self.small_cargo,
-        }
+        self.counts[kind.index()]
     }
 
     pub fn add(&mut self, kind: ShipKind, n: u32) {
-        match kind {
-            ShipKind::LightFighter => self.light_fighter = self.light_fighter.saturating_add(n),
-            ShipKind::HeavyFighter => self.heavy_fighter = self.heavy_fighter.saturating_add(n),
-            ShipKind::SmallCargo => self.small_cargo = self.small_cargo.saturating_add(n),
-        }
+        let i = kind.index();
+        self.counts[i] = self.counts[i].saturating_add(n);
+    }
+
+    pub fn total(self) -> u32 {
+        self.counts.iter().copied().fold(0, u32::saturating_add)
     }
 }
 
@@ -186,6 +243,7 @@ pub struct ShipJob {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ShipError {
     NeedShipyard { required: u32, actual: u32 },
+    MissingPrerequisites { gaps: Vec<crate::PrereqGap> },
     QueueFull { cap: usize },
     ZeroCount,
     InsufficientResources { missing: Resources, cost: Resources },
@@ -197,6 +255,16 @@ impl fmt::Display for ShipError {
         match self {
             ShipError::NeedShipyard { required, actual } => {
                 write!(f, "requires shipyard level {required} (have {actual})")
+            }
+            ShipError::MissingPrerequisites { gaps } => {
+                write!(f, "missing ship prerequisites: ")?;
+                for (i, gap) in gaps.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{gap}")?;
+                }
+                Ok(())
             }
             ShipError::QueueFull { cap } => write!(f, "ship queue is full ({cap}/{cap})"),
             ShipError::ZeroCount => write!(f, "ship batch count must be at least 1"),
@@ -225,6 +293,7 @@ pub enum ShipCatalogError {
     UnknownId(String),
     DuplicateId(String),
     MissingId(&'static str),
+    MissingDrive(String),
 }
 
 impl fmt::Display for ShipCatalogError {
@@ -234,6 +303,7 @@ impl fmt::Display for ShipCatalogError {
             ShipCatalogError::UnknownId(id) => write!(f, "unknown ship id {id}"),
             ShipCatalogError::DuplicateId(id) => write!(f, "duplicate ship id {id}"),
             ShipCatalogError::MissingId(id) => write!(f, "ships.toml missing {id}"),
+            ShipCatalogError::MissingDrive(id) => write!(f, "ships.toml {id} missing drive"),
         }
     }
 }
@@ -257,6 +327,18 @@ struct RawShip {
     shield: f64,
     hull: f64,
     cargo: f64,
+    speed: f64,
+    fuel: f64,
+    shipyard: u32,
+    drive: String,
+    #[serde(default)]
+    prereq_techs: Vec<RawPrereq>,
+}
+
+#[derive(Deserialize)]
+struct RawPrereq {
+    id: String,
+    level: u32,
 }
 
 #[cfg(test)]
@@ -264,13 +346,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bundled_catalog_has_three_named_types() {
+    fn bundled_catalog_has_nine_named_types() {
         let catalog = ShipCatalog::default();
-        assert_eq!(catalog.light_fighter.kind, ShipKind::LightFighter);
-        assert_eq!(catalog.heavy_fighter.kind, ShipKind::HeavyFighter);
-        assert_eq!(catalog.small_cargo.kind, ShipKind::SmallCargo);
-        assert!(catalog.light_fighter.attack < catalog.heavy_fighter.attack);
-        assert!(catalog.small_cargo.cargo > catalog.light_fighter.cargo);
-        assert!(catalog.light_fighter.metal < catalog.heavy_fighter.metal);
+        for kind in ShipKind::ALL {
+            assert_eq!(catalog.get(kind).kind, kind);
+            assert!(!catalog.get(kind).drive.is_empty());
+            assert!(catalog.get(kind).shipyard >= 1);
+        }
+        assert!(
+            catalog.get(ShipKind::LightFighter).attack < catalog.get(ShipKind::HeavyFighter).attack
+        );
+        assert!(catalog.get(ShipKind::SmallCargo).cargo < catalog.get(ShipKind::LargeCargo).cargo);
+        assert!(catalog.get(ShipKind::Cruiser).attack < catalog.get(ShipKind::Battleship).attack);
+        assert!(
+            catalog.get(ShipKind::EspionageProbe).speed > catalog.get(ShipKind::LightFighter).speed
+        );
     }
 }
