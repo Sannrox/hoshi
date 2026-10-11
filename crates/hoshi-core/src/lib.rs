@@ -1,5 +1,6 @@
 //! hoshi-core: game rules, state, timers and offline progression.
 
+mod activity;
 mod balance;
 mod buildings;
 mod clock;
@@ -11,6 +12,10 @@ mod save;
 mod ships;
 mod state;
 
+pub use activity::{
+    ActivityApply, ActivityChannel, ActivityChannelConfig, ActivityEffectsConfig, ActivityPulse,
+    ActivityTracker,
+};
 pub use balance::{
     BalanceConfig, BuildingCatalog, BuildingSpec, EnergyProducerSpec, ProducerSpec, RaidConfig,
     StorageSpec,
