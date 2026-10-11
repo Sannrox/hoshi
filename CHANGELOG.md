@@ -4,6 +4,7 @@
 
 ### Added
 
+- NPC resource market: metal, crystal and deuterium trade at mean-reverting prices with fees, slippage and optional cargo for large lots. Story choices can shock a price. The TUI market screen shows mids, a sparkline and a trade preview. Catch-up ticks the walk. Save schema v16 stores prices and history.
 - Story events from `crates/hoshi-core/data/story.toml` (twelve to start). A weighted pick offers one pending event after a delay and cooldown; the TUI overlay shows the text and numbered choices. Pending events survive save/load (schema v15). Ignored too long applies the event's default choice. Adding a row needs no code change.
 - Shareable galaxy seeds: a short checksummed code (`XXXX-XXXX-XXXX-XX`) encodes the generator input. Same seed and generator version replay the same planets and outposts. `hoshi new --seed <code>` writes a live save. The overview shows the code; `y` copies it. Save schema v14 stores the generator version so older saves keep the galaxy they were created with.
 - Production chains: mines extract planet deposits into recipes from `balance.toml` (ore through refined goods into frames, electronics and fuel). Rates are limited by inputs, energy and building levels, and stop when an input runs out. Deposits come from planet type and galaxy seed and show on the planet screen. Ship and building costs accept component names (`frames`, `electronics`, `fuel` / `propellant`). Existing metal, crystal and deuterium stockpiles stay the construction components. Save schema v13 stores intermediate goods.

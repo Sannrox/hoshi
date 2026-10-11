@@ -532,3 +532,21 @@ id = "blend_fuel"
 building = "deuterium_synthesizer"
 inputs = { propellant = 0.5, fuel = 0.5 }
 outputs = { deuterium = 1.0 }
+
+[market]
+enabled = true
+tick_secs = 3600
+reversion = 0.15
+volatility = 0.04
+shock_chance = 0.05
+shock_size = 0.12
+fee = 0.04
+slippage = 0.002
+impact_unit = 100.0
+min_mult = 0.5
+max_mult = 2.0
+history_len = 24
+metal_mean = 1.0
+crystal_mean = 2.0
+deuterium_mean = 3.0
+cargo_free = 50.0

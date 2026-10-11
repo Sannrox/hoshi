@@ -1,5 +1,5 @@
-//! Overview, planet, shipyard and wonder screens. Core owns the rules; this module
-//! only renders and turns keys into core commands.
+//! Overview, planet, shipyard, wonder, prestige and market screens. Core owns
+//! the rules; this module only renders and turns keys into core commands.
 
 use crate::title::AwaySummary;
 use hoshi_core::{
@@ -21,7 +21,17 @@ pub enum Screen {
     Shipyard,
     Wonder,
     Prestige,
+    Market,
 }
+
+const TRADE_PAIRS: [(ResourceKind, ResourceKind); 6] = [
+    (ResourceKind::Metal, ResourceKind::Crystal),
+    (ResourceKind::Metal, ResourceKind::Deuterium),
+    (ResourceKind::Crystal, ResourceKind::Metal),
+    (ResourceKind::Crystal, ResourceKind::Deuterium),
+    (ResourceKind::Deuterium, ResourceKind::Metal),
+    (ResourceKind::Deuterium, ResourceKind::Crystal),
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -36,6 +46,7 @@ pub struct App {
     planet_index: usize,
     status: String,
     confirming_prestige: bool,
+    trade_amount: f64,
     away: Option<AwaySummary>,
     away_hidden: bool,
 }
@@ -49,6 +60,7 @@ impl App {
             planet_index: 0,
             status: String::new(),
             confirming_prestige: false,
+            trade_amount: 10.0,
             away: None,
             away_hidden: false,
         }
@@ -94,7 +106,8 @@ impl App {
                     Screen::Planet => Screen::Shipyard,
                     Screen::Shipyard => Screen::Wonder,
                     Screen::Wonder => Screen::Prestige,
-                    Screen::Prestige => Screen::Overview,
+                    Screen::Prestige => Screen::Market,
+                    Screen::Market => Screen::Overview,
                 };
                 self.selected = 0;
                 self.status.clear();
@@ -113,6 +126,12 @@ impl App {
                 if len > 0 {
                     self.selected = (self.selected + len - 1) % len;
                 }
+            }
+            KeyCode::Char('+') if self.screen == Screen::Market => {
+                self.trade_amount = (self.trade_amount + 10.0).min(1_000_000.0);
+            }
+            KeyCode::Char('-') if self.screen == Screen::Market => {
+                self.trade_amount = (self.trade_amount - 10.0).max(10.0);
             }
             KeyCode::Enter => self.activate(now_unix),
             KeyCode::Char('x') => self.cancel(now_unix),
@@ -151,11 +170,12 @@ impl App {
 
     pub fn draw(&self, frame: &mut Frame<'_>) {
         let title = match self.screen {
-            Screen::Overview => " hoshi  [overview] planet shipyard wonder prestige ",
-            Screen::Planet => " hoshi  overview [planet] shipyard wonder prestige ",
-            Screen::Shipyard => " hoshi  overview planet [shipyard] wonder prestige ",
-            Screen::Wonder => " hoshi  overview planet shipyard [wonder] prestige ",
-            Screen::Prestige => " hoshi  overview planet shipyard wonder [prestige] ",
+            Screen::Overview => " hoshi  [overview] planet shipyard wonder prestige market ",
+            Screen::Planet => " hoshi  overview [planet] shipyard wonder prestige market ",
+            Screen::Shipyard => " hoshi  overview planet [shipyard] wonder prestige market ",
+            Screen::Wonder => " hoshi  overview planet shipyard [wonder] prestige market ",
+            Screen::Prestige => " hoshi  overview planet shipyard wonder [prestige] market ",
+            Screen::Market => " hoshi  overview planet shipyard wonder prestige [market] ",
         };
         let block = Block::bordered().title(title);
         let inner = block.inner(frame.area());
@@ -291,6 +311,28 @@ impl App {
             }
             Screen::Wonder => self.activate_wonder(now_unix),
             Screen::Prestige => self.activate_prestige(now_unix),
+            Screen::Market => self.activate_market(now_unix),
+        }
+    }
+
+    fn activate_market(&mut self, now_unix: u64) {
+        let Some(&(pay, recv)) = TRADE_PAIRS.get(self.selected) else {
+            return;
+        };
+        match self
+            .state
+            .trade_market(pay, recv, self.trade_amount, now_unix)
+        {
+            Ok(quote) => {
+                self.status = format!(
+                    "{:.0} {} -> {:.1} {}",
+                    quote.pay_amount,
+                    pay.label(),
+                    quote.recv_amount,
+                    recv.label()
+                );
+            }
+            Err(e) => self.status = e.to_string(),
         }
     }
 
@@ -352,6 +394,7 @@ impl App {
                 self.confirming_prestige = false;
                 self.status.clear();
             }
+            Screen::Market => {}
         }
     }
 
@@ -362,6 +405,7 @@ impl App {
             Screen::Overview => self.state.config.techs.iter().count(),
             Screen::Wonder => self.state.config.wonders.len(),
             Screen::Prestige => 1 + self.state.config.prestige.bonuses.len(),
+            Screen::Market => TRADE_PAIRS.len(),
         }
     }
 
@@ -423,6 +467,7 @@ impl App {
             }
             Screen::Wonder => "tab screens  [/] planet  j/k select  enter start/contribute  q quit",
             Screen::Prestige => "tab screens  j/k select  enter buy/reset  x back  q quit",
+            Screen::Market => "tab screens  j/k pair  +/- amount  enter trade  q quit",
         })]
     }
 
@@ -433,6 +478,7 @@ impl App {
             Screen::Overview => self.research_lines(height),
             Screen::Wonder => self.wonder_lines(height),
             Screen::Prestige => self.prestige_lines(height),
+            Screen::Market => self.market_lines(height),
         }
     }
 
@@ -822,6 +868,53 @@ impl App {
         append_windowed(&mut rows, &entries, self.selected, height)
     }
 
+    fn market_lines(&self, height: usize) -> Vec<Line<'static>> {
+        let market = &self.state.market;
+        let fee_pct = self.state.config.market.fee * 100.0;
+        let mut rows = vec![
+            Line::from(format!(
+                "Prices  metal {:.3}  crystal {:.3}  deuterium {:.3}",
+                market.metal, market.crystal, market.deuterium
+            )),
+            Line::from(format!(
+                "metal     {}",
+                sparkline(market.history(ResourceKind::Metal), 24)
+            )),
+            Line::from(format!(
+                "crystal   {}",
+                sparkline(market.history(ResourceKind::Crystal), 24)
+            )),
+            Line::from(format!(
+                "deuterium {}",
+                sparkline(market.history(ResourceKind::Deuterium), 24)
+            )),
+            Line::from(format!(
+                "amount {:.0}  +/-  fee {fee_pct:.0}%",
+                self.trade_amount
+            )),
+        ];
+        let entries: Vec<Line<'static>> = TRADE_PAIRS
+            .iter()
+            .enumerate()
+            .map(|(i, &(pay, recv))| {
+                let mark = if i == self.selected { '>' } else { ' ' };
+                match self.state.quote_market(pay, recv, self.trade_amount) {
+                    Ok(quote) => Line::from(format!(
+                        "{mark} {:.0} {} -> {:.1} {}  preview",
+                        quote.pay_amount,
+                        pay.label(),
+                        quote.recv_amount,
+                        recv.label()
+                    )),
+                    Err(e) => {
+                        Line::from(format!("{mark} {} -> {}  {e}", pay.label(), recv.label()))
+                    }
+                }
+            })
+            .collect();
+        append_windowed(&mut rows, &entries, self.selected, height)
+    }
+
     fn wonder_status(&self) -> String {
         match &self.state.wonder {
             Some(job) => {
@@ -974,6 +1067,28 @@ fn append_windowed(
     };
     rows.extend(entries.iter().skip(start).take(avail).cloned());
     std::mem::take(rows)
+}
+
+fn sparkline(values: &[f64], width: usize) -> String {
+    const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    if values.is_empty() || width == 0 {
+        return String::new();
+    }
+    let slice = if values.len() > width {
+        &values[values.len() - width..]
+    } else {
+        values
+    };
+    let min = slice.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = slice.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let span = (max - min).max(1e-9);
+    slice
+        .iter()
+        .map(|&v| {
+            let t = ((v - min) / span * (BARS.len() - 1) as f64).round() as usize;
+            BARS[t.min(BARS.len() - 1)]
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1137,6 +1252,7 @@ mod tests {
         let text = render_text(&app, 80, 24);
         assert!(text.contains(&format!("{build_left_later}s")), "{text}");
 
+        app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
@@ -1318,6 +1434,7 @@ mod tests {
         assert!(app.state.ship_queue.is_empty());
         assert_eq!(app.state.build_queue.len(), 1);
 
+        app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
@@ -1517,5 +1634,33 @@ mod tests {
         );
         let text = render_text(&app, 80, 24);
         assert!(!text.contains("Cut it open"), "{text}");
+    }
+
+    #[test]
+    fn market_screen_shows_prices_sparkline_and_trade_preview() {
+        let mut state = GameState::new(1_000);
+        state.resources.metal = 1_000.0;
+        let mut app = App::new(state);
+        for _ in 0..5 {
+            app.handle_key(KeyCode::Tab, 1_000);
+        }
+        assert_eq!(app.screen, Screen::Market);
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("[market]"), "{text}");
+        assert!(text.contains("Prices"), "{text}");
+        assert!(text.contains("preview"), "{text}");
+        assert!(
+            text.chars().any(|c| "▁▂▃▄▅▆▇█".contains(c)),
+            "sparkline missing: {text}"
+        );
+        let before = app.state.resources.metal;
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(
+            app.state.resources.metal < before,
+            "trade should spend metal"
+        );
+        app.handle_key(KeyCode::Char('+'), 1_000);
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("amount 20"), "{text}");
     }
 }

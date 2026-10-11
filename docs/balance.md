@@ -52,6 +52,10 @@ comparison). `troop_strength` is the landing power of one troop transport.
 
 `[prestige]` is the late-game reset. Score is building levels plus research levels plus `colony_weight` per colony plus `wonder_weight` per completed wonder. Reset is allowed with a completed wonder or when score reaches `min_score`. Currency earned is `score / points_per_currency`, at least 1. `[[prestige.bonuses]]` rows are permanent purchases: extra starting resources, production and research speed, extra build-queue slots. They live in the save apart from the run. `hoshi simulate` reports three runs with 0, 1 and 2 mine-focus bonuses so later runs produce more without skipping construction time.
 
+## Market
+
+`[market]` is the NPC resource exchange. Each of metal, crystal and deuterium has a mid price in abstract units. A trade of A for B converts at `price_A / price_B`, then a fee and volume slippage. Prices walk toward their means with noise, occasional shocks, and clamps at `min_mult`/`max_mult` of the mean. Story choice fields `metal_price`, `crystal_price` and `deuterium_price` apply a relative shock when the market is on. Trades larger than `cargo_free` need home cargo capacity at least the pay amount. `tick_secs` is the catch-up interval. Set `enabled = false` to freeze the walk.
+
 ## Simulator
 
 ```sh
