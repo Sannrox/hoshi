@@ -9,6 +9,7 @@ mod expedition;
 mod fleets;
 mod outposts;
 mod planets;
+mod prestige;
 mod research;
 mod save;
 mod ships;
@@ -42,6 +43,10 @@ pub use outposts::{
     Outpost, OutpostConfig, RarePlanetBonus, generate_outposts, scaled_defence, scaled_garrison,
 };
 pub use planets::{Colony, PlanetType, PlanetTypeBonus, PlanetTypeCatalog, planet_profile};
+pub use prestige::{
+    PRESTIGE_KEPT, PRESTIGE_LOST, Prestige, PrestigeBonusSpec, PrestigeConfig, PrestigeError,
+    PrestigePreview, RunStats,
+};
 pub use research::{
     BuildingPrereq, ModifierKind, PrereqGap, ResearchError, ResearchJob, TechModifier, TechPrereq,
     TechSpec, TechTree, TechTreeError,
@@ -54,6 +59,6 @@ pub use ships::{
     Fleet, SHIP_KINDS, ShipCatalog, ShipCatalogError, ShipError, ShipJob, ShipKind, ShipSpec,
     ShipStats,
 };
-pub use simulate::{DaySnapshot, SimReport, simulate_greedy};
+pub use simulate::{DaySnapshot, PrestigeSimRow, SimReport, simulate_greedy};
 pub use state::{GameEvent, GameState, ResourceKind, Resources};
 pub use wonders::{WonderError, WonderJob, WonderModifier, WonderSpec, WonderStage};

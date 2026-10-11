@@ -15,6 +15,7 @@ pub enum Screen {
     Planet,
     Shipyard,
     Wonder,
+    Prestige,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +30,7 @@ pub struct App {
     selected: usize,
     planet_index: usize,
     status: String,
+    confirming_prestige: bool,
 }
 
 impl App {
@@ -39,6 +41,7 @@ impl App {
             selected: 0,
             planet_index: 0,
             status: String::new(),
+            confirming_prestige: false,
         }
     }
 
@@ -52,10 +55,12 @@ impl App {
                     Screen::Overview => Screen::Planet,
                     Screen::Planet => Screen::Shipyard,
                     Screen::Shipyard => Screen::Wonder,
-                    Screen::Wonder => Screen::Overview,
+                    Screen::Wonder => Screen::Prestige,
+                    Screen::Prestige => Screen::Overview,
                 };
                 self.selected = 0;
                 self.status.clear();
+                self.confirming_prestige = false;
             }
             KeyCode::Char(']') => self.cycle_planet(1),
             KeyCode::Char('[') => self.cycle_planet(-1),
@@ -103,10 +108,11 @@ impl App {
 
     pub fn draw(&self, frame: &mut Frame<'_>) {
         let title = match self.screen {
-            Screen::Overview => " hoshi  [overview] planet shipyard wonder ",
-            Screen::Planet => " hoshi  overview [planet] shipyard wonder ",
-            Screen::Shipyard => " hoshi  overview planet [shipyard] wonder ",
-            Screen::Wonder => " hoshi  overview planet shipyard [wonder] ",
+            Screen::Overview => " hoshi  [overview] planet shipyard wonder prestige ",
+            Screen::Planet => " hoshi  overview [planet] shipyard wonder prestige ",
+            Screen::Shipyard => " hoshi  overview planet [shipyard] wonder prestige ",
+            Screen::Wonder => " hoshi  overview planet shipyard [wonder] prestige ",
+            Screen::Prestige => " hoshi  overview planet shipyard wonder [prestige] ",
         };
         let block = Block::bordered().title(title);
         let inner = block.inner(frame.area());
@@ -160,6 +166,7 @@ impl App {
                 }
             }
             Screen::Wonder => self.activate_wonder(now_unix),
+            Screen::Prestige => self.activate_prestige(now_unix),
         }
     }
 
@@ -217,6 +224,10 @@ impl App {
                 Err(e) => self.status = e.to_string(),
             },
             Screen::Wonder => {}
+            Screen::Prestige => {
+                self.confirming_prestige = false;
+                self.status.clear();
+            }
         }
     }
 
@@ -226,6 +237,7 @@ impl App {
             Screen::Shipyard => ShipKind::ALL.len(),
             Screen::Overview => self.state.config.techs.iter().count(),
             Screen::Wonder => self.state.config.wonders.len(),
+            Screen::Prestige => 1 + self.state.config.prestige.bonuses.len(),
         }
     }
 
@@ -255,6 +267,7 @@ impl App {
             Line::from(self.ship_status()),
             Line::from(self.raid_status()),
             Line::from(self.wonder_status()),
+            Line::from(self.prestige_status()),
         ];
         lines.extend(self.planet_glance_lines());
         if let Some(event) = s.events.last() {
@@ -280,6 +293,7 @@ impl App {
                 "tab screens  [/] planet  j/k select  enter queue  x cancel queue  q quit"
             }
             Screen::Wonder => "tab screens  [/] planet  j/k select  enter start/contribute  q quit",
+            Screen::Prestige => "tab screens  j/k select  enter buy/reset  x back  q quit",
         })]
     }
 
@@ -289,6 +303,7 @@ impl App {
             Screen::Shipyard => self.shipyard_lines(height),
             Screen::Overview => self.research_lines(height),
             Screen::Wonder => self.wonder_lines(height),
+            Screen::Prestige => self.prestige_lines(height),
         }
     }
 
@@ -305,7 +320,7 @@ impl App {
         rows.push(Line::from(format!(
             "Planet {coord}  {kind}  size {size}  Queue {}/{}",
             queue.len(),
-            self.state.config.max_build_queue
+            self.state.build_queue_cap()
         )));
         if let Some(rare) = self.state.rare_bonus_at(coord) {
             rows.push(Line::from(format!(
@@ -597,6 +612,79 @@ impl App {
         }
     }
 
+    fn prestige_status(&self) -> String {
+        format!(
+            "Prestige: {} unspent  run {}",
+            self.state.prestige.currency, self.state.prestige.current.index
+        )
+    }
+
+    fn activate_prestige(&mut self, now_unix: u64) {
+        if self.selected == 0 {
+            if self.confirming_prestige {
+                match self.state.prestige_reset(now_unix) {
+                    Ok(_) => {
+                        self.confirming_prestige = false;
+                        self.status.clear();
+                    }
+                    Err(e) => {
+                        self.confirming_prestige = false;
+                        self.status = e.to_string();
+                    }
+                }
+            } else {
+                self.confirming_prestige = true;
+                self.status.clear();
+            }
+            return;
+        }
+        self.confirming_prestige = false;
+        let Some(spec) = self.state.config.prestige.bonuses.get(self.selected - 1) else {
+            return;
+        };
+        let id = spec.id.clone();
+        match self.state.buy_prestige_bonus(&id, now_unix) {
+            Ok(()) => self.status.clear(),
+            Err(e) => self.status = e.to_string(),
+        }
+    }
+
+    fn prestige_lines(&self, height: usize) -> Vec<Line<'static>> {
+        let preview = self.state.prestige_preview();
+        let mut rows = vec![Line::from(format!(
+            "Run {}  score {}  earned {}  {}",
+            preview.run.index,
+            preview.score,
+            preview.earned,
+            if preview.eligible { "ready" } else { "locked" }
+        ))];
+        if self.confirming_prestige {
+            rows.push(Line::from(format!(
+                "Reset keeps: {}",
+                preview.kept.join(", ")
+            )));
+            rows.push(Line::from(format!(
+                "Reset loses: {}",
+                preview.lost.join(", ")
+            )));
+            rows.push(Line::from("Enter again to confirm. x cancels."));
+        }
+        let mut entries = vec![Line::from(if self.selected == 0 {
+            "> Reset".to_string()
+        } else {
+            "  Reset".to_string()
+        })];
+        for (i, spec) in self.state.config.prestige.bonuses.iter().enumerate() {
+            let mark = if self.selected == i + 1 { '>' } else { ' ' };
+            let owned = self.state.prestige.owned_count(&spec.id);
+            entries.push(Line::from(format!(
+                "{mark} {}  cost {}  owned {owned}",
+                spec.name, spec.cost
+            )));
+        }
+        append_windowed(&mut rows, &entries, self.selected, height)
+    }
+
     fn wonder_status(&self) -> String {
         match &self.state.wonder {
             Some(job) => {
@@ -780,6 +868,7 @@ mod tests {
             assert!(text.contains("Ships"), "{w}x{h}: {text}");
             assert!(text.contains("Raid:"), "{w}x{h}: {text}");
             assert!(text.contains("Wonder:"), "{w}x{h}: {text}");
+            assert!(text.contains("Prestige:"), "{w}x{h}: {text}");
         }
     }
 
@@ -836,6 +925,7 @@ mod tests {
         let text = render_text(&app, 80, 24);
         assert!(text.contains(&format!("{build_left_later}s")), "{text}");
 
+        app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
@@ -1019,6 +1109,7 @@ mod tests {
         app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
+        app.handle_key(KeyCode::Tab, 1_000);
         assert_eq!(app.screen, Screen::Planet);
         app.handle_key(KeyCode::Char('x'), 1_000);
         assert!(app.state.build_queue.is_empty());
@@ -1150,5 +1241,30 @@ mod tests {
         );
         assert!(text.contains(&format!("eta {eta}s")), "{text}");
         assert!(text.contains("stage 1/"), "{text}");
+    }
+
+    #[test]
+    fn prestige_screen_shows_kept_and_lost_before_reset() {
+        let mut state = GameState::new(1_000);
+        state.completed_wonders.push("observatory".into());
+        let mut app = App::new(state);
+        app.handle_key(KeyCode::Tab, 1_000);
+        app.handle_key(KeyCode::Tab, 1_000);
+        app.handle_key(KeyCode::Tab, 1_000);
+        app.handle_key(KeyCode::Tab, 1_000);
+        assert_eq!(app.screen, Screen::Prestige);
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("[prestige]"), "{text}");
+        assert!(text.contains("Reset"), "{text}");
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.confirming_prestige);
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("Reset keeps:"), "{text}");
+        assert!(text.contains("prestige currency"), "{text}");
+        assert!(text.contains("Reset loses:"), "{text}");
+        assert!(text.contains("resources"), "{text}");
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert_eq!(app.state.prestige.current.index, 2);
+        assert!(app.state.completed_wonders.is_empty());
     }
 }

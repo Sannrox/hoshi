@@ -6,6 +6,17 @@ use crate::balance::{BalanceConfig, PacingTargets};
 use crate::buildings::{BuildError, BuildingKind, Buildings};
 use crate::state::{GameState, ResourceKind};
 
+/// One simulated prestige run: later runs own more bonuses and produce more.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PrestigeSimRow {
+    pub run: u32,
+    pub bonuses: u32,
+    pub first_upgrade_secs: Option<u64>,
+    pub metal_mine_level: u32,
+    pub metal: f64,
+    pub metal_per_hour: f64,
+}
+
 /// One day's stockpile and mine level at the day boundary.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DaySnapshot {
@@ -29,6 +40,7 @@ pub struct SimReport {
     pub bridge_metal_ratio: f64,
     pub days_log: Vec<DaySnapshot>,
     pub pacing: PacingTargets,
+    pub prestige_runs: Vec<PrestigeSimRow>,
 }
 
 impl SimReport {
@@ -103,6 +115,22 @@ impl SimReport {
             self.bridge_metal_ratio,
             mark(self.bridge_ok())
         ));
+        if !self.prestige_runs.is_empty() {
+            out.push_str("\n## Prestige runs\n\n");
+            out.push_str("| run | bonuses | first upgrade | metal mine | metal | metal/h |\n");
+            out.push_str("| --- | --- | --- | --- | --- | --- |\n");
+            for row in &self.prestige_runs {
+                let first = match row.first_upgrade_secs {
+                    Some(s) => format!("{s}s"),
+                    None => "never".into(),
+                };
+                out.push_str(&format!(
+                    "| {} | {} | {first} | {} | {:.0} | {:.0} |\n",
+                    row.run, row.bonuses, row.metal_mine_level, row.metal, row.metal_per_hour
+                ));
+            }
+            out.push('\n');
+        }
         out.push_str(&format!(
             "Overall: {}\n\n",
             if self.passed() { "pass" } else { "fail" }
@@ -134,8 +162,13 @@ fn mark(ok: bool) -> &'static str {
 pub fn simulate_greedy(config: BalanceConfig, days: u32) -> SimReport {
     let days = days.max(1);
     let pacing = config.pacing.clone();
-    let quiet = run_once(config.clone(), days, false);
-    let busy = run_once(config, days, true);
+    let quiet = run_once(config.clone(), days, false, 0);
+    let busy = run_once(config.clone(), days, true, 0);
+    let prestige_runs = vec![
+        prestige_row(&quiet, 1, 0),
+        prestige_row(&run_once(config.clone(), days, false, 1), 2, 1),
+        prestige_row(&run_once(config, days, false, 2), 3, 2),
+    ];
     let ratio = if quiet.metal > 1e-9 {
         busy.metal / quiet.metal
     } else {
@@ -150,6 +183,18 @@ pub fn simulate_greedy(config: BalanceConfig, days: u32) -> SimReport {
         bridge_metal_ratio: ratio,
         days_log: quiet.days_log,
         pacing,
+        prestige_runs,
+    }
+}
+
+fn prestige_row(run: &Run, index: u32, bonuses: u32) -> PrestigeSimRow {
+    PrestigeSimRow {
+        run: index,
+        bonuses,
+        first_upgrade_secs: run.first_upgrade_secs,
+        metal_mine_level: run.metal_mine,
+        metal: run.metal,
+        metal_per_hour: run.metal_per_hour,
     }
 }
 
@@ -157,15 +202,24 @@ struct Run {
     first_upgrade_secs: Option<u64>,
     metal_mine: u32,
     metal: f64,
+    metal_per_hour: f64,
     days_log: Vec<DaySnapshot>,
 }
 
-fn run_once(mut config: BalanceConfig, days: u32, activity: bool) -> Run {
+fn run_once(mut config: BalanceConfig, days: u32, activity: bool, mine_focus: u32) -> Run {
     config.raid = crate::RaidConfig::inactive();
     config.activity.enabled = activity;
     let start = 0_u64;
     let end = u64::from(days) * 86_400;
     let mut state = GameState::with_config(start, config);
+    if mine_focus > 0 {
+        state.prestige.owned.insert("mine_focus".into(), mine_focus);
+        state.resources = state.config.starting_resources;
+        let (metal, crystal, deuterium) = state.prestige.starting_bonus(&state.config.prestige);
+        state.resources.metal += metal;
+        state.resources.crystal += crystal;
+        state.resources.deuterium += deuterium;
+    }
     let start_buildings = state.buildings;
     let mut first_upgrade_secs = None;
     let mut days_log = Vec::new();
@@ -219,6 +273,7 @@ fn run_once(mut config: BalanceConfig, days: u32, activity: bool) -> Run {
         first_upgrade_secs,
         metal_mine: state.buildings.metal_mine,
         metal: state.resources.metal,
+        metal_per_hour: state.production_per_hour(ResourceKind::Metal),
         days_log,
     }
 }
@@ -236,7 +291,7 @@ fn snapshot(state: &GameState, day: u32) -> DaySnapshot {
 }
 
 fn fill_queue(state: &mut GameState) {
-    let cap = state.config.max_build_queue;
+    let cap = state.build_queue_cap();
     while state.build_queue.len() < cap {
         let order = candidate_order(state);
         let mut enqueued = false;
@@ -390,5 +445,29 @@ mod tests {
             "ratio {}",
             report.bridge_metal_ratio
         );
+    }
+
+    #[test]
+    fn prestige_runs_get_faster_without_trivialising_the_start() {
+        let report = simulate_greedy(BalanceConfig::default(), 1);
+        assert_eq!(report.prestige_runs.len(), 3);
+        let first = &report.prestige_runs[0];
+        let second = &report.prestige_runs[1];
+        let third = &report.prestige_runs[2];
+        assert!(
+            first.metal_per_hour + 1e-9 < second.metal_per_hour,
+            "{first:?} {second:?}"
+        );
+        assert!(
+            second.metal_per_hour + 1e-9 < third.metal_per_hour,
+            "{second:?} {third:?}"
+        );
+        let first_up = first.first_upgrade_secs.expect("run 1 upgrade");
+        assert!(first_up > 0);
+        assert!(first_up <= report.pacing.first_upgrade_secs);
+        let later = third.first_upgrade_secs.expect("run 3 upgrade");
+        assert!(later > 0, "later run still spends construction time");
+        let md = report.to_markdown();
+        assert!(md.contains("## Prestige runs"), "{md}");
     }
 }

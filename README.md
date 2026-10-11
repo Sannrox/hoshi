@@ -6,7 +6,7 @@ games: mine resources, raise buildings, research technologies, build fleets
 and send them on expeditions. Meant to be played in a spare terminal pane
 while your coding agents work.
 
-> Status: hobby project, pre-alpha. The terminal has overview, planet, shipyard and wonder screens. Tab switches; enter queues a build, a ship, research, or a wonder contribution. Fleets fly on timers. Colony ships settle empty planets. Pirate outposts take a fleet attack then a troop landing. Pirate raids land on a countdown. The game saves to SQLite.
+> Status: hobby project, pre-alpha. The terminal has overview, planet, shipyard, wonder and prestige screens. Tab switches; enter queues a build, a ship, research, or a wonder contribution. Fleets fly on timers. Colony ships settle empty planets. Pirate outposts take a fleet attack then a troop landing. A prestige reset starts a new galaxy with kept bonuses. Pirate raids land on a countdown. The game saves to SQLite.
 
 ## A standalone game first
 

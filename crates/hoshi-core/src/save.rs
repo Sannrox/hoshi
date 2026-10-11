@@ -6,6 +6,7 @@ use crate::buildings::{BuildJob, BuildingKind, Buildings};
 use crate::fleets::{Coord, Mission, MissionPhase, TradeRoute};
 use crate::outposts::{Outpost, generate_outposts};
 use crate::planets::{Colony, PlanetType};
+use crate::prestige::{Prestige, RunStats};
 use crate::research::ResearchJob;
 use crate::ships::{Fleet, ShipJob, ShipKind};
 use crate::state::{GameEvent, GameState, Resources};
@@ -17,7 +18,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 11;
+pub const SCHEMA_VERSION: u32 = 12;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -133,7 +134,10 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM wonder_job;
          DELETE FROM wonder_done;
          DELETE FROM outpost_ships;
-         DELETE FROM outposts;",
+         DELETE FROM outposts;
+         DELETE FROM prestige_owned;
+         DELETE FROM prestige_runs;
+         DELETE FROM prestige;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -410,6 +414,43 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 params![planet_id, kind.as_key(), count],
             )?;
         }
+    }
+    tx.execute(
+        "INSERT INTO prestige (
+            id, currency, lifetime, run_index, run_started_at
+         ) VALUES (1, ?1, ?2, ?3, ?4)",
+        params![
+            state.prestige.currency as i64,
+            state.prestige.lifetime as i64,
+            state.prestige.current.index as i64,
+            state.prestige.current.started_at as i64,
+        ],
+    )?;
+    for (id, count) in &state.prestige.owned {
+        tx.execute(
+            "INSERT INTO prestige_owned (bonus_id, count) VALUES (?1, ?2)",
+            params![id, *count as i64],
+        )?;
+    }
+    for (i, run) in state.prestige.runs.iter().enumerate() {
+        tx.execute(
+            "INSERT INTO prestige_runs (
+                position, run_index, started_at, ended_at, score, prestige_earned,
+                wonders, colonies, building_levels, research_levels
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                i as i64,
+                run.index as i64,
+                run.started_at as i64,
+                run.ended_at.map(|t| t as i64),
+                run.score as i64,
+                run.prestige_earned as i64,
+                run.wonders as i64,
+                run.colonies as i64,
+                run.building_levels as i64,
+                run.research_levels as i64,
+            ],
+        )?;
     }
     tx.commit()?;
     Ok(())
@@ -912,6 +953,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     }
 
     state.outposts = read_outposts(conn)?;
+    state.prestige = read_prestige(conn, state.last_tick_unix)?;
     if outposts_seeded == 0 && state.outposts.is_empty() {
         let mut occupied = vec![state.home];
         occupied.extend(state.colonies.iter().map(|c| c.coord));
@@ -1161,6 +1203,9 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "wonder_done" => "SELECT COUNT(*) FROM wonder_done",
         "outposts" => "SELECT COUNT(*) FROM outposts",
         "outpost_ships" => "SELECT COUNT(*) FROM outpost_ships",
+        "prestige" => "SELECT COUNT(*) FROM prestige",
+        "prestige_owned" => "SELECT COUNT(*) FROM prestige_owned",
+        "prestige_runs" => "SELECT COUNT(*) FROM prestige_runs",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -1186,7 +1231,10 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "wonder_job")?
         + count_rows(conn, "wonder_done")?
         + count_rows(conn, "outposts")?
-        + count_rows(conn, "outpost_ships")?)
+        + count_rows(conn, "outpost_ships")?
+        + count_rows(conn, "prestige")?
+        + count_rows(conn, "prestige_owned")?
+        + count_rows(conn, "prestige_runs")?)
 }
 
 fn migrate(conn: &Connection) -> Result<(), SaveError> {
@@ -1229,6 +1277,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 11 {
         migrate_v11(conn)?;
+    }
+    if found < 12 {
+        migrate_v12(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -1566,6 +1617,111 @@ fn migrate_v11(conn: &Connection) -> Result<(), SaveError> {
         ",
     )?;
     Ok(())
+}
+
+fn migrate_v12(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS prestige (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            currency INTEGER NOT NULL,
+            lifetime INTEGER NOT NULL,
+            run_index INTEGER NOT NULL,
+            run_started_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS prestige_owned (
+            bonus_id TEXT PRIMARY KEY,
+            count INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS prestige_runs (
+            position INTEGER PRIMARY KEY,
+            run_index INTEGER NOT NULL,
+            started_at INTEGER NOT NULL,
+            ended_at INTEGER,
+            score INTEGER NOT NULL,
+            prestige_earned INTEGER NOT NULL,
+            wonders INTEGER NOT NULL,
+            colonies INTEGER NOT NULL,
+            building_levels INTEGER NOT NULL,
+            research_levels INTEGER NOT NULL
+        );
+        ",
+    )?;
+    Ok(())
+}
+
+fn read_prestige(conn: &Connection, fallback_started: u64) -> Result<Prestige, SaveError> {
+    let row = conn
+        .query_row(
+            "SELECT currency, lifetime, run_index, run_started_at FROM prestige WHERE id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((currency, lifetime, run_index, started_at)) = row else {
+        return Ok(Prestige::new(fallback_started));
+    };
+    let mut prestige = Prestige {
+        currency: u32_field(currency, "prestige currency")?,
+        lifetime: u32_field(lifetime, "prestige lifetime")?,
+        owned: std::collections::BTreeMap::new(),
+        runs: Vec::new(),
+        current: RunStats::new(u32_field(run_index, "prestige run")?, unix_ts(started_at)?),
+    };
+    let mut stmt = conn.prepare("SELECT bonus_id, count FROM prestige_owned")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    for row in rows {
+        let (id, count) = row?;
+        prestige
+            .owned
+            .insert(id, u32_field(count, "prestige owned")?);
+    }
+    let mut stmt = conn.prepare(
+        "SELECT run_index, started_at, ended_at, score, prestige_earned,
+                wonders, colonies, building_levels, research_levels
+         FROM prestige_runs ORDER BY position",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, Option<i64>>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, i64>(5)?,
+            row.get::<_, i64>(6)?,
+            row.get::<_, i64>(7)?,
+            row.get::<_, i64>(8)?,
+        ))
+    })?;
+    for row in rows {
+        let (index, started, ended, score, earned, wonders, colonies, buildings, research) = row?;
+        prestige.runs.push(RunStats {
+            index: u32_field(index, "run index")?,
+            started_at: unix_ts(started)?,
+            ended_at: unix_ts_opt(ended)?,
+            score: u32_field(score, "run score")?,
+            prestige_earned: u32_field(earned, "run earned")?,
+            wonders: u32_field(wonders, "run wonders")?,
+            colonies: u32_field(colonies, "run colonies")?,
+            building_levels: u32_field(buildings, "run buildings")?,
+            research_levels: u32_field(research, "run research")?,
+        });
+    }
+    Ok(prestige)
+}
+
+fn u32_field(value: i64, label: &'static str) -> Result<u32, SaveError> {
+    u32::try_from(value).map_err(|_| SaveError::Corrupt(label))
 }
 
 fn colonies_has_column(conn: &Connection, column: &str) -> Result<bool, SaveError> {
@@ -2228,5 +2384,33 @@ mod tests {
             )
             .unwrap();
         assert_eq!(metal, original.resources.metal);
+    }
+
+    #[test]
+    fn migrate_v12_retries_and_round_trips_prestige() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v12(&conn).unwrap();
+        migrate_v12(&conn).unwrap();
+        let mut state = GameState::new(3);
+        state.prestige.currency = 4;
+        state.prestige.lifetime = 7;
+        state.prestige.owned.insert("mine_focus".into(), 2);
+        state.prestige.runs.push(crate::RunStats {
+            index: 1,
+            started_at: 1,
+            ended_at: Some(2),
+            score: 90,
+            prestige_earned: 4,
+            wonders: 1,
+            colonies: 0,
+            building_levels: 12,
+            research_levels: 3,
+        });
+        state.prestige.current.index = 2;
+        state.prestige.current.started_at = 3;
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.prestige, state.prestige);
+        assert_eq!(loaded, state);
     }
 }
