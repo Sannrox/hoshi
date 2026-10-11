@@ -1,0 +1,4 @@
+{"type":"agent_started","source":"shell","ts":1}
+this is not json
+{"type":"agent_started"}
+{"type":"agent_finished","source":"shell","ts":3}

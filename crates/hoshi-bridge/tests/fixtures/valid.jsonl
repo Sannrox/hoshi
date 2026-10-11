@@ -1,0 +1,4 @@
+{"type":"agent_started","source":"shell","ts":1700000000,"payload":{"agent":"local"}}
+{"type":"agent_waiting_for_input","source":"shell","ts":1700000001}
+{"type":"agent_finished","source":"hook","ts":1700000002,"payload":{"code":"0"}}
+{"type":"agent_failed","source":"hook","ts":1700000003,"payload":{"code":"1"}}
