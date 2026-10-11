@@ -3,6 +3,7 @@
 
 use crate::activity::{ActivityChannelConfig, ActivityEffectsConfig};
 use crate::buildings::{BuildingKind, Buildings};
+use crate::chains::{ChainConfig, FileChains};
 use crate::expedition::{ExpeditionConfig, ExpeditionWeights};
 use crate::fleets::FlightConfig;
 use crate::outposts::{OutpostConfig, RarePlanetBonus};
@@ -316,6 +317,7 @@ pub struct BalanceConfig {
     pub wonders: Vec<WonderSpec>,
     pub outposts: OutpostConfig,
     pub prestige: PrestigeConfig,
+    pub chains: ChainConfig,
 }
 
 impl BalanceConfig {
@@ -367,6 +369,8 @@ struct File {
     outposts: FileOutposts,
     #[serde(default)]
     prestige: FilePrestige,
+    #[serde(default)]
+    chains: FileChains,
 }
 
 #[derive(Deserialize)]
@@ -594,8 +598,11 @@ struct FileBuildings {
 
 #[derive(Deserialize)]
 struct FileBuilding {
+    #[serde(alias = "frames")]
     metal_base: f64,
+    #[serde(alias = "electronics")]
     crystal_base: f64,
+    #[serde(alias = "fuel")]
     deuterium_base: f64,
     cost_growth: f64,
     base_seconds: f64,
@@ -619,8 +626,11 @@ struct FileQueues {
 
 #[derive(Deserialize)]
 struct FileResources {
+    #[serde(alias = "frames")]
     metal: f64,
+    #[serde(alias = "electronics")]
     crystal: f64,
+    #[serde(alias = "fuel")]
     deuterium: f64,
 }
 
@@ -963,6 +973,7 @@ impl File {
                     bonuses,
                 }
             },
+            chains: self.chains.into_config().map_err(BalanceError::Invalid)?,
         };
         config.validate()?;
         Ok(config)
@@ -1099,6 +1110,7 @@ impl BalanceConfig {
             "starting_resources.deuterium",
             self.starting_resources.deuterium,
         )?;
+        self.chains.validate().map_err(BalanceError::Invalid)?;
         let mut seen = std::collections::HashSet::new();
         for spec in &self.wonders {
             if spec.id.is_empty() {
@@ -1369,6 +1381,8 @@ mod tests {
         );
         assert_eq!(cfg.outposts, crate::OutpostConfig::default());
         assert_eq!(cfg.prestige, crate::PrestigeConfig::default());
+        assert!(cfg.chains.enabled());
+        assert!(cfg.chains.validate().is_ok());
         assert_eq!(cfg.wonders.len(), 3);
         assert_eq!(cfg.wonders[0].id, "dyson_ring");
         assert_eq!(cfg.wonders[0].prereq_techs[0].id, "energy");

@@ -47,90 +47,90 @@ base = 10000.0
 growth = 2.0
 
 [buildings.metal_mine]
-metal_base = 60.0
-crystal_base = 15.0
-deuterium_base = 0.0
+frames = 60.0
+electronics = 15.0
+fuel = 0.0
 cost_growth = 1.5
 base_seconds = 120.0
 time_growth = 1.5
 prerequisites = []
 
 [buildings.crystal_mine]
-metal_base = 48.0
-crystal_base = 24.0
-deuterium_base = 0.0
+frames = 48.0
+electronics = 24.0
+fuel = 0.0
 cost_growth = 1.6
 base_seconds = 120.0
 time_growth = 1.6
 prerequisites = []
 
 [buildings.deuterium_synthesizer]
-metal_base = 225.0
-crystal_base = 75.0
-deuterium_base = 0.0
+frames = 225.0
+electronics = 75.0
+fuel = 0.0
 cost_growth = 1.5
 base_seconds = 180.0
 time_growth = 1.5
 prerequisites = []
 
 [buildings.solar_plant]
-metal_base = 75.0
-crystal_base = 30.0
-deuterium_base = 0.0
+frames = 75.0
+electronics = 30.0
+fuel = 0.0
 cost_growth = 1.5
 base_seconds = 120.0
 time_growth = 1.5
 prerequisites = []
 
 [buildings.metal_storage]
-metal_base = 1000.0
-crystal_base = 0.0
-deuterium_base = 0.0
+frames = 1000.0
+electronics = 0.0
+fuel = 0.0
 cost_growth = 2.0
 base_seconds = 60.0
 time_growth = 2.0
 prerequisites = []
 
 [buildings.crystal_storage]
-metal_base = 1000.0
-crystal_base = 500.0
-deuterium_base = 0.0
+frames = 1000.0
+electronics = 500.0
+fuel = 0.0
 cost_growth = 2.0
 base_seconds = 60.0
 time_growth = 2.0
 prerequisites = []
 
 [buildings.deuterium_storage]
-metal_base = 1000.0
-crystal_base = 1000.0
-deuterium_base = 0.0
+frames = 1000.0
+electronics = 1000.0
+fuel = 0.0
 cost_growth = 2.0
 base_seconds = 60.0
 time_growth = 2.0
 prerequisites = []
 
 [buildings.robotics_factory]
-metal_base = 400.0
-crystal_base = 120.0
-deuterium_base = 200.0
+frames = 400.0
+electronics = 120.0
+fuel = 200.0
 cost_growth = 2.0
 base_seconds = 300.0
 time_growth = 2.0
 prerequisites = []
 
 [buildings.research_lab]
-metal_base = 200.0
-crystal_base = 400.0
-deuterium_base = 200.0
+frames = 200.0
+electronics = 400.0
+fuel = 200.0
 cost_growth = 2.0
 base_seconds = 300.0
 time_growth = 2.0
 prerequisites = []
 
 [buildings.shipyard]
-metal_base = 400.0
-crystal_base = 200.0
-deuterium_base = 100.0
+frames = 400.0
+electronics = 200.0
+fuel = 100.0
 cost_growth = 2.0
 base_seconds = 300.0
 time_growth = 2.0
@@ -390,3 +390,145 @@ stages = [
   { metal = 8000.0, crystal = 16000.0, deuterium = 2000.0, duration_secs = 86400 },
 ]
 modifiers = [{ kind = "espionage", value = 2.0 }]
+
+# Production chains. Extractors pull raw deposits; later recipes refine and
+# assemble components. Construction costs still settle as frames/electronics/fuel
+# (the metal/crystal/deuterium stockpiles).
+[chains]
+deposit_jitter = 0.05
+
+[[chains.goods]]
+id = "iron_ore"
+kind = "raw"
+[[chains.goods]]
+id = "silicon"
+kind = "raw"
+[[chains.goods]]
+id = "rare_earths"
+kind = "raw"
+[[chains.goods]]
+id = "water_ice"
+kind = "raw"
+[[chains.goods]]
+id = "helium_3"
+kind = "raw"
+[[chains.goods]]
+id = "steel"
+kind = "refined"
+[[chains.goods]]
+id = "purified_silicon"
+kind = "refined"
+[[chains.goods]]
+id = "magnets"
+kind = "refined"
+[[chains.goods]]
+id = "propellant"
+kind = "refined"
+[[chains.goods]]
+id = "fuel"
+kind = "refined"
+[[chains.goods]]
+id = "frames"
+kind = "component"
+[[chains.goods]]
+id = "electronics"
+kind = "component"
+
+[chains.deposits.rocky]
+iron_ore = 1.10
+silicon = 1.10
+rare_earths = 1.05
+water_ice = 0.20
+helium_3 = 0.10
+
+[chains.deposits.ice]
+iron_ore = 0.20
+silicon = 0.20
+rare_earths = 0.10
+water_ice = 1.25
+helium_3 = 0.40
+
+[chains.deposits.gas_giant]
+iron_ore = 0.10
+silicon = 0.10
+rare_earths = 0.05
+water_ice = 0.50
+helium_3 = 1.50
+
+[[chains.recipes]]
+id = "extract_iron"
+building = "metal_mine"
+deposit = "iron_ore"
+outputs = { iron_ore = 1.0 }
+
+[[chains.recipes]]
+id = "extract_rare_earths"
+building = "metal_mine"
+deposit = "rare_earths"
+outputs = { rare_earths = 0.15 }
+
+[[chains.recipes]]
+id = "smelt_steel"
+building = "metal_mine"
+inputs = { iron_ore = 1.0 }
+outputs = { steel = 1.0 }
+
+[[chains.recipes]]
+id = "forge_frames"
+building = "metal_mine"
+inputs = { steel = 1.0 }
+outputs = { frames = 1.0 }
+
+[[chains.recipes]]
+id = "extract_silicon"
+building = "crystal_mine"
+deposit = "silicon"
+outputs = { silicon = 1.0 }
+
+[[chains.recipes]]
+id = "purify_silicon"
+building = "crystal_mine"
+inputs = { silicon = 1.0 }
+outputs = { purified_silicon = 1.0 }
+
+[[chains.recipes]]
+id = "make_magnets"
+building = "crystal_mine"
+inputs = { rare_earths = 0.15 }
+outputs = { magnets = 0.15 }
+
+[[chains.recipes]]
+id = "assemble_electronics"
+building = "crystal_mine"
+inputs = { purified_silicon = 0.85, magnets = 0.15 }
+outputs = { electronics = 1.0 }
+
+[[chains.recipes]]
+id = "extract_ice"
+building = "deuterium_synthesizer"
+deposit = "water_ice"
+outputs = { water_ice = 1.0 }
+
+[[chains.recipes]]
+id = "extract_helium"
+building = "deuterium_synthesizer"
+deposit = "helium_3"
+outputs = { helium_3 = 1.0 }
+
+[[chains.recipes]]
+id = "refine_propellant"
+building = "deuterium_synthesizer"
+inputs = { water_ice = 0.5 }
+outputs = { propellant = 0.5 }
+
+[[chains.recipes]]
+id = "refine_fuel"
+building = "deuterium_synthesizer"
+inputs = { helium_3 = 0.5 }
+outputs = { fuel = 0.5 }
+
+[[chains.recipes]]
+id = "blend_fuel"
+building = "deuterium_synthesizer"
+inputs = { propellant = 0.5, fuel = 0.5 }
+outputs = { deuterium = 1.0 }

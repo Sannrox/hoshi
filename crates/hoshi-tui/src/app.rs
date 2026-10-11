@@ -380,6 +380,14 @@ impl App {
                 rare.summary()
             )));
         }
+        let deposits = self.state.deposits_at(coord);
+        if !deposits.is_empty() {
+            let parts: Vec<String> = deposits
+                .iter()
+                .map(|(id, richness)| format!("{id} {richness:.2}"))
+                .collect();
+            rows.push(Line::from(format!("Deposits  {}", parts.join("  "))));
+        }
         for (i, job) in queue.iter().enumerate() {
             let left = job
                 .completes_at
@@ -1243,6 +1251,7 @@ mod tests {
             fleet: Fleet::default(),
             build_queue: Vec::new(),
             rare: None,
+            goods: std::collections::BTreeMap::new(),
         });
         let mut app = App::new(state);
         let text = render_text(&app, 100, 32);
@@ -1281,6 +1290,7 @@ mod tests {
             fleet: Fleet::default(),
             build_queue: Vec::new(),
             rare: Some("rich_vein".into()),
+            goods: std::collections::BTreeMap::new(),
         });
         let mut app = App::new(state);
         app.handle_key(KeyCode::Char(']'), 1_000);
@@ -1290,6 +1300,17 @@ mod tests {
         assert!(text.contains("Planet 1:1:2"), "{text}");
         assert!(text.contains("Rare: Rich vein"), "{text}");
         assert!(text.contains("metal +25%"), "{text}");
+    }
+
+    #[test]
+    fn planet_screen_shows_deposits_from_type_and_seed() {
+        let state = GameState::new(1_000);
+        let mut app = App::new(state);
+        app.handle_key(KeyCode::Tab, 1_000);
+        assert_eq!(app.screen, Screen::Planet);
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("Deposits"), "{text}");
+        assert!(text.contains("iron_ore"), "{text}");
     }
 
     #[test]

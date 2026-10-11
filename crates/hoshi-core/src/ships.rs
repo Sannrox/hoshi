@@ -359,8 +359,11 @@ struct File {
 struct RawShip {
     id: String,
     name: String,
+    #[serde(alias = "frames")]
     metal: f64,
+    #[serde(alias = "electronics")]
     crystal: f64,
+    #[serde(alias = "propellant")]
     deuterium: f64,
     base_seconds: f64,
     attack: f64,

@@ -16,6 +16,14 @@ hoshi --balance path/to/balance.toml
 (same keys as the bundled one), not a partial patch. Version must be `1`. Growth
 factors must be `> 0`, bases `>= 0`, build and ship queues at least 1.
 
+## Production chains
+
+`[chains]` is the recipe graph. Empty recipe lists keep the legacy mine-to-stockpile path. With recipes, each mine extracts declared deposits and then processes goods in listed order; list every producer before the recipes that consume its outputs. Extractors need a deposit (no mass from nothing). Process recipes must not create mass. Every non-raw input has to be produced by some recipe. Cycles that feed an output back into its own inputs are rejected. Duplicate input or output names that alias the same construction stockpile (`frames`/`metal`, `electronics`/`crystal`, `deuterium`) are rejected.
+
+Construction stockpiles stay the three resource columns (`metal` / `crystal` / `deuterium`), also named frames, electronics and fuel. Intermediate goods live in the save `goods` table. Building costs may use `frames`, `electronics` and `fuel`; ship costs may use `frames`, `electronics` and `propellant` (`fuel` on a ship is still flight consumption).
+
+`[chains.deposits.<type>]` is richness by planet type. `deposit_jitter` (in `[0, 1)`) spreads that richness from the galaxy seed and coord. The planet screen lists the resulting deposits.
+
 ## Pacing targets
 
 `[pacing]` is checked by `hoshi simulate`:
