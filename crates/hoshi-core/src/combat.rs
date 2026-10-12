@@ -41,6 +41,91 @@ pub struct CombatReport {
     pub winner: CombatWinner,
     /// Ground assault, when this report is an invasion.
     pub ground: Option<GroundReport>,
+    /// RNG value at the start of this fight. Fleet-resolver fights replay with [`Self::replay`].
+    pub seed: u64,
+    /// Round 0 is the opening fleets; later rows are after each volley.
+    pub frames: Vec<CombatFrame>,
+    /// Layered planet battles and ground invasions replay from `frames`, not [`Self::replay`].
+    pub layered: bool,
+}
+
+/// One animation step. Counts are surviving ships after that round.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CombatFrame {
+    pub round: u8,
+    pub attacker: Fleet,
+    pub defender: Fleet,
+    pub shots: u32,
+    pub explosions: u32,
+}
+
+/// A stored fight, small enough to keep a handful in the save.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CombatLog {
+    pub at: u64,
+    pub report: CombatReport,
+}
+
+pub const MAX_COMBAT_LOGS: usize = 8;
+
+impl CombatReport {
+    /// Fill seed and, if needed, opening/closing frames for fights that skip the fleet resolver.
+    /// Marks the report layered: replay is the stored frames, not [`Self::replay`].
+    pub fn with_seed_and_endpoints(mut self, seed: u64) -> Self {
+        self.seed = seed;
+        self.layered = true;
+        if self.frames.is_empty() {
+            let explosions = self
+                .attacker_before
+                .total()
+                .saturating_add(self.defender_before.total())
+                .saturating_sub(
+                    self.attacker_after
+                        .total()
+                        .saturating_add(self.defender_after.total()),
+                );
+            self.frames = vec![
+                CombatFrame {
+                    round: 0,
+                    attacker: self.attacker_before,
+                    defender: self.defender_before,
+                    shots: 0,
+                    explosions: 0,
+                },
+                CombatFrame {
+                    round: self.rounds.max(1),
+                    attacker: self.attacker_after,
+                    defender: self.defender_after,
+                    shots: 0,
+                    explosions,
+                },
+            ];
+        }
+        self
+    }
+
+    /// Rebuild a fleet-resolver fight from the stored seed and opening fleets.
+    /// Layered planet battles and invasions are not reproduced this way; play `frames`.
+    pub fn replay(
+        attacker: Fleet,
+        defender: Fleet,
+        attacker_stats: &[ShipStats; SHIP_KINDS],
+        defender_stats: &[ShipStats; SHIP_KINDS],
+        max_rounds: u8,
+        rapid_fire: &[[u32; SHIP_KINDS]; SHIP_KINDS],
+        seed: u64,
+    ) -> Self {
+        let mut rng = seed;
+        resolve_combat(
+            attacker,
+            defender,
+            attacker_stats,
+            defender_stats,
+            max_rounds,
+            rapid_fire,
+            &mut rng,
+        )
+    }
 }
 
 /// Strength comparison with seeded variance. Same seed replays the same rolls.
@@ -184,8 +269,16 @@ pub fn resolve_combat(
     rapid_fire: &[[u32; SHIP_KINDS]; SHIP_KINDS],
     rng: &mut u64,
 ) -> CombatReport {
+    let seed = *rng;
     let mut attackers = expand(attacker, attacker_stats);
     let mut defenders = expand(defender, defender_stats);
+    let mut frames = vec![CombatFrame {
+        round: 0,
+        attacker,
+        defender,
+        shots: 0,
+        explosions: 0,
+    }];
     let mut rounds = 0;
     if !attackers.is_empty() && !defenders.is_empty() {
         while rounds < max_rounds {
@@ -199,9 +292,21 @@ pub fn resolve_combat(
             }
             let atk_fire = living(&attackers);
             let def_fire = living(&defenders);
+            let shots = (atk_fire.len() + def_fire.len()) as u32;
+            let before = compress(&attackers).total() + compress(&defenders).total();
             shoot(&attackers, &atk_fire, &mut defenders, rapid_fire, rng);
             shoot(&defenders, &def_fire, &mut attackers, rapid_fire, rng);
             rounds += 1;
+            let attacker_now = compress(&attackers);
+            let defender_now = compress(&defenders);
+            let after = attacker_now.total() + defender_now.total();
+            frames.push(CombatFrame {
+                round: rounds,
+                attacker: attacker_now,
+                defender: defender_now,
+                shots,
+                explosions: before.saturating_sub(after),
+            });
         }
     }
     let attacker_after = compress(&attackers);
@@ -221,6 +326,9 @@ pub fn resolve_combat(
         defender_after,
         winner,
         ground: None,
+        seed,
+        frames,
+        layered: false,
     }
 }
 
@@ -349,6 +457,19 @@ mod tests {
         );
         assert_eq!(left, right);
         assert_eq!(rng_a, rng_b);
+        let replayed = CombatReport::replay(
+            a,
+            b,
+            &stats(),
+            &stats(),
+            6,
+            &[[0; SHIP_KINDS]; SHIP_KINDS],
+            left.seed,
+        );
+        assert_eq!(replayed.winner, left.winner);
+        assert_eq!(replayed.attacker_after, left.attacker_after);
+        assert_eq!(replayed.defender_after, left.defender_after);
+        assert_eq!(replayed.frames, left.frames);
     }
 
     #[test]

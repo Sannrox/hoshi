@@ -42,8 +42,8 @@ pub use buildings::{BuildError, BuildJob, BuildingKind, Buildings};
 pub use chains::{ChainConfig, GoodKind, GoodSpec, Recipe, component_kind};
 pub use clock::{Clock, FakeClock, SystemClock};
 pub use combat::{
-    CombatReport, CombatWinner, GroundReport, next_u64, plunder_from, rapid_fire_table,
-    resolve_combat, resolve_ground,
+    CombatFrame, CombatLog, CombatReport, CombatWinner, GroundReport, MAX_COMBAT_LOGS, next_u64,
+    plunder_from, rapid_fire_table, resolve_combat, resolve_ground,
 };
 pub use defences::{
     DEFENCE_KINDS, DefenceConfig, DefenceGrid, DefenceKind, DefenceRole, DefenceSpec, PlanetBattle,
