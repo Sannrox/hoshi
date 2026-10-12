@@ -1,0 +1,12 @@
+# no-seed
+# fixture v6.sqlite
+state
+# snapshot v6
+# reset
+# fixture v8.sqlite
+state
+# snapshot v8
+# reset
+# fixture too_new.sqlite
+# expect 5
+state
