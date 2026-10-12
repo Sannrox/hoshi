@@ -2,6 +2,7 @@
 //! Core owns the rules; this module only renders and turns keys into core commands.
 
 use crate::keymap::{Binding, HelpContext, Keymap};
+use crate::notify::{self, Prefs as NotifyPrefs, Watch as NotifyWatch};
 use crate::portraits::{self, PortraitView, Protocol, Slot};
 use crate::title::AwaySummary;
 use hoshi_core::{
@@ -85,6 +86,8 @@ pub struct App {
     replay: Option<ReplayView>,
     pub reduced_motion: bool,
     pub no_animation: bool,
+    notify: NotifyPrefs,
+    watch: NotifyWatch,
     bridge_ui: bool,
     activity_open: bool,
     activity_scroll: usize,
@@ -105,6 +108,7 @@ impl App {
     }
 
     pub fn with_keymap(state: GameState, keymap: Keymap) -> Self {
+        let watch = NotifyWatch::from_state(&state);
         Self {
             state,
             portraits: PortraitView::default(),
@@ -126,6 +130,8 @@ impl App {
             replay: None,
             reduced_motion: false,
             no_animation: false,
+            notify: NotifyPrefs::default(),
+            watch,
             bridge_ui: false,
             activity_open: false,
             activity_scroll: 0,
@@ -191,6 +197,24 @@ impl App {
     pub fn set_away(&mut self, summary: AwaySummary) {
         self.away = Some(summary);
         self.away_hidden = false;
+    }
+
+    pub fn set_notify(&mut self, prefs: NotifyPrefs) {
+        self.notify = prefs;
+        self.watch = NotifyWatch::from_state(&self.state);
+    }
+
+    pub fn poll_notify(&mut self) -> Vec<u8> {
+        let now = self.state.last_tick_unix;
+        let notices = self.watch.observe(&self.state, now);
+        notify::encode(self.notify, now, &notices)
+    }
+
+    pub fn notify_away(&self, summary: &AwaySummary) -> Vec<u8> {
+        let Some(notice) = notify::summarize_away(summary, self.notify) else {
+            return Vec::new();
+        };
+        notify::encode(self.notify, self.state.last_tick_unix, &[notice])
     }
 
     pub fn handle_key(&mut self, code: KeyCode, now_unix: u64) -> Action {
