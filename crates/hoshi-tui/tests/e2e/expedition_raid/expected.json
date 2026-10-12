@@ -86,6 +86,10 @@
       "text": "raid: pirates 900 light fighter vs 5 light fighter. 1 rounds. lost 5 light fighter. pirates lost none. plunder M816 C536 D5000. winner attacker"
     },
     {
+      "at": 3600,
+      "text": "moon formed at 1:1:1"
+    },
+    {
       "at": 32400,
       "text": "standing: Pirate clans -3 -> -7 (raid)"
     },
@@ -109,6 +113,14 @@
   },
   "laws": [],
   "missions": [],
+  "moons": [
+    {
+      "jump_gate": 0,
+      "jump_ready_at": 0,
+      "parent": "1:1:1",
+      "phalanx": 0
+    }
+  ],
   "now": 43200,
   "ok": true,
   "outposts": [
@@ -230,7 +242,7 @@
     "deuterium": 2500.0,
     "metal": 638.75
   },
-  "save_schema": 24,
+  "save_schema": 25,
   "schema_version": 1,
   "spy_reports": [],
   "waste": {

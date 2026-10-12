@@ -3,7 +3,7 @@
 use crate::ships::{Fleet, ShipKind};
 use std::fmt;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Coord {
     pub galaxy: u16,
     pub system: u16,

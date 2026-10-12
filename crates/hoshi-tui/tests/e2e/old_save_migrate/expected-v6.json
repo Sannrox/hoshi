@@ -75,6 +75,7 @@
   },
   "laws": [],
   "missions": [],
+  "moons": [],
   "now": 4102444800,
   "ok": true,
   "outposts": [
@@ -196,7 +197,7 @@
     "deuterium": 30.0,
     "metal": 10.0
   },
-  "save_schema": 24,
+  "save_schema": 25,
   "schema_version": 1,
   "spy_reports": [],
   "waste": {

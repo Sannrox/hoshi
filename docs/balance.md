@@ -90,6 +90,10 @@ comparison). `troop_strength` is the landing power of one troop transport.
 
 `[daily]` sets the in-game day length (`day_secs`), an optional reset offset, how many slots to pick (`slots`), the streak cap, and the per-streak resource bonus. The catalog lives in `crates/hoshi-core/data/missions.toml` (upgrade a mine, finish research, hold a raid, trade, launch an expedition). Picks are deterministic from the galaxy seed and the in-game day. Progress counts during offline catch-up. Completing the full set raises the streak; a missed day resets it. Rewards stop at storage caps. GitHub and agent activity never count.
 
+## Moons
+
+`[moons]` is debris-to-moon formation around an owned planet. Hull lost in a fight adds `debris_per_hull` to that coord. Once debris passes `form_threshold`, each extra point rolls `form_chance_per_debris` (capped) against a seeded RNG; the same seed repeats the same moon. A moon is an orbital facility of its parent, not a new map slot. `phalanx_range_systems` is the sensor radius in systems; `jump_cooldown_secs` is the gate cooldown. Jump is instant between two moons that both have a jump gate, and is refused if the destination has none. Costs are `phalanx_*` and `gate_*`. Set `enabled = false` to skip formation.
+
 ## Prestige
 
 `[prestige]` is the late-game reset. Score is building levels plus research levels plus `colony_weight` per colony plus `wonder_weight` per completed wonder. Reset is allowed with a completed wonder or when score reaches `min_score`. Currency earned is `score / points_per_currency`, at least 1. `[[prestige.bonuses]]` rows are permanent purchases: extra starting resources, production and research speed, extra build-queue slots. They live in the save apart from the run. `hoshi simulate` reports three runs with 0, 1 and 2 mine-focus bonuses so later runs produce more without skipping construction time.

@@ -640,6 +640,21 @@ streak_metal = 80.0
 streak_crystal = 40.0
 streak_deuterium = 0.0
 
+[moons]
+enabled = true
+debris_per_hull = 1.0
+form_threshold = 400.0
+form_chance_per_debris = 0.002
+form_chance_cap = 0.35
+phalanx_range_systems = 5
+jump_cooldown_secs = 3600
+phalanx_metal = 400.0
+phalanx_crystal = 200.0
+phalanx_deuterium = 0.0
+gate_metal = 800.0
+gate_crystal = 400.0
+gate_deuterium = 100.0
+
 [market]
 enabled = true
 tick_secs = 3600

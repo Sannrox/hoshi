@@ -8,6 +8,7 @@
 
 ### Added
 
+- Moons form from battle debris around an owned planet (`[moons]`). Phalanx sensors list fleets in range; jump gates move parked fleets instantly between moons, with a cooldown and a refusal if the target has no gate. The planet switcher and galaxy map label moons. Save schema v25.
 - Daily goals: three seeded picks per in-game day from `missions.toml`, with progress during catch-up, capped streak rewards in `[daily]`, a TUI daily screen, and `state` JSON. Save schema v24.
 - Harness CLI end-to-end scenarios under `crates/hoshi-tui/tests/e2e`: build and research, catch-up across a restart, expedition plus raid, save lock, and old-schema migration. Goldens update with `HOSHI_UPDATE_GOLDEN=1 cargo test -p hoshi-tui --test e2e`.
 - Title Prestige appears once a reset is available: unspent currency, owned bonuses, and a shop that buys with confirmation into the richest save. New game lists those bonuses and applies their starting extras to the new slot.

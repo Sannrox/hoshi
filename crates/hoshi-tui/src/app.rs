@@ -1335,6 +1335,48 @@ impl App {
                 self.state.config.waste.unrest_per_overflow,
             )));
         }
+        if let Some(moon) = self.state.moon_at(coord) {
+            let ready = if moon.jump_ready_at > self.state.last_tick_unix {
+                format!(
+                    "jump {}",
+                    moon.jump_ready_at.saturating_sub(self.state.last_tick_unix)
+                )
+            } else {
+                "jump ready".into()
+            };
+            rows.push(Line::from(format!(
+                "Moon  phalanx {}  gate {}  {ready}",
+                moon.phalanx, moon.jump_gate
+            )));
+            if moon.phalanx > 0 {
+                match self
+                    .state
+                    .phalanx_contacts(coord, self.state.last_tick_unix)
+                {
+                    Ok(contacts) if contacts.is_empty() => {
+                        rows.push(Line::from("Phalanx  no fleets in range"));
+                    }
+                    Ok(contacts) => {
+                        for contact in contacts {
+                            rows.push(Line::from(format!(
+                                "Phalanx  fleet #{} {} {} -> {}  {}s  ships {}",
+                                contact.id,
+                                contact.phase,
+                                contact.origin,
+                                contact.dest,
+                                contact.eta_secs,
+                                contact.ships
+                            )));
+                        }
+                    }
+                    Err(_) => {}
+                }
+            }
+        } else if let Some(amount) = self.state.debris.get(&coord)
+            && *amount > 0.0
+        {
+            rows.push(Line::from(format!("Debris {amount:.0}")));
+        }
         let deposits = self.state.deposits_at(coord);
         if !deposits.is_empty() {
             let parts: Vec<String> = deposits
@@ -1947,6 +1989,9 @@ impl App {
                 } else if let Some(out) = self.state.outposts.iter().find(|o| o.coord == coord) {
                     labels.push(format!("pirate {coord} {}", out.kind.as_key()));
                 }
+                if self.state.moon_at(coord).is_some() {
+                    labels.push("moon".into());
+                }
             }
             for mission in &self.state.missions {
                 if mission.dest.galaxy == cursor.galaxy && mission.dest.system == system {
@@ -2104,8 +2149,13 @@ impl App {
                     }
                     None => "idle".to_string(),
                 };
+                let moon = if self.state.moon_at(coord).is_some() {
+                    "  moon"
+                } else {
+                    ""
+                };
                 Line::from(format!(
-                    "{mark} {coord}  M{:.0} C{:.0} D{:.0}  {active}",
+                    "{mark} {coord}  M{:.0} C{:.0} D{:.0}  {active}{moon}",
                     res.metal, res.crystal, res.deuterium
                 ))
             })
@@ -3344,6 +3394,22 @@ mod tests {
         assert!(large.contains("[H]"), "{large}");
         assert!(large.contains("home"), "{large}");
         assert!(large.contains("hjkl"), "{large}");
+    }
+
+    #[test]
+    fn map_and_planet_switcher_label_moons() {
+        let mut state = GameState::new(1_000);
+        state.moons.push(hoshi_core::Moon::new(Coord::HOME));
+        let mut app = App::new(state);
+        let overview = render_text(&app, 100, 28);
+        assert!(overview.contains("moon"), "{overview}");
+        open_map(&mut app, 1_000);
+        let map = render_text(&app, 100, 32);
+        assert!(map.contains("moon"), "{map}");
+        app.screen = Screen::Planet;
+        let planet = render_text(&app, 100, 32);
+        assert!(planet.contains("Moon"), "{planet}");
+        assert!(planet.contains("phalanx"), "{planet}");
     }
 
     #[test]

@@ -2,9 +2,9 @@
 
 use hoshi_core::{
     BalanceConfig, BuildingKind, Clock, Coord, DefenceKind, FakeClock, Fleet, GameState,
-    Jurisdiction, JurisdictionKind, ResourceKind, SCHEMA_VERSION as SAVE_SCHEMA, SaveError,
-    ShipKind, SpyReport, SystemClock, load_or_new, load_or_new_with_seed, lock_save, open_save,
-    resolve_save_path, save_state,
+    Jurisdiction, JurisdictionKind, MoonFacility, ResourceKind, SCHEMA_VERSION as SAVE_SCHEMA,
+    SaveError, ShipKind, SpyReport, SystemClock, load_or_new, load_or_new_with_seed, lock_save,
+    open_save, resolve_save_path, save_state,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -60,6 +60,18 @@ enum Command {
     LawRepeal {
         id: u64,
         effective: u64,
+    },
+    MoonBuild {
+        planet: Coord,
+        facility: MoonFacility,
+    },
+    MoonJump {
+        from: Coord,
+        to: Coord,
+        ships: Fleet,
+    },
+    MoonScan {
+        planet: Coord,
     },
 }
 
@@ -370,6 +382,41 @@ fn apply(state: &mut GameState, now: u64, command: &Command) -> Result<Value, Cl
                 .map_err(|e| CliError::Refused(e.to_string()))?;
             Ok(ok_state(state, "proposed repeal"))
         }
+        Command::MoonBuild { planet, facility } => {
+            state
+                .build_moon_facility(*planet, *facility, now)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, "built moon facility"))
+        }
+        Command::MoonJump { from, to, ships } => {
+            state
+                .jump_between(*from, *to, *ships, now)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, "jumped"))
+        }
+        Command::MoonScan { planet } => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            let contacts = state
+                .phalanx_contacts(*planet, state.last_tick_unix)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            let mut value = ok_state(state, "phalanx");
+            value["contacts"] = json!(
+                contacts
+                    .iter()
+                    .map(|c| json!({
+                        "id": c.id,
+                        "origin": c.origin.to_string(),
+                        "dest": c.dest.to_string(),
+                        "phase": c.phase,
+                        "eta_secs": c.eta_secs,
+                        "ships": c.ships,
+                    }))
+                    .collect::<Vec<_>>()
+            );
+            Ok(value)
+        }
     }
 }
 
@@ -516,6 +563,14 @@ fn state_value(state: &GameState) -> Value {
                 })
             }).collect::<Vec<_>>(),
         },
+        "moons": state.moons.iter().map(|moon| {
+            json!({
+                "parent": moon.parent.to_string(),
+                "phalanx": moon.phalanx,
+                "jump_gate": moon.jump_gate,
+                "jump_ready_at": moon.jump_ready_at,
+            })
+        }).collect::<Vec<_>>(),
         "laws": state.laws.laws.iter().map(|law| {
             json!({
                 "id": law.id,
@@ -700,6 +755,7 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
             ))),
         },
         "law" => parse_law_command(args),
+        "moon" => parse_moon_command(args),
         "tick" => {
             let mut advance = None;
             let mut i = 1;
@@ -722,6 +778,31 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
             })
         }
         other => Err(CliError::Invalid(format!("unknown command {other}"))),
+    }
+}
+
+fn parse_moon_command(args: &[String]) -> Result<Command, CliError> {
+    match args.get(1).map(String::as_str) {
+        Some("build") => {
+            let planet = parse_coord(nth(args, 2, "moon build <planet> <facility>")?)?;
+            let facility = MoonFacility::from_key(nth(args, 3, "moon build <planet> <facility>")?)
+                .ok_or_else(|| CliError::Invalid("unknown moon facility".into()))?;
+            expect_end(args, 4)?;
+            Ok(Command::MoonBuild { planet, facility })
+        }
+        Some("jump") => {
+            let from = parse_coord(nth(args, 2, "moon jump <from> <to> <ships...>")?)?;
+            let to = parse_coord(nth(args, 3, "moon jump <from> <to> <ships...>")?)?;
+            let ships = parse_ships(&args[4..])?;
+            Ok(Command::MoonJump { from, to, ships })
+        }
+        Some("scan") => {
+            let planet = parse_coord(nth(args, 2, "moon scan <planet>")?)?;
+            expect_end(args, 3)?;
+            Ok(Command::MoonScan { planet })
+        }
+        Some(other) => Err(CliError::Invalid(format!("unknown moon command {other}"))),
+        None => Err(CliError::Invalid("moon needs build, jump, or scan".into())),
     }
 }
 
@@ -990,6 +1071,7 @@ mod tests {
         assert!(value["achievements"].is_array());
         assert!(value["daily"]["slots"].is_array());
         assert_eq!(value["daily"]["slots"].as_array().unwrap().len(), 3);
+        assert!(value["moons"].is_array());
         let _ = std::fs::remove_file(&save);
     }
 

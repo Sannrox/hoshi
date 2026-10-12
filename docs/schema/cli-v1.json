@@ -57,6 +57,10 @@
       "type": "object",
       "description": "In-game daily goals for the current day: streak, time until reset, and slot progress."
     },
+    "moons": {
+      "type": "array",
+      "description": "Orbital moons of owned planets, with phalanx and jump-gate levels."
+    },
     "laws": {
       "type": "array",
       "description": "Proposed, enacted and repealed laws with approvals and latest expected vs measured samples."
