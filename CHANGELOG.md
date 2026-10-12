@@ -8,6 +8,7 @@
 
 ### Added
 
+- Production screen: live chain rates, buffers, energy and heat, and the limiting factor (input, energy, heat, pollution, full storage, or transport delay) with a short rate history. Fits 80×24.
 - Combat replay commentary from `commentary.toml` (twelve event types, template variants). Off by default; `commentary = true` in config or `--commentary`. Lines are chosen from the fight seed before playback so the overlay never waits on I/O. Optional `commentary-model` sends one loopback request with a 100ms budget and falls back to templates.
 - First playable loop: `docs/playtest.md` checklist (launch, build, research, raid, offline return), `hoshi feedback` to append a local versioned note, and a Playtest feedback GitHub issue template.
 - Guided first hour: a skippable opening plus contextual hints from `hints.toml` (mine finished, energy short, lab, storage, research, raid, fleet, shipyard). `g` jumps to the screen, `x` dismisses, `s` skips the rest. Progress is in the save (schema v26); Settings can hide hints or reset them.

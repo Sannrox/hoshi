@@ -311,14 +311,14 @@ pub fn component_kind(id: &str) -> Option<ResourceKind> {
     }
 }
 
-fn available(resources: &Resources, goods: &BTreeMap<String, f64>, id: &str) -> f64 {
+pub(crate) fn available(resources: &Resources, goods: &BTreeMap<String, f64>, id: &str) -> f64 {
     match component_kind(id) {
         Some(kind) => resources.get(kind),
         None => goods.get(id).copied().unwrap_or(0.0),
     }
 }
 
-fn add_good(
+pub(crate) fn add_good(
     resources: &mut Resources,
     goods: &mut BTreeMap<String, f64>,
     id: &str,
@@ -344,7 +344,12 @@ fn add_good(
     }
 }
 
-fn take_good(resources: &mut Resources, goods: &mut BTreeMap<String, f64>, id: &str, amount: f64) {
+pub(crate) fn take_good(
+    resources: &mut Resources,
+    goods: &mut BTreeMap<String, f64>,
+    id: &str,
+    amount: f64,
+) {
     if amount <= 0.0 {
         return;
     }

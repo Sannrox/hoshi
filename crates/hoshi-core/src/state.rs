@@ -1757,7 +1757,7 @@ impl GameState {
         Some(secs)
     }
 
-    fn empire_production_per_hour(&self, kind: ResourceKind) -> f64 {
+    pub(crate) fn empire_production_per_hour(&self, kind: ResourceKind) -> f64 {
         self.production_per_hour(kind)
             + self
                 .colonies
@@ -3780,7 +3780,7 @@ impl GameState {
         }
     }
 
-    fn recipe_building_scale(
+    pub(crate) fn recipe_building_scale(
         &self,
         buildings: Buildings,
         planet: PlanetType,
@@ -3921,7 +3921,7 @@ impl GameState {
         }
     }
 
-    fn production_at(&self, coord: Coord, kind: ResourceKind) -> f64 {
+    pub(crate) fn production_at(&self, coord: Coord, kind: ResourceKind) -> f64 {
         if coord == self.home {
             self.production_per_hour(kind)
         } else {
@@ -4155,7 +4155,7 @@ impl GameState {
         stock.get(kind) - before
     }
 
-    fn prod_boost_mult(&self) -> f64 {
+    pub(crate) fn prod_boost_mult(&self) -> f64 {
         match self.activity.prod_boost_until {
             Some(until) if self.last_tick_unix < until => 1.0 + self.activity.prod_boost_factor,
             _ => 1.0,

@@ -607,7 +607,7 @@ fn play_path(
                 apply_bridge_events(&mut app, batch, clock.now_unix());
             }
         }
-        app.state.catch_up(clock.now_unix());
+        app.catch_up_now(clock.now_unix());
         write_notify(app.poll_notify());
         if last_save.elapsed() >= SAVE_INTERVAL {
             if let Err(e) = save_state(&mut conn, &app.state) {
