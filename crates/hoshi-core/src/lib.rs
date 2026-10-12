@@ -7,6 +7,7 @@ mod buildings;
 mod chains;
 mod clock;
 mod combat;
+mod commentary;
 mod daily;
 mod defences;
 mod diplomacy;
@@ -48,6 +49,7 @@ pub use combat::{
     CombatFrame, CombatLog, CombatReport, CombatWinner, GroundReport, MAX_COMBAT_LOGS, next_u64,
     plunder_from, rapid_fire_table, resolve_combat, resolve_ground,
 };
+pub use commentary::{CommentaryCatalog, CommentaryError, rephrase_lines, rephrase_local};
 pub use daily::{
     DailyAction, DailyBoard, DailyConfig, DailyError, DailyKind, DailySlot, DailySpec,
 };

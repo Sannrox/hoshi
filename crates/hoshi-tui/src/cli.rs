@@ -154,6 +154,8 @@ pub fn is_cli_invocation(args: &[String]) -> bool {
             || a.starts_with("--balance=")
             || a == "--continue"
             || a == "new"
+            || a == "--commentary"
+            || a == "--no-portraits"
         {
             i += 1;
             continue;
@@ -1302,6 +1304,8 @@ mod tests {
         assert!(!is_cli_invocation(&args(&["--balance", "b.toml"])));
         assert!(!is_cli_invocation(&args(&["--continue"])));
         assert!(!is_cli_invocation(&args(&["new"])));
+        assert!(!is_cli_invocation(&args(&["--commentary"])));
+        assert!(!is_cli_invocation(&args(&["--no-portraits"])));
         let out = run_cli(&args(&["stete"]));
         assert_eq!(out.exit, EXIT_INVALID);
         let value: Value = serde_json::from_str(&out.json).unwrap();

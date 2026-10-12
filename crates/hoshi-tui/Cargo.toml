@@ -10,6 +10,7 @@ publish.workspace = true
 [features]
 default = []
 bridge = ["dep:hoshi-bridge"]
+commentary-model = ["hoshi-core/commentary-model"]
 
 [dependencies]
 hoshi-core = { path = "../hoshi-core" }

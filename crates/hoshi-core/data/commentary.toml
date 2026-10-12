@@ -1,0 +1,95 @@
+[[events]]
+id = "opening_volley"
+lines = [
+  "The first volley lights the void.",
+  "Opening fire cracks across the screen.",
+  "Guns speak; the fleets close.",
+]
+
+[[events]]
+id = "first_blood"
+lines = [
+  "First hulls bloom into debris.",
+  "The wedge draws first blood.",
+  "A ship dies; the fight is real now.",
+]
+
+[[events]]
+id = "screen_breaks"
+lines = [
+  "The fighter screen tears open.",
+  "Light fighters scatter and vanish.",
+  "The screen cannot hold.",
+]
+
+[[events]]
+id = "cargo_lost"
+lines = [
+  "A cargo hull splits and spills ore.",
+  "Freighters burn; the haul will not come home.",
+  "The convoy pays in steel.",
+]
+
+[[events]]
+id = "probe_sniped"
+lines = [
+  "A probe winks out mid-scan.",
+  "Spy craft die before they can speak.",
+  "The scouts are gone.",
+]
+
+[[events]]
+id = "flagship_lost"
+lines = [
+  "The heavy hull folds; the flagship is gone.",
+  "A capital ship breaks amidships.",
+  "The admiral's keel fails.",
+]
+
+[[events]]
+id = "reversal"
+lines = [
+  "The weaker line surges past the stronger.",
+  "The fight turns; numbers swap places.",
+  "Momentum flips in a single volley.",
+]
+
+[[events]]
+id = "last_stand"
+lines = [
+  "A handful of hulls refuse to yield.",
+  "The last ships close ranks and fire.",
+  "This is the last stand.",
+]
+
+[[events]]
+id = "wipe"
+lines = [
+  "One fleet is silence and wreckage.",
+  "Nothing remains on that vector.",
+  "The line is gone.",
+]
+
+[[events]]
+id = "victory"
+lines = [
+  "You hold the field.",
+  "The pirate screen breaks for good.",
+  "The last enemy gun goes dark.",
+]
+
+[[events]]
+id = "defeat"
+lines = [
+  "The home fleet is wreckage.",
+  "Pirates own this sky.",
+  "Nothing of yours still answers.",
+]
+
+[[events]]
+id = "stalemate"
+lines = [
+  "Guns fall quiet with both sides still standing.",
+  "Neither fleet can finish it.",
+  "The clock ends the fight, not the guns.",
+]

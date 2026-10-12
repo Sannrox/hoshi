@@ -351,6 +351,7 @@ fn run() -> Result<(), LaunchError> {
     let env = std::env::var_os("HOSHI_SAVE");
     let continue_flag = args.iter().any(|a| a == "--continue");
     let no_portraits = args.iter().any(|a| a == "--no-portraits");
+    let commentary_flag = args.iter().any(|a| a == "--commentary");
     let balance =
         load_balance(balance_override(parse_path_flag(args.iter(), "--balance")).as_deref())
             .map_err(|e| LaunchError {
@@ -359,7 +360,10 @@ fn run() -> Result<(), LaunchError> {
             })?;
     if flag.is_some() || env.is_some() {
         let path = resolve_save_path(flag.as_deref(), env.as_deref());
-        let cfg = config::UserConfig::load(&config_dir_for_save(&path));
+        let mut cfg = config::UserConfig::load(&config_dir_for_save(&path));
+        if commentary_flag {
+            cfg.commentary = true;
+        }
         return play_path(
             &path,
             balance,
@@ -372,7 +376,10 @@ fn run() -> Result<(), LaunchError> {
     let dir = default_save_dir();
     if continue_flag {
         let path = resolve_continue(&dir, clock.now_unix())?;
-        let cfg = config::UserConfig::load(&dir);
+        let mut cfg = config::UserConfig::load(&dir);
+        if commentary_flag {
+            cfg.commentary = true;
+        }
         return play_path(
             &path,
             balance,
@@ -382,7 +389,7 @@ fn run() -> Result<(), LaunchError> {
             &cfg,
         );
     }
-    title_then_play(dir, balance, &clock, no_portraits)
+    title_then_play(dir, balance, &clock, no_portraits, commentary_flag)
 }
 
 fn config_dir_for_save(path: &Path) -> PathBuf {
@@ -418,8 +425,12 @@ fn title_then_play(
     balance: BalanceConfig,
     clock: &SystemClock,
     no_portraits: bool,
+    commentary_flag: bool,
 ) -> Result<(), LaunchError> {
     let mut title = Title::new(dir, clock.now_unix());
+    if commentary_flag {
+        title.config.commentary = true;
+    }
     title.set_balance(balance.clone());
     let mut terminal = ratatui::init();
     let result = loop {
@@ -557,6 +568,8 @@ fn play_path(
     app.reduced_motion = user.reduced_motion;
     app.no_animation = user.no_animation;
     app.show_tutorial = user.tutorial;
+    app.commentary = user.commentary;
+    app.commentary_model_url = user.commentary_model_url.clone();
     app.set_notify(user.notify_prefs());
     #[cfg(feature = "bridge")]
     app.set_bridge_ui(user.bridge);
