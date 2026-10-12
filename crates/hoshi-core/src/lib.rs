@@ -78,8 +78,8 @@ pub use prestige::{
     PrestigePreview, RunStats,
 };
 pub use research::{
-    BuildingPrereq, ModifierKind, PrereqGap, ResearchError, ResearchJob, TechModifier, TechPrereq,
-    TechSpec, TechTree, TechTreeError,
+    BuildingPrereq, ModifierKind, PrereqGap, ResearchError, ResearchJob, TechBranch, TechModifier,
+    TechNodeState, TechPrereq, TechSpec, TechTree, TechTreeError,
 };
 pub use save::{
     SCHEMA_VERSION, SaveError, SaveGlance, SaveLock, default_save_dir, default_save_path,

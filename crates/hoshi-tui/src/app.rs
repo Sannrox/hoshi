@@ -5,7 +5,8 @@ use crate::portraits::{self, PortraitView, Protocol, Slot};
 use crate::title::AwaySummary;
 use hoshi_core::{
     BuildingKind, Coord, DefenceKind, Fleet, GameState, Jurisdiction, JurisdictionKind, LawStatus,
-    ResourceKind, Resources, ShipKind, SpyReport, StoryEvent, WonderError, encode_galaxy_seed,
+    ResourceKind, Resources, ShipKind, SpyReport, StoryEvent, TechBranch, TechNodeState,
+    WonderError, encode_galaxy_seed,
 };
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
@@ -69,6 +70,7 @@ pub struct App {
     map_system: u16,
     map_position: u16,
     dispatch: Option<DispatchForm>,
+    tree_branch: TechBranch,
 }
 
 impl App {
@@ -88,6 +90,7 @@ impl App {
             map_system: Coord::HOME.system,
             map_position: Coord::HOME.position,
             dispatch: None,
+            tree_branch: TechBranch::Industry,
         }
     }
 
@@ -171,6 +174,12 @@ impl App {
                 if self.screen == Screen::Map && self.dispatch.is_none() =>
             {
                 self.nudge_map_position(1);
+            }
+            KeyCode::Char('h') | KeyCode::Left if self.screen == Screen::Overview => {
+                self.nudge_tree_branch(-1);
+            }
+            KeyCode::Char('l') | KeyCode::Right if self.screen == Screen::Overview => {
+                self.nudge_tree_branch(1);
             }
             KeyCode::Char('j') | KeyCode::Down
                 if self.screen == Screen::Map && self.dispatch.is_none() =>
@@ -755,7 +764,7 @@ impl App {
         match self.screen {
             Screen::Planet => BuildingKind::ALL.len(),
             Screen::Shipyard => ShipKind::ALL.len() + DefenceKind::ALL.len(),
-            Screen::Overview => self.state.config.techs.iter().count(),
+            Screen::Overview => self.overview_techs().len(),
             Screen::Wonder => self.state.config.wonders.len(),
             Screen::Prestige => 1 + self.state.config.prestige.bonuses.len(),
             Screen::Market => TRADE_PAIRS.len(),
@@ -767,12 +776,39 @@ impl App {
     }
 
     fn tech_id_at(&self, index: usize) -> Option<String> {
+        self.overview_techs().get(index).map(|spec| spec.id.clone())
+    }
+
+    fn overview_techs(&self) -> Vec<&hoshi_core::TechSpec> {
         self.state
             .config
             .techs
+            .branch_techs(self.tree_branch)
+            .into_iter()
+            .filter(|spec| self.state.tech_node_state(&spec.id) != TechNodeState::Hidden)
+            .collect()
+    }
+
+    fn visible_tree_branches(&self) -> Vec<TechBranch> {
+        let mut branches = TechBranch::PLAYABLE.to_vec();
+        if self.state.ancient_unlocked() {
+            branches.push(TechBranch::Ancient);
+        }
+        branches
+    }
+
+    fn nudge_tree_branch(&mut self, delta: i32) {
+        let branches = self.visible_tree_branches();
+        if branches.is_empty() {
+            return;
+        }
+        let i = branches
             .iter()
-            .nth(index)
-            .map(|spec| spec.id.clone())
+            .position(|b| *b == self.tree_branch)
+            .unwrap_or(0);
+        let next = (i as i32 + delta).rem_euclid(branches.len() as i32) as usize;
+        self.tree_branch = branches[next];
+        self.selected = 0;
     }
 
     fn header_lines(&self) -> Vec<Line<'static>> {
@@ -815,7 +851,7 @@ impl App {
     fn footer_lines(&self) -> Vec<Line<'static>> {
         vec![Line::from(match self.screen {
             Screen::Overview => {
-                "tab screens  [/] planet  j/k select  enter research  x cancel  y copy seed  q quit"
+                "tab screens  [/] planet  h/l branch  j/k select  enter research  x cancel  y copy seed  q quit"
             }
             Screen::Planet => {
                 "tab screens  [/] planet  j/k select  enter build  x cancel queue  q quit"
@@ -947,8 +983,20 @@ impl App {
     }
 
     fn research_lines(&self, height: usize) -> Vec<Line<'static>> {
-        let mut rows = vec![Line::from("Research")];
-        let specs: Vec<_> = self.state.config.techs.iter().collect();
+        let tabs = self
+            .visible_tree_branches()
+            .into_iter()
+            .map(|branch| {
+                if branch == self.tree_branch {
+                    format!("[{}]", branch.as_key())
+                } else {
+                    branch.as_key().to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut rows = vec![Line::from(format!("Tree  {tabs}  h/l branch"))];
+        let specs = self.overview_techs();
         let entries: Vec<Line<'static>> = specs
             .iter()
             .enumerate()
@@ -1089,8 +1137,11 @@ impl App {
         let cost = spec.cost(level);
         let secs = spec.duration_secs(level);
         let mark = if index == self.selected { '>' } else { ' ' };
+        let indent = "  ".repeat(spec.tier.min(4) as usize);
+        let state = self.state.tech_node_state(&spec.id).as_key();
+        let extra = if spec.keystone { " keystone" } else { "" };
         let text = format!(
-            "{mark} {}  lv{level}  {}  {secs}s",
+            "{mark}{indent}{}  lv{level}  {state}{extra}  {}  {secs}s",
             spec.name,
             cost_label(cost)
         );
@@ -1124,6 +1175,11 @@ impl App {
     }
 
     fn tech_block_reason(&self, id: &str, cost: Resources) -> Option<String> {
+        match self.state.tech_node_state(id) {
+            TechNodeState::Excluded => return Some("excluded".into()),
+            TechNodeState::Hidden => return Some("prestige".into()),
+            _ => {}
+        }
         if let Ok(gaps) = self.state.missing_research_prereqs(id)
             && let Some(gap) = gaps.first()
         {
@@ -1910,6 +1966,62 @@ mod tests {
     }
 
     #[test]
+    fn tree_view_renders_at_80x24_and_shows_node_states() {
+        let mut state = GameState::new(1_000);
+        state.buildings.research_lab = 1;
+        state.tech_levels.insert("energy".into(), 1);
+        state
+            .exclusive_picks
+            .insert("mining_method".into(), "deep_core".into());
+        let mut app = App::new(state);
+        let small = render_text(&app, 80, 24);
+        assert!(small.contains("[industry]"), "{small}");
+        assert!(
+            small.contains("locked") || small.contains("available") || small.contains("researched"),
+            "{small}"
+        );
+        let text = render_text(&app, 120, 40);
+        assert!(text.contains("[industry]"), "{text}");
+        assert!(text.contains("military"), "{text}");
+        assert!(text.contains("society"), "{text}");
+        assert!(text.contains("researched"), "{text}");
+        assert!(text.contains("Energy Technology"), "{text}");
+        assert!(text.contains("excluded"), "{text}");
+        assert!(text.contains("keystone"), "{text}");
+        assert!(!text.contains("ancient"), "{text}");
+        app.handle_key(KeyCode::Char('l'), 1_000);
+        assert_eq!(app.tree_branch, TechBranch::Military);
+        let military = render_text(&app, 120, 40);
+        assert!(military.contains("[military]"), "{military}");
+        app.handle_key(KeyCode::Char('l'), 1_000);
+        app.handle_key(KeyCode::Char('l'), 1_000);
+        assert_eq!(app.tree_branch, TechBranch::Industry);
+    }
+
+    #[test]
+    fn tree_view_queues_research_from_the_keyboard() {
+        let mut state = GameState::new(1_000);
+        state.buildings.research_lab = 1;
+        state.resources.metal = 10_000.0;
+        state.resources.crystal = 10_000.0;
+        state.resources.deuterium = 10_000.0;
+        let mut app = App::new(state);
+        let energy = app
+            .overview_techs()
+            .iter()
+            .position(|spec| spec.id == "energy")
+            .unwrap();
+        app.selected = energy;
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert_eq!(
+            app.state.research.as_ref().map(|j| j.tech.as_str()),
+            Some("energy")
+        );
+        let text = render_text(&app, 120, 40);
+        assert!(text.contains("in_progress"), "{text}");
+    }
+
+    #[test]
     fn disabled_portraits_use_ascii_and_keep_layout() {
         let mut app = App::new(GameState::new(1_000));
         app.portraits.enabled = false;
@@ -2012,9 +2124,7 @@ mod tests {
         app.handle_key(KeyCode::Tab, clock.now_unix());
         assert_eq!(app.screen, Screen::Overview);
         let energy = app
-            .state
-            .config
-            .techs
+            .overview_techs()
             .iter()
             .position(|spec| spec.id == "energy")
             .unwrap();

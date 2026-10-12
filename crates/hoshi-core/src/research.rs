@@ -47,6 +47,68 @@ pub struct TechPrereq {
     pub level: u32,
 }
 
+/// Playable tree branch. Ancient stays hidden until prestige unlocks it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TechBranch {
+    #[default]
+    Industry,
+    Military,
+    Society,
+    Ancient,
+}
+
+impl TechBranch {
+    pub const PLAYABLE: [TechBranch; 3] = [
+        TechBranch::Industry,
+        TechBranch::Military,
+        TechBranch::Society,
+    ];
+
+    pub fn as_key(self) -> &'static str {
+        match self {
+            TechBranch::Industry => "industry",
+            TechBranch::Military => "military",
+            TechBranch::Society => "society",
+            TechBranch::Ancient => "ancient",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Some(match key {
+            "industry" => TechBranch::Industry,
+            "military" => TechBranch::Military,
+            "society" => TechBranch::Society,
+            "ancient" => TechBranch::Ancient,
+            _ => return None,
+        })
+    }
+}
+
+/// Derived TUI/state for one node. Hidden is omitted from the five visible states.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TechNodeState {
+    Locked,
+    Available,
+    InProgress,
+    Researched,
+    Excluded,
+    Hidden,
+}
+
+impl TechNodeState {
+    pub fn as_key(self) -> &'static str {
+        match self {
+            TechNodeState::Locked => "locked",
+            TechNodeState::Available => "available",
+            TechNodeState::InProgress => "in_progress",
+            TechNodeState::Researched => "researched",
+            TechNodeState::Excluded => "excluded",
+            TechNodeState::Hidden => "hidden",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TechSpec {
     pub id: String,
@@ -60,6 +122,12 @@ pub struct TechSpec {
     pub prereq_buildings: Vec<BuildingPrereq>,
     pub prereq_techs: Vec<TechPrereq>,
     pub modifiers: Vec<TechModifier>,
+    pub branch: TechBranch,
+    pub tier: u32,
+    pub exclusive_group: Option<String>,
+    pub keystone: bool,
+    pub hidden: bool,
+    pub max_level: Option<u32>,
 }
 
 impl TechSpec {
@@ -81,12 +149,16 @@ impl TechSpec {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TechTree {
     techs: BTreeMap<String, TechSpec>,
+    pub starting_techs: Vec<String>,
+    pub ancient_prestige_runs: u32,
 }
 
 impl TechTree {
     pub fn empty() -> Self {
         Self {
             techs: BTreeMap::new(),
+            starting_techs: Vec::new(),
+            ancient_prestige_runs: 0,
         }
     }
 
@@ -125,10 +197,25 @@ impl TechTree {
                     })
                     .collect(),
                 modifiers: raw.modifiers,
+                branch: raw.branch,
+                tier: raw.tier,
+                exclusive_group: raw.exclusive_group,
+                keystone: raw.keystone,
+                hidden: raw.hidden || raw.branch == TechBranch::Ancient,
+                max_level: raw.max_level,
             };
             techs.insert(raw.id, spec);
         }
-        let tree = Self { techs };
+        for id in &file.tree.starting_techs {
+            if !techs.contains_key(id) {
+                return Err(TechTreeError::UnknownStartingTech(id.clone()));
+            }
+        }
+        let tree = Self {
+            techs,
+            starting_techs: file.tree.starting_techs,
+            ancient_prestige_runs: file.tree.ancient_prestige_runs,
+        };
         tree.validate()?;
         Ok(tree)
     }
@@ -139,6 +226,22 @@ impl TechTree {
 
     pub fn iter(&self) -> impl Iterator<Item = &TechSpec> {
         self.techs.values()
+    }
+
+    pub fn branch_techs(&self, branch: TechBranch) -> Vec<&TechSpec> {
+        let mut rows: Vec<&TechSpec> = self
+            .techs
+            .values()
+            .filter(|spec| spec.branch == branch)
+            .collect();
+        rows.sort_by(|a, b| a.tier.cmp(&b.tier).then(a.id.cmp(&b.id)));
+        rows
+    }
+
+    pub fn keystone(&self, branch: TechBranch) -> Option<&TechSpec> {
+        self.techs
+            .values()
+            .find(|spec| spec.branch == branch && spec.keystone)
     }
 
     fn validate(&self) -> Result<(), TechTreeError> {
@@ -157,7 +260,86 @@ impl TechTree {
                 return Err(TechTreeError::Cycle(cycle));
             }
         }
+        self.validate_exclusive_groups()?;
+        self.validate_keystones()?;
         Ok(())
+    }
+
+    fn validate_exclusive_groups(&self) -> Result<(), TechTreeError> {
+        let mut groups: BTreeMap<&str, Vec<&TechSpec>> = BTreeMap::new();
+        for spec in self.techs.values() {
+            if let Some(group) = spec.exclusive_group.as_deref() {
+                groups.entry(group).or_default().push(spec);
+            }
+        }
+        for (group, members) in &groups {
+            if members.len() < 2 {
+                return Err(TechTreeError::ExclusiveTooSmall {
+                    group: (*group).to_string(),
+                });
+            }
+            let ids: HashSet<&str> = members.iter().map(|s| s.id.as_str()).collect();
+            let independent = members.iter().any(|spec| {
+                !spec
+                    .prereq_techs
+                    .iter()
+                    .any(|pre| ids.contains(pre.id.as_str()))
+            });
+            if !independent {
+                return Err(TechTreeError::ExclusiveDeadlock {
+                    group: (*group).to_string(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_keystones(&self) -> Result<(), TechTreeError> {
+        let reachable = self.reachable_ids();
+        for spec in self.techs.values() {
+            if spec.keystone && !reachable.contains(&spec.id) {
+                return Err(TechTreeError::UnreachableKeystone(spec.id.clone()));
+            }
+        }
+        if self.techs.len() < 8 {
+            return Ok(());
+        }
+        for branch in TechBranch::PLAYABLE {
+            let stones: Vec<_> = self
+                .techs
+                .values()
+                .filter(|spec| spec.branch == branch && spec.keystone)
+                .collect();
+            if stones.len() != 1 {
+                return Err(TechTreeError::KeystoneCount {
+                    branch: branch.as_key().to_string(),
+                    count: stones.len(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn reachable_ids(&self) -> HashSet<String> {
+        let mut reachable = HashSet::new();
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for spec in self.techs.values() {
+                if reachable.contains(&spec.id) {
+                    continue;
+                }
+                let ok = spec
+                    .prereq_techs
+                    .iter()
+                    .all(|pre| reachable.contains(&pre.id));
+                if ok {
+                    reachable.insert(spec.id.clone());
+                    changed = true;
+                }
+            }
+        }
+        reachable
     }
 
     fn cycle_from(&self, start: &str) -> Option<Vec<String>> {
@@ -218,6 +400,9 @@ pub enum ResearchError {
     InsufficientResources { missing: Resources, cost: Resources },
     MissingPrerequisites { gaps: Vec<PrereqGap> },
     Idle,
+    Excluded { id: String, group: String },
+    Hidden { id: String },
+    Complete { id: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -273,6 +458,11 @@ impl fmt::Display for ResearchError {
                 write!(f, "missing prerequisites: {}", list.join("; "))
             }
             ResearchError::Idle => write!(f, "no research in progress"),
+            ResearchError::Excluded { id, group } => {
+                write!(f, "{id} is excluded by exclusive group {group}")
+            }
+            ResearchError::Hidden { id } => write!(f, "{id} is locked behind prestige"),
+            ResearchError::Complete { id } => write!(f, "{id} is already complete"),
         }
     }
 }
@@ -286,6 +476,11 @@ pub enum TechTreeError {
     UnknownPrereq { tech: String, missing: String },
     UnknownBuilding { name: String },
     Cycle(Vec<String>),
+    UnknownStartingTech(String),
+    ExclusiveTooSmall { group: String },
+    ExclusiveDeadlock { group: String },
+    UnreachableKeystone(String),
+    KeystoneCount { branch: String, count: usize },
 }
 
 impl fmt::Display for TechTreeError {
@@ -300,6 +495,21 @@ impl fmt::Display for TechTreeError {
                 write!(f, "unknown building {name} in research tree")
             }
             TechTreeError::Cycle(ids) => write!(f, "cycle in research tree: {}", ids.join(" -> ")),
+            TechTreeError::UnknownStartingTech(id) => {
+                write!(f, "starting tech {id} is not in the tree")
+            }
+            TechTreeError::ExclusiveTooSmall { group } => {
+                write!(f, "exclusive group {group} needs at least two techs")
+            }
+            TechTreeError::ExclusiveDeadlock { group } => {
+                write!(f, "exclusive group {group} deadlocks the branch")
+            }
+            TechTreeError::UnreachableKeystone(id) => {
+                write!(f, "keystone {id} is unreachable")
+            }
+            TechTreeError::KeystoneCount { branch, count } => {
+                write!(f, "{branch} has {count} keystones, want 1")
+            }
         }
     }
 }
@@ -308,7 +518,17 @@ impl std::error::Error for TechTreeError {}
 
 #[derive(Deserialize)]
 struct File {
+    #[serde(default)]
+    tree: FileTree,
     tech: Vec<FileTech>,
+}
+
+#[derive(Deserialize, Default)]
+struct FileTree {
+    #[serde(default)]
+    starting_techs: Vec<String>,
+    #[serde(default)]
+    ancient_prestige_runs: u32,
 }
 
 #[derive(Deserialize)]
@@ -327,6 +547,18 @@ struct FileTech {
     prereq_techs: Vec<FileTechPrereq>,
     #[serde(default)]
     modifiers: Vec<TechModifier>,
+    #[serde(default)]
+    branch: TechBranch,
+    #[serde(default)]
+    tier: u32,
+    #[serde(default)]
+    exclusive_group: Option<String>,
+    #[serde(default)]
+    keystone: bool,
+    #[serde(default)]
+    hidden: bool,
+    #[serde(default)]
+    max_level: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -364,6 +596,20 @@ mod tests {
         let weapons = tree.get("weapons").unwrap();
         assert_eq!(weapons.modifiers[0].kind, ModifierKind::WeaponDamage);
         assert!((weapons.modifiers[0].per_level - 0.1).abs() < 1e-12);
+        assert_eq!(
+            tree.keystone(TechBranch::Industry).unwrap().id,
+            "dyson_blueprint"
+        );
+        assert_eq!(
+            tree.keystone(TechBranch::Military).unwrap().id,
+            "invasion_doctrine"
+        );
+        assert_eq!(
+            tree.keystone(TechBranch::Society).unwrap().id,
+            "galactic_senate"
+        );
+        assert!(tree.get("deep_core").unwrap().exclusive_group.is_some());
+        assert!(tree.get("ancient_drive").unwrap().hidden);
     }
 
     #[test]
@@ -419,6 +665,147 @@ prereq_techs = [{ id = "a", level = 1 }]
                 assert!(ids.contains(&"a".to_string()));
                 assert!(ids.contains(&"b".to_string()));
             }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exclusive_group_of_one_is_rejected() {
+        let toml = r#"
+[[tech]]
+id = "a"
+name = "A"
+metal = 0.0
+crystal = 0.0
+deuterium = 0.0
+cost_growth = 1.0
+base_seconds = 1.0
+time_growth = 1.0
+exclusive_group = "solo"
+"#;
+        match TechTree::parse(toml) {
+            Err(TechTreeError::ExclusiveTooSmall { group }) => assert_eq!(group, "solo"),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exclusive_deadlock_is_rejected() {
+        let toml = r#"
+[[tech]]
+id = "a"
+name = "A"
+metal = 0.0
+crystal = 0.0
+deuterium = 0.0
+cost_growth = 1.0
+base_seconds = 1.0
+time_growth = 1.0
+exclusive_group = "g"
+prereq_techs = [{ id = "b", level = 1 }]
+
+[[tech]]
+id = "b"
+name = "B"
+metal = 0.0
+crystal = 0.0
+deuterium = 0.0
+cost_growth = 1.0
+base_seconds = 1.0
+time_growth = 1.0
+exclusive_group = "g"
+prereq_techs = [{ id = "a", level = 1 }]
+"#;
+        match TechTree::parse(toml) {
+            Err(TechTreeError::ExclusiveDeadlock { group }) => assert_eq!(group, "g"),
+            Err(TechTreeError::Cycle(_)) => {}
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unreachable_keystone_is_rejected() {
+        let toml = r#"
+[[tech]]
+id = "root"
+name = "Root"
+metal = 0.0
+crystal = 0.0
+deuterium = 0.0
+cost_growth = 1.0
+base_seconds = 1.0
+time_growth = 1.0
+
+[[tech]]
+id = "stone"
+name = "Stone"
+metal = 0.0
+crystal = 0.0
+deuterium = 0.0
+cost_growth = 1.0
+base_seconds = 1.0
+time_growth = 1.0
+keystone = true
+prereq_techs = [{ id = "missing_path", level = 1 }]
+"#;
+        match TechTree::parse(toml) {
+            Err(TechTreeError::UnknownPrereq { missing, .. }) => {
+                assert_eq!(missing, "missing_path");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn keystone_behind_a_missing_chain_is_unreachable() {
+        let toml = r#"
+[[tech]]
+id = "root"
+name = "Root"
+metal = 0.0
+crystal = 0.0
+deuterium = 0.0
+cost_growth = 1.0
+base_seconds = 1.0
+time_growth = 1.0
+
+[[tech]]
+id = "loop_a"
+name = "Loop A"
+metal = 0.0
+crystal = 0.0
+deuterium = 0.0
+cost_growth = 1.0
+base_seconds = 1.0
+time_growth = 1.0
+prereq_techs = [{ id = "loop_b", level = 1 }]
+
+[[tech]]
+id = "loop_b"
+name = "Loop B"
+metal = 0.0
+crystal = 0.0
+deuterium = 0.0
+cost_growth = 1.0
+base_seconds = 1.0
+time_growth = 1.0
+prereq_techs = [{ id = "loop_a", level = 1 }]
+
+[[tech]]
+id = "stone"
+name = "Stone"
+metal = 0.0
+crystal = 0.0
+deuterium = 0.0
+cost_growth = 1.0
+base_seconds = 1.0
+time_growth = 1.0
+keystone = true
+prereq_techs = [{ id = "loop_a", level = 1 }]
+"#;
+        match TechTree::parse(toml) {
+            Err(TechTreeError::Cycle(_)) => {}
+            Err(TechTreeError::UnreachableKeystone(id)) => assert_eq!(id, "stone"),
             other => panic!("unexpected {other:?}"),
         }
     }

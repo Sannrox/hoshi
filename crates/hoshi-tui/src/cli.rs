@@ -469,6 +469,7 @@ fn state_value(state: &GameState) -> Value {
                 "completes_at": j.completes_at,
             })),
             "levels": techs,
+            "exclusive_picks": state.exclusive_picks,
         },
         "fleet": fleet,
         "defences": defences,
@@ -968,6 +969,7 @@ mod tests {
         let text = value.to_string();
         assert!(!text.contains("rng_seed"));
         assert!(!text.contains("galaxy_seed"));
+        assert!(value["research"]["exclusive_picks"].is_object());
         let _ = std::fs::remove_file(&save);
     }
 

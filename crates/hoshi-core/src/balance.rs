@@ -270,6 +270,8 @@ pub struct PacingTargets {
     pub min_metal_mine_per_day: u32,
     /// `metal(with max PR-merge) / metal(activity off)` must stay at or below this.
     pub max_bridge_metal_ratio: f64,
+    /// Each branch keystone should complete within this many seconds.
+    pub keystone_secs: u64,
 }
 
 impl Default for PacingTargets {
@@ -278,6 +280,7 @@ impl Default for PacingTargets {
             first_upgrade_secs: 300,
             min_metal_mine_per_day: 1,
             max_bridge_metal_ratio: 8.0,
+            keystone_secs: 14 * 86_400,
         }
     }
 }
@@ -828,6 +831,12 @@ struct FilePacing {
     first_upgrade_secs: u64,
     min_metal_mine_per_day: u32,
     max_bridge_metal_ratio: f64,
+    #[serde(default = "default_keystone_secs")]
+    keystone_secs: u64,
+}
+
+fn default_keystone_secs() -> u64 {
+    14 * 86_400
 }
 
 #[derive(Deserialize)]
@@ -1153,6 +1162,7 @@ impl File {
                 first_upgrade_secs: self.pacing.first_upgrade_secs,
                 min_metal_mine_per_day: self.pacing.min_metal_mine_per_day,
                 max_bridge_metal_ratio: self.pacing.max_bridge_metal_ratio,
+                keystone_secs: self.pacing.keystone_secs,
             },
             outposts: {
                 let rare = if self.outposts.rare.is_empty() {
