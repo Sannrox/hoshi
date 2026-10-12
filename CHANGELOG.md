@@ -8,6 +8,7 @@
 
 ### Added
 
+- Bridge activity status bar and a scrollable log (`a`) when the TUI is built with `--features bridge` and the bridge is enabled in config. Latest event, mine/lab boost countdowns, and the last 100 sourced effects; raids are marked. Off in a default build.
 - Combat replays: each fight stores a seed plus round frames (save schema v23). The TUI overlay plays ASCII volleys at 10 fps from the overview (`r`) and the away summary; space pauses, `n` steps, `x` skips. Reduced motion and `no_animation` jump to the last frame. Fleet fights replay from the stored seed; layered planet battles and invasions replay from stored frames.
 - TUI keymap is remappable in `config.toml` (`keys.quit = "p"`). Conflicting remaps are rejected and the defaults stay in force. `?` opens a help overlay that lists the actions for the current screen. Existing keys still work as before.
 - Achievements from `achievements.toml` (twenty-four to start). Conditions evaluate during catch-up and award once. Hidden rows stay ??? until earned. Unlocks and dates survive prestige. The TUI achievements screen lists progress; an unlock lands in the event log. Save schema v22.

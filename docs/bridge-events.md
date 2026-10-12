@@ -53,6 +53,8 @@ The reader stores a byte offset in `feed.jsonl.offset` and continues from there 
 
 ## Game effects
 
+When the TUI is built with `--features bridge` and Settings enables the agent bridge, a one-line status bar shows the latest accepted event and remaining production/research boost time. `a` opens a scrollable log of the last 100 sourced effects. Raids and losses are marked. The bar is absent from a default build.
+
 When the TUI is built with `--features bridge` and the feed is enabled, accepted events apply at their timestamp during catch-up:
 
 | Event | Effect |

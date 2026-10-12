@@ -527,6 +527,8 @@ fn play_path(
     app.portraits = portraits;
     app.reduced_motion = user.reduced_motion;
     app.no_animation = user.no_animation;
+    #[cfg(feature = "bridge")]
+    app.set_bridge_ui(user.bridge);
     if now.saturating_sub(before.tick) >= user.away_threshold_secs {
         app.set_away(summarize_away(&before, &app.state));
     }
@@ -556,7 +558,7 @@ fn play_path(
             if let Some(bridge) = bridge.as_mut()
                 && let Ok(batch) = bridge.poll()
             {
-                apply_bridge_events(&mut app.state, batch, clock.now_unix());
+                apply_bridge_events(&mut app, batch, clock.now_unix());
             }
         }
         app.state.catch_up(clock.now_unix());
@@ -603,16 +605,21 @@ fn play_path(
 }
 
 #[cfg(feature = "bridge")]
-fn apply_bridge_events(
-    state: &mut hoshi_core::GameState,
-    batch: hoshi_bridge::ReadBatch,
-    now_unix: u64,
-) {
+fn apply_bridge_events(app: &mut App, batch: hoshi_bridge::ReadBatch, now_unix: u64) {
     let mut events = batch.events;
     events.sort_by_key(|e| e.ts);
     for event in events {
-        if let Some(pulse) = pulse_from_event(&event) {
-            let _ = state.apply_activity(pulse, now_unix);
+        if let Some(pulse) = pulse_from_event(&event)
+            && app.state.apply_activity(pulse, now_unix) == hoshi_core::ActivityApply::Applied
+        {
+            let effect = app
+                .state
+                .events
+                .last()
+                .map(|e| e.text.clone())
+                .unwrap_or_else(|| event.kind.as_key().to_string());
+            let alert = effect.contains("raid") || effect.contains("lost");
+            app.record_bridge(&event.source, &effect, alert);
         }
     }
 }
