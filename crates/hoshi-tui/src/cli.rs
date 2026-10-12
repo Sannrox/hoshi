@@ -499,6 +499,9 @@ fn state_value(state: &GameState) -> Value {
             "eligible": state.can_prestige(),
             "owned": state.prestige.owned,
         },
+        "achievements": state.achievements.iter().map(|(id, at)| {
+            json!({"id": id, "unlocked_at": at})
+        }).collect::<Vec<_>>(),
         "laws": state.laws.laws.iter().map(|law| {
             json!({
                 "id": law.id,
@@ -970,6 +973,7 @@ mod tests {
         assert!(!text.contains("rng_seed"));
         assert!(!text.contains("galaxy_seed"));
         assert!(value["research"]["exclusive_picks"].is_object());
+        assert!(value["achievements"].is_array());
         let _ = std::fs::remove_file(&save);
     }
 

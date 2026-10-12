@@ -211,6 +211,12 @@ pub struct GameState {
     pub spy_reports: Vec<crate::SpyReport>,
     pub next_report_id: u64,
     pub laws: crate::LawState,
+    /// Achievement id → unix unlock time. Survives prestige.
+    pub achievements: BTreeMap<String, u64>,
+    /// Raids this run where the player was not the attacker. Resets with prestige.
+    pub raids_survived: u32,
+    /// Successful outpost invasions this run. Resets with prestige.
+    pub outposts_conquered: u32,
     pub config: BalanceConfig,
 }
 
@@ -274,6 +280,9 @@ impl GameState {
             spy_reports: Vec::new(),
             next_report_id: 0,
             laws: crate::LawState::default(),
+            achievements: BTreeMap::new(),
+            raids_survived: 0,
+            outposts_conquered: 0,
             config,
         };
         state.apply_prestige_start();
@@ -378,12 +387,14 @@ impl GameState {
                 self.produce_until(now_unix);
                 self.apply_laws_at(now_unix);
                 self.resolve_story(now_unix);
+                self.evaluate_achievements(now_unix);
                 return;
             };
             if done_at > now_unix {
                 self.produce_until(now_unix);
                 self.apply_laws_at(now_unix);
                 self.resolve_story(now_unix);
+                self.evaluate_achievements(now_unix);
                 return;
             }
             self.produce_until(done_at);
@@ -451,6 +462,7 @@ impl GameState {
                 self.tick_diplomacy(done_at);
             }
             self.resolve_story(done_at);
+            self.evaluate_achievements(done_at);
         }
     }
 
@@ -2103,6 +2115,7 @@ impl GameState {
 
         let config = self.config.clone();
         let prestige = self.prestige.clone();
+        let achievements = self.achievements.clone();
         let deterministic = self.deterministic;
         let next_seed = self
             .galaxy_seed
@@ -2111,6 +2124,7 @@ impl GameState {
 
         let mut next = Self::with_config(now, config);
         next.prestige = prestige;
+        next.achievements = achievements;
         next.deterministic = deterministic;
         next.galaxy_seed = next_seed;
         next.rng_seed = next_seed;
@@ -2134,6 +2148,7 @@ impl GameState {
                 preview.run.index, preview.score, preview.earned
             ),
         );
+        next.evaluate_achievements(now);
         *self = next;
         Ok(preview)
     }
@@ -2759,6 +2774,7 @@ impl GameState {
             return false;
         }
         self.apply_faction_delta("pirates", |f| f.conquest_delta, "conquest", done_at);
+        self.outposts_conquered = self.outposts_conquered.saturating_add(1);
         self.push_event(done_at, format_outpost_invade(&report, dest));
         let outpost = self.outposts.remove(outpost_idx);
         let ships = self.missions.remove(index).ships;
@@ -2774,6 +2790,7 @@ impl GameState {
             rare: outpost.rare,
             goods: BTreeMap::new(),
         });
+        self.evaluate_achievements(done_at);
         true
     }
 
@@ -2815,6 +2832,9 @@ impl GameState {
             self.fleet = report.defender_after;
             let plunder = self.take_raid_plunder(report.winner);
             self.apply_raid_standing(report.winner, done_at);
+            if report.winner != CombatWinner::Attacker {
+                self.raids_survived = self.raids_survived.saturating_add(1);
+            }
             self.push_event(done_at, format_raid_report(&report, plunder));
             report
         } else {
@@ -2837,6 +2857,9 @@ impl GameState {
             self.defences = battle.defences_after;
             let plunder = self.take_raid_plunder(battle.winner);
             self.apply_raid_standing(battle.winner, done_at);
+            if battle.winner != CombatWinner::Attacker {
+                self.raids_survived = self.raids_survived.saturating_add(1);
+            }
             self.push_event(
                 done_at,
                 format_layered_raid(pirates, parked, &battle, plunder),
@@ -2854,6 +2877,7 @@ impl GameState {
         self.next_raid_at = self
             .raid_interval_secs()
             .map(|wait| done_at.saturating_add(wait));
+        self.evaluate_achievements(done_at);
         report
     }
 
@@ -2921,7 +2945,7 @@ impl GameState {
         out
     }
 
-    fn push_event(&mut self, at: u64, text: String) {
+    pub(crate) fn push_event(&mut self, at: u64, text: String) {
         self.events.push(GameEvent { at, text });
         if self.events.len() > EVENT_LOG_CAP {
             let drop = self.events.len() - EVENT_LOG_CAP;
@@ -4241,7 +4265,7 @@ fn format_outpost_invade(report: &crate::CombatReport, dest: Coord) -> String {
 
 fn format_raid_report(report: &crate::CombatReport, plunder: Resources) -> String {
     format!(
-        "raid: pirates {} vs {}. {} rounds. lost {}. pirates lost {}. plunder M{:.0} C{:.0} D{:.0}",
+        "raid: pirates {} vs {}. {} rounds. lost {}. pirates lost {}. plunder M{:.0} C{:.0} D{:.0}. winner {}",
         fleet_label(report.attacker_before),
         fleet_label(report.defender_before),
         report.rounds,
@@ -4249,7 +4273,8 @@ fn format_raid_report(report: &crate::CombatReport, plunder: Resources) -> Strin
         fleet_label(fleet_losses(report.attacker_before, report.attacker_after)),
         plunder.metal,
         plunder.crystal,
-        plunder.deuterium
+        plunder.deuterium,
+        report.winner.as_key(),
     )
 }
 
@@ -4477,6 +4502,7 @@ mod tests {
             defences: crate::DefenceConfig::default(),
             waste: crate::WasteConfig::default(),
             laws: crate::LawConfig::default(),
+            achievements: crate::AchievementConfig::empty(),
         }
     }
 
@@ -7138,6 +7164,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         let preview = state.prestige_preview();
         assert!(preview.eligible);
         assert!(preview.kept.contains(&"purchased bonuses"));
+        assert!(preview.kept.contains(&"achievements"));
         assert!(preview.lost.contains(&"resources"));
         let score = preview.score;
         state.prestige_reset(20).unwrap();
