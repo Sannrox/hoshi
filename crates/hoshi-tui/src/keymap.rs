@@ -15,6 +15,8 @@ pub enum Binding {
     Cancel,
     CopySeed,
     ShowAway,
+    Replay,
+    ReplayStep,
     Increase,
     Decrease,
     SendProbe,
@@ -40,6 +42,7 @@ pub enum HelpContext {
     Map,
     Dispatch,
     Away,
+    Replay,
     Story,
     ReportView,
     TitleMenu,
@@ -75,6 +78,8 @@ impl Binding {
         Binding::Cancel,
         Binding::CopySeed,
         Binding::ShowAway,
+        Binding::Replay,
+        Binding::ReplayStep,
         Binding::Increase,
         Binding::Decrease,
         Binding::SendProbe,
@@ -98,6 +103,8 @@ impl Binding {
             Binding::Cancel => "cancel",
             Binding::CopySeed => "copy_seed",
             Binding::ShowAway => "show_away",
+            Binding::Replay => "replay",
+            Binding::ReplayStep => "replay_step",
             Binding::Increase => "increase",
             Binding::Decrease => "decrease",
             Binding::SendProbe => "send_probe",
@@ -129,6 +136,8 @@ impl Binding {
             Binding::Cancel => vec![KeyCode::Char('x'), KeyCode::Esc],
             Binding::CopySeed => vec![KeyCode::Char('y')],
             Binding::ShowAway => vec![KeyCode::Char('w')],
+            Binding::Replay => vec![KeyCode::Char('r')],
+            Binding::ReplayStep => vec![KeyCode::Char('n')],
             Binding::Increase => vec![KeyCode::Char('+')],
             Binding::Decrease => vec![KeyCode::Char('-')],
             Binding::SendProbe => vec![KeyCode::Char('s')],
@@ -156,6 +165,7 @@ impl HelpContext {
                 Binding::Cancel,
                 Binding::CopySeed,
                 Binding::ShowAway,
+                Binding::Replay,
                 Binding::CursorLeft,
                 Binding::CursorRight,
             ],
@@ -241,7 +251,21 @@ impl HelpContext {
                 Binding::Confirm,
                 Binding::Cancel,
             ],
-            HelpContext::Away | HelpContext::ReportView => &[
+            HelpContext::Away => &[
+                Binding::Help,
+                Binding::Quit,
+                Binding::Confirm,
+                Binding::Cancel,
+                Binding::Replay,
+            ],
+            HelpContext::Replay => &[
+                Binding::Help,
+                Binding::Quit,
+                Binding::Cancel,
+                Binding::Toggle,
+                Binding::ReplayStep,
+            ],
+            HelpContext::ReportView => &[
                 Binding::Help,
                 Binding::Quit,
                 Binding::Confirm,
@@ -303,6 +327,8 @@ impl HelpContext {
             Binding::Cancel => "cancel / back / dismiss",
             Binding::CopySeed => "copy galaxy seed",
             Binding::ShowAway => "reopen away summary",
+            Binding::Replay => "replay last combat",
+            Binding::ReplayStep => "step replay",
             Binding::Increase => "increase amount",
             Binding::Decrease => "decrease amount",
             Binding::SendProbe => "send spy probe",
@@ -450,6 +476,7 @@ impl Keymap {
             HelpContext::Map,
             HelpContext::Dispatch,
             HelpContext::Away,
+            HelpContext::Replay,
             HelpContext::Story,
             HelpContext::ReportView,
             HelpContext::TitleMenu,
@@ -594,6 +621,7 @@ mod tests {
         assert!(overview.contains("quit"), "{overview}");
         assert!(overview.contains("?"), "{overview}");
         assert!(overview.contains("copy galaxy seed"), "{overview}");
+        assert!(overview.contains("replay last combat"), "{overview}");
         let market = km.help_lines(HelpContext::Market).join("\n");
         assert!(market.contains("increase amount"), "{market}");
         assert!(!market.contains("send spy probe"), "{market}");

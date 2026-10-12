@@ -1,6 +1,5 @@
 //! SQLite save file. Schema version is `PRAGMA user_version`.
 
-use crate::DefenceKind;
 use crate::activity::{ActivityChannel, ActivityTracker};
 use crate::balance::BalanceConfig;
 use crate::buildings::{BuildJob, BuildingKind, Buildings};
@@ -12,6 +11,7 @@ use crate::research::ResearchJob;
 use crate::ships::{Fleet, ShipJob, ShipKind};
 use crate::state::{GameEvent, GameState, Resources};
 use crate::wonders::WonderJob;
+use crate::{CombatFrame, CombatLog, CombatReport, CombatWinner, DefenceKind, GroundReport};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 22;
+pub const SCHEMA_VERSION: u32 = 23;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -166,7 +166,10 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM law_actions;
          DELETE FROM laws;
          DELETE FROM achievements;
-         DELETE FROM achievement_stats;",
+         DELETE FROM achievement_stats;
+         DELETE FROM combat_log_ships;
+         DELETE FROM combat_log_frames;
+         DELETE FROM combat_logs;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -457,6 +460,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
         "INSERT INTO achievement_stats (id, raids_survived, outposts_conquered) VALUES (1, ?1, ?2)",
         params![state.raids_survived, state.outposts_conquered],
     )?;
+    insert_combat_logs(&tx, state)?;
     for (i, colony) in state.colonies.iter().enumerate() {
         let planet_id = (i as i64) + 2;
         tx.execute(
@@ -1069,6 +1073,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     load_spy_reports(conn, &mut state)?;
     load_laws(conn, &mut state)?;
     load_achievements(conn, &mut state)?;
+    load_combat_logs(conn, &mut state)?;
     state.sync_raid_schedule_after_standing(state.last_tick_unix);
 
     let mut stmt = conn.prepare(
@@ -1638,6 +1643,9 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "law_samples" => "SELECT COUNT(*) FROM law_samples",
         "achievements" => "SELECT COUNT(*) FROM achievements",
         "achievement_stats" => "SELECT COUNT(*) FROM achievement_stats",
+        "combat_logs" => "SELECT COUNT(*) FROM combat_logs",
+        "combat_log_frames" => "SELECT COUNT(*) FROM combat_log_frames",
+        "combat_log_ships" => "SELECT COUNT(*) FROM combat_log_ships",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -1682,7 +1690,10 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "law_actions")?
         + count_rows(conn, "law_samples")?
         + count_rows(conn, "achievements")?
-        + count_rows(conn, "achievement_stats")?)
+        + count_rows(conn, "achievement_stats")?
+        + count_rows(conn, "combat_logs")?
+        + count_rows(conn, "combat_log_frames")?
+        + count_rows(conn, "combat_log_ships")?)
 }
 
 fn migrate(conn: &Connection) -> Result<(), SaveError> {
@@ -1758,6 +1769,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 22 {
         migrate_v22(conn)?;
+    }
+    if found < 23 {
+        migrate_v23(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -2356,6 +2370,44 @@ fn migrate_v22(conn: &Connection) -> Result<(), SaveError> {
     Ok(())
 }
 
+fn migrate_v23(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS combat_logs (
+            id INTEGER PRIMARY KEY,
+            at INTEGER NOT NULL,
+            seed INTEGER NOT NULL,
+            winner TEXT NOT NULL,
+            rounds INTEGER NOT NULL,
+            layered INTEGER NOT NULL DEFAULT 0,
+            ground_atk INTEGER,
+            ground_def INTEGER,
+            ground_atk_roll INTEGER,
+            ground_def_roll INTEGER,
+            ground_winner TEXT
+        );
+        CREATE TABLE IF NOT EXISTS combat_log_frames (
+            log_id INTEGER NOT NULL,
+            frame INTEGER NOT NULL,
+            round INTEGER NOT NULL,
+            shots INTEGER NOT NULL,
+            explosions INTEGER NOT NULL,
+            PRIMARY KEY (log_id, frame)
+        );
+        CREATE TABLE IF NOT EXISTS combat_log_ships (
+            log_id INTEGER NOT NULL,
+            frame INTEGER NOT NULL,
+            side TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            count INTEGER NOT NULL,
+            shots INTEGER NOT NULL DEFAULT 0,
+            explosions INTEGER NOT NULL DEFAULT 0
+        );
+        ",
+    )?;
+    Ok(())
+}
+
 fn load_achievements(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
     let mut stmt = conn.prepare("SELECT id, unlocked_at FROM achievements")?;
     let rows = stmt.query_map([], |row| {
@@ -2378,6 +2430,217 @@ fn load_achievements(conn: &Connection, state: &mut GameState) -> Result<(), Sav
         state.outposts_conquered = u32_field(conquests, "outposts conquered")?;
     }
     Ok(())
+}
+
+fn insert_combat_logs(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<(), SaveError> {
+    for (id, log) in state.combat_logs.iter().enumerate() {
+        let log_id = (id as i64) + 1;
+        let (g_atk, g_def, g_atk_roll, g_def_roll, g_winner) = match &log.report.ground {
+            Some(g) => (
+                Some(i64::from(g.attacker_strength)),
+                Some(i64::from(g.defender_strength)),
+                Some(i64::from(g.attacker_roll)),
+                Some(i64::from(g.defender_roll)),
+                Some(g.winner.as_key()),
+            ),
+            None => (None, None, None, None, None),
+        };
+        tx.execute(
+            "INSERT INTO combat_logs (id, at, seed, winner, rounds, layered,
+                ground_atk, ground_def, ground_atk_roll, ground_def_roll, ground_winner)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                log_id,
+                log.at as i64,
+                log.report.seed as i64,
+                log.report.winner.as_key(),
+                i64::from(log.report.rounds),
+                i64::from(log.report.layered),
+                g_atk,
+                g_def,
+                g_atk_roll,
+                g_def_roll,
+                g_winner,
+            ],
+        )?;
+        for (frame_i, frame) in log.report.frames.iter().enumerate() {
+            tx.execute(
+                "INSERT INTO combat_log_frames (log_id, frame, round, shots, explosions)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    log_id,
+                    frame_i as i64,
+                    i64::from(frame.round),
+                    frame.shots,
+                    frame.explosions,
+                ],
+            )?;
+            insert_combat_frame(tx, log_id, frame_i as i64, "a", frame.attacker, frame)?;
+            insert_combat_frame(tx, log_id, frame_i as i64, "d", frame.defender, frame)?;
+        }
+    }
+    Ok(())
+}
+
+fn insert_combat_frame(
+    tx: &rusqlite::Transaction<'_>,
+    log_id: i64,
+    frame: i64,
+    side: &str,
+    fleet: Fleet,
+    snap: &CombatFrame,
+) -> Result<(), SaveError> {
+    for kind in ShipKind::ALL {
+        let count = fleet.get(kind);
+        if count == 0 {
+            continue;
+        }
+        tx.execute(
+            "INSERT INTO combat_log_ships (log_id, frame, side, kind, count, shots, explosions)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                log_id,
+                frame,
+                side,
+                kind.as_key(),
+                count,
+                snap.shots,
+                snap.explosions,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn combat_winner_from_key(key: &str) -> Result<CombatWinner, SaveError> {
+    match key {
+        "attacker" => Ok(CombatWinner::Attacker),
+        "defender" => Ok(CombatWinner::Defender),
+        "draw" => Ok(CombatWinner::Draw),
+        _ => Err(SaveError::Corrupt("unknown combat winner")),
+    }
+}
+
+fn load_combat_logs(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, at, seed, winner, rounds, layered,
+                ground_atk, ground_def, ground_atk_roll, ground_def_roll, ground_winner
+         FROM combat_logs ORDER BY id",
+    )?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, Option<i64>>(6)?,
+                row.get::<_, Option<i64>>(7)?,
+                row.get::<_, Option<i64>>(8)?,
+                row.get::<_, Option<i64>>(9)?,
+                row.get::<_, Option<String>>(10)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    state.combat_logs.clear();
+    for (id, at, seed, winner, rounds, layered, g_atk, g_def, g_atk_roll, g_def_roll, g_winner) in
+        rows
+    {
+        let winner = combat_winner_from_key(&winner)?;
+        let ground = match g_winner {
+            Some(key) => Some(GroundReport {
+                attacker_strength: u32_field(g_atk.unwrap_or(0), "ground attacker")?,
+                defender_strength: u32_field(g_def.unwrap_or(0), "ground defender")?,
+                attacker_roll: u32_field(g_atk_roll.unwrap_or(0), "ground attacker roll")?,
+                defender_roll: u32_field(g_def_roll.unwrap_or(0), "ground defender roll")?,
+                winner: combat_winner_from_key(&key)?,
+            }),
+            None => None,
+        };
+        let frames = load_combat_frames(conn, id)?;
+        let (attacker_before, defender_before) = frames
+            .first()
+            .map(|f| (f.attacker, f.defender))
+            .unwrap_or_default();
+        let (attacker_after, defender_after) = frames
+            .last()
+            .map(|f| (f.attacker, f.defender))
+            .unwrap_or_default();
+        state.combat_logs.push(CombatLog {
+            at: unix_ts(at)?,
+            report: CombatReport {
+                rounds: u8::try_from(rounds).map_err(|_| SaveError::Corrupt("combat rounds"))?,
+                attacker_before,
+                defender_before,
+                attacker_after,
+                defender_after,
+                winner,
+                ground,
+                seed: seed as u64,
+                frames,
+                layered: layered != 0,
+            },
+        });
+    }
+    Ok(())
+}
+
+fn load_combat_frames(conn: &Connection, log_id: i64) -> Result<Vec<CombatFrame>, SaveError> {
+    let mut stmt = conn.prepare(
+        "SELECT frame, round, shots, explosions FROM combat_log_frames
+         WHERE log_id = ?1 ORDER BY frame",
+    )?;
+    let header_rows = stmt.query_map([log_id], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?,
+        ))
+    })?;
+    let mut by_frame: BTreeMap<i64, CombatFrame> = BTreeMap::new();
+    for row in header_rows {
+        let (frame, round, shots, explosions) = row?;
+        by_frame.insert(
+            frame,
+            CombatFrame {
+                round: u8::try_from(round).map_err(|_| SaveError::Corrupt("combat round"))?,
+                attacker: Fleet::default(),
+                defender: Fleet::default(),
+                shots: u32_field(shots, "combat shots")?,
+                explosions: u32_field(explosions, "combat explosions")?,
+            },
+        );
+    }
+    drop(stmt);
+    let mut stmt = conn.prepare(
+        "SELECT frame, side, kind, count FROM combat_log_ships
+         WHERE log_id = ?1 ORDER BY frame, side, kind",
+    )?;
+    let rows = stmt.query_map([log_id], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, i64>(3)?,
+        ))
+    })?;
+    for row in rows {
+        let (frame, side, kind, count) = row?;
+        let kind = ShipKind::from_key(&kind).ok_or(SaveError::Corrupt("unknown combat ship"))?;
+        let count = u32_field(count, "combat ship count")?;
+        let entry = by_frame
+            .get_mut(&frame)
+            .ok_or(SaveError::Corrupt("combat ship without frame"))?;
+        match side.as_str() {
+            "a" => entry.attacker.add(kind, count),
+            "d" => entry.defender.add(kind, count),
+            _ => return Err(SaveError::Corrupt("unknown combat side")),
+        }
+    }
+    Ok(by_frame.into_values().collect())
 }
 
 fn load_spy_reports(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
@@ -3835,6 +4098,100 @@ mod tests {
         assert_eq!(loaded, state);
         assert_eq!(count_rows(&conn, "laws").unwrap(), 1);
         assert_eq!(count_rows(&conn, "law_approvals").unwrap(), 1);
+    }
+
+    #[test]
+    fn migrate_v23_round_trips_combat_logs() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v23(&conn).unwrap();
+        migrate_v23(&conn).unwrap();
+        let mut state = GameState::new(10);
+        state.fleet.add(crate::ShipKind::LightFighter, 4);
+        let _ = state.trigger_raid(10);
+        assert!(!state.combat_logs.is_empty());
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.combat_logs, state.combat_logs);
+        assert_eq!(count_rows(&conn, "combat_logs").unwrap(), 1);
+        assert!(count_rows(&conn, "combat_log_frames").unwrap() >= 1);
+    }
+
+    #[test]
+    fn migrate_v23_keeps_empty_terminal_frames_and_ground() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let mut before = Fleet::default();
+        before.add(crate::ShipKind::LightFighter, 1);
+        let mut state = GameState::new(10);
+        state.combat_logs.push(CombatLog {
+            at: 10,
+            report: CombatReport {
+                rounds: 6,
+                attacker_before: before,
+                defender_before: before,
+                attacker_after: Fleet::default(),
+                defender_after: Fleet::default(),
+                winner: CombatWinner::Draw,
+                ground: Some(crate::GroundReport {
+                    attacker_strength: 10,
+                    defender_strength: 4,
+                    attacker_roll: 9,
+                    defender_roll: 3,
+                    winner: CombatWinner::Attacker,
+                }),
+                seed: 7,
+                frames: vec![
+                    CombatFrame {
+                        round: 0,
+                        attacker: before,
+                        defender: before,
+                        shots: 0,
+                        explosions: 0,
+                    },
+                    CombatFrame {
+                        round: 6,
+                        attacker: Fleet::default(),
+                        defender: Fleet::default(),
+                        shots: 2,
+                        explosions: 2,
+                    },
+                ],
+                layered: true,
+            },
+        });
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.combat_logs, state.combat_logs);
+        assert_eq!(loaded.combat_logs[0].report.frames.len(), 2);
+        assert_eq!(loaded.combat_logs[0].report.frames[1].round, 6);
+        assert!(loaded.combat_logs[0].report.frames[1].attacker.is_empty());
+        assert!(loaded.combat_logs[0].report.frames[1].defender.is_empty());
+        assert_eq!(count_rows(&conn, "combat_log_frames").unwrap(), 2);
+    }
+
+    #[test]
+    fn migrate_v23_round_trips_layered_raid_logs() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let mut state = GameState::new(10);
+        state.defences.add(DefenceKind::LightCannon, 6);
+        state.defences.add(DefenceKind::OrbitalStation, 1);
+        state.defences.add(DefenceKind::ShieldDome, 1);
+        state.defences.add(DefenceKind::Garrison, 4);
+        state.fleet.add(crate::ShipKind::LightFighter, 2);
+        let report = state.trigger_raid(10);
+        assert!(report.layered);
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.combat_logs, state.combat_logs);
+        let log = &loaded.combat_logs[0].report;
+        assert_eq!(log.frames.last().map(|f| f.round), Some(log.rounds.max(1)));
+        assert_eq!(
+            log.frames.last().map(|f| f.attacker),
+            Some(log.attacker_after)
+        );
+        assert_eq!(
+            log.frames.last().map(|f| f.defender),
+            Some(log.defender_after)
+        );
     }
 
     #[test]

@@ -5,9 +5,9 @@ use crate::keymap::{Binding, HelpContext, Keymap};
 use crate::portraits::{self, PortraitView, Protocol, Slot};
 use crate::title::AwaySummary;
 use hoshi_core::{
-    BuildingKind, Coord, DefenceKind, Fleet, GameState, Jurisdiction, JurisdictionKind, LawStatus,
-    ResourceKind, Resources, ShipKind, SpyReport, StoryEvent, TechBranch, TechNodeState,
-    WonderError, encode_galaxy_seed,
+    BuildingKind, CombatLog, CombatWinner, Coord, DefenceKind, Fleet, GameState, Jurisdiction,
+    JurisdictionKind, LawStatus, ResourceKind, Resources, ShipKind, SpyReport, StoryEvent,
+    TechBranch, TechNodeState, WonderError, encode_galaxy_seed,
 };
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
@@ -40,6 +40,13 @@ struct DispatchForm {
     dest: Coord,
     ships: Fleet,
     selected: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ReplayView {
+    log: CombatLog,
+    frame: usize,
+    paused: bool,
 }
 
 const TRADE_PAIRS: [(ResourceKind, ResourceKind); 6] = [
@@ -75,6 +82,9 @@ pub struct App {
     map_position: u16,
     dispatch: Option<DispatchForm>,
     tree_branch: TechBranch,
+    replay: Option<ReplayView>,
+    pub reduced_motion: bool,
+    pub no_animation: bool,
 }
 
 impl App {
@@ -102,7 +112,42 @@ impl App {
             map_position: Coord::HOME.position,
             dispatch: None,
             tree_branch: TechBranch::Industry,
+            replay: None,
+            reduced_motion: false,
+            no_animation: false,
         }
+    }
+
+    pub fn replay_active(&self) -> bool {
+        self.replay.is_some()
+    }
+
+    pub fn tick_replay(&mut self) {
+        let still = self.reduced_motion || self.no_animation;
+        let Some(replay) = self.replay.as_mut() else {
+            return;
+        };
+        if replay.paused || still {
+            return;
+        }
+        if replay.frame + 1 < replay.log.report.frames.len() {
+            replay.frame += 1;
+        }
+    }
+
+    fn open_latest_replay(&mut self) {
+        let Some(log) = self.state.combat_logs.last().cloned() else {
+            self.status = "no combat log".into();
+            return;
+        };
+        let last = log.report.frames.len().saturating_sub(1);
+        let still = self.reduced_motion || self.no_animation;
+        self.replay = Some(ReplayView {
+            frame: if still { last } else { 0 },
+            paused: still,
+            log,
+        });
+        self.away_hidden = true;
     }
 
     pub fn set_away(&mut self, summary: AwaySummary) {
@@ -130,9 +175,13 @@ impl App {
             self.help_open = true;
             return Action::None;
         }
+        if self.replay.is_some() {
+            return self.handle_replay_key(code);
+        }
         if self.away.is_some() && !self.away_hidden {
             match self.keymap.lookup(ctx, code) {
                 Some(Binding::Confirm | Binding::Cancel) => self.away_hidden = true,
+                Some(Binding::Replay) => self.open_latest_replay(),
                 Some(Binding::Quit) => return Action::Quit,
                 _ => {}
             }
@@ -163,6 +212,9 @@ impl App {
         }
         match self.keymap.lookup(ctx, code) {
             Some(Binding::Quit) => return Action::Quit,
+            Some(Binding::Replay) if self.screen == Screen::Overview => {
+                self.open_latest_replay();
+            }
             Some(Binding::ShowAway) if self.screen == Screen::Overview && self.away.is_some() => {
                 self.away_hidden = false;
             }
@@ -246,6 +298,9 @@ impl App {
     }
 
     fn help_context(&self) -> HelpContext {
+        if self.replay.is_some() {
+            return HelpContext::Replay;
+        }
         if self.away.is_some() && !self.away_hidden {
             return HelpContext::Away;
         }
@@ -365,7 +420,9 @@ impl App {
                 art[0],
             );
         }
-        if let Some(away) = &self.away
+        if self.replay.is_some() {
+            self.draw_replay(frame);
+        } else if let Some(away) = &self.away
             && !self.away_hidden
         {
             self.draw_away(frame, away);
@@ -406,6 +463,7 @@ impl App {
             || self.story_event().is_some()
             || self.opened_report
             || self.dispatch.is_some()
+            || self.replay.is_some()
         {
             return portraits::erase_inline_graphics(out);
         }
@@ -449,6 +507,78 @@ impl App {
         }
     }
 
+    fn handle_replay_key(&mut self, code: KeyCode) -> Action {
+        match self.keymap.lookup(HelpContext::Replay, code) {
+            Some(Binding::Quit) => Action::Quit,
+            Some(Binding::Cancel) => {
+                self.replay = None;
+                Action::None
+            }
+            Some(Binding::Toggle) => {
+                if let Some(replay) = self.replay.as_mut() {
+                    replay.paused = !replay.paused;
+                }
+                Action::None
+            }
+            Some(Binding::ReplayStep) => {
+                if let Some(replay) = self.replay.as_mut()
+                    && replay.frame + 1 < replay.log.report.frames.len()
+                {
+                    replay.frame += 1;
+                    replay.paused = true;
+                }
+                Action::None
+            }
+            _ => Action::None,
+        }
+    }
+
+    fn draw_replay(&self, frame: &mut Frame<'_>) {
+        let Some(replay) = &self.replay else {
+            return;
+        };
+        let report = &replay.log.report;
+        let n = report.frames.len().max(1);
+        let idx = replay.frame.min(n - 1);
+        let snap = &report.frames[idx];
+        let winner = match report.winner {
+            CombatWinner::Attacker => "pirates",
+            CombatWinner::Defender => "you",
+            CombatWinner::Draw => "draw",
+        };
+        let mut lines = vec![
+            Line::from(format!(
+                "round {}/{}  winner {winner}",
+                snap.round,
+                report.rounds.max(snap.round)
+            )),
+            Line::from(format!(
+                "pirates {}  {}",
+                snap.attacker.total(),
+                fleet_bar(snap.attacker.total())
+            )),
+            Line::from(format!(
+                "you     {}  {}",
+                snap.defender.total(),
+                fleet_bar(snap.defender.total())
+            )),
+        ];
+        if snap.shots > 0 {
+            lines.push(Line::from(format!(
+                "shots {}  shields flare  {} explode",
+                snap.shots, snap.explosions
+            )));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(format!(
+            "{} pause  {} step  {} skip",
+            self.keymap.primary(Binding::Toggle),
+            self.keymap.primary(Binding::ReplayStep),
+            self.keymap.primary(Binding::Cancel)
+        )));
+        render_overlay(frame, " combat replay ", lines);
+    }
+
     fn draw_away(&self, frame: &mut Frame<'_>, away: &AwaySummary) {
         let mut lines = vec![
             Line::from(format!("elapsed {}s", away.elapsed_secs)),
@@ -464,7 +594,12 @@ impl App {
         for event in away.events.iter().take(8) {
             lines.push(Line::from(event.clone()));
         }
-        lines.push(Line::from("Enter dismisses. w on overview reopens."));
+        lines.push(Line::from(format!(
+            "{} dismisses. {} replay. {} on overview reopens.",
+            self.keymap.primary(Binding::Confirm),
+            self.keymap.primary(Binding::Replay),
+            self.keymap.primary(Binding::ShowAway)
+        )));
         render_overlay(frame, " while you were away ", lines);
     }
 
@@ -927,9 +1062,10 @@ impl App {
         let help = format!("{} help", k.primary(Binding::Help));
         vec![Line::from(match self.screen {
             Screen::Overview => format!(
-                "{tab} screens  {planets}  {}/{} branch  {select}  {confirm} research  {cancel}  {} copy seed  {quit}  {help}",
+                "{tab} screens  {planets}  {}/{} branch  {select}  {confirm} research  {} replay  {cancel}  {} copy seed  {quit}  {help}",
                 k.primary(Binding::CursorLeft),
                 k.primary(Binding::CursorRight),
+                k.primary(Binding::Replay),
                 k.primary(Binding::CopySeed)
             ),
             Screen::Planet => format!(
@@ -1822,6 +1958,10 @@ fn waste_detail_line(
     line
 }
 
+fn fleet_bar(n: u32) -> String {
+    "*".repeat(n.min(40) as usize)
+}
+
 fn render_overlay(frame: &mut Frame<'_>, title: impl Into<String>, lines: Vec<Line<'static>>) {
     let area = frame.area();
     frame.render_widget(Clear, area);
@@ -2206,6 +2346,51 @@ mod tests {
         app.handle_key(KeyCode::Char('y'), 1_000);
         let text = render_text(&app, 80, 24);
         assert!(text.contains(&format!("copied {code}")), "{text}");
+    }
+
+    #[test]
+    fn combat_replay_opens_from_overview_and_away_and_respects_reduced_motion() {
+        let mut state = GameState::new(1_000);
+        state.fleet.add(ShipKind::LightFighter, 6);
+        state.trigger_raid(1_000);
+        let mut app = App::new(state);
+        app.handle_key(KeyCode::Char('r'), 1_000);
+        assert!(app.replay_active());
+        let text = render_text(&app, 80, 24);
+        assert!(text.contains("combat replay"), "{text}");
+        assert!(text.contains("pirates"), "{text}");
+        assert!(text.contains("you"), "{text}");
+        app.handle_key(KeyCode::Char('n'), 1_000);
+        let text = render_text(&app, 80, 24);
+        assert!(text.contains("round"), "{text}");
+        app.handle_key(KeyCode::Char('x'), 1_000);
+        assert!(!app.replay_active());
+
+        app.reduced_motion = true;
+        app.handle_key(KeyCode::Char('r'), 1_000);
+        let replay = app.replay.as_ref().expect("replay");
+        assert_eq!(
+            replay.frame,
+            replay.log.report.frames.len().saturating_sub(1)
+        );
+        assert!(replay.paused);
+
+        app.replay = None;
+        app.set_away(AwaySummary {
+            elapsed_secs: 10,
+            metal: 0.0,
+            crystal: 0.0,
+            deuterium: 0.0,
+            builds: 0,
+            research: 0,
+            fleets_returned: 0,
+            expeditions: 0,
+            raids: 1,
+            events: vec!["raid: replay".into()],
+        });
+        app.handle_key(KeyCode::Char('r'), 1_000);
+        assert!(app.replay_active());
+        assert!(app.away_hidden);
     }
 
     #[test]

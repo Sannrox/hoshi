@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq)]
 pub struct UserConfig {
     pub reduced_motion: bool,
+    pub no_animation: bool,
     pub high_contrast: bool,
     pub bridge: bool,
     pub ai_advisor: bool,
@@ -21,6 +22,7 @@ impl Default for UserConfig {
     fn default() -> Self {
         Self {
             reduced_motion: false,
+            no_animation: false,
             high_contrast: false,
             bridge: false,
             ai_advisor: false,
@@ -56,6 +58,7 @@ impl UserConfig {
             let value = value.trim().trim_matches('"');
             match key {
                 "reduced_motion" => cfg.reduced_motion = value == "true",
+                "no_animation" => cfg.no_animation = value == "true",
                 "high_contrast" => cfg.high_contrast = value == "true",
                 "bridge" => cfg.bridge = value == "true",
                 "ai_advisor" => cfg.ai_advisor = value == "true",
@@ -99,8 +102,9 @@ impl UserConfig {
         std::fs::create_dir_all(dir)?;
         let last = self.last_slot.as_deref().unwrap_or("");
         let text = format!(
-            "reduced_motion = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}{}\n",
+            "reduced_motion = {}\nno_animation = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}{}\n",
             self.reduced_motion,
+            self.no_animation,
             self.high_contrast,
             self.bridge,
             self.ai_advisor,
