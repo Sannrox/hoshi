@@ -137,6 +137,24 @@ base_seconds = 300.0
 time_growth = 2.0
 prerequisites = [{ building = "robotics_factory", level = 1 }]
 
+[buildings.radiator]
+frames = 200.0
+electronics = 150.0
+fuel = 0.0
+cost_growth = 1.6
+base_seconds = 180.0
+time_growth = 1.6
+prerequisites = [{ building = "solar_plant", level = 1 }]
+
+[buildings.scrubber]
+frames = 150.0
+electronics = 200.0
+fuel = 50.0
+cost_growth = 1.6
+base_seconds = 180.0
+time_growth = 1.6
+prerequisites = []
+
 [queues]
 max_build_queue = 5
 max_ship_queue = 5
@@ -491,78 +509,127 @@ id = "extract_iron"
 building = "metal_mine"
 deposit = "iron_ore"
 outputs = { iron_ore = 1.0 }
+heat = 0.0
+pollution = 0.2
 
 [[chains.recipes]]
 id = "extract_rare_earths"
 building = "metal_mine"
 deposit = "rare_earths"
 outputs = { rare_earths = 0.15 }
+heat = 0.0
+pollution = 0.1
 
 [[chains.recipes]]
 id = "smelt_steel"
 building = "metal_mine"
 inputs = { iron_ore = 1.0 }
 outputs = { steel = 1.0 }
+heat = 0.5
+pollution = 0.4
 
 [[chains.recipes]]
 id = "forge_frames"
 building = "metal_mine"
 inputs = { steel = 1.0 }
 outputs = { frames = 1.0 }
+heat = 0.3
+pollution = 0.1
 
 [[chains.recipes]]
 id = "extract_silicon"
 building = "crystal_mine"
 deposit = "silicon"
 outputs = { silicon = 1.0 }
+heat = 0.0
+pollution = 0.2
 
 [[chains.recipes]]
 id = "purify_silicon"
 building = "crystal_mine"
 inputs = { silicon = 1.0 }
 outputs = { purified_silicon = 1.0 }
+heat = 0.4
+pollution = 0.3
 
 [[chains.recipes]]
 id = "make_magnets"
 building = "crystal_mine"
 inputs = { rare_earths = 0.15 }
 outputs = { magnets = 0.15 }
+heat = 0.2
+pollution = 0.2
 
 [[chains.recipes]]
 id = "assemble_electronics"
 building = "crystal_mine"
 inputs = { purified_silicon = 0.85, magnets = 0.15 }
 outputs = { electronics = 1.0 }
+heat = 0.2
+pollution = 0.1
 
 [[chains.recipes]]
 id = "extract_ice"
 building = "deuterium_synthesizer"
 deposit = "water_ice"
 outputs = { water_ice = 1.0 }
+heat = 0.0
+pollution = 0.05
 
 [[chains.recipes]]
 id = "extract_helium"
 building = "deuterium_synthesizer"
 deposit = "helium_3"
 outputs = { helium_3 = 1.0 }
+heat = 0.0
+pollution = 0.05
 
 [[chains.recipes]]
 id = "refine_propellant"
 building = "deuterium_synthesizer"
 inputs = { water_ice = 0.5 }
 outputs = { propellant = 0.5 }
+heat = 0.4
+pollution = 0.2
 
 [[chains.recipes]]
 id = "refine_fuel"
 building = "deuterium_synthesizer"
 inputs = { helium_3 = 0.5 }
 outputs = { fuel = 0.5 }
+heat = 0.4
+pollution = 0.2
 
 [[chains.recipes]]
 id = "blend_fuel"
 building = "deuterium_synthesizer"
 inputs = { propellant = 0.5, fuel = 0.5 }
 outputs = { deuterium = 1.0 }
+heat = 0.2
+pollution = 0.1
+
+# Instantaneous heat and pollution. Load is mine energy plus recipe extras.
+# Planet sinks depend on type (atmosphere dumps heat and mixes effluent;
+# ice worlds radiate well but hold dust). Radiators and scrubbers add sink
+# at an energy cost. Overflow slows work and raises pirate interest.
+[waste]
+heat_per_energy = 1.0
+pollution_per_energy = 0.35
+rocky_heat_sink = 80.0
+ice_heat_sink = 140.0
+gas_giant_heat_sink = 200.0
+rocky_pollution_sink = 50.0
+ice_pollution_sink = 18.0
+gas_giant_pollution_sink = 120.0
+radiator_per_level = 40.0
+radiator_base_energy = 6.0
+radiator_energy_growth = 1.1
+scrubber_per_level = 22.0
+scrubber_base_energy = 8.0
+scrubber_energy_growth = 1.1
+warn_ratio = 0.8
+unrest_per_overflow = 0.8
+raid_signature_per_overflow = 0.05
 
 [market]
 enabled = true

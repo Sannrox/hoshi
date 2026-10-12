@@ -29,6 +29,22 @@ Construction stockpiles stay the three resource columns (`metal` / `crystal` / `
 
 `[chains.deposits.<type>]` is richness by planet type. `deposit_jitter` (in `[0, 1)`) spreads that richness from the galaxy seed and coord. The planet screen lists the resulting deposits.
 
+## Waste heat and pollution
+
+`[waste]` is an instantaneous load versus sink. Mine energy times
+`heat_per_energy` / `pollution_per_energy` plus each recipe's `heat` and
+`pollution` (scaled by building level) is the load. Planet type sets the
+base sink (ice worlds radiate heat well and hold dust; gas giants dump both
+into a thick atmosphere). Each radiator and scrubber level adds a linear
+sink and draws energy. Research `heat_sink` and `pollution_sink` scale the
+total sink.
+
+When load/sink reaches `warn_ratio` the TUI shows WARN. Above 1.0, work
+speed is `1 / (1 + overflow * unrest_per_overflow)` and pirate fleets gain
+`floor((heat_overflow + pollution_overflow) * raid_signature_per_overflow)`
+ships. Starter mines stay under the rocky sinks; heavy industry needs
+radiators and scrubbers. `hoshi simulate` prints that snapshot.
+
 ## Pacing targets
 
 `[pacing]` is checked by `hoshi simulate`:

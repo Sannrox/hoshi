@@ -45,7 +45,7 @@ includes RNG state or galaxy seed. Unknown commands and CLI-only flags print
 JSON with exit 2; they do not open the TUI. `expedition` dest must be the
 configured expedition slot.
 
-`prestige` prints score, currency and owned bonuses. `prestige buy` spends unspent currency. `prestige reset` is refused until a wonder is complete or score reaches the configured minimum; it keeps bonuses and run history.
+`prestige` prints score, currency and owned bonuses. `prestige buy` spends unspent currency. `prestige reset` is refused until a wonder is complete or score reaches the configured minimum; it keeps bonuses and run history. `state` includes a `waste` object (heat and pollution load versus sink, unrest, and the warning flag).
 
 `--save` / `HOSHI_SAVE` and `--balance` / `HOSHI_BALANCE` match the TUI. `hoshi` with no subcommand opens the title screen. `--save PATH` still opens that file directly. `hoshi --continue` resumes the last slot without the menu; locked slots exit 4, corrupt or newer-schema or harness slots exit 5. `hoshi new --seed <code>` writes a new live save (default slot, `--save PATH`, or `HOSHI_SAVE`) and prints the canonical grouped seed code; an existing file exits 2. Shareable codes are grouped `XXXX-XXXX-XXXX-XX` with a checksum. Encode always includes the hyphens. Grouped input is a code; ungrouped digits are a raw `u64`; an ungrouped 14-character string with letters is a pasted compact code. JSON `--seed N` on the harness CLI stays a raw integer.
 

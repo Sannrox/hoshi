@@ -110,10 +110,10 @@ radiators (or an atmosphere that can dump it). Radiated power is `σ A T⁴`
 Byproducts have mass: slag, effluent and emissions go into storage, recycling
 or the environment. They are not deleted.
 
-Unmanaged heat and waste should hurt habitability and make a world easier to
-spot. Mitigation (radiators, recycling, moving industry to airless moons)
-costs energy and materials. This layer is not in the live rules yet; see
-known gaps.
+Unmanaged heat and waste hurt habitability and make a world easier to
+spot. Mitigation (radiators, scrubbers, thermal and ecology research)
+costs energy and materials. Load versus sink is instantaneous: nothing is
+stockpiled, and overflow drops as soon as capacity catches up.
 
 ## Intel
 
@@ -169,7 +169,7 @@ silent extra departure; they extend this list.
 | Construction stockpiles named metal / crystal / deuterium | Three columns keep the TUI and save small; chains already have real material names underneath. |
 | Solar output ignores orbital radius | Energy is already a cap; radius falloff is a follow-up, not a hidden extra. |
 | Round-based combat with rapid-fire tables | Seeded, short, offline-safe fights. Map new stats onto energy and mass rather than replacing the resolver. |
-| No radiator / waste-heat layer yet | Economy loop shipped first; heat is specified here so later work has a target. |
+| Instantaneous heat and pollution (no stored slag or thermal inertia) | Catch-up stays a single pass; overflow is a work-speed and raid-signature modifier. |
 | FTL, if any | Only through late-game gates or a listed wonder. Default travel is sublight on the flight clock. |
 | Story, species and faction flavour | Out of scope for realism; they must not mint mass or energy. |
 
@@ -188,7 +188,6 @@ silent exceptions. Do not "fix" them in an unrelated PR.
   `delta-v * mass`.
 - Combat `attack` / `shield` / `hull` are points. They do not yet cite
   joules, kilograms or radiator load.
-- No radiator capacity, waste heat or pollution fields in `balance.toml`.
 - Empty `[chains]` recipes still allow the legacy mine-to-stockpile path
   (mass from a building level with no deposit). Bundled config has recipes;
   overrides that clear them regress.

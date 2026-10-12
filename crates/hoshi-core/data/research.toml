@@ -11,7 +11,7 @@ base_seconds = 240.0
 time_growth = 2.0
 prereq_buildings = [{ building = "research_lab", level = 1 }]
 prereq_techs = []
-modifiers = []
+modifiers = [{ kind = "heat_sink", per_level = 0.05 }]
 
 [[tech]]
 id = "laser"
@@ -181,6 +181,19 @@ time_growth = 2.0
 prereq_buildings = [{ building = "research_lab", level = 3 }]
 prereq_techs = [{ id = "energy", level = 3 }]
 modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
+
+[[tech]]
+id = "ecology"
+name = "Ecology"
+metal = 200.0
+crystal = 400.0
+deuterium = 100.0
+cost_growth = 2.0
+base_seconds = 300.0
+time_growth = 2.0
+prereq_buildings = [{ building = "research_lab", level = 1 }]
+prereq_techs = [{ id = "energy", level = 1 }]
+modifiers = [{ kind = "pollution_sink", per_level = 0.08 }]
 
 [[tech]]
 id = "logistics"

@@ -13,6 +13,7 @@ use crate::prestige::{PrestigeBonusSpec, PrestigeConfig};
 use crate::research::{ModifierKind, TechPrereq};
 use crate::ships::ShipKind;
 use crate::state::Resources;
+use crate::waste::WasteConfig;
 use crate::wonders::{WonderModifier, WonderSpec, WonderStage};
 use serde::Deserialize;
 use std::fmt;
@@ -146,6 +147,8 @@ pub struct BuildingCatalog {
     pub robotics_factory: BuildingSpec,
     pub research_lab: BuildingSpec,
     pub shipyard: BuildingSpec,
+    pub radiator: BuildingSpec,
+    pub scrubber: BuildingSpec,
 }
 
 impl BuildingCatalog {
@@ -161,6 +164,8 @@ impl BuildingCatalog {
             BuildingKind::RoboticsFactory => &self.robotics_factory,
             BuildingKind::ResearchLab => &self.research_lab,
             BuildingKind::Shipyard => &self.shipyard,
+            BuildingKind::Radiator => &self.radiator,
+            BuildingKind::Scrubber => &self.scrubber,
         }
     }
 }
@@ -186,6 +191,16 @@ impl Default for BuildingCatalog {
                 2.0,
                 vec![(BuildingKind::RoboticsFactory, 1)],
             ),
+            radiator: spec(
+                200.0,
+                150.0,
+                0.0,
+                1.6,
+                180.0,
+                1.6,
+                vec![(BuildingKind::SolarPlant, 1)],
+            ),
+            scrubber: spec(150.0, 200.0, 50.0, 1.6, 180.0, 1.6, vec![]),
         }
     }
 }
@@ -324,6 +339,28 @@ pub struct BalanceConfig {
     pub diplomacy: crate::DiplomacyConfig,
     pub espionage: EspionageConfig,
     pub defences: crate::DefenceConfig,
+    pub waste: WasteConfig,
+}
+
+impl BalanceConfig {
+    /// Mine plus radiator and scrubber energy draw for a planet's buildings.
+    pub fn energy_draw(&self, buildings: &Buildings) -> f64 {
+        self.metal_mine.energy_use(buildings.metal_mine)
+            + self.crystal_mine.energy_use(buildings.crystal_mine)
+            + self
+                .deuterium_synthesizer
+                .energy_use(buildings.deuterium_synthesizer)
+            + self.waste.mitigation_energy(buildings)
+    }
+
+    /// Mine energy only. Waste heat and pollution scale from this, not from radiators.
+    pub fn industry_energy(&self, buildings: &Buildings) -> f64 {
+        self.metal_mine.energy_use(buildings.metal_mine)
+            + self.crystal_mine.energy_use(buildings.crystal_mine)
+            + self
+                .deuterium_synthesizer
+                .energy_use(buildings.deuterium_synthesizer)
+    }
 }
 
 impl BalanceConfig {
@@ -381,6 +418,8 @@ struct File {
     market: FileMarket,
     #[serde(default)]
     espionage: FileEspionage,
+    #[serde(default)]
+    waste: Option<FileWaste>,
 }
 
 #[derive(Deserialize)]
@@ -515,6 +554,27 @@ struct FileEspionage {
 struct FileEspionageTier {
     id: String,
     min_score: f64,
+}
+
+#[derive(Deserialize)]
+struct FileWaste {
+    heat_per_energy: f64,
+    pollution_per_energy: f64,
+    rocky_heat_sink: f64,
+    ice_heat_sink: f64,
+    gas_giant_heat_sink: f64,
+    rocky_pollution_sink: f64,
+    ice_pollution_sink: f64,
+    gas_giant_pollution_sink: f64,
+    radiator_per_level: f64,
+    radiator_base_energy: f64,
+    radiator_energy_growth: f64,
+    scrubber_per_level: f64,
+    scrubber_base_energy: f64,
+    scrubber_energy_growth: f64,
+    warn_ratio: f64,
+    unrest_per_overflow: f64,
+    raid_signature_per_overflow: f64,
 }
 
 fn default_spy_target() -> f64 {
@@ -801,6 +861,8 @@ struct FileBuildings {
     robotics_factory: FileBuilding,
     research_lab: FileBuilding,
     shipyard: FileBuilding,
+    radiator: FileBuilding,
+    scrubber: FileBuilding,
 }
 
 #[derive(Deserialize)]
@@ -863,6 +925,10 @@ struct FileStartingBuildings {
     research_lab: u32,
     #[serde(default)]
     shipyard: u32,
+    #[serde(default)]
+    radiator: u32,
+    #[serde(default)]
+    scrubber: u32,
 }
 
 #[derive(Deserialize)]
@@ -998,6 +1064,8 @@ impl File {
                 robotics_factory: self.buildings.robotics_factory.into_spec()?,
                 research_lab: self.buildings.research_lab.into_spec()?,
                 shipyard: self.buildings.shipyard.into_spec()?,
+                radiator: self.buildings.radiator.into_spec()?,
+                scrubber: self.buildings.scrubber.into_spec()?,
             },
             max_build_queue: self.queues.max_build_queue,
             robotics_speed_per_level: self.queues.robotics_speed_per_level,
@@ -1077,6 +1145,8 @@ impl File {
                 robotics_factory: self.starting_buildings.robotics_factory,
                 research_lab: self.starting_buildings.research_lab,
                 shipyard: self.starting_buildings.shipyard,
+                radiator: self.starting_buildings.radiator,
+                scrubber: self.starting_buildings.scrubber,
             },
             pacing: PacingTargets {
                 first_upgrade_secs: self.pacing.first_upgrade_secs,
@@ -1185,6 +1255,7 @@ impl File {
             diplomacy: crate::DiplomacyConfig::default(),
             espionage: self.espionage.into_config(),
             defences: crate::DefenceConfig::default(),
+            waste: self.waste.map(FileWaste::into_config).unwrap_or_default(),
             market: crate::MarketConfig {
                 enabled: self.market.enabled,
                 tick_secs: self.market.tick_secs,
@@ -1256,6 +1327,30 @@ impl FileResources {
             metal: self.metal,
             crystal: self.crystal,
             deuterium: self.deuterium,
+        }
+    }
+}
+
+impl FileWaste {
+    fn into_config(self) -> WasteConfig {
+        WasteConfig {
+            heat_per_energy: self.heat_per_energy,
+            pollution_per_energy: self.pollution_per_energy,
+            rocky_heat_sink: self.rocky_heat_sink,
+            ice_heat_sink: self.ice_heat_sink,
+            gas_giant_heat_sink: self.gas_giant_heat_sink,
+            rocky_pollution_sink: self.rocky_pollution_sink,
+            ice_pollution_sink: self.ice_pollution_sink,
+            gas_giant_pollution_sink: self.gas_giant_pollution_sink,
+            radiator_per_level: self.radiator_per_level,
+            radiator_base_energy: self.radiator_base_energy,
+            radiator_energy_growth: self.radiator_energy_growth,
+            scrubber_per_level: self.scrubber_per_level,
+            scrubber_base_energy: self.scrubber_base_energy,
+            scrubber_energy_growth: self.scrubber_energy_growth,
+            warn_ratio: self.warn_ratio,
+            unrest_per_overflow: self.unrest_per_overflow,
+            raid_signature_per_overflow: self.raid_signature_per_overflow,
         }
     }
 }
@@ -1611,6 +1706,7 @@ impl BalanceConfig {
                 )));
             }
         }
+        self.waste.validate().map_err(BalanceError::Invalid)?;
         Ok(())
     }
 }

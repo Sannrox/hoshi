@@ -731,18 +731,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     state.resources = resources;
     state.goods = read_goods(conn, 1)?;
 
-    let mut buildings = Buildings {
-        metal_mine: 0,
-        crystal_mine: 0,
-        deuterium_synthesizer: 0,
-        solar_plant: 0,
-        metal_storage: 0,
-        crystal_storage: 0,
-        deuterium_storage: 0,
-        robotics_factory: 0,
-        research_lab: 0,
-        shipyard: 0,
-    };
+    let mut buildings = Buildings::default();
     let mut stmt = conn.prepare("SELECT kind, level FROM buildings WHERE planet_id = 1")?;
     let rows = stmt.query_map([], |row| {
         let kind: String = row.get(0)?;
