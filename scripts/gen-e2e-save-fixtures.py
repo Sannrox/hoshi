@@ -553,6 +553,23 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             );
             """
         )
+    elif version == 24:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS daily_meta (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                day_index INTEGER,
+                streak INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS daily_slots (
+                ord INTEGER PRIMARY KEY,
+                spec_id TEXT NOT NULL,
+                progress INTEGER NOT NULL,
+                target INTEGER NOT NULL,
+                rewarded INTEGER NOT NULL
+            );
+            """
+        )
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"

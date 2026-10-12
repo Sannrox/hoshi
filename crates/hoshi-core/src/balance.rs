@@ -345,6 +345,7 @@ pub struct BalanceConfig {
     pub waste: WasteConfig,
     pub laws: crate::LawConfig,
     pub achievements: crate::AchievementConfig,
+    pub daily: crate::DailyConfig,
 }
 
 impl BalanceConfig {
@@ -425,6 +426,42 @@ struct File {
     espionage: FileEspionage,
     #[serde(default)]
     waste: Option<FileWaste>,
+    #[serde(default)]
+    daily: Option<FileDaily>,
+}
+
+#[derive(Deserialize)]
+struct FileDaily {
+    #[serde(default = "default_day_secs")]
+    day_secs: u64,
+    #[serde(default)]
+    reset_offset_secs: u64,
+    #[serde(default = "default_daily_slots")]
+    slots: u32,
+    #[serde(default = "default_streak_cap")]
+    streak_cap: u32,
+    #[serde(default = "default_streak_metal")]
+    streak_metal: f64,
+    #[serde(default = "default_streak_crystal")]
+    streak_crystal: f64,
+    #[serde(default)]
+    streak_deuterium: f64,
+}
+
+fn default_day_secs() -> u64 {
+    86_400
+}
+fn default_daily_slots() -> u32 {
+    3
+}
+fn default_streak_cap() -> u32 {
+    7
+}
+fn default_streak_metal() -> f64 {
+    80.0
+}
+fn default_streak_crystal() -> f64 {
+    40.0
 }
 
 #[derive(Deserialize)]
@@ -1270,6 +1307,21 @@ impl File {
             waste: self.waste.map(FileWaste::into_config).unwrap_or_default(),
             laws: crate::LawConfig::default(),
             achievements: crate::AchievementConfig::default(),
+            daily: {
+                let mut daily = crate::DailyConfig::default();
+                if let Some(file) = self.daily {
+                    daily.day_secs = file.day_secs.max(1);
+                    daily.reset_offset_secs = file.reset_offset_secs;
+                    daily.slots = file.slots.max(1);
+                    daily.streak_cap = file.streak_cap.max(1);
+                    daily.streak_reward = Resources {
+                        metal: file.streak_metal,
+                        crystal: file.streak_crystal,
+                        deuterium: file.streak_deuterium,
+                    };
+                }
+                daily
+            },
             market: crate::MarketConfig {
                 enabled: self.market.enabled,
                 tick_secs: self.market.tick_secs,
@@ -1427,6 +1479,20 @@ impl BalanceConfig {
                 "queues.max_ship_queue must be >= 1".into(),
             ));
         }
+        if self.daily.day_secs < 1 {
+            return Err(BalanceError::Invalid("daily.day_secs must be >= 1".into()));
+        }
+        if self.daily.slots < 1 {
+            return Err(BalanceError::Invalid("daily.slots must be >= 1".into()));
+        }
+        if self.daily.streak_cap < 1 {
+            return Err(BalanceError::Invalid(
+                "daily.streak_cap must be >= 1".into(),
+            ));
+        }
+        nonneg_finite("daily.streak_metal", self.daily.streak_reward.metal)?;
+        nonneg_finite("daily.streak_crystal", self.daily.streak_reward.crystal)?;
+        nonneg_finite("daily.streak_deuterium", self.daily.streak_reward.deuterium)?;
         check_producer("metal_mine", &self.metal_mine)?;
         check_producer("crystal_mine", &self.crystal_mine)?;
         check_producer("deuterium_synthesizer", &self.deuterium_synthesizer)?;

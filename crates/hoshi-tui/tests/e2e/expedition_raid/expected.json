@@ -20,6 +20,34 @@
     "shipyard": 0,
     "solar_plant": 1
   },
+  "daily": {
+    "day_index": 0,
+    "resets_in_secs": 43200,
+    "slots": [
+      {
+        "done": false,
+        "id": "win_raid",
+        "name": "Hold the pirates",
+        "progress": 0,
+        "target": 1
+      },
+      {
+        "done": true,
+        "id": "send_expedition",
+        "name": "Launch an expedition",
+        "progress": 1,
+        "target": 1
+      },
+      {
+        "done": false,
+        "id": "upgrade_mine",
+        "name": "Upgrade a mine",
+        "progress": 0,
+        "target": 1
+      }
+    ],
+    "streak": 0
+  },
   "defences": {
     "garrison": 0,
     "heavy_cannon": 0,
@@ -38,6 +66,10 @@
   },
   "events": [
     {
+      "at": 0,
+      "text": "daily: Launch an expedition complete"
+    },
+    {
       "at": 1,
       "text": "expedition: found M1068 C534 D213"
     },
@@ -51,7 +83,7 @@
     },
     {
       "at": 3600,
-      "text": "raid: pirates 900 light fighter vs 5 light fighter. 1 rounds. lost 5 light fighter. pirates lost none. plunder M800 C528 D5000. winner attacker"
+      "text": "raid: pirates 900 light fighter vs 5 light fighter. 1 rounds. lost 5 light fighter. pirates lost none. plunder M816 C536 D5000. winner attacker"
     },
     {
       "at": 32400,
@@ -59,7 +91,7 @@
     },
     {
       "at": 32400,
-      "text": "raid: pirates 900 light fighter vs 5 light fighter. 1 rounds. lost 5 light fighter. pirates lost none. plunder M532 C352 D2500. winner attacker"
+      "text": "raid: pirates 900 light fighter vs 5 light fighter. 1 rounds. lost 5 light fighter. pirates lost none. plunder M540 C356 D2500. winner attacker"
     }
   ],
   "fleet": {
@@ -194,11 +226,11 @@
     }
   },
   "resources": {
-    "crystal": 417.99999999999994,
+    "crystal": 421.74999999999994,
     "deuterium": 2500.0,
-    "metal": 631.25
+    "metal": 638.75
   },
-  "save_schema": 23,
+  "save_schema": 24,
   "schema_version": 1,
   "spy_reports": [],
   "waste": {

@@ -1480,6 +1480,7 @@ fn screens_for(binding: Binding) -> String {
         HelpContext::Wonder,
         HelpContext::Prestige,
         HelpContext::Achievements,
+        HelpContext::Daily,
         HelpContext::Market,
         HelpContext::Diplomacy,
         HelpContext::Laws,

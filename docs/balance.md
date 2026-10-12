@@ -7,7 +7,8 @@ Production, construction, raids, bridge-effect sizes, expedition weights, flight
 starting stockpiles, and staged wonders live in `crates/hoshi-core/data/balance.toml`.
 The file is embedded and validated on `BalanceConfig::default()`. Research stays in
 `research.toml`; ships stay in `ships.toml`; story events stay in `story.toml`;
-planet defences stay in `defences.toml`; laws stay in `laws.toml`.
+planet defences stay in `defences.toml`; laws stay in `laws.toml`; daily goals
+stay in `missions.toml`.
 Wonder ids must be unique; each wonder
 needs at least one stage with `duration_secs > 0` and a positive resource cost.
 
@@ -84,6 +85,10 @@ catch-up interval. `variance` is the ground-combat spread (`0` is an exact
 comparison). `troop_strength` is the landing power of one troop transport.
 `[[outposts.rare]]` rows are the rare-planet bonuses shown on the planet screen.
 `shipyard_speed` speeds the empire shipyard (ships queue at home).
+
+## Daily goals
+
+`[daily]` sets the in-game day length (`day_secs`), an optional reset offset, how many slots to pick (`slots`), the streak cap, and the per-streak resource bonus. The catalog lives in `crates/hoshi-core/data/missions.toml` (upgrade a mine, finish research, hold a raid, trade, launch an expedition). Picks are deterministic from the galaxy seed and the in-game day. Progress counts during offline catch-up. Completing the full set raises the streak; a missed day resets it. Rewards stop at storage caps. GitHub and agent activity never count.
 
 ## Prestige
 
