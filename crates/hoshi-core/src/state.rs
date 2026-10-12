@@ -217,6 +217,8 @@ pub struct GameState {
     pub raids_survived: u32,
     /// Successful outpost invasions this run. Resets with prestige.
     pub outposts_conquered: u32,
+    /// Recent fights, newest last. Rebuilt from seed plus opening fleets.
+    pub combat_logs: Vec<crate::CombatLog>,
     pub config: BalanceConfig,
 }
 
@@ -283,6 +285,7 @@ impl GameState {
             achievements: BTreeMap::new(),
             raids_survived: 0,
             outposts_conquered: 0,
+            combat_logs: Vec::new(),
             config,
         };
         state.apply_prestige_start();
@@ -2543,6 +2546,7 @@ impl GameState {
                     &rf,
                     &mut fight_seed,
                 );
+                self.push_combat_log(done_at, report.clone());
                 self.missions[index].ships = report.attacker_after;
                 let survivors: u32 = ShipKind::ALL
                     .iter()
@@ -2710,6 +2714,7 @@ impl GameState {
         );
         self.outposts[outpost_idx].defences = report.defender_after;
         self.missions[index].ships = report.attacker_after;
+        self.push_combat_log(done_at, report.clone());
         self.push_event(done_at, format_outpost_attack(&report, dest));
         if self.missions[index].ships.is_empty() {
             self.missions.remove(index);
@@ -2749,6 +2754,7 @@ impl GameState {
             .saturating_mul(self.config.outposts.troop_strength);
         let garrison = self.outposts[outpost_idx].garrison;
         let mult = self.config.defences.tactical_ground_mult;
+        let seed = self.rng_seed;
         let ground = resolve_ground(
             scale_ground(troops, mult),
             scale_ground(garrison, mult),
@@ -2763,12 +2769,17 @@ impl GameState {
             defender_after: Fleet::default(),
             winner: ground.winner,
             ground: Some(ground.clone()),
+            seed: 0,
+            frames: Vec::new(),
+            layered: false,
         };
         let landed = self.missions[index].ships.get(ShipKind::TroopTransport);
         self.missions[index]
             .ships
             .saturating_sub(ShipKind::TroopTransport, landed);
         report.attacker_after = self.missions[index].ships;
+        report = report.with_seed_and_endpoints(seed);
+        self.push_combat_log(done_at, report.clone());
         if ground.winner != CombatWinner::Attacker {
             self.push_event(done_at, format_outpost_invade(&report, dest));
             return false;
@@ -2840,6 +2851,7 @@ impl GameState {
         } else {
             let parked = self.fleet;
             let hangar = def_stats[ShipKind::LightFighter.index()];
+            let seed = self.rng_seed;
             let battle = resolve_planet_battle(
                 pirates,
                 parked,
@@ -2872,13 +2884,29 @@ impl GameState {
                 defender_after: battle.fleet_after,
                 winner: battle.winner,
                 ground: battle.ground.clone(),
+                seed: 0,
+                frames: Vec::new(),
+                layered: false,
             }
+            .with_seed_and_endpoints(seed)
         };
         self.next_raid_at = self
             .raid_interval_secs()
             .map(|wait| done_at.saturating_add(wait));
+        self.push_combat_log(done_at, report.clone());
         self.evaluate_achievements(done_at);
         report
+    }
+
+    fn push_combat_log(&mut self, at: u64, report: CombatReport) {
+        self.combat_logs.push(crate::CombatLog { at, report });
+        let extra = self
+            .combat_logs
+            .len()
+            .saturating_sub(crate::MAX_COMBAT_LOGS);
+        if extra > 0 {
+            self.combat_logs.drain(..extra);
+        }
     }
 
     fn take_raid_plunder(&mut self, winner: CombatWinner) -> Resources {
@@ -5627,6 +5655,52 @@ modifiers = []
         assert_eq!(again.fleet, bridged.fleet);
         assert_eq!(again.events, bridged.events);
         assert_eq!(again.rng_seed, bridged.rng_seed);
+    }
+
+    #[test]
+    fn raid_log_replays_to_the_same_result() {
+        let mut state = GameState::new(0);
+        state.fleet.add(ShipKind::LightFighter, 8);
+        let report = state.trigger_raid(0);
+        let log = state.combat_logs.last().expect("logged");
+        assert_eq!(log.report.winner, report.winner);
+        let last = log.report.frames.last().expect("frames");
+        assert_eq!(last.attacker, report.attacker_after);
+        assert_eq!(last.defender, report.defender_after);
+        let atk = stats_from_catalog(&state.config.ships);
+        let def = state.player_combat_stats();
+        let replayed = CombatReport::replay(
+            log.report.attacker_before,
+            log.report.defender_before,
+            &atk,
+            &def,
+            state.config.raid.max_rounds,
+            &rapid_fire_table(&state.config.ships),
+            log.report.seed,
+        );
+        assert_eq!(replayed.winner, report.winner);
+        assert_eq!(replayed.attacker_after, report.attacker_after);
+        assert_eq!(replayed.defender_after, report.defender_after);
+        assert!(!report.layered);
+    }
+
+    #[test]
+    fn layered_raid_replays_from_stored_frames() {
+        let mut state = GameState::new(0);
+        state.defences.add(DefenceKind::LightCannon, 6);
+        state.defences.add(DefenceKind::OrbitalStation, 1);
+        state.defences.add(DefenceKind::ShieldDome, 1);
+        state.defences.add(DefenceKind::Garrison, 4);
+        state.fleet.add(ShipKind::LightFighter, 2);
+        let report = state.trigger_raid(0);
+        assert!(report.layered);
+        let last = report.frames.last().expect("frames");
+        assert_eq!(last.attacker, report.attacker_after);
+        assert_eq!(last.defender, report.defender_after);
+        assert_eq!(
+            report.frames.first().map(|f| f.attacker),
+            Some(report.attacker_before)
+        );
     }
 
     #[test]

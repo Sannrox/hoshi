@@ -525,6 +525,8 @@ fn play_path(
     state.catch_up(now);
     let mut app = App::with_keymap(state, user.keys.clone());
     app.portraits = portraits;
+    app.reduced_motion = user.reduced_motion;
+    app.no_animation = user.no_animation;
     #[cfg(feature = "bridge")]
     app.set_bridge_ui(user.bridge);
     if now.saturating_sub(before.tick) >= user.away_threshold_secs {
@@ -577,7 +579,12 @@ fn play_path(
         if let Err(e) = app.paint_inline_graphics(&mut std::io::stdout(), area) {
             break Err(e);
         }
-        match event::poll(Duration::from_secs(1)) {
+        let wait = if app.replay_active() {
+            Duration::from_millis(100)
+        } else {
+            Duration::from_secs(1)
+        };
+        match event::poll(wait) {
             Ok(true) => match event::read() {
                 Ok(Event::Key(k)) if k.kind == KeyEventKind::Press => {
                     if app.handle_key(k.code, clock.now_unix()) == Action::Quit {
@@ -587,7 +594,7 @@ fn play_path(
                 Ok(_) => {}
                 Err(e) => break Err(e),
             },
-            Ok(false) => {}
+            Ok(false) => app.tick_replay(),
             Err(e) => break Err(e),
         }
     };
