@@ -16,6 +16,8 @@ pub enum BuildingKind {
     RoboticsFactory,
     ResearchLab,
     Shipyard,
+    Radiator,
+    Scrubber,
 }
 
 impl BuildingKind {
@@ -31,6 +33,8 @@ impl BuildingKind {
             BuildingKind::RoboticsFactory => "robotics_factory",
             BuildingKind::ResearchLab => "research_lab",
             BuildingKind::Shipyard => "shipyard",
+            BuildingKind::Radiator => "radiator",
+            BuildingKind::Scrubber => "scrubber",
         }
     }
 
@@ -46,11 +50,13 @@ impl BuildingKind {
             "robotics_factory" => BuildingKind::RoboticsFactory,
             "research_lab" => BuildingKind::ResearchLab,
             "shipyard" => BuildingKind::Shipyard,
+            "radiator" => BuildingKind::Radiator,
+            "scrubber" => BuildingKind::Scrubber,
             _ => return None,
         })
     }
 
-    pub const ALL: [BuildingKind; 10] = [
+    pub const ALL: [BuildingKind; 12] = [
         BuildingKind::MetalMine,
         BuildingKind::CrystalMine,
         BuildingKind::DeuteriumSynthesizer,
@@ -61,6 +67,8 @@ impl BuildingKind {
         BuildingKind::RoboticsFactory,
         BuildingKind::ResearchLab,
         BuildingKind::Shipyard,
+        BuildingKind::Radiator,
+        BuildingKind::Scrubber,
     ];
 }
 
@@ -77,6 +85,8 @@ impl fmt::Display for BuildingKind {
             BuildingKind::RoboticsFactory => "robotics factory",
             BuildingKind::ResearchLab => "research lab",
             BuildingKind::Shipyard => "shipyard",
+            BuildingKind::Radiator => "radiator",
+            BuildingKind::Scrubber => "scrubber",
         })
     }
 }
@@ -94,6 +104,8 @@ pub struct Buildings {
     pub robotics_factory: u32,
     pub research_lab: u32,
     pub shipyard: u32,
+    pub radiator: u32,
+    pub scrubber: u32,
 }
 
 impl Buildings {
@@ -109,6 +121,8 @@ impl Buildings {
             BuildingKind::RoboticsFactory => self.robotics_factory,
             BuildingKind::ResearchLab => self.research_lab,
             BuildingKind::Shipyard => self.shipyard,
+            BuildingKind::Radiator => self.radiator,
+            BuildingKind::Scrubber => self.scrubber,
         }
     }
 
@@ -124,6 +138,8 @@ impl Buildings {
             BuildingKind::RoboticsFactory => self.robotics_factory = level,
             BuildingKind::ResearchLab => self.research_lab = level,
             BuildingKind::Shipyard => self.shipyard = level,
+            BuildingKind::Radiator => self.radiator = level,
+            BuildingKind::Scrubber => self.scrubber = level,
         }
     }
 

@@ -22,6 +22,10 @@
     },
     "rates": { "type": "object" },
     "energy": { "type": "object" },
+    "waste": {
+      "type": "object",
+      "description": "Instantaneous heat and pollution load versus sink, plus unrest and the warning flag."
+    },
     "buildings": { "type": "object" },
     "build_queue": { "type": "array" },
     "research": { "type": "object" },

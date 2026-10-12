@@ -44,6 +44,10 @@ pub struct Recipe {
     pub deposit: Option<String>,
     pub inputs: BTreeMap<String, f64>,
     pub outputs: BTreeMap<String, f64>,
+    /// Extra waste heat per hour at building level 1. Scaled by level.
+    pub heat: f64,
+    /// Extra pollution per hour at building level 1. Scaled by level.
+    pub pollution: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -465,6 +469,10 @@ struct FileRecipe {
     inputs: BTreeMap<String, f64>,
     #[serde(default)]
     outputs: BTreeMap<String, f64>,
+    #[serde(default)]
+    heat: f64,
+    #[serde(default)]
+    pollution: f64,
 }
 
 #[derive(Deserialize, Default)]
@@ -495,6 +503,8 @@ impl FileChains {
                 deposit: row.deposit,
                 inputs: row.inputs,
                 outputs: row.outputs,
+                heat: row.heat,
+                pollution: row.pollution,
             });
         }
         let mut deposits = BTreeMap::new();
@@ -544,6 +554,8 @@ mod tests {
                     deposit: Some("iron_ore".into()),
                     inputs: BTreeMap::new(),
                     outputs: BTreeMap::from([("iron_ore".into(), 1.0)]),
+                    heat: 0.0,
+                    pollution: 0.0,
                 },
                 Recipe {
                     id: "smelt".into(),
@@ -551,6 +563,8 @@ mod tests {
                     deposit: None,
                     inputs: BTreeMap::from([("iron_ore".into(), 1.0)]),
                     outputs: BTreeMap::from([("steel".into(), 1.0)]),
+                    heat: 0.0,
+                    pollution: 0.0,
                 },
                 Recipe {
                     id: "forge".into(),
@@ -558,6 +572,8 @@ mod tests {
                     deposit: None,
                     inputs: BTreeMap::from([("steel".into(), 1.0)]),
                     outputs: BTreeMap::from([("frames".into(), 1.0)]),
+                    heat: 0.0,
+                    pollution: 0.0,
                 },
             ],
             deposits,

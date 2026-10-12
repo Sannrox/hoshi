@@ -1683,23 +1683,13 @@ impl GameState {
             .solar_plant
             .energy_output(colony.buildings.solar_plant)
             * (1.0 + energy_t + bonus.energy + rare.energy).max(0.0);
-        let consumed = self
-            .config
-            .metal_mine
-            .energy_use(colony.buildings.metal_mine)
-            + self
-                .config
-                .crystal_mine
-                .energy_use(colony.buildings.crystal_mine)
-            + self
-                .config
-                .deuterium_synthesizer
-                .energy_use(colony.buildings.deuterium_synthesizer);
-        let factor = if consumed <= 0.0 {
+        let consumed = self.config.energy_draw(&colony.buildings);
+        let energy = if consumed <= 0.0 {
             1.0
         } else {
             (produced / consumed).clamp(0.0, 1.0)
         };
+        let factor = energy * self.unrest_for(colony.buildings, colony.kind);
         let boost = self.prod_boost_mult();
         if self.config.chains.enabled() {
             return self.chain_net_per_hour(
@@ -2768,7 +2758,12 @@ impl GameState {
         let points =
             self.fleet_combat_points() + self.defences.combat_points(&self.config.defences);
         let scaled = (points * self.config.raid.strength_factor).floor().max(0.0) as u32;
-        let n = scaled.max(self.config.raid.min_ships);
+        let signature = self
+            .waste_home()
+            .raid_ships(self.config.waste.raid_signature_per_overflow);
+        let n = scaled
+            .max(self.config.raid.min_ships)
+            .saturating_add(signature);
         let mut fleet = Fleet::default();
         if n > 0 {
             fleet.add(ShipKind::LightFighter, n);
@@ -3302,7 +3297,7 @@ impl GameState {
             return;
         }
         let hours = (now_unix - self.last_tick_unix) as f64 / 3600.0;
-        let factor = self.energy_factor();
+        let factor = self.energy_factor() * self.unrest_factor();
         let boost = self.prod_boost_mult();
         if self.config.chains.enabled() {
             self.produce_chains(hours, factor, boost);
@@ -3319,24 +3314,31 @@ impl GameState {
             let crystal_t = self.tech_modifier(ModifierKind::CrystalOutput);
             let deut_t = self.tech_modifier(ModifierKind::DeuteriumOutput);
             let energy_t = self.tech_modifier(ModifierKind::EnergyOutput);
+            let heat_t = self.tech_modifier(ModifierKind::HeatSink);
+            let pollution_t = self.tech_modifier(ModifierKind::PollutionSink);
             for colony in &mut self.colonies {
                 let bonus = config.planet_types.get(colony.kind);
                 let produced = config
                     .solar_plant
                     .energy_output(colony.buildings.solar_plant)
                     * (1.0 + energy_t + bonus.energy).max(0.0);
-                let consumed = config.metal_mine.energy_use(colony.buildings.metal_mine)
-                    + config
-                        .crystal_mine
-                        .energy_use(colony.buildings.crystal_mine)
-                    + config
-                        .deuterium_synthesizer
-                        .energy_use(colony.buildings.deuterium_synthesizer);
-                let factor = if consumed <= 0.0 {
+                let consumed = config.energy_draw(&colony.buildings);
+                let energy = if consumed <= 0.0 {
                     1.0
                 } else {
                     (produced / consumed).clamp(0.0, 1.0)
                 };
+                let factor = energy
+                    * crate::waste::report(
+                        &config.waste,
+                        &config.chains.recipes,
+                        config.industry_energy(&colony.buildings),
+                        colony.buildings,
+                        colony.kind,
+                        heat_t,
+                        pollution_t,
+                    )
+                    .unrest_factor(config.waste.unrest_per_overflow);
                 let metal_rate = config
                     .metal_mine
                     .production_per_hour(colony.buildings.metal_mine)
@@ -3445,23 +3447,13 @@ impl GameState {
                     .solar_plant
                     .energy_output(colony.buildings.solar_plant)
                     * (1.0 + energy_t + bonus.energy + rare.energy).max(0.0);
-                let consumed = self
-                    .config
-                    .metal_mine
-                    .energy_use(colony.buildings.metal_mine)
-                    + self
-                        .config
-                        .crystal_mine
-                        .energy_use(colony.buildings.crystal_mine)
-                    + self
-                        .config
-                        .deuterium_synthesizer
-                        .energy_use(colony.buildings.deuterium_synthesizer);
-                let factor = if consumed <= 0.0 {
+                let consumed = self.config.energy_draw(&colony.buildings);
+                let energy = if consumed <= 0.0 {
                     1.0
                 } else {
                     (produced / consumed).clamp(0.0, 1.0)
                 };
+                let factor = energy * self.unrest_for(colony.buildings, colony.kind);
                 (
                     colony.coord,
                     colony.kind,
@@ -3597,15 +3589,36 @@ impl GameState {
     }
 
     pub fn energy_consumed(&self) -> f64 {
-        self.config.metal_mine.energy_use(self.buildings.metal_mine)
-            + self
-                .config
-                .crystal_mine
-                .energy_use(self.buildings.crystal_mine)
-            + self
-                .config
-                .deuterium_synthesizer
-                .energy_use(self.buildings.deuterium_synthesizer)
+        self.config.energy_draw(&self.buildings)
+    }
+
+    pub fn waste_home(&self) -> crate::WasteReport {
+        self.waste_for(self.buildings, self.home_kind)
+    }
+
+    pub fn waste_at(&self, coord: Coord) -> Option<crate::WasteReport> {
+        Some(self.waste_for(*self.buildings_at(coord)?, self.planet_kind(coord)?))
+    }
+
+    fn waste_for(&self, buildings: Buildings, planet: PlanetType) -> crate::WasteReport {
+        crate::waste::report(
+            &self.config.waste,
+            &self.config.chains.recipes,
+            self.config.industry_energy(&buildings),
+            buildings,
+            planet,
+            self.tech_modifier(ModifierKind::HeatSink),
+            self.tech_modifier(ModifierKind::PollutionSink),
+        )
+    }
+
+    pub fn unrest_factor(&self) -> f64 {
+        self.unrest_for(self.buildings, self.home_kind)
+    }
+
+    fn unrest_for(&self, buildings: Buildings, planet: PlanetType) -> f64 {
+        self.waste_for(buildings, planet)
+            .unrest_factor(self.config.waste.unrest_per_overflow)
     }
 
     /// Produced minus consumed. Negative when mines draw more than the plant supplies.
@@ -3624,7 +3637,7 @@ impl GameState {
     }
 
     pub fn production_per_hour(&self, kind: ResourceKind) -> f64 {
-        let factor = self.energy_factor();
+        let factor = self.energy_factor() * self.unrest_factor();
         let boost = self.prod_boost_mult();
         if self.config.chains.enabled() {
             self.chain_net_per_hour(
@@ -4084,6 +4097,8 @@ mod tests {
                 robotics_factory: 0,
                 research_lab: 0,
                 shipyard: 0,
+                radiator: 0,
+                scrubber: 0,
             },
             buildings: crate::BuildingCatalog::default(),
             max_build_queue: 5,
@@ -4110,6 +4125,7 @@ mod tests {
             diplomacy: crate::DiplomacyConfig::inactive(),
             espionage: crate::EspionageConfig::default(),
             defences: crate::DefenceConfig::default(),
+            waste: crate::WasteConfig::default(),
         }
     }
 
@@ -4160,6 +4176,31 @@ mod tests {
     }
 
     #[test]
+    fn waste_overflow_slows_production_and_grows_pirate_fleets() {
+        let mut cfg = crate::BalanceConfig::default();
+        cfg.raid.min_ships = 1;
+        cfg.raid.strength_factor = 0.0;
+        let mut raw = GameState::with_config(0, cfg.clone());
+        raw.buildings.metal_mine = 18;
+        raw.buildings.crystal_mine = 18;
+        raw.buildings.deuterium_synthesizer = 12;
+        raw.buildings.solar_plant = 24;
+        assert!(raw.waste_home().overflowing());
+        assert!(raw.unrest_factor() < 1.0);
+        let quiet = raw.production_per_hour(ResourceKind::Metal);
+        let pirates = raw.pirate_fleet().get(crate::ShipKind::LightFighter);
+        assert!(pirates > 1, "{pirates}");
+
+        let mut ok = raw.clone();
+        ok.buildings.radiator = 5;
+        ok.buildings.scrubber = 2;
+        assert!(!ok.waste_home().overflowing());
+        close(ok.unrest_factor(), 1.0);
+        assert!(ok.production_per_hour(ResourceKind::Metal) > quiet);
+        assert_eq!(ok.pirate_fleet().get(crate::ShipKind::LightFighter), 1);
+    }
+
+    #[test]
     fn production_chains_stop_when_an_input_runs_out() {
         let mut cfg = test_config();
         let mut deposits = BTreeMap::new();
@@ -4189,6 +4230,8 @@ mod tests {
                     deposit: Some("iron_ore".into()),
                     inputs: BTreeMap::new(),
                     outputs: BTreeMap::from([("iron_ore".into(), 1.0)]),
+                    heat: 0.0,
+                    pollution: 0.0,
                 },
                 crate::Recipe {
                     id: "smelt".into(),
@@ -4196,6 +4239,8 @@ mod tests {
                     deposit: None,
                     inputs: BTreeMap::from([("iron_ore".into(), 1.0)]),
                     outputs: BTreeMap::from([("steel".into(), 1.0)]),
+                    heat: 0.0,
+                    pollution: 0.0,
                 },
                 crate::Recipe {
                     id: "forge".into(),
@@ -4203,6 +4248,8 @@ mod tests {
                     deposit: None,
                     inputs: BTreeMap::from([("steel".into(), 1.0)]),
                     outputs: BTreeMap::from([("frames".into(), 1.0)]),
+                    heat: 0.0,
+                    pollution: 0.0,
                 },
             ],
             deposits,
@@ -4339,6 +4386,8 @@ mod tests {
                 deposit: None,
                 inputs: BTreeMap::new(),
                 outputs: BTreeMap::from([("frames".into(), 1.0)]),
+                heat: 0.0,
+                pollution: 0.0,
             }],
             deposits: BTreeMap::new(),
             deposit_jitter: 0.0,
@@ -4381,6 +4430,8 @@ mod tests {
                     deposit: Some("iron_ore".into()),
                     inputs: BTreeMap::new(),
                     outputs: BTreeMap::from([("iron_ore".into(), 1.0)]),
+                    heat: 0.0,
+                    pollution: 0.0,
                 },
                 crate::Recipe {
                     id: "smelt".into(),
@@ -4388,6 +4439,8 @@ mod tests {
                     deposit: None,
                     inputs: BTreeMap::from([("iron_ore".into(), 1.0)]),
                     outputs: BTreeMap::from([("steel".into(), 1.0)]),
+                    heat: 0.0,
+                    pollution: 0.0,
                 },
                 crate::Recipe {
                     id: "forge".into(),
@@ -4395,6 +4448,8 @@ mod tests {
                     deposit: None,
                     inputs: BTreeMap::from([("steel".into(), 1.0)]),
                     outputs: BTreeMap::from([("frames".into(), 1.0)]),
+                    heat: 0.0,
+                    pollution: 0.0,
                 },
             ],
             deposits,
@@ -6701,6 +6756,8 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
                     robotics_factory: 0,
                     research_lab: 0,
                     shipyard: 0,
+                    radiator: 0,
+                    scrubber: 0,
                 },
                 fleet: Fleet::default(),
                 defences: crate::DefenceGrid::default(),

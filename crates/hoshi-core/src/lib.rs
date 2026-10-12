@@ -22,6 +22,7 @@ mod ships;
 mod simulate;
 mod state;
 mod story;
+mod waste;
 mod wonders;
 
 pub use activity::{
@@ -83,7 +84,11 @@ pub use ships::{
     Fleet, SHIP_KINDS, ShipCatalog, ShipCatalogError, ShipError, ShipJob, ShipKind, ShipSpec,
     ShipStats,
 };
-pub use simulate::{DaySnapshot, PrestigeSimRow, SimReport, simulate_greedy};
+pub use simulate::{
+    DaySnapshot, HeavyIndustryReport, PrestigeSimRow, SimReport, heavy_industry_check,
+    simulate_greedy,
+};
 pub use state::{GameEvent, GameState, ResourceKind, Resources};
 pub use story::{PendingStory, StoryCatalog, StoryChoice, StoryError, StoryEvent};
+pub use waste::{WasteConfig, WasteReport, report as waste_report};
 pub use wonders::{WonderError, WonderJob, WonderModifier, WonderSpec, WonderStage};

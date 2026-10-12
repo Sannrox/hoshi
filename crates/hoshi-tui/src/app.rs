@@ -579,6 +579,7 @@ impl App {
                 s.energy_consumed(),
                 s.energy_balance()
             )),
+            Line::from(waste_header_line(s)),
             Line::from(self.build_status()),
             Line::from(self.research_status()),
             Line::from(self.ship_status()),
@@ -655,6 +656,13 @@ impl App {
                 "Rare: {}  {}",
                 rare.name,
                 rare.summary()
+            )));
+        }
+        if let Some(waste) = self.state.waste_at(coord) {
+            rows.push(Line::from(waste_detail_line(
+                &waste,
+                self.state.config.waste.warn_ratio,
+                self.state.config.waste.unrest_per_overflow,
             )));
         }
         let deposits = self.state.deposits_at(coord);
@@ -1254,6 +1262,48 @@ fn resource_line(name: &str, state: &GameState, kind: ResourceKind) -> Line<'sta
     ))
 }
 
+fn waste_header_line(state: &GameState) -> String {
+    let waste = state.waste_home();
+    let warn = state.config.waste.warn_ratio;
+    let unrest = waste.unrest_factor(state.config.waste.unrest_per_overflow);
+    if waste.overflowing() {
+        format!(
+            "Waste      heat {:.0}/{:.0}  pol {:.0}/{:.0}  unrest {:.2}",
+            waste.heat_load, waste.heat_sink, waste.pollution_load, waste.pollution_sink, unrest
+        )
+    } else if waste.warns(warn) {
+        format!(
+            "Waste      heat {:.0}/{:.0}  pol {:.0}/{:.0}  WARN",
+            waste.heat_load, waste.heat_sink, waste.pollution_load, waste.pollution_sink
+        )
+    } else {
+        format!(
+            "Waste      heat {:.0}/{:.0}  pol {:.0}/{:.0}",
+            waste.heat_load, waste.heat_sink, waste.pollution_load, waste.pollution_sink
+        )
+    }
+}
+
+fn waste_detail_line(
+    waste: &hoshi_core::WasteReport,
+    warn_ratio: f64,
+    unrest_per_overflow: f64,
+) -> String {
+    let mut line = format!(
+        "Heat {:.0}/{:.0}  Pollution {:.0}/{:.0}",
+        waste.heat_load, waste.heat_sink, waste.pollution_load, waste.pollution_sink
+    );
+    if waste.overflowing() {
+        line.push_str(&format!(
+            "  unrest {:.2}",
+            waste.unrest_factor(unrest_per_overflow)
+        ));
+    } else if waste.warns(warn_ratio) {
+        line.push_str("  WARN");
+    }
+    line
+}
+
 fn report_overlay_lines(report: &SpyReport, now: u64) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(format!(
@@ -1673,7 +1723,11 @@ mod tests {
 
         let mut app = App::new(GameState::new(1_000));
         app.handle_key(KeyCode::Tab, 1_000);
-        let backend = TestBackend::new(80, 24);
+        app.selected = BuildingKind::ALL
+            .iter()
+            .position(|&kind| kind == BuildingKind::ResearchLab)
+            .expect("research lab");
+        let backend = TestBackend::new(80, 32);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(terminal.backend());
@@ -1952,6 +2006,28 @@ mod tests {
         let text = render_text(&app, 100, 32);
         assert!(text.contains("Deposits"), "{text}");
         assert!(text.contains("iron_ore"), "{text}");
+        assert!(text.contains("Heat"), "{text}");
+        assert!(text.contains("Pollution"), "{text}");
+    }
+
+    #[test]
+    fn planet_screen_warns_before_waste_overflow() {
+        let mut state = GameState::new(1_000);
+        state.buildings.metal_mine = 18;
+        state.buildings.crystal_mine = 18;
+        state.buildings.deuterium_synthesizer = 12;
+        state.buildings.solar_plant = 24;
+        let waste = state.waste_home();
+        assert!(waste.overflowing(), "ratio {}", waste.peak_ratio());
+        let mut app = App::new(state);
+        let overview = render_text(&app, 100, 32);
+        assert!(overview.contains("unrest"), "{overview}");
+        app.handle_key(KeyCode::Tab, 1_000);
+        assert_eq!(app.screen, Screen::Planet);
+        let planet = render_text(&app, 100, 32);
+        assert!(planet.contains("unrest"), "{planet}");
+        assert!(planet.contains("radiator"), "{planet}");
+        assert!(planet.contains("scrubber"), "{planet}");
     }
 
     #[test]

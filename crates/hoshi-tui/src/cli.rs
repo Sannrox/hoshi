@@ -369,6 +369,7 @@ fn state_value(state: &GameState) -> Value {
         .iter()
         .map(|e| json!({"at": e.at, "text": e.text}))
         .collect();
+    let waste = state.waste_home();
     json!({
         "schema_version": SCHEMA_VERSION,
         "ok": true,
@@ -389,6 +390,14 @@ fn state_value(state: &GameState) -> Value {
             "produced": state.energy_produced(),
             "consumed": state.energy_consumed(),
             "factor": state.energy_factor(),
+        },
+        "waste": {
+            "heat_load": waste.heat_load,
+            "heat_sink": waste.heat_sink,
+            "pollution_load": waste.pollution_load,
+            "pollution_sink": waste.pollution_sink,
+            "unrest": state.unrest_factor(),
+            "warn": waste.warns(state.config.waste.warn_ratio),
         },
         "buildings": buildings,
         "build_queue": queue,

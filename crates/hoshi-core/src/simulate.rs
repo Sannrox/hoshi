@@ -41,6 +41,7 @@ pub struct SimReport {
     pub days_log: Vec<DaySnapshot>,
     pub pacing: PacingTargets,
     pub prestige_runs: Vec<PrestigeSimRow>,
+    pub heavy: HeavyIndustryReport,
 }
 
 impl SimReport {
@@ -131,6 +132,25 @@ impl SimReport {
             }
             out.push('\n');
         }
+        out.push_str("## Heavy industry\n\n");
+        out.push_str(&format!(
+            "- unrest without mitigation: {:.2} ({})\n",
+            self.heavy.unrest_without,
+            mark(self.heavy.mitigation_needed())
+        ));
+        out.push_str(&format!(
+            "- unrest with radiators and scrubbers: {:.2} ({})\n",
+            self.heavy.unrest_with,
+            mark(self.heavy.viable_with_mitigation())
+        ));
+        out.push_str(&format!(
+            "- metal/h without {:.0}  with {:.0}\n",
+            self.heavy.metal_without, self.heavy.metal_with
+        ));
+        out.push_str(&format!(
+            "- extra pirate ships without {}  with {}\n\n",
+            self.heavy.raid_without, self.heavy.raid_with
+        ));
         out.push_str(&format!(
             "Overall: {}\n\n",
             if self.passed() { "pass" } else { "fail" }
@@ -164,6 +184,7 @@ pub fn simulate_greedy(config: BalanceConfig, days: u32) -> SimReport {
     let pacing = config.pacing.clone();
     let quiet = run_once(config.clone(), days, false, 0);
     let busy = run_once(config.clone(), days, true, 0);
+    let heavy = heavy_industry_check(&config);
     let prestige_runs = vec![
         prestige_row(&quiet, 1, 0),
         prestige_row(&run_once(config.clone(), days, false, 1), 2, 1),
@@ -184,6 +205,55 @@ pub fn simulate_greedy(config: BalanceConfig, days: u32) -> SimReport {
         days_log: quiet.days_log,
         pacing,
         prestige_runs,
+        heavy,
+    }
+}
+
+/// Late-game mine snapshot: overflow without mitigation, viable once sinks are built.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HeavyIndustryReport {
+    pub unrest_without: f64,
+    pub unrest_with: f64,
+    pub metal_without: f64,
+    pub metal_with: f64,
+    pub raid_without: u32,
+    pub raid_with: u32,
+}
+
+impl HeavyIndustryReport {
+    pub fn mitigation_needed(&self) -> bool {
+        self.unrest_without < 1.0 - 1e-9
+    }
+
+    pub fn viable_with_mitigation(&self) -> bool {
+        self.unrest_with > 0.99 && self.metal_with + 1e-9 >= self.metal_without
+    }
+}
+
+fn heavy_snapshot(config: BalanceConfig, radiator: u32, scrubber: u32) -> GameState {
+    let mut state = GameState::with_config(0, config);
+    state.buildings.metal_mine = 18;
+    state.buildings.crystal_mine = 18;
+    state.buildings.deuterium_synthesizer = 12;
+    state.buildings.solar_plant = 24;
+    state.buildings.radiator = radiator;
+    state.buildings.scrubber = scrubber;
+    state
+}
+
+/// Heavy mines on a rocky home: unrest without sinks, full speed once they are built.
+pub fn heavy_industry_check(config: &BalanceConfig) -> HeavyIndustryReport {
+    let raw = heavy_snapshot(config.clone(), 0, 0);
+    let mitigated = heavy_snapshot(config.clone(), 5, 2);
+    let waste_raw = raw.waste_home();
+    let waste_ok = mitigated.waste_home();
+    HeavyIndustryReport {
+        unrest_without: waste_raw.unrest_factor(config.waste.unrest_per_overflow),
+        unrest_with: waste_ok.unrest_factor(config.waste.unrest_per_overflow),
+        metal_without: raw.production_per_hour(ResourceKind::Metal),
+        metal_with: mitigated.production_per_hour(ResourceKind::Metal),
+        raid_without: waste_raw.raid_ships(config.waste.raid_signature_per_overflow),
+        raid_with: waste_ok.raid_ships(config.waste.raid_signature_per_overflow),
     }
 }
 
@@ -315,26 +385,28 @@ fn fill_queue(state: &mut GameState) {
     }
 }
 
-fn candidate_order(state: &GameState) -> [BuildingKind; 6] {
-    if energy_ok_after(state, BuildingKind::MetalMine) {
-        [
-            BuildingKind::MetalMine,
-            BuildingKind::CrystalMine,
-            BuildingKind::SolarPlant,
-            BuildingKind::DeuteriumSynthesizer,
-            BuildingKind::RoboticsFactory,
-            BuildingKind::MetalStorage,
-        ]
-    } else {
-        [
-            BuildingKind::SolarPlant,
-            BuildingKind::MetalMine,
-            BuildingKind::CrystalMine,
-            BuildingKind::DeuteriumSynthesizer,
-            BuildingKind::RoboticsFactory,
-            BuildingKind::MetalStorage,
-        ]
+fn candidate_order(state: &GameState) -> Vec<BuildingKind> {
+    let mut order = Vec::new();
+    if !energy_ok_after(state, BuildingKind::MetalMine) {
+        order.push(BuildingKind::SolarPlant);
     }
+    if !heat_ok_after(state, BuildingKind::MetalMine) {
+        order.push(BuildingKind::Radiator);
+    }
+    if !pollution_ok_after(state, BuildingKind::MetalMine) {
+        order.push(BuildingKind::Scrubber);
+    }
+    order.extend([
+        BuildingKind::MetalMine,
+        BuildingKind::CrystalMine,
+        BuildingKind::DeuteriumSynthesizer,
+        BuildingKind::RoboticsFactory,
+        BuildingKind::MetalStorage,
+    ]);
+    if energy_ok_after(state, BuildingKind::MetalMine) {
+        order.push(BuildingKind::SolarPlant);
+    }
+    order
 }
 
 fn projected_buildings(state: &GameState) -> Buildings {
@@ -352,13 +424,30 @@ fn energy_ok_after(state: &GameState, extra: BuildingKind) -> bool {
         .config
         .solar_plant
         .energy_output(buildings.solar_plant);
-    let consumed = state.config.metal_mine.energy_use(buildings.metal_mine)
-        + state.config.crystal_mine.energy_use(buildings.crystal_mine)
-        + state
-            .config
-            .deuterium_synthesizer
-            .energy_use(buildings.deuterium_synthesizer);
+    let consumed = state.config.energy_draw(&buildings);
     consumed <= 0.0 || produced + 1e-9 >= consumed
+}
+
+fn waste_after(state: &GameState, extra: BuildingKind) -> crate::WasteReport {
+    let mut buildings = projected_buildings(state);
+    buildings.increment(extra);
+    crate::waste::report(
+        &state.config.waste,
+        &state.config.chains.recipes,
+        state.config.industry_energy(&buildings),
+        buildings,
+        state.home_kind,
+        0.0,
+        0.0,
+    )
+}
+
+fn heat_ok_after(state: &GameState, extra: BuildingKind) -> bool {
+    waste_after(state, extra).heat_ratio() <= 1.0 + 1e-9
+}
+
+fn pollution_ok_after(state: &GameState, extra: BuildingKind) -> bool {
+    waste_after(state, extra).pollution_ratio() <= 1.0 + 1e-9
 }
 
 fn next_afford_at(state: &GameState) -> Option<u64> {
@@ -469,5 +558,29 @@ mod tests {
         assert!(later > 0, "later run still spends construction time");
         let md = report.to_markdown();
         assert!(md.contains("## Prestige runs"), "{md}");
+    }
+
+    #[test]
+    fn heavy_industry_needs_mitigation_and_stays_viable_with_it() {
+        let report = simulate_greedy(BalanceConfig::default(), 1);
+        assert!(
+            report.heavy.mitigation_needed(),
+            "unrest {}",
+            report.heavy.unrest_without
+        );
+        assert!(
+            report.heavy.viable_with_mitigation(),
+            "with unrest {} metal {} vs {}",
+            report.heavy.unrest_with,
+            report.heavy.metal_with,
+            report.heavy.metal_without
+        );
+        assert!(
+            report.heavy.raid_without > report.heavy.raid_with,
+            "{:?}",
+            report.heavy
+        );
+        let md = report.to_markdown();
+        assert!(md.contains("## Heavy industry"), "{md}");
     }
 }

@@ -25,6 +25,8 @@ pub enum ModifierKind {
     CrystalOutput,
     DeuteriumOutput,
     EnergyOutput,
+    HeatSink,
+    PollutionSink,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -340,21 +342,9 @@ struct FileTechPrereq {
 }
 
 fn parse_building(name: &str) -> Result<BuildingKind, TechTreeError> {
-    match name {
-        "metal_mine" => Ok(BuildingKind::MetalMine),
-        "crystal_mine" => Ok(BuildingKind::CrystalMine),
-        "deuterium_synthesizer" => Ok(BuildingKind::DeuteriumSynthesizer),
-        "solar_plant" => Ok(BuildingKind::SolarPlant),
-        "metal_storage" => Ok(BuildingKind::MetalStorage),
-        "crystal_storage" => Ok(BuildingKind::CrystalStorage),
-        "deuterium_storage" => Ok(BuildingKind::DeuteriumStorage),
-        "robotics_factory" => Ok(BuildingKind::RoboticsFactory),
-        "research_lab" => Ok(BuildingKind::ResearchLab),
-        "shipyard" => Ok(BuildingKind::Shipyard),
-        other => Err(TechTreeError::UnknownBuilding {
-            name: other.to_string(),
-        }),
-    }
+    BuildingKind::from_key(name).ok_or_else(|| TechTreeError::UnknownBuilding {
+        name: name.to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -368,6 +358,9 @@ mod tests {
         assert!(tree.get("weapons").is_some());
         assert!(tree.get("astrophysics").is_some());
         assert!(tree.get("logistics").is_some());
+        assert!(tree.get("ecology").is_some());
+        let energy = tree.get("energy").unwrap();
+        assert_eq!(energy.modifiers[0].kind, ModifierKind::HeatSink);
         let weapons = tree.get("weapons").unwrap();
         assert_eq!(weapons.modifiers[0].kind, ModifierKind::WeaponDamage);
         assert!((weapons.modifiers[0].per_level - 0.1).abs() < 1e-12);
