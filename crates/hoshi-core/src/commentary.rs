@@ -200,11 +200,22 @@ pub fn rephrase_lines(lines: &mut [Option<String>], endpoint: &str) {
 /// Same as [`rephrase_lines`], but a private IPv4 host is allowed when
 /// `allow_lan` is set. Public addresses stay refused.
 pub fn rephrase_lines_allow(lines: &mut [Option<String>], endpoint: &str, allow_lan: bool) {
+    rephrase_lines_named(lines, endpoint, allow_lan, "");
+}
+
+/// Same as [`rephrase_lines_allow`], sending `model` in the JSON body when
+/// non-empty.
+pub fn rephrase_lines_named(
+    lines: &mut [Option<String>],
+    endpoint: &str,
+    allow_lan: bool,
+    model: &str,
+) {
     #[cfg(feature = "commentary-model")]
-    rephrase_lines_model(lines, endpoint, allow_lan);
+    rephrase_lines_model(lines, endpoint, allow_lan, model);
     #[cfg(not(feature = "commentary-model"))]
     {
-        let _ = (lines, endpoint, allow_lan);
+        let _ = (lines, endpoint, allow_lan, model);
     }
 }
 
@@ -214,6 +225,21 @@ pub fn rephrase_local(line: &str, endpoint: &str) -> String {
     let mut lines = [Some(line.to_string())];
     rephrase_lines(&mut lines, endpoint);
     lines[0].take().unwrap_or_else(|| line.to_string())
+}
+
+/// Probe a local model URL with a 100ms TCP budget. Public hosts are refused
+/// even when `allow_lan` is set; private IPv4 is allowed only then.
+pub fn probe_model_endpoint(endpoint: &str, allow_lan: bool) -> Result<(), String> {
+    if endpoint.is_empty() {
+        return Err("no endpoint".into());
+    }
+    let Some((addr, _, _)) = model_connect_addr(endpoint, allow_lan) else {
+        return Err("only loopback, or a private IPv4 host when LAN is allowed".into());
+    };
+    match std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(100)) {
+        Ok(_) => Ok(()),
+        Err(err) => Err(err.to_string()),
+    }
 }
 
 /// Parse an `http://` endpoint into a connect address. Loopback always;
@@ -247,12 +273,17 @@ pub(crate) fn model_connect_addr(
 }
 
 #[cfg(feature = "commentary-model")]
-fn rephrase_lines_model(lines: &mut [Option<String>], endpoint: &str, allow_lan: bool) {
+fn rephrase_lines_model(
+    lines: &mut [Option<String>],
+    endpoint: &str,
+    allow_lan: bool,
+    model: &str,
+) {
     let originals: Vec<String> = lines.iter().filter_map(|slot| slot.clone()).collect();
     if originals.is_empty() {
         return;
     }
-    let Some(out) = rephrase_local_batch(&originals, endpoint, allow_lan) else {
+    let Some(out) = rephrase_local_batch(&originals, endpoint, allow_lan, model) else {
         return;
     };
     if out.len() != originals.len() {
@@ -275,7 +306,12 @@ fn remaining(deadline: std::time::Instant) -> Option<std::time::Duration> {
 }
 
 #[cfg(feature = "commentary-model")]
-fn rephrase_local_batch(lines: &[String], endpoint: &str, allow_lan: bool) -> Option<Vec<String>> {
+fn rephrase_local_batch(
+    lines: &[String],
+    endpoint: &str,
+    allow_lan: bool,
+    model: &str,
+) -> Option<Vec<String>> {
     let (addr, host, path) = model_connect_addr(endpoint, allow_lan)?;
     let deadline = std::time::Instant::now() + MODEL_BUDGET;
     let mut stream = std::net::TcpStream::connect_timeout(&addr, remaining(deadline)?).ok()?;
@@ -285,7 +321,15 @@ fn rephrase_local_batch(lines: &[String], endpoint: &str, allow_lan: bool) -> Op
         .iter()
         .map(|line| format!("\"{}\"", line.replace('\\', "\\\\").replace('"', "\\\"")))
         .collect();
-    let body = format!("{{\"lines\":[{}]}}", escaped.join(","));
+    let model_field = if model.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\"model\":\"{}\",",
+            model.replace('\\', "\\\\").replace('"', "\\\"")
+        )
+    };
+    let body = format!("{{{model_field}\"lines\":[{}]}}", escaped.join(","));
     let req = format!(
         "POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
@@ -416,6 +460,14 @@ mod tests {
         assert!(model_connect_addr("http://192.168.1.10:8080/v1", true).is_some());
         assert!(model_connect_addr("http://192.168.1.10:8080/v1", false).is_none());
         assert!(model_connect_addr("http://8.8.8.8/v1", true).is_none());
+        assert_eq!(
+            probe_model_endpoint("http://8.8.8.8/v1", true).unwrap_err(),
+            "only loopback, or a private IPv4 host when LAN is allowed"
+        );
+        assert_eq!(probe_model_endpoint("", false).unwrap_err(), "no endpoint");
+        let started = std::time::Instant::now();
+        assert!(probe_model_endpoint("http://127.0.0.1:1/v1", false).is_err());
+        assert!(started.elapsed() < std::time::Duration::from_millis(400));
     }
 
     #[cfg(feature = "commentary-model")]

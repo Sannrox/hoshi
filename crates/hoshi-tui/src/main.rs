@@ -590,6 +590,7 @@ fn play_path(
     app.commentary_model_url = user.commentary_model_url.clone();
     app.ai_advisor = user.ai_advisor;
     app.advisor_model_url = user.advisor_model_url.clone();
+    app.advisor_model_name = user.advisor_model_name.clone();
     app.advisor_allow_lan = user.advisor_allow_lan;
     app.set_notify(user.notify_prefs());
     #[cfg(feature = "bridge")]

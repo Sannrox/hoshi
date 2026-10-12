@@ -5,8 +5,9 @@ use crate::config::UserConfig;
 use crate::keymap::{Binding, HelpContext, Keymap};
 use hoshi_core::{
     AchievementConfig, BalanceConfig, CareerGlance, Prestige, PrestigeConfig, PrestigeError,
-    SaveError, SaveGlance, encode_galaxy_seed, inspect_career, inspect_save, load_state, lock_save,
-    open_save, parse_galaxy_seed, preview_galaxy, save_is_locked, save_state,
+    SaveError, SaveGlance, advisor_endpoint_allowed, encode_galaxy_seed, inspect_career,
+    inspect_save, load_state, lock_save, open_save, parse_galaxy_seed, preview_galaxy,
+    probe_model_endpoint, save_is_locked, save_state,
 };
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
@@ -15,6 +16,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TitleAction {
@@ -29,6 +31,7 @@ enum Page {
     New,
     Load,
     Settings,
+    Advisor,
     Keys,
     Achievements,
     Prestige,
@@ -161,6 +164,11 @@ pub struct Title {
     prestige_confirm: bool,
     prestige_source: Option<PathBuf>,
     prestige_menu: bool,
+    advisor_selected: usize,
+    advisor_editing: bool,
+    advisor_draft: String,
+    advisor_probe: Option<mpsc::Receiver<Result<(), String>>>,
+    advisor_probe_status: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -203,6 +211,11 @@ impl Title {
             prestige_confirm: false,
             prestige_source: None,
             prestige_menu: false,
+            advisor_selected: 0,
+            advisor_editing: false,
+            advisor_draft: String::new(),
+            advisor_probe: None,
+            advisor_probe_status: String::new(),
         };
         title.refresh_slots();
         title
@@ -215,6 +228,16 @@ impl Title {
     pub fn tick(&mut self) {
         if !self.config.reduced_motion {
             self.tick = self.tick.saturating_add(1);
+        }
+        if let Some(rx) = &self.advisor_probe
+            && let Ok(result) = rx.try_recv()
+        {
+            self.advisor_probe = None;
+            self.advisor_probe_status = match result {
+                Ok(()) => "connection ok".into(),
+                Err(err) => format!("connection failed: {err}"),
+            };
+            self.status = self.advisor_probe_status.clone();
         }
     }
 
@@ -342,6 +365,7 @@ impl Title {
             return TitleAction::None;
         }
         if !self.listening
+            && !self.advisor_editing
             && self.config.keys.lookup(self.help_context(), code) == Some(Binding::Help)
         {
             self.help_open = true;
@@ -352,6 +376,7 @@ impl Title {
             Page::New => self.handle_new(code),
             Page::Load => self.handle_load(code),
             Page::Settings => self.handle_settings(code),
+            Page::Advisor => self.handle_advisor(code),
             Page::Keys => self.handle_keys(code),
             Page::Achievements => self.handle_achievements(code),
             Page::Prestige => self.handle_prestige(code),
@@ -374,6 +399,7 @@ impl Title {
             Page::Load if self.confirm_delete.is_some() => HelpContext::TitleDelete,
             Page::Load => HelpContext::TitleLoad,
             Page::Settings => HelpContext::TitleSettings,
+            Page::Advisor => HelpContext::TitleAdvisor,
             Page::Keys => HelpContext::TitleKeys,
             Page::Achievements => HelpContext::TitleAchievements,
             Page::Prestige => HelpContext::TitlePrestige,
@@ -971,7 +997,7 @@ impl Title {
     }
 
     fn handle_settings(&mut self, code: KeyCode) -> TitleAction {
-        let items = 9;
+        let items = 10;
         match self.config.keys.lookup(HelpContext::TitleSettings, code) {
             Some(Binding::Cancel) => {
                 self.page = Page::Menu;
@@ -1004,6 +1030,16 @@ impl Title {
                         self.status.clear();
                         return TitleAction::None;
                     }
+                    9 => {
+                        self.page = Page::Advisor;
+                        self.advisor_selected = 0;
+                        self.advisor_editing = false;
+                        self.advisor_draft.clear();
+                        self.advisor_probe = None;
+                        self.advisor_probe_status.clear();
+                        self.status.clear();
+                        return TitleAction::None;
+                    }
                     _ => {}
                 }
                 let _ = self.config.save(&self.dir);
@@ -1011,6 +1047,118 @@ impl Title {
             _ => {}
         }
         TitleAction::None
+    }
+
+    fn handle_advisor(&mut self, code: KeyCode) -> TitleAction {
+        if self.advisor_editing {
+            match self.config.keys.lookup(HelpContext::TitleAdvisor, code) {
+                Some(Binding::Cancel) => {
+                    self.advisor_editing = false;
+                    self.advisor_draft.clear();
+                    self.status.clear();
+                    return TitleAction::None;
+                }
+                Some(Binding::Confirm) => {
+                    self.commit_advisor_draft();
+                    return TitleAction::None;
+                }
+                _ => {}
+            }
+            match code {
+                KeyCode::Backspace => {
+                    self.advisor_draft.pop();
+                }
+                KeyCode::Char(c) if !c.is_control() && self.advisor_draft.len() < 80 => {
+                    self.advisor_draft.push(c);
+                }
+                _ => {}
+            }
+            return TitleAction::None;
+        }
+        const ITEMS: usize = 5;
+        match self.config.keys.lookup(HelpContext::TitleAdvisor, code) {
+            Some(Binding::Cancel) => {
+                self.page = Page::Settings;
+                self.selected = 9;
+                self.status.clear();
+            }
+            Some(Binding::SelectNext) => {
+                self.advisor_selected = (self.advisor_selected + 1) % ITEMS;
+            }
+            Some(Binding::SelectPrev) => {
+                self.advisor_selected = (self.advisor_selected + ITEMS - 1) % ITEMS;
+            }
+            Some(Binding::Confirm | Binding::Toggle) => match self.advisor_selected {
+                0 => {
+                    self.config.ai_advisor = !self.config.ai_advisor;
+                    let _ = self.config.save(&self.dir);
+                }
+                1 => {
+                    self.advisor_draft = self.config.advisor_model_url.clone();
+                    self.advisor_editing = true;
+                    self.status = "edit endpoint, Enter to save".into();
+                }
+                2 => {
+                    self.advisor_draft = self.config.advisor_model_name.clone();
+                    self.advisor_editing = true;
+                    self.status = "edit model name, Enter to save".into();
+                }
+                3 => {
+                    self.config.advisor_allow_lan = !self.config.advisor_allow_lan;
+                    let _ = self.config.save(&self.dir);
+                }
+                4 => self.start_advisor_probe(),
+                _ => {}
+            },
+            _ => {}
+        }
+        TitleAction::None
+    }
+
+    fn commit_advisor_draft(&mut self) {
+        let draft = self.advisor_draft.trim().to_string();
+        match self.advisor_selected {
+            1 => {
+                if !draft.is_empty()
+                    && !advisor_endpoint_allowed(&draft, self.config.advisor_allow_lan)
+                {
+                    self.status = "only loopback, or enable LAN for a private IPv4 host".into();
+                    return;
+                }
+                self.config.advisor_model_url = draft;
+            }
+            2 => {
+                if !draft
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+                {
+                    self.status = "model name: letters, digits, dash, underscore, dot".into();
+                    return;
+                }
+                self.config.advisor_model_name = draft;
+            }
+            _ => {}
+        }
+        self.advisor_editing = false;
+        self.advisor_draft.clear();
+        let _ = self.config.save(&self.dir);
+        self.status = "saved".into();
+    }
+
+    fn start_advisor_probe(&mut self) {
+        if self.advisor_probe.is_some() {
+            self.status = "connection test already running".into();
+            return;
+        }
+        let url = self.config.advisor_model_url.clone();
+        let allow_lan = self.config.advisor_allow_lan;
+        let (tx, rx) = mpsc::channel();
+        self.advisor_probe = Some(rx);
+        self.advisor_probe_status = "testing…".into();
+        self.status = "testing connection…".into();
+        std::thread::spawn(move || {
+            let _ = tx.send(probe_model_endpoint(&url, allow_lan));
+        });
     }
 
     fn commit_keys(&mut self, keys: Keymap, ok: String) {
@@ -1082,7 +1230,7 @@ impl Title {
         match self.config.keys.lookup(HelpContext::TitleKeys, code) {
             Some(Binding::Cancel) => {
                 self.page = Page::Settings;
-                self.selected = 6;
+                self.selected = 8;
                 self.status.clear();
             }
             Some(Binding::SelectNext) => {
@@ -1247,6 +1395,62 @@ impl Title {
                 ));
                 lines.push(menu_line("reset tutorial hints", self.selected == 7));
                 lines.push(menu_line("keybindings", self.selected == 8));
+                lines.push(menu_line("advisor model", self.selected == 9));
+            }
+            Page::Advisor => {
+                let endpoint = if self.advisor_editing && self.advisor_selected == 1 {
+                    format!("{}█", self.advisor_draft)
+                } else if self.config.advisor_model_url.is_empty() {
+                    "(none)".into()
+                } else {
+                    self.config.advisor_model_url.clone()
+                };
+                let model = if self.advisor_editing && self.advisor_selected == 2 {
+                    format!("{}█", self.advisor_draft)
+                } else if self.config.advisor_model_name.is_empty() {
+                    "(none)".into()
+                } else {
+                    self.config.advisor_model_name.clone()
+                };
+                lines.push(Line::from(format!(
+                    "Advisor  {} toggles  {} test  {} back  {} help",
+                    self.config.keys.primary(Binding::Toggle),
+                    self.config.keys.primary(Binding::Confirm),
+                    self.config.keys.primary(Binding::Cancel),
+                    self.config.keys.primary(Binding::Help)
+                )));
+                lines.push(toggle_line(
+                    "local AI advisor (off by default)",
+                    self.config.ai_advisor,
+                    self.advisor_selected == 0,
+                ));
+                lines.push(menu_line(
+                    &format!("endpoint  {endpoint}"),
+                    self.advisor_selected == 1,
+                ));
+                lines.push(menu_line(
+                    &format!("model     {model}"),
+                    self.advisor_selected == 2,
+                ));
+                lines.push(toggle_line(
+                    "allow private LAN host",
+                    self.config.advisor_allow_lan,
+                    self.advisor_selected == 3,
+                ));
+                let test = if self.advisor_probe.is_some() {
+                    "test connection  (running)"
+                } else {
+                    "test connection"
+                };
+                lines.push(menu_line(test, self.advisor_selected == 4));
+                if !self.advisor_probe_status.is_empty() {
+                    lines.push(Line::from(self.advisor_probe_status.clone()));
+                }
+                if !cfg!(feature = "advisor-model") {
+                    lines.push(Line::from(
+                        "rebuild with --features advisor-model to rephrase suggestions",
+                    ));
+                }
             }
             Page::Keys => {
                 let actions = Binding::REMAPPABLE;
@@ -1509,6 +1713,7 @@ fn screens_for(binding: Binding) -> String {
         HelpContext::TitleDelete,
         HelpContext::TitleRename,
         HelpContext::TitleSettings,
+        HelpContext::TitleAdvisor,
         HelpContext::TitleKeys,
         HelpContext::TitleAchievements,
         HelpContext::TitlePrestige,
@@ -1908,6 +2113,74 @@ mod tests {
         assert!(title.config.notify);
         let loaded = UserConfig::load(&dir);
         assert!(loaded.notify);
+        let settings = render(&title, 80, 24);
+        assert!(settings.contains("advisor model"), "{settings}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn advisor_settings_save_to_config_not_the_save() {
+        let dir = unique_dir();
+        let mut title = Title::new(dir.clone(), 1);
+        title.page = Page::Advisor;
+        title.advisor_selected = 0;
+        assert!(!title.config.ai_advisor);
+        title.handle_key(KeyCode::Char(' '));
+        assert!(title.config.ai_advisor);
+        title.advisor_selected = 3;
+        title.handle_key(KeyCode::Char(' '));
+        assert!(title.config.advisor_allow_lan);
+        title.advisor_selected = 1;
+        title.handle_key(KeyCode::Enter);
+        for c in "http://8.8.8.8/v1".chars() {
+            title.handle_key(KeyCode::Char(c));
+        }
+        title.handle_key(KeyCode::Enter);
+        assert!(title.config.advisor_model_url.is_empty());
+        assert!(
+            title.status.contains("loopback") || title.status.contains("LAN"),
+            "{}",
+            title.status
+        );
+        title.advisor_draft.clear();
+        title.advisor_editing = true;
+        title.advisor_selected = 1;
+        for c in "http://127.0.0.1:11434/v1".chars() {
+            title.handle_key(KeyCode::Char(c));
+        }
+        title.handle_key(KeyCode::Enter);
+        assert_eq!(title.config.advisor_model_url, "http://127.0.0.1:11434/v1");
+        title.advisor_selected = 2;
+        title.handle_key(KeyCode::Enter);
+        for c in "llama3".chars() {
+            title.handle_key(KeyCode::Char(c));
+        }
+        title.handle_key(KeyCode::Enter);
+        assert_eq!(title.config.advisor_model_name, "llama3");
+        let loaded = UserConfig::load(&dir);
+        assert!(loaded.ai_advisor);
+        assert_eq!(loaded.advisor_model_url, "http://127.0.0.1:11434/v1");
+        assert_eq!(loaded.advisor_model_name, "llama3");
+        assert!(loaded.advisor_allow_lan);
+        title.advisor_selected = 4;
+        let started = std::time::Instant::now();
+        title.handle_key(KeyCode::Enter);
+        assert!(started.elapsed() < std::time::Duration::from_millis(50));
+        assert!(title.advisor_probe.is_some());
+        for _ in 0..20 {
+            title.tick();
+            if title.advisor_probe.is_none() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(title.advisor_probe.is_none());
+        assert!(
+            title.advisor_probe_status.contains("ok")
+                || title.advisor_probe_status.contains("failed"),
+            "{}",
+            title.advisor_probe_status
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

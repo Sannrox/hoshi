@@ -10,7 +10,7 @@ use hoshi_core::{
     BuildingKind, CombatLog, CombatWinner, CommentaryCatalog, Coord, DefenceKind, Fleet, GameState,
     HintScreen, Jurisdiction, JurisdictionKind, LawStatus, ResourceKind, Resources, ShipKind,
     SpyReport, StoryEvent, TechBranch, TechNodeState, WonderError, advise, encode_galaxy_seed,
-    polish_all, rephrase_lines,
+    polish_all_named, rephrase_lines,
 };
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
@@ -94,6 +94,7 @@ pub struct App {
     pub commentary_model_url: String,
     pub ai_advisor: bool,
     pub advisor_model_url: String,
+    pub advisor_model_name: String,
     pub advisor_allow_lan: bool,
     notify: NotifyPrefs,
     watch: NotifyWatch,
@@ -147,6 +148,7 @@ impl App {
             commentary_model_url: String::new(),
             ai_advisor: false,
             advisor_model_url: String::new(),
+            advisor_model_name: String::new(),
             advisor_allow_lan: false,
             notify: NotifyPrefs::default(),
             watch,
@@ -1378,10 +1380,11 @@ impl App {
 
     fn open_advisor(&mut self) {
         let tips = advise(&self.state);
-        self.advisor_lines = polish_all(
+        self.advisor_lines = polish_all_named(
             &tips.into_iter().map(|row| row.text).collect::<Vec<_>>(),
             &self.advisor_model_url,
             self.advisor_allow_lan,
+            &self.advisor_model_name,
         );
         self.advisor_open = true;
     }
