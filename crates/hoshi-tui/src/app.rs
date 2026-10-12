@@ -1,4 +1,4 @@
-//! Overview, planet, shipyard, wonder, prestige, market, diplomacy, laws and reports screens.
+//! Overview, planet, shipyard, wonder, prestige, market, diplomacy, laws, reports and map screens.
 //! Core owns the rules; this module only renders and turns keys into core commands.
 
 use crate::portraits::{self, PortraitView, Protocol, Slot};
@@ -26,6 +26,17 @@ pub enum Screen {
     Diplomacy,
     Laws,
     Reports,
+    Map,
+}
+
+const MAP_SYSTEM_MAX: u16 = 81;
+const MAP_SLOT_COUNT: u16 = 16;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct DispatchForm {
+    dest: Coord,
+    ships: Fleet,
+    selected: usize,
 }
 
 const TRADE_PAIRS: [(ResourceKind, ResourceKind); 6] = [
@@ -55,6 +66,9 @@ pub struct App {
     away: Option<AwaySummary>,
     away_hidden: bool,
     opened_report: bool,
+    map_system: u16,
+    map_position: u16,
+    dispatch: Option<DispatchForm>,
 }
 
 impl App {
@@ -71,6 +85,9 @@ impl App {
             away: None,
             away_hidden: false,
             opened_report: false,
+            map_system: Coord::HOME.system,
+            map_position: Coord::HOME.position,
+            dispatch: None,
         }
     }
 
@@ -128,15 +145,43 @@ impl App {
                     Screen::Market => Screen::Diplomacy,
                     Screen::Diplomacy => Screen::Laws,
                     Screen::Laws => Screen::Reports,
-                    Screen::Reports => Screen::Overview,
+                    Screen::Reports => Screen::Map,
+                    Screen::Map => Screen::Overview,
                 };
                 self.selected = 0;
                 self.status.clear();
                 self.confirming_prestige = false;
                 self.opened_report = false;
+                self.dispatch = None;
             }
             KeyCode::Char(']') => self.cycle_planet(1),
             KeyCode::Char('[') => self.cycle_planet(-1),
+            KeyCode::Char('j') | KeyCode::Down if self.dispatch.is_some() => {
+                self.nudge_dispatch(1);
+            }
+            KeyCode::Char('k') | KeyCode::Up if self.dispatch.is_some() => {
+                self.nudge_dispatch(-1);
+            }
+            KeyCode::Char('h') | KeyCode::Left
+                if self.screen == Screen::Map && self.dispatch.is_none() =>
+            {
+                self.nudge_map_position(-1);
+            }
+            KeyCode::Char('l') | KeyCode::Right
+                if self.screen == Screen::Map && self.dispatch.is_none() =>
+            {
+                self.nudge_map_position(1);
+            }
+            KeyCode::Char('j') | KeyCode::Down
+                if self.screen == Screen::Map && self.dispatch.is_none() =>
+            {
+                self.nudge_map_system(1);
+            }
+            KeyCode::Char('k') | KeyCode::Up
+                if self.screen == Screen::Map && self.dispatch.is_none() =>
+            {
+                self.nudge_map_system(-1);
+            }
             KeyCode::Char('j') | KeyCode::Down => {
                 let len = self.list_len();
                 if len > 0 {
@@ -149,6 +194,8 @@ impl App {
                     self.selected = (self.selected + len - 1) % len;
                 }
             }
+            KeyCode::Char('+') if self.dispatch.is_some() => self.nudge_dispatch_ships(1),
+            KeyCode::Char('-') if self.dispatch.is_some() => self.nudge_dispatch_ships(-1),
             KeyCode::Char('+') if self.screen == Screen::Market => {
                 self.trade_amount = (self.trade_amount + 10.0).min(1_000_000.0);
             }
@@ -196,31 +243,34 @@ impl App {
     pub fn draw(&self, frame: &mut Frame<'_>) {
         let title = match self.screen {
             Screen::Overview => {
-                " hoshi  [overview] planet shipyard wonder prestige market diplomacy laws reports "
+                " hoshi  [overview] planet shipyard wonder prestige market diplomacy laws reports map "
             }
             Screen::Planet => {
-                " hoshi  overview [planet] shipyard wonder prestige market diplomacy laws reports "
+                " hoshi  overview [planet] shipyard wonder prestige market diplomacy laws reports map "
             }
             Screen::Shipyard => {
-                " hoshi  overview planet [shipyard] wonder prestige market diplomacy laws reports "
+                " hoshi  overview planet [shipyard] wonder prestige market diplomacy laws reports map "
             }
             Screen::Wonder => {
-                " hoshi  overview planet shipyard [wonder] prestige market diplomacy laws reports "
+                " hoshi  overview planet shipyard [wonder] prestige market diplomacy laws reports map "
             }
             Screen::Prestige => {
-                " hoshi  overview planet shipyard wonder [prestige] market diplomacy laws reports "
+                " hoshi  overview planet shipyard wonder [prestige] market diplomacy laws reports map "
             }
             Screen::Market => {
-                " hoshi  overview planet shipyard wonder prestige [market] diplomacy laws reports "
+                " hoshi  overview planet shipyard wonder prestige [market] diplomacy laws reports map "
             }
             Screen::Diplomacy => {
-                " hoshi  overview planet shipyard wonder prestige market [diplomacy] laws reports "
+                " hoshi  overview planet shipyard wonder prestige market [diplomacy] laws reports map "
             }
             Screen::Laws => {
-                " hoshi  overview planet shipyard wonder prestige market diplomacy [laws] reports "
+                " hoshi  overview planet shipyard wonder prestige market diplomacy [laws] reports map "
             }
             Screen::Reports => {
-                " hoshi  overview planet shipyard wonder prestige market diplomacy laws [reports] "
+                " hoshi  overview planet shipyard wonder prestige market diplomacy laws [reports] map "
+            }
+            Screen::Map => {
+                " hoshi  overview planet shipyard wonder prestige market diplomacy laws reports [map] "
             }
         };
         let block = Block::bordered().title(title);
@@ -264,6 +314,8 @@ impl App {
             self.draw_story(frame, event);
         } else if self.opened_report {
             self.draw_report(frame);
+        } else if let Some(form) = &self.dispatch {
+            self.draw_dispatch(frame, form);
         }
     }
 
@@ -290,6 +342,7 @@ impl App {
         if (self.away.is_some() && !self.away_hidden)
             || self.story_event().is_some()
             || self.opened_report
+            || self.dispatch.is_some()
         {
             return portraits::erase_inline_graphics(out);
         }
@@ -416,6 +469,7 @@ impl App {
             Screen::Market => self.activate_market(now_unix),
             Screen::Diplomacy => self.activate_diplomacy(now_unix),
             Screen::Laws => self.activate_law(now_unix),
+            Screen::Map => self.activate_map(now_unix),
             Screen::Reports => {
                 if self
                     .selected_outpost()
@@ -487,6 +541,118 @@ impl App {
             Ok(msg) => self.status = msg,
             Err(e) => self.status = e.to_string(),
         }
+    }
+
+    fn map_cursor(&self) -> Coord {
+        Coord {
+            galaxy: self.state.home.galaxy,
+            system: self.map_system,
+            position: self.map_position,
+        }
+    }
+
+    fn nudge_map_system(&mut self, delta: i32) {
+        let next = i32::from(self.map_system) + delta;
+        self.map_system = if next < 1 {
+            MAP_SYSTEM_MAX
+        } else if next > i32::from(MAP_SYSTEM_MAX) {
+            1
+        } else {
+            next as u16
+        };
+    }
+
+    fn nudge_map_position(&mut self, delta: i32) {
+        let next = i32::from(self.map_position) + delta;
+        self.map_position = if next < 1 {
+            MAP_SLOT_COUNT
+        } else if next > i32::from(MAP_SLOT_COUNT) {
+            1
+        } else {
+            next as u16
+        };
+    }
+
+    fn nudge_dispatch(&mut self, delta: i32) {
+        let Some(form) = self.dispatch.as_mut() else {
+            return;
+        };
+        let len = ShipKind::ALL.len() as i32;
+        form.selected = ((form.selected as i32 + delta).rem_euclid(len)) as usize;
+    }
+
+    fn nudge_dispatch_ships(&mut self, delta: i32) {
+        let Some(form) = self.dispatch.as_mut() else {
+            return;
+        };
+        let kind = ShipKind::ALL[form.selected];
+        let have = self.state.fleet.get(kind);
+        let cur = form.ships.get(kind);
+        let next = (cur as i32 + delta).clamp(0, have as i32) as u32;
+        if next > cur {
+            form.ships.add(kind, next - cur);
+        } else {
+            form.ships.saturating_sub(kind, cur - next);
+        }
+    }
+
+    fn activate_map(&mut self, now_unix: u64) {
+        if self.dispatch.is_some() {
+            self.confirm_dispatch(now_unix);
+            return;
+        }
+        let dest = self.map_cursor();
+        if dest == self.state.home {
+            self.status = "same location".into();
+            return;
+        }
+        self.dispatch = Some(DispatchForm {
+            dest,
+            ships: Fleet::default(),
+            selected: 0,
+        });
+        self.status.clear();
+    }
+
+    fn confirm_dispatch(&mut self, now_unix: u64) {
+        let Some(form) = self.dispatch else {
+            return;
+        };
+        match self
+            .state
+            .launch_fleet(form.ships, form.dest, 100, 0, now_unix)
+        {
+            Ok(()) => {
+                self.status = format!("launched to {}", form.dest);
+                self.dispatch = None;
+            }
+            Err(e) => self.status = e.to_string(),
+        }
+    }
+
+    fn draw_dispatch(&self, frame: &mut Frame<'_>, form: &DispatchForm) {
+        let mut lines = vec![Line::from(format!("to {}", form.dest))];
+        if !form.ships.is_empty() {
+            match self.state.flight_time_and_fuel(form.ships, form.dest, 100) {
+                Ok((eta, fuel)) => {
+                    lines.push(Line::from(format!("ETA {eta}s  fuel {fuel:.1}")));
+                }
+                Err(e) => lines.push(Line::from(e.to_string())),
+            }
+        } else {
+            lines.push(Line::from("pick ships with +/-"));
+        }
+        for (i, kind) in ShipKind::ALL.iter().enumerate() {
+            let mark = if i == form.selected { '>' } else { ' ' };
+            lines.push(Line::from(format!(
+                "{mark} {} {}/{}",
+                kind.as_key(),
+                form.ships.get(*kind),
+                self.state.fleet.get(*kind)
+            )));
+        }
+        lines.push(Line::from("enter launch  +/- count  x close"));
+        render_overlay(frame, " dispatch ", lines);
     }
 
     fn activate_diplomacy(&mut self, now_unix: u64) {
@@ -580,6 +746,7 @@ impl App {
                 self.confirming_prestige = false;
                 self.status.clear();
             }
+            Screen::Map => self.dispatch = None,
             Screen::Market | Screen::Diplomacy | Screen::Laws | Screen::Reports => {}
         }
     }
@@ -595,6 +762,7 @@ impl App {
             Screen::Diplomacy => self.state.config.diplomacy.len(),
             Screen::Laws => self.state.config.laws.len() + self.state.laws.laws.len(),
             Screen::Reports => self.state.outposts.len(),
+            Screen::Map => 0,
         }
     }
 
@@ -661,6 +829,7 @@ impl App {
             Screen::Diplomacy => "tab screens  j/k faction  enter tribute  q quit",
             Screen::Laws => "tab screens  j/k law  enter propose/approve/repeal  q quit",
             Screen::Reports => "tab screens  j/k outpost  enter report  s send probe  q quit",
+            Screen::Map => "tab screens  hjkl cursor  enter dispatch  q quit",
         })]
     }
 
@@ -675,6 +844,7 @@ impl App {
             Screen::Diplomacy => self.diplomacy_lines(height),
             Screen::Laws => self.law_lines(height),
             Screen::Reports => self.report_lines(height),
+            Screen::Map => self.map_lines(height),
         }
     }
 
@@ -1193,6 +1363,73 @@ impl App {
         }
         let _ = i;
         append_windowed(&mut rows, &entries, self.selected, height)
+    }
+
+    fn map_lines(&self, height: usize) -> Vec<Line<'static>> {
+        let cursor = self.map_cursor();
+        let mut rows = vec![Line::from(format!(
+            "Map  galaxy {}  cursor {cursor}  hjkl move  enter dispatch",
+            cursor.galaxy
+        ))];
+        let owned = self.state.owned_coords();
+        let mut entries: Vec<Line<'static>> = Vec::new();
+        for system in 1..=MAP_SYSTEM_MAX {
+            let mark = if system == self.map_system { '>' } else { ' ' };
+            let mut glyphs = String::with_capacity(MAP_SLOT_COUNT as usize);
+            let mut labels = Vec::new();
+            for pos in 1..=MAP_SLOT_COUNT {
+                let coord = Coord {
+                    galaxy: cursor.galaxy,
+                    system,
+                    position: pos,
+                };
+                let ch = if coord == self.state.home {
+                    'H'
+                } else if owned.contains(&coord) {
+                    'C'
+                } else if self.state.outposts.iter().any(|o| o.coord == coord) {
+                    'P'
+                } else if self.state.missions.iter().any(|m| m.dest == coord) {
+                    'f'
+                } else {
+                    '.'
+                };
+                if pos == self.map_position && system == self.map_system {
+                    glyphs.push('[');
+                    glyphs.push(ch);
+                    glyphs.push(']');
+                } else {
+                    glyphs.push(ch);
+                }
+                if coord == self.state.home {
+                    labels.push("home".into());
+                } else if owned.contains(&coord) {
+                    labels.push(format!("colony {coord}"));
+                } else if let Some(out) = self.state.outposts.iter().find(|o| o.coord == coord) {
+                    labels.push(format!("pirate {coord} {}", out.kind.as_key()));
+                }
+            }
+            for mission in &self.state.missions {
+                if mission.dest.galaxy == cursor.galaxy && mission.dest.system == system {
+                    let eta = mission
+                        .phase_ends_at
+                        .saturating_sub(self.state.last_tick_unix);
+                    labels.push(format!(
+                        "fleet #{} {} {eta}s",
+                        mission.id,
+                        mission.phase.as_key()
+                    ));
+                }
+            }
+            let extra = if labels.is_empty() {
+                String::new()
+            } else {
+                format!("  {}", labels.join("  "))
+            };
+            entries.push(Line::from(format!("{mark} {system:>3} {glyphs}{extra}")));
+        }
+        let selected = self.map_system.saturating_sub(1) as usize;
+        append_windowed(&mut rows, &entries, selected, height)
     }
 
     fn diplomacy_lines(&self, height: usize) -> Vec<Line<'static>> {
@@ -1772,6 +2009,7 @@ mod tests {
         app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
+        app.handle_key(KeyCode::Tab, clock.now_unix());
         assert_eq!(app.screen, Screen::Overview);
         let energy = app
             .state
@@ -1845,6 +2083,13 @@ mod tests {
         app.handle_key(KeyCode::Tab, now);
         app.handle_key(KeyCode::Tab, now);
         assert_eq!(app.screen, Screen::Shipyard);
+    }
+
+    fn open_map(app: &mut App, now: u64) {
+        for _ in 0..9 {
+            app.handle_key(KeyCode::Tab, now);
+        }
+        assert_eq!(app.screen, Screen::Map);
     }
 
     #[test]
@@ -1953,6 +2198,7 @@ mod tests {
         assert!(app.state.ship_queue.is_empty());
         assert_eq!(app.state.build_queue.len(), 1);
 
+        app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
@@ -2427,6 +2673,80 @@ mod tests {
         let text = render_text(&app, 100, 32);
         assert!(text.contains("[reports]"), "{text}");
         assert!(!text.contains("detected yes"), "{text}");
+    }
+
+    #[test]
+    fn map_renders_at_80x24_and_scales_up() {
+        let mut app = App::new(GameState::new(1_000));
+        open_map(&mut app, 1_000);
+        let small = render_text(&app, 80, 24);
+        assert!(small.contains("Map"), "{small}");
+        assert!(small.contains("[H]") || small.contains("home"), "{small}");
+        let large = render_text(&app, 120, 40);
+        assert!(large.contains("[map]"), "{large}");
+        assert!(large.contains("[H]"), "{large}");
+        assert!(large.contains("home"), "{large}");
+        assert!(large.contains("hjkl"), "{large}");
+    }
+
+    #[test]
+    fn map_shows_fleets_in_flight_with_eta() {
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 2,
+        };
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::SmallCargo, 1);
+        let mut state = GameState::new(1_000);
+        state.fleet.add(ShipKind::SmallCargo, 1);
+        state.resources.deuterium = 10_000.0;
+        state.launch_fleet(ships, dest, 100, 0, 1_000).unwrap();
+        let eta = state.missions[0]
+            .phase_ends_at
+            .saturating_sub(state.last_tick_unix);
+        let id = state.missions[0].id;
+        let mut app = App::new(state);
+        open_map(&mut app, 1_000);
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("[map]"), "{text}");
+        assert!(text.contains("[H]f"), "{text}");
+        assert!(
+            text.contains(&format!("fleet #{id} outbound {eta}s")),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn map_enter_opens_dispatch_and_launches() {
+        let mut state = GameState::new(1_000);
+        state.fleet.add(ShipKind::SmallCargo, 2);
+        state.resources.deuterium = 10_000.0;
+        let mut app = App::new(state);
+        open_map(&mut app, 1_000);
+        app.handle_key(KeyCode::Char('l'), 1_000);
+        app.handle_key(KeyCode::Enter, 1_000);
+        let overlay = render_text(&app, 100, 32);
+        assert!(overlay.contains("dispatch"), "{overlay}");
+        assert!(overlay.contains("to 1:1:2"), "{overlay}");
+        assert!(overlay.contains("pick ships"), "{overlay}");
+        assert!(overlay.contains("small_cargo"), "{overlay}");
+        assert!(
+            !overlay.contains("[map]"),
+            "dispatch overlay left the map chrome visible:\n{overlay}"
+        );
+        app.handle_key(KeyCode::Char('+'), 1_000);
+        let preview = render_text(&app, 100, 32);
+        assert!(preview.contains("ETA"), "{preview}");
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.dispatch.is_none());
+        assert_eq!(app.state.missions.len(), 1);
+        assert_eq!(app.state.missions[0].dest.to_string(), "1:1:2");
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("[map]"), "{text}");
+        assert!(text.contains("fleet #"), "{text}");
+        assert!(text.contains("outbound"), "{text}");
+        assert!(text.contains("launched to 1:1:2"), "{text}");
     }
 
     fn close_standing(app: &App, id: &str, expected: f64) {
