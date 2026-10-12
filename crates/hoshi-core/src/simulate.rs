@@ -45,6 +45,7 @@ pub struct SimReport {
     pub prestige_runs: Vec<PrestigeSimRow>,
     pub heavy: HeavyIndustryReport,
     pub keystone_secs: BTreeMap<String, Option<u64>>,
+    pub tactics_ok: bool,
 }
 
 impl SimReport {
@@ -80,7 +81,11 @@ impl SimReport {
     }
 
     pub fn passed(&self) -> bool {
-        self.first_upgrade_ok() && self.mine_goal_ok() && self.bridge_ok() && self.keystones_ok()
+        self.first_upgrade_ok()
+            && self.mine_goal_ok()
+            && self.bridge_ok()
+            && self.keystones_ok()
+            && self.tactics_ok
     }
 
     pub fn to_markdown(&self) -> String {
@@ -143,6 +148,10 @@ impl SimReport {
                 .collect::<Vec<_>>()
                 .join(", "),
             mark(self.keystones_ok())
+        ));
+        out.push_str(&format!(
+            "- tactics: no combo dominates ({})\n",
+            mark(self.tactics_ok)
         ));
         if !self.prestige_runs.is_empty() {
             out.push_str("\n## Prestige runs\n\n");
@@ -214,6 +223,7 @@ pub fn simulate_greedy(config: BalanceConfig, days: u32) -> SimReport {
     let busy = run_once(config.clone(), days, true, 0);
     let heavy = heavy_industry_check(&config);
     let keystone_secs = simulate_keystones(config.clone(), pacing.keystone_secs);
+    let tactics_ok = tactics_no_combo_dominates(&config);
     let prestige_runs = vec![
         prestige_row(&quiet, 1, 0),
         prestige_row(&run_once(config.clone(), days, false, 1), 2, 1),
@@ -236,7 +246,62 @@ pub fn simulate_greedy(config: BalanceConfig, days: u32) -> SimReport {
         prestige_runs,
         heavy,
         keystone_secs,
+        tactics_ok,
     }
+}
+
+/// True when no formation+stance pair wins every seeded sample.
+pub fn tactics_no_combo_dominates(config: &BalanceConfig) -> bool {
+    use crate::combat::{rapid_fire_table, stats_from_catalog};
+    use crate::ships::ShipKind;
+    use crate::{Fleet, Formation, Stance, TacticalPlan, Terrain, resolve_tactical};
+    let stats = stats_from_catalog(&config.ships);
+    let rf = rapid_fire_table(&config.ships);
+    let mut atk = Fleet::default();
+    atk.add(ShipKind::LightFighter, 8);
+    atk.add(ShipKind::Cruiser, 2);
+    atk.add(ShipKind::Battleship, 1);
+    let mut def = Fleet::default();
+    def.add(ShipKind::LightFighter, 6);
+    def.add(ShipKind::HeavyFighter, 4);
+    def.add(ShipKind::Battleship, 2);
+    let mut wins = Vec::new();
+    for formation in Formation::ALL {
+        for stance in Stance::ALL {
+            let plan = TacticalPlan {
+                formation,
+                stance,
+                terrain: Terrain::Open,
+            };
+            let mut n = 0u32;
+            for seed in 1u64..=8 {
+                let mut rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+                let report = resolve_tactical(
+                    atk,
+                    def,
+                    &stats,
+                    &stats,
+                    &rf,
+                    &mut rng,
+                    &config.tactics,
+                    plan,
+                    TacticalPlan::default(),
+                    crate::FleetTactics::default(),
+                    None,
+                    None,
+                    &[],
+                    Fleet::default(),
+                );
+                if report.winner == crate::CombatWinner::Attacker {
+                    n += 1;
+                }
+            }
+            wins.push(n);
+        }
+    }
+    let max = wins.iter().copied().max().unwrap_or(0);
+    let min = wins.iter().copied().min().unwrap_or(0);
+    max < 8 && max.saturating_sub(min) < 7
 }
 
 /// Late-game mine snapshot: overflow without mitigation, viable once sinks are built.
@@ -658,6 +723,7 @@ mod tests {
             report.pacing.max_bridge_metal_ratio
         );
         assert!(report.passed(), "{}", report.to_markdown());
+        assert!(report.tactics_ok, "{}", report.to_markdown());
         assert_eq!(report.days_log.len(), 1);
     }
 

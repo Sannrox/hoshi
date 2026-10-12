@@ -83,6 +83,8 @@ pub struct SpyReport {
     pub garrison: Option<u32>,
     pub kind: Option<PlanetType>,
     pub size: Option<u8>,
+    pub formation: Option<String>,
+    pub stance: Option<String>,
 }
 
 impl SpyReport {

@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 26;
+pub const SCHEMA_VERSION: u32 = 27;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -175,7 +175,10 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM moons;
          DELETE FROM debris;
          DELETE FROM tutorial_seen;
-         DELETE FROM tutorial_meta;",
+         DELETE FROM tutorial_meta;
+         DELETE FROM admirals;
+         DELETE FROM fleet_tactics;
+         DELETE FROM reserve_ships;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -423,8 +426,9 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
             "INSERT INTO spy_reports (
                 id, galaxy, system, position, created_at, probes_sent, probes_lost,
                 detected, score, tier, metal, crystal, deuterium, garrison, kind, size,
-                revealed_resources, revealed_fleet, revealed_defences, revealed_garrison
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+                revealed_resources, revealed_fleet, revealed_defences, revealed_garrison,
+                formation, stance
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
             params![
                 report.id as i64,
                 report.target.galaxy as i64,
@@ -446,6 +450,8 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 i64::from(report.fleet.is_some()),
                 i64::from(report.defences.is_some()),
                 i64::from(report.garrison.is_some()),
+                report.formation,
+                report.stance,
             ],
         )?;
         if let Some(fleet) = report.fleet {
@@ -470,6 +476,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
     insert_daily(&tx, state)?;
     insert_moons(&tx, state)?;
     insert_tutorial(&tx, state)?;
+    insert_tactics(&tx, state)?;
     for (i, colony) in state.colonies.iter().enumerate() {
         let planet_id = (i as i64) + 2;
         tx.execute(
@@ -1086,6 +1093,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     load_daily(conn, &mut state)?;
     load_moons(conn, &mut state)?;
     load_tutorial(conn, &mut state)?;
+    load_tactics(conn, &mut state)?;
     state.sync_raid_schedule_after_standing(state.last_tick_unix);
 
     let mut stmt = conn.prepare(
@@ -1922,6 +1930,9 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "debris" => "SELECT COUNT(*) FROM debris",
         "tutorial_meta" => "SELECT COUNT(*) FROM tutorial_meta",
         "tutorial_seen" => "SELECT COUNT(*) FROM tutorial_seen",
+        "fleet_tactics" => "SELECT COUNT(*) FROM fleet_tactics",
+        "admirals" => "SELECT COUNT(*) FROM admirals",
+        "reserve_ships" => "SELECT COUNT(*) FROM reserve_ships",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -1975,7 +1986,10 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "moons")?
         + count_rows(conn, "debris")?
         + count_rows(conn, "tutorial_meta")?
-        + count_rows(conn, "tutorial_seen")?)
+        + count_rows(conn, "tutorial_seen")?
+        + count_rows(conn, "fleet_tactics")?
+        + count_rows(conn, "admirals")?
+        + count_rows(conn, "reserve_ships")?)
 }
 
 fn migrate(conn: &Connection) -> Result<(), SaveError> {
@@ -2063,6 +2077,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 26 {
         migrate_v26(conn)?;
+    }
+    if found < 27 {
+        migrate_v27(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -2759,6 +2776,56 @@ fn migrate_v26(conn: &Connection) -> Result<(), SaveError> {
     Ok(())
 }
 
+fn migrate_v27(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS fleet_tactics (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            formation TEXT NOT NULL,
+            stance TEXT NOT NULL,
+            retreat_below REAL NOT NULL,
+            home_admiral_id INTEGER,
+            next_admiral_id INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS admirals (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            trait_id TEXT NOT NULL,
+            xp INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS reserve_ships (
+            kind TEXT PRIMARY KEY,
+            count INTEGER NOT NULL
+        );
+        ",
+    )?;
+    if table_exists(conn, "spy_reports") {
+        for (column, sql) in [
+            (
+                "formation",
+                "ALTER TABLE spy_reports ADD COLUMN formation TEXT",
+            ),
+            ("stance", "ALTER TABLE spy_reports ADD COLUMN stance TEXT"),
+        ] {
+            if !spy_reports_has_column(conn, column)? {
+                conn.execute(sql, [])?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn spy_reports_has_column(conn: &Connection, column: &str) -> Result<bool, SaveError> {
+    let mut stmt = conn.prepare("PRAGMA table_info(spy_reports)")?;
+    let names = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for name in names {
+        if name? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn insert_daily(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<(), SaveError> {
     tx.execute(
         "INSERT INTO daily_meta (id, day_index, streak) VALUES (1, ?1, ?2)",
@@ -2951,6 +3018,116 @@ fn load_tutorial(conn: &Connection, state: &mut GameState) -> Result<(), SaveErr
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         for row in rows {
             state.tutorial.seen.insert(row?);
+        }
+    }
+    Ok(())
+}
+
+fn insert_tactics(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<(), SaveError> {
+    tx.execute(
+        "INSERT INTO fleet_tactics (id, formation, stance, retreat_below, home_admiral_id, next_admiral_id)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5)",
+        params![
+            state.fleet_tactics.formation.as_key(),
+            state.fleet_tactics.stance.as_key(),
+            state.fleet_tactics.retreat_below,
+            state.home_admiral_id.map(|id| id as i64),
+            state.next_admiral_id as i64,
+        ],
+    )?;
+    for admiral in &state.admirals {
+        tx.execute(
+            "INSERT INTO admirals (id, name, trait_id, xp) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                admiral.id as i64,
+                admiral.name,
+                admiral.trait_id,
+                admiral.xp,
+            ],
+        )?;
+    }
+    for kind in ShipKind::ALL {
+        let n = state.reserves.get(kind);
+        if n > 0 {
+            tx.execute(
+                "INSERT INTO reserve_ships (kind, count) VALUES (?1, ?2)",
+                params![kind.as_key(), n],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn load_tactics(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
+    if !table_exists(conn, "fleet_tactics") {
+        return Ok(());
+    }
+    let Some((formation, stance, retreat, home_id, next_id)) = conn
+        .query_row(
+            "SELECT formation, stance, retreat_below, home_admiral_id, next_admiral_id
+             FROM fleet_tactics WHERE id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, f64>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            },
+        )
+        .optional()?
+    else {
+        return Ok(());
+    };
+    state.fleet_tactics.formation =
+        crate::Formation::from_key(&formation).ok_or(SaveError::Corrupt("fleet formation"))?;
+    state.fleet_tactics.stance =
+        crate::Stance::from_key(&stance).ok_or(SaveError::Corrupt("fleet stance"))?;
+    if !retreat.is_finite() || !(0.0..=1.0).contains(&retreat) {
+        return Err(SaveError::Corrupt("retreat below"));
+    }
+    state.fleet_tactics.retreat_below = retreat;
+    state.home_admiral_id = match home_id {
+        Some(id) => Some(unix_ts(id)?),
+        None => None,
+    };
+    state.next_admiral_id = unix_ts(next_id)?;
+    if table_exists(conn, "admirals") {
+        let mut stmt = conn.prepare("SELECT id, name, trait_id, xp FROM admirals ORDER BY id")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?;
+        state.admirals.clear();
+        for row in rows {
+            let (id, name, trait_id, xp) = row?;
+            state.admirals.push(crate::Admiral {
+                id: unix_ts(id)?,
+                name,
+                trait_id,
+                xp: u32::try_from(xp).map_err(|_| SaveError::Corrupt("admiral xp"))?,
+            });
+        }
+    }
+    if table_exists(conn, "reserve_ships") {
+        let mut stmt = conn.prepare("SELECT kind, count FROM reserve_ships")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        state.reserves = Fleet::default();
+        for row in rows {
+            let (kind, count) = row?;
+            let kind = ShipKind::from_key(&kind).ok_or(SaveError::Corrupt("reserve ship"))?;
+            state.reserves.add(
+                kind,
+                u32::try_from(count).map_err(|_| SaveError::Corrupt("reserve count"))?,
+            );
         }
     }
     Ok(())
@@ -3195,7 +3372,8 @@ fn load_spy_reports(conn: &Connection, state: &mut GameState) -> Result<(), Save
     let mut stmt = conn.prepare(
         "SELECT id, galaxy, system, position, created_at, probes_sent, probes_lost,
                 detected, score, tier, metal, crystal, deuterium, garrison, kind, size,
-                revealed_resources, revealed_fleet, revealed_defences, revealed_garrison
+                revealed_resources, revealed_fleet, revealed_defences, revealed_garrison,
+                formation, stance
          FROM spy_reports ORDER BY id",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -3220,6 +3398,8 @@ fn load_spy_reports(conn: &Connection, state: &mut GameState) -> Result<(), Save
             row.get::<_, i64>(17)?,
             row.get::<_, i64>(18)?,
             row.get::<_, i64>(19)?,
+            row.get::<_, Option<String>>(20)?,
+            row.get::<_, Option<String>>(21)?,
         ))
     })?;
     let mut pending = Vec::new();
@@ -3249,6 +3429,8 @@ fn load_spy_reports(conn: &Connection, state: &mut GameState) -> Result<(), Save
         revealed_fleet,
         revealed_defences,
         revealed_garrison,
+        formation,
+        stance,
     ) in pending
     {
         if !score.is_finite() {
@@ -3304,6 +3486,8 @@ fn load_spy_reports(conn: &Connection, state: &mut GameState) -> Result<(), Save
             },
             kind,
             size,
+            formation,
+            stance,
         });
     }
     state.next_report_id = state
@@ -4570,6 +4754,8 @@ mod tests {
             garrison: None,
             kind: Some(PlanetType::Rocky),
             size: Some(12),
+            formation: Some("neutral".into()),
+            stance: Some("neutral".into()),
         });
         state.next_report_id = 3;
         save_state(&mut conn, &state).unwrap();
@@ -4742,6 +4928,28 @@ mod tests {
             log.frames.last().map(|f| f.defender),
             Some(log.defender_after)
         );
+    }
+
+    #[test]
+    fn migrate_v27_round_trips_tactics() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v27(&conn).unwrap();
+        migrate_v27(&conn).unwrap();
+        let mut state = GameState::new(10);
+        state.set_formation("wedge").unwrap();
+        state.set_stance("aggressive").unwrap();
+        state.set_retreat_below(0.3).unwrap();
+        state.admirals[0].xp = 5;
+        state.admirals[0].trait_id = "flanker".into();
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.fleet_tactics.formation, crate::Formation::Wedge);
+        assert_eq!(loaded.fleet_tactics.stance, crate::Stance::Aggressive);
+        assert!((loaded.fleet_tactics.retreat_below - 0.3).abs() < 1e-12);
+        assert_eq!(loaded.admirals[0].xp, 5);
+        assert_eq!(loaded.admirals[0].trait_id, "flanker");
+        assert_eq!(count_rows(&conn, "fleet_tactics").unwrap(), 1);
+        assert_eq!(count_rows(&conn, "admirals").unwrap(), 1);
     }
 
     #[test]

@@ -8,6 +8,7 @@
 
 ### Added
 
+- Light tactical combat: formations, stances, terrain, ship roles and admirals in `tactics.toml` on top of the fleet resolver. Neutral plans keep the old results. Between rounds the TUI overlay is one keypress (hold / retreat / commit reserves); catch-up and saves auto-finish. Admirals gain XP in the save (schema v27). Spy reports at fleet tier include formation and stance. `hoshi tactics set` and `hoshi simulate` check that no combo dominates.
 - Offline story authoring: `hoshi-author events draft --theme <theme> --count <n>` writes validated files to `content/drafts/` using the same loader as `story.toml`. Skeleton mode needs no model; an optional loopback `--endpoint` may polish the draft and is refused for public hosts. CI fails if a game crate references the drafts directory. The game never generates events at runtime. See `docs/authoring.md`.
 - Title Settings → advisor model: toggle, endpoint, model name, LAN switch, and a non-blocking connection test. Values land in `config.toml`, never the save. Public hosts stay refused. Local rephrase still needs `--features advisor-model`.
 - Optional local AI advisor: rule-based next-move suggestions from player-visible state. Off until Settings `ai_advisor`, `config.toml`, or `--advisor`. Overlay key `i`; `hoshi advise` prints JSON. Never acts. Optional `--features advisor-model` rephrases every suggestion in one HTTP request with a 100ms budget. Loopback only unless `advisor_allow_lan` is set for a private IPv4 URL; public hosts stay refused.

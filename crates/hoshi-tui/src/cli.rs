@@ -2,9 +2,10 @@
 
 use hoshi_core::{
     BalanceConfig, BuildingKind, Clock, Coord, DefenceKind, FakeClock, Fleet, GameState,
-    Jurisdiction, JurisdictionKind, MoonFacility, ResourceKind, SCHEMA_VERSION as SAVE_SCHEMA,
-    SaveError, ShipKind, SpyReport, SystemClock, advise, inspect_save, load_or_new,
-    load_or_new_with_seed, lock_save, open_save, resolve_save_path, save_is_locked, save_state,
+    Jurisdiction, JurisdictionKind, MoonFacility, ResourceKind, RoundAction,
+    SCHEMA_VERSION as SAVE_SCHEMA, SaveError, ShipKind, SpyReport, SystemClock, advise,
+    inspect_save, load_or_new, load_or_new_with_seed, lock_save, open_save, resolve_save_path,
+    save_is_locked, save_state,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -75,6 +76,14 @@ enum Command {
     },
     TutorialSkip,
     TutorialReset,
+    TacticsSet {
+        formation: Option<String>,
+        stance: Option<String>,
+        retreat: Option<String>,
+    },
+    TacticsAction {
+        action: RoundAction,
+    },
     Feedback {
         note: String,
     },
@@ -478,6 +487,39 @@ fn apply(state: &mut GameState, now: u64, command: &Command) -> Result<Value, Cl
             state.reset_hints();
             Ok(ok_state(state, "tutorial reset"))
         }
+        Command::TacticsSet {
+            formation,
+            stance,
+            retreat,
+        } => {
+            if let Some(key) = formation {
+                state
+                    .set_formation(key)
+                    .map_err(|e| CliError::Invalid(e.to_string()))?;
+            }
+            if let Some(key) = stance {
+                state
+                    .set_stance(key)
+                    .map_err(|e| CliError::Invalid(e.to_string()))?;
+            }
+            if let Some(raw) = retreat {
+                let value: f64 = raw
+                    .parse()
+                    .map_err(|_| CliError::Invalid("retreat needs a number".into()))?;
+                state
+                    .set_retreat_below(value)
+                    .map_err(|e| CliError::Invalid(e.to_string()))?;
+            }
+            Ok(ok_state(state, "tactics updated"))
+        }
+        Command::TacticsAction { action } => {
+            if state.pending_tactical.is_none() {
+                return Err(CliError::Refused("no pending battle".into()));
+            }
+            state.queue_tactical_action(*action);
+            state.progress_tactical(now);
+            Ok(ok_state(state, "tactical action"))
+        }
         Command::Feedback { .. } => Err(CliError::Internal(
             "feedback is handled before apply".into(),
         )),
@@ -579,6 +621,51 @@ fn state_value(state: &GameState) -> Value {
         .iter()
         .map(|e| json!({"at": e.at, "text": e.text}))
         .collect();
+    let admiral = state
+        .admirals
+        .iter()
+        .find(|a| Some(a.id) == state.home_admiral_id)
+        .map(|a| {
+            json!({
+                "id": a.id,
+                "name": a.name,
+                "trait": a.trait_id,
+                "xp": a.xp,
+            })
+        });
+    let tactics = json!({
+        "formation": state.fleet_tactics.formation.as_key(),
+        "stance": state.fleet_tactics.stance.as_key(),
+        "retreat_below": state.fleet_tactics.retreat_below,
+        "admiral": admiral,
+        "pending": state.pending_tactical.is_some(),
+    });
+    let laws: Vec<Value> = state
+        .laws
+        .laws
+        .iter()
+        .map(|law| {
+            json!({
+                "id": law.id,
+                "template": law.template_id,
+                "param": law.param,
+                "owner": law.owner,
+                "jurisdiction": law.jurisdiction.as_key(),
+                "status": law.status.as_key(),
+                "effective_at": law.effective_at,
+                "approvals": law.approvals.iter().map(|a| json!({
+                    "who": a.who,
+                    "at": a.at,
+                })).collect::<Vec<_>>(),
+                "samples": state.laws.latest_samples(law.id).iter().map(|s| json!({
+                    "metric": s.metric.as_key(),
+                    "expected": s.expected,
+                    "actual": s.actual,
+                    "at": s.at,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
     let waste = state.waste_home();
     json!({
         "schema_version": SCHEMA_VERSION,
@@ -670,6 +757,7 @@ fn state_value(state: &GameState) -> Value {
             "skipped": state.tutorial.skipped,
             "pending": state.pending_hint().map(|h| h.id),
         },
+        "tactics": tactics,
         "moons": state.moons.iter().map(|moon| {
             json!({
                 "parent": moon.parent.to_string(),
@@ -678,27 +766,7 @@ fn state_value(state: &GameState) -> Value {
                 "jump_ready_at": moon.jump_ready_at,
             })
         }).collect::<Vec<_>>(),
-        "laws": state.laws.laws.iter().map(|law| {
-            json!({
-                "id": law.id,
-                "template": law.template_id,
-                "param": law.param,
-                "owner": law.owner,
-                "jurisdiction": law.jurisdiction.as_key(),
-                "status": law.status.as_key(),
-                "effective_at": law.effective_at,
-                "approvals": law.approvals.iter().map(|a| json!({
-                    "who": a.who,
-                    "at": a.at,
-                })).collect::<Vec<_>>(),
-                "samples": state.laws.latest_samples(law.id).iter().map(|s| json!({
-                    "metric": s.metric.as_key(),
-                    "expected": s.expected,
-                    "actual": s.actual,
-                    "at": s.at,
-                })).collect::<Vec<_>>(),
-            })
-        }).collect::<Vec<_>>(),
+        "laws": laws,
     })
 }
 
@@ -722,6 +790,8 @@ fn spy_report_value(report: &SpyReport, now: u64) -> Value {
         "fleet": report.fleet.map(fleet_counts),
         "defences": report.defences.map(fleet_counts),
         "garrison": report.garrison,
+        "formation": report.formation,
+        "stance": report.stance,
     })
 }
 
@@ -873,6 +943,7 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
                 note: strip_controls(&note),
             })
         }
+        "tactics" => parse_tactics_command(args),
         "tutorial" => match args.get(1).map(String::as_str) {
             Some("skip") => {
                 expect_end(args, 2)?;
@@ -909,6 +980,59 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
             })
         }
         other => Err(CliError::Invalid(format!("unknown command {other}"))),
+    }
+}
+
+fn parse_tactics_command(args: &[String]) -> Result<Command, CliError> {
+    match args.get(1).map(String::as_str) {
+        Some("set") => {
+            let mut formation = None;
+            let mut stance = None;
+            let mut retreat = None;
+            let mut i = 2;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "formation" => {
+                        formation = Some(nth(args, i + 1, "tactics set formation <id>")?.into());
+                        i += 2;
+                    }
+                    "stance" => {
+                        stance = Some(nth(args, i + 1, "tactics set stance <id>")?.into());
+                        i += 2;
+                    }
+                    "retreat" => {
+                        retreat = Some(nth(args, i + 1, "tactics set retreat <0-1>")?.into());
+                        i += 2;
+                    }
+                    other => {
+                        return Err(CliError::Invalid(format!(
+                            "unknown tactics set field {other}"
+                        )));
+                    }
+                }
+            }
+            if formation.is_none() && stance.is_none() && retreat.is_none() {
+                return Err(CliError::Invalid(
+                    "tactics set needs formation, stance, or retreat".into(),
+                ));
+            }
+            Ok(Command::TacticsSet {
+                formation,
+                stance,
+                retreat,
+            })
+        }
+        Some("action") => {
+            let key = nth(args, 2, "tactics action <hold|retreat|commit>")?;
+            let action = RoundAction::from_key(key)
+                .ok_or_else(|| CliError::Invalid("unknown tactical action".into()))?;
+            expect_end(args, 3)?;
+            Ok(Command::TacticsAction { action })
+        }
+        Some(other) => Err(CliError::Invalid(format!(
+            "unknown tactics command {other}"
+        ))),
+        None => Err(CliError::Invalid("tactics needs set or action".into())),
     }
 }
 
@@ -1382,6 +1506,32 @@ mod tests {
         let (after, _) = run_on(&save, &["state"]);
         assert_eq!(after["resources"]["metal"], metal);
         assert_eq!(after["build_queue"], created["build_queue"]);
+        let _ = std::fs::remove_file(&save);
+    }
+
+    #[test]
+    fn tactics_set_persists_in_state() {
+        let save = unique_save("tactics");
+        let (value, exit) = run_on(
+            &save,
+            &[
+                "--seed=1",
+                "tactics",
+                "set",
+                "formation",
+                "wedge",
+                "stance",
+                "defensive",
+                "retreat",
+                "0.25",
+            ],
+        );
+        assert_eq!(exit, EXIT_OK, "{value}");
+        let (state, exit) = run_on(&save, &["state"]);
+        assert_eq!(exit, EXIT_OK, "{state}");
+        assert_eq!(state["tactics"]["formation"], "wedge");
+        assert_eq!(state["tactics"]["stance"], "defensive");
+        assert!((state["tactics"]["retreat_below"].as_f64().unwrap() - 0.25).abs() < 1e-12);
         let _ = std::fs::remove_file(&save);
     }
 
