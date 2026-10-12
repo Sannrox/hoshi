@@ -1,0 +1,5 @@
+# Fixture already has fighters, fuel, and deterministic mode.
+# fixture expedition.sqlite
+fleet send home 1:1:16 expedition light_fighter:5
+tick --advance 12h
+state

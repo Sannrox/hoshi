@@ -1,0 +1,6 @@
+# Catch-up through a process restart equals one tick of the same total advance.
+build home metal_mine
+tick --advance 1h
+# restart
+tick --advance 2d
+state

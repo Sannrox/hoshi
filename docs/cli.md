@@ -64,3 +64,35 @@ hoshi --save "$save" state
 
 Each write takes the save lock. A running TUI on the same file makes the CLI
 exit 4 until it quits.
+
+## End-to-end scenarios
+
+Checked-in scripts under `crates/hoshi-tui/tests/e2e/<name>/` drive the `hoshi`
+binary (`script.txt`, `expected.json`, optional fixture save). Adding a
+scenario needs no Rust: drop a directory with those files next to the others.
+
+Lines in `script.txt` are CLI arguments after `--save` / `--seed` (`build home
+metal_mine`). Directives:
+
+| Line | Meaning |
+| --- | --- |
+| `# expect N` | the following command must exit `N` (default 0) |
+| `# restart` | process boundary; the runner also checks that one `tick` of the summed advance matches |
+| `# lock` / `# unlock` | take or drop the save lock in the test process |
+| `# fixture NAME` | copy `NAME` from the scenario dir or `tests/e2e/fixtures/` over the temp save |
+| `# no-seed` | omit `--seed` (old live saves) |
+| `# reset` | delete the temp save |
+| `# snapshot NAME` | compare that step to `expected-NAME.json` |
+
+Every JSON line is checked against `docs/schema/cli-v1.json`. A mismatch prints
+the command and the JSON path. Golden files are pretty JSON from the CLI.
+Review golden diffs in the PR; they are not regenerated in CI.
+
+```sh
+HOSHI_UPDATE_GOLDEN=1 cargo test -p hoshi-tui --test e2e
+```
+
+Old-schema fixtures (`v1.sqlite` through the previous `SCHEMA_VERSION`, plus a
+newer-than-supported save) come from `python3 scripts/gen-e2e-save-fixtures.py`.
+See `crates/hoshi-tui/tests/e2e/fixtures/README.md`.
+

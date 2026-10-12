@@ -1,0 +1,182 @@
+{
+  "achievements": [],
+  "build_queue": [],
+  "buildings": {
+    "crystal_mine": 0,
+    "crystal_storage": 0,
+    "deuterium_storage": 0,
+    "deuterium_synthesizer": 0,
+    "metal_mine": 4,
+    "metal_storage": 0,
+    "radiator": 0,
+    "research_lab": 0,
+    "robotics_factory": 0,
+    "scrubber": 0,
+    "shipyard": 0,
+    "solar_plant": 0
+  },
+  "defences": {
+    "garrison": 0,
+    "heavy_cannon": 0,
+    "interceptor": 0,
+    "ion_cannon": 0,
+    "light_cannon": 0,
+    "missile_silo": 0,
+    "orbital_station": 0,
+    "shield_dome": 0
+  },
+  "deterministic": false,
+  "energy": {
+    "consumed": 13.310000000000004,
+    "factor": 0.0,
+    "produced": 0.0
+  },
+  "events": [],
+  "fleet": {
+    "battleship": 0,
+    "colony_ship": 0,
+    "cruiser": 0,
+    "espionage_probe": 0,
+    "explorer": 0,
+    "heavy_fighter": 0,
+    "large_cargo": 0,
+    "light_fighter": 0,
+    "recycler": 0,
+    "small_cargo": 0,
+    "troop_transport": 0
+  },
+  "laws": [],
+  "missions": [],
+  "now": 4102444800,
+  "ok": true,
+  "outposts": [
+    {
+      "coord": "1:12:7",
+      "defences": 1,
+      "garrison": 2,
+      "rare": null,
+      "report": null
+    },
+    {
+      "coord": "1:73:8",
+      "defences": 1,
+      "garrison": 2,
+      "rare": null,
+      "report": null
+    },
+    {
+      "coord": "1:74:6",
+      "defences": 1,
+      "garrison": 2,
+      "rare": null,
+      "report": null
+    },
+    {
+      "coord": "1:23:4",
+      "defences": 1,
+      "garrison": 2,
+      "rare": null,
+      "report": null
+    },
+    {
+      "coord": "1:51:5",
+      "defences": 1,
+      "garrison": 2,
+      "rare": null,
+      "report": null
+    },
+    {
+      "coord": "1:62:3",
+      "defences": 1,
+      "garrison": 2,
+      "rare": null,
+      "report": null
+    },
+    {
+      "coord": "1:2:4",
+      "defences": 1,
+      "garrison": 2,
+      "rare": null,
+      "report": null
+    },
+    {
+      "coord": "1:76:5",
+      "defences": 1,
+      "garrison": 2,
+      "rare": null,
+      "report": null
+    }
+  ],
+  "planets": [
+    {
+      "coord": "1:1:1",
+      "home": true,
+      "rare": null
+    }
+  ],
+  "prestige": {
+    "currency": 0,
+    "eligible": false,
+    "lifetime": 0,
+    "owned": {},
+    "run": 1,
+    "score": 7
+  },
+  "raid": {
+    "lands_in_secs": 3600
+  },
+  "rates": {
+    "crystal": 0.0,
+    "deuterium": 0.0,
+    "metal": 0.0
+  },
+  "research": {
+    "current": null,
+    "exclusive_picks": {},
+    "levels": {
+      "ancient_drive": 0,
+      "ancient_weapon": 0,
+      "armour": 0,
+      "armour_doctrine": 0,
+      "astrophysics": 0,
+      "colonization": 0,
+      "combustion_drive": 0,
+      "computer": 0,
+      "deep_core": 0,
+      "dyson_blueprint": 0,
+      "ecology": 0,
+      "energy": 3,
+      "espionage": 0,
+      "galactic_senate": 0,
+      "hyperspace": 0,
+      "hyperspace_drive": 0,
+      "impulse_drive": 0,
+      "invasion_doctrine": 0,
+      "ion": 0,
+      "laser": 0,
+      "logistics": 0,
+      "orbital_harvest": 0,
+      "shield_doctrine": 0,
+      "shields": 0,
+      "smuggler_network": 0,
+      "trade_empire": 0,
+      "weapons": 0
+    }
+  },
+  "resources": {
+    "crystal": 20.0,
+    "deuterium": 30.0,
+    "metal": 10.0
+  },
+  "save_schema": 23,
+  "schema_version": 1,
+  "spy_reports": [],
+  "waste": {
+    "heat_load": 16.510000000000005,
+    "heat_sink": 92.0,
+    "pollution_load": 7.858500000000001,
+    "pollution_sink": 50.0,
+    "unrest": 1.0,
+    "warn": false
+  }
+}

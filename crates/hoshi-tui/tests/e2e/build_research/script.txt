@@ -1,0 +1,6 @@
+# Fixture has a lab and stockpile so a new-game queue can finish in minutes.
+# fixture build_research.sqlite
+build home metal_mine
+research energy
+tick --advance 10m
+state

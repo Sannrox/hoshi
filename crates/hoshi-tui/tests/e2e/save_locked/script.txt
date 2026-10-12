@@ -1,0 +1,13 @@
+state
+# lock
+# expect 4
+build home metal_mine
+# expect 4
+research energy
+# expect 4
+tick --advance 1h
+# expect 4
+fleet send home 1:1:16 expedition light_fighter:1
+# unlock
+build home metal_mine
+state
