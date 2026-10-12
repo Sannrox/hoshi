@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 20;
+pub const SCHEMA_VERSION: u32 = 21;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -132,6 +132,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM buildings;
          DELETE FROM build_queue;
          DELETE FROM tech_levels;
+         DELETE FROM exclusive_picks;
          DELETE FROM research;
          DELETE FROM ships;
          DELETE FROM ship_queue;
@@ -202,6 +203,12 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
         tx.execute(
             "INSERT INTO tech_levels (id, level) VALUES (?1, ?2)",
             params![id, *level],
+        )?;
+    }
+    for (group, tech) in &state.exclusive_picks {
+        tx.execute(
+            "INSERT INTO exclusive_picks (group_id, tech_id) VALUES (?1, ?2)",
+            params![group, tech],
         )?;
     }
     if let Some(job) = &state.research {
@@ -764,6 +771,19 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         let (id, level) = row?;
         state.tech_levels.insert(id, level);
     }
+
+    let mut stmt = conn.prepare("SELECT group_id, tech_id FROM exclusive_picks")?;
+    let picks = stmt.query_map([], |row| {
+        let group: String = row.get(0)?;
+        let tech: String = row.get(1)?;
+        Ok((group, tech))
+    })?;
+    state.exclusive_picks.clear();
+    for row in picks {
+        let (group, tech) = row?;
+        state.exclusive_picks.insert(group, tech);
+    }
+    state.infer_exclusive_picks();
 
     state.research = match conn
         .query_row(
@@ -1570,6 +1590,7 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "buildings" => "SELECT COUNT(*) FROM buildings",
         "build_queue" => "SELECT COUNT(*) FROM build_queue",
         "tech_levels" => "SELECT COUNT(*) FROM tech_levels",
+        "exclusive_picks" => "SELECT COUNT(*) FROM exclusive_picks",
         "research" => "SELECT COUNT(*) FROM research",
         "ships" => "SELECT COUNT(*) FROM ships",
         "ship_queue" => "SELECT COUNT(*) FROM ship_queue",
@@ -1612,6 +1633,7 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "buildings")?
         + count_rows(conn, "build_queue")?
         + count_rows(conn, "tech_levels")?
+        + count_rows(conn, "exclusive_picks")?
         + count_rows(conn, "research")?
         + count_rows(conn, "ships")?
         + count_rows(conn, "ship_queue")?
@@ -1713,6 +1735,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 20 {
         migrate_v20(conn)?;
+    }
+    if found < 21 {
+        migrate_v21(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -2276,6 +2301,18 @@ fn migrate_v20(conn: &Connection) -> Result<(), SaveError> {
             expected REAL NOT NULL,
             actual REAL NOT NULL,
             PRIMARY KEY (law_id, at, metric)
+        );
+        ",
+    )?;
+    Ok(())
+}
+
+fn migrate_v21(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS exclusive_picks (
+            group_id TEXT PRIMARY KEY,
+            tech_id TEXT NOT NULL
         );
         ",
     )?;
@@ -3737,6 +3774,54 @@ mod tests {
         assert_eq!(loaded, state);
         assert_eq!(count_rows(&conn, "laws").unwrap(), 1);
         assert_eq!(count_rows(&conn, "law_approvals").unwrap(), 1);
+    }
+
+    #[test]
+    fn migrate_v21_keeps_research_progress_and_stores_exclusive_picks() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v21(&conn).unwrap();
+        migrate_v21(&conn).unwrap();
+        let mut state = GameState::new(10);
+        state.buildings.research_lab = 1;
+        state.tech_levels.insert("energy".into(), 2);
+        state.tech_levels.insert("deep_core".into(), 1);
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.tech_level("energy"), 2);
+        assert_eq!(loaded.tech_level("deep_core"), 1);
+        assert_eq!(
+            loaded
+                .exclusive_picks
+                .get("mining_method")
+                .map(String::as_str),
+            Some("deep_core")
+        );
+        save_state(&mut conn, &loaded).unwrap();
+        assert_eq!(count_rows(&conn, "exclusive_picks").unwrap(), 1);
+    }
+
+    #[test]
+    fn schema_20_save_migrates_without_losing_tech_levels() {
+        let path = unique_path("v20-tree");
+        let _ = std::fs::remove_file(&path);
+        {
+            let mut conn = open_save(&path).unwrap();
+            let mut state = GameState::new(10);
+            state.tech_levels.insert("energy".into(), 3);
+            save_state(&mut conn, &state).unwrap();
+            conn.execute_batch("DROP TABLE exclusive_picks; PRAGMA user_version = 20;")
+                .unwrap();
+        }
+        let conn = open_save(&path).unwrap();
+        let version: u32 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.tech_level("energy"), 3);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
     }
 
     #[test]

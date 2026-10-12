@@ -65,9 +65,11 @@ is how often expected vs actual is sampled.
 | `first_upgrade_secs` | First building upgrade must complete within this many seconds. |
 | `min_metal_mine_per_day` | Metal mine levels gained per simulated day under the greedy strategy. |
 | `max_bridge_metal_ratio` | `metal` after maxed PR-merge pulses divided by `metal` with activity off. |
+| `keystone_secs` | Each playable branch keystone must complete within this many seconds under a research-greedy run. |
 
-Defaults: first upgrade in 5 minutes, at least one metal mine level per day, and
-bridge pulses must not multiply stored metal by more than 8.
+Defaults: first upgrade in 5 minutes, at least one metal mine level per day,
+bridge pulses must not multiply stored metal by more than 8, and each branch
+keystone within 14 days.
 
 ## Espionage
 

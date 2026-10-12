@@ -4,7 +4,9 @@
 use crate::activity::ActivityPulse;
 use crate::balance::{BalanceConfig, PacingTargets};
 use crate::buildings::{BuildError, BuildingKind, Buildings};
+use crate::research::{TechBranch, TechNodeState};
 use crate::state::{GameState, ResourceKind};
+use std::collections::BTreeMap;
 
 /// One simulated prestige run: later runs own more bonuses and produce more.
 #[derive(Debug, Clone, PartialEq)]
@@ -42,6 +44,7 @@ pub struct SimReport {
     pub pacing: PacingTargets,
     pub prestige_runs: Vec<PrestigeSimRow>,
     pub heavy: HeavyIndustryReport,
+    pub keystone_secs: BTreeMap<String, Option<u64>>,
 }
 
 impl SimReport {
@@ -67,8 +70,17 @@ impl SimReport {
             && self.bridge_metal_ratio <= self.pacing.max_bridge_metal_ratio
     }
 
+    pub fn keystones_ok(&self) -> bool {
+        TechBranch::PLAYABLE.iter().all(|branch| {
+            self.keystone_secs
+                .get(branch.as_key())
+                .and_then(|t| *t)
+                .is_some_and(|secs| secs <= self.pacing.keystone_secs)
+        })
+    }
+
     pub fn passed(&self) -> bool {
-        self.first_upgrade_ok() && self.mine_goal_ok() && self.bridge_ok()
+        self.first_upgrade_ok() && self.mine_goal_ok() && self.bridge_ok() && self.keystones_ok()
     }
 
     pub fn to_markdown(&self) -> String {
@@ -90,8 +102,12 @@ impl SimReport {
             self.pacing.min_metal_mine_per_day
         ));
         out.push_str(&format!(
-            "- bridge metal ratio at most {:.1}\n\n",
+            "- bridge metal ratio at most {:.1}\n",
             self.pacing.max_bridge_metal_ratio
+        ));
+        out.push_str(&format!(
+            "- each branch keystone within {}s\n\n",
+            self.pacing.keystone_secs
         ));
         out.push_str("## Results\n\n");
         out.push_str(&format!(
@@ -115,6 +131,18 @@ impl SimReport {
             "- bridge metal ratio: {:.2} ({})\n\n",
             self.bridge_metal_ratio,
             mark(self.bridge_ok())
+        ));
+        out.push_str(&format!(
+            "- keystones: {} ({})\n\n",
+            self.keystone_secs
+                .iter()
+                .map(|(branch, at)| match at {
+                    Some(secs) => format!("{branch} {secs}s"),
+                    None => format!("{branch} never"),
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+            mark(self.keystones_ok())
         ));
         if !self.prestige_runs.is_empty() {
             out.push_str("\n## Prestige runs\n\n");
@@ -185,6 +213,7 @@ pub fn simulate_greedy(config: BalanceConfig, days: u32) -> SimReport {
     let quiet = run_once(config.clone(), days, false, 0);
     let busy = run_once(config.clone(), days, true, 0);
     let heavy = heavy_industry_check(&config);
+    let keystone_secs = simulate_keystones(config.clone(), pacing.keystone_secs);
     let prestige_runs = vec![
         prestige_row(&quiet, 1, 0),
         prestige_row(&run_once(config.clone(), days, false, 1), 2, 1),
@@ -206,6 +235,7 @@ pub fn simulate_greedy(config: BalanceConfig, days: u32) -> SimReport {
         pacing,
         prestige_runs,
         heavy,
+        keystone_secs,
     }
 }
 
@@ -358,6 +388,120 @@ fn snapshot(state: &GameState, day: u32) -> DaySnapshot {
         crystal: state.resources.crystal,
         deuterium: state.resources.deuterium,
     }
+}
+
+fn simulate_keystones(mut config: BalanceConfig, limit: u64) -> BTreeMap<String, Option<u64>> {
+    config.raid = crate::RaidConfig::inactive();
+    let mut state = GameState::with_config(0, config);
+    state.resources.metal = 50_000.0;
+    state.resources.crystal = 50_000.0;
+    state.resources.deuterium = 50_000.0;
+    let mut reached: BTreeMap<String, Option<u64>> = TechBranch::PLAYABLE
+        .iter()
+        .map(|b| (b.as_key().to_string(), None))
+        .collect();
+    let mut steps = 0_u32;
+    while state.last_tick_unix < limit && steps < 200_000 {
+        steps += 1;
+        let _ = state.enqueue_build(BuildingKind::ResearchLab, state.last_tick_unix);
+        let _ = state.enqueue_build(BuildingKind::SolarPlant, state.last_tick_unix);
+        try_research_toward_keystones(&mut state);
+        let mut jump = limit;
+        if let Some(job) = state.build_queue.first()
+            && let Some(at) = job.completes_at
+        {
+            jump = jump.min(at);
+        }
+        if let Some(job) = &state.research {
+            jump = jump.min(job.completes_at);
+        }
+        if jump <= state.last_tick_unix {
+            jump = state.last_tick_unix.saturating_add(1).min(limit);
+        }
+        state.catch_up(jump);
+        for branch in TechBranch::PLAYABLE {
+            let key = branch.as_key().to_string();
+            if reached.get(&key).and_then(|t| *t).is_none() && state.keystone_complete(branch) {
+                reached.insert(key, Some(state.last_tick_unix));
+            }
+        }
+        if reached.values().all(|t| t.is_some()) {
+            break;
+        }
+        if state.build_queue.is_empty() && state.research.is_none() {
+            if jump >= limit {
+                break;
+            }
+            state.catch_up(limit);
+            break;
+        }
+    }
+    reached
+}
+
+fn try_research_toward_keystones(state: &mut GameState) {
+    if state.research.is_some() {
+        return;
+    }
+    let mut candidates: Vec<(u64, String)> = Vec::new();
+    for spec in state.config.techs.iter() {
+        if spec.branch == TechBranch::Ancient {
+            continue;
+        }
+        if state.tech_node_state(&spec.id) != TechNodeState::Available {
+            continue;
+        }
+        let cost = spec.cost(state.tech_level(&spec.id));
+        let weight = (cost.metal + cost.crystal + cost.deuterium) as u64;
+        let prefer = on_keystone_path(state, &spec.id);
+        let rank = if prefer {
+            weight
+        } else {
+            weight.saturating_add(1_000_000)
+        };
+        candidates.push((rank, spec.id.clone()));
+    }
+    candidates.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    for (_, id) in candidates {
+        if state.start_research(&id, state.last_tick_unix).is_ok() {
+            return;
+        }
+    }
+}
+
+fn on_keystone_path(state: &GameState, id: &str) -> bool {
+    for branch in TechBranch::PLAYABLE {
+        let Some(stone) = state.config.techs.keystone(branch) else {
+            continue;
+        };
+        if state.keystone_complete(branch) {
+            continue;
+        }
+        if id == stone.id || requires_tech(state, &stone.id, id) {
+            return true;
+        }
+    }
+    false
+}
+
+fn requires_tech(state: &GameState, from: &str, want: &str) -> bool {
+    let mut stack = vec![from.to_string()];
+    let mut seen = std::collections::HashSet::new();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        let Some(spec) = state.config.techs.get(&id) else {
+            continue;
+        };
+        for pre in &spec.prereq_techs {
+            if pre.id == want {
+                return true;
+            }
+            stack.push(pre.id.clone());
+        }
+    }
+    false
 }
 
 fn fill_queue(state: &mut GameState) {
@@ -582,5 +726,14 @@ mod tests {
         );
         let md = report.to_markdown();
         assert!(md.contains("## Heavy industry"), "{md}");
+    }
+
+    #[test]
+    fn keystones_meet_galaxy_pacing() {
+        let report = simulate_greedy(BalanceConfig::default(), 1);
+        assert!(report.keystones_ok(), "{}", report.to_markdown());
+        assert!(report.passed(), "{}", report.to_markdown());
+        let md = report.to_markdown();
+        assert!(md.contains("each branch keystone"), "{md}");
     }
 }

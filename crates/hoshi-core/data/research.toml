@@ -1,8 +1,14 @@
 # Research tree. Loaded and validated by hoshi-core on BalanceConfig::default.
 
+[tree]
+ancient_prestige_runs = 1
+starting_techs = ["energy"]
+
 [[tech]]
 id = "energy"
 name = "Energy Technology"
+branch = "industry"
+tier = 1
 metal = 0.0
 crystal = 800.0
 deuterium = 400.0
@@ -16,6 +22,8 @@ modifiers = [{ kind = "heat_sink", per_level = 0.05 }]
 [[tech]]
 id = "laser"
 name = "Laser Technology"
+branch = "military"
+tier = 2
 metal = 200.0
 crystal = 100.0
 deuterium = 0.0
@@ -29,6 +37,8 @@ modifiers = []
 [[tech]]
 id = "ion"
 name = "Ion Technology"
+branch = "military"
+tier = 3
 metal = 1000.0
 crystal = 300.0
 deuterium = 100.0
@@ -42,6 +52,8 @@ modifiers = []
 [[tech]]
 id = "hyperspace"
 name = "Hyperspace Technology"
+branch = "military"
+tier = 4
 metal = 0.0
 crystal = 4000.0
 deuterium = 2000.0
@@ -55,6 +67,8 @@ modifiers = []
 [[tech]]
 id = "combustion_drive"
 name = "Combustion Drive"
+branch = "military"
+tier = 2
 metal = 400.0
 crystal = 0.0
 deuterium = 600.0
@@ -68,6 +82,8 @@ modifiers = [{ kind = "drive_speed", per_level = 0.1 }]
 [[tech]]
 id = "impulse_drive"
 name = "Impulse Drive"
+branch = "military"
+tier = 2
 metal = 2000.0
 crystal = 4000.0
 deuterium = 600.0
@@ -81,6 +97,8 @@ modifiers = [{ kind = "drive_speed", per_level = 0.2 }]
 [[tech]]
 id = "hyperspace_drive"
 name = "Hyperspace Drive"
+branch = "military"
+tier = 5
 metal = 10000.0
 crystal = 20000.0
 deuterium = 6000.0
@@ -94,6 +112,8 @@ modifiers = [{ kind = "drive_speed", per_level = 0.3 }]
 [[tech]]
 id = "espionage"
 name = "Espionage Technology"
+branch = "society"
+tier = 2
 metal = 200.0
 crystal = 1000.0
 deuterium = 200.0
@@ -107,6 +127,8 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
 [[tech]]
 id = "computer"
 name = "Computer Technology"
+branch = "industry"
+tier = 1
 metal = 0.0
 crystal = 400.0
 deuterium = 600.0
@@ -120,6 +142,8 @@ modifiers = [{ kind = "fleet_slots", per_level = 1.0 }]
 [[tech]]
 id = "weapons"
 name = "Weapons Technology"
+branch = "military"
+tier = 2
 metal = 800.0
 crystal = 200.0
 deuterium = 0.0
@@ -133,6 +157,8 @@ modifiers = [{ kind = "weapon_damage", per_level = 0.1 }]
 [[tech]]
 id = "shields"
 name = "Shielding Technology"
+branch = "military"
+tier = 3
 metal = 200.0
 crystal = 600.0
 deuterium = 0.0
@@ -146,6 +172,8 @@ modifiers = [{ kind = "shield_strength", per_level = 0.1 }]
 [[tech]]
 id = "armour"
 name = "Armour Technology"
+branch = "military"
+tier = 1
 metal = 1000.0
 crystal = 0.0
 deuterium = 0.0
@@ -159,6 +187,8 @@ modifiers = [{ kind = "armour", per_level = 0.1 }]
 [[tech]]
 id = "astrophysics"
 name = "Astrophysics"
+branch = "society"
+tier = 4
 metal = 4000.0
 crystal = 8000.0
 deuterium = 4000.0
@@ -172,6 +202,8 @@ modifiers = [{ kind = "expedition_slots", per_level = 1.0 }]
 [[tech]]
 id = "colonization"
 name = "Colonization"
+branch = "society"
+tier = 3
 metal = 1000.0
 crystal = 4000.0
 deuterium = 2000.0
@@ -185,6 +217,8 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
 [[tech]]
 id = "ecology"
 name = "Ecology"
+branch = "industry"
+tier = 2
 metal = 200.0
 crystal = 400.0
 deuterium = 100.0
@@ -198,6 +232,8 @@ modifiers = [{ kind = "pollution_sink", per_level = 0.08 }]
 [[tech]]
 id = "logistics"
 name = "Logistics"
+branch = "industry"
+tier = 3
 metal = 2000.0
 crystal = 4000.0
 deuterium = 1000.0
@@ -207,3 +243,190 @@ time_growth = 2.0
 prereq_buildings = [{ building = "research_lab", level = 4 }]
 prereq_techs = [{ id = "colonization", level = 1 }]
 modifiers = [{ kind = "logistics", per_level = 1.0 }]
+
+[[tech]]
+id = "deep_core"
+name = "Deep-core mining"
+branch = "industry"
+tier = 2
+exclusive_group = "mining_method"
+max_level = 1
+metal = 400.0
+crystal = 200.0
+deuterium = 0.0
+cost_growth = 1.0
+base_seconds = 180.0
+time_growth = 1.0
+prereq_buildings = [{ building = "research_lab", level = 1 }]
+prereq_techs = [{ id = "energy", level = 1 }]
+modifiers = [{ kind = "metal_output", per_level = 0.08 }]
+
+[[tech]]
+id = "orbital_harvest"
+name = "Orbital harvesting"
+branch = "industry"
+tier = 2
+exclusive_group = "mining_method"
+max_level = 1
+metal = 200.0
+crystal = 400.0
+deuterium = 0.0
+cost_growth = 1.0
+base_seconds = 180.0
+time_growth = 1.0
+prereq_buildings = [{ building = "research_lab", level = 1 }]
+prereq_techs = [{ id = "energy", level = 1 }]
+modifiers = [{ kind = "crystal_output", per_level = 0.08 }]
+
+[[tech]]
+id = "dyson_blueprint"
+name = "Dyson ring blueprint"
+branch = "industry"
+tier = 5
+keystone = true
+max_level = 1
+metal = 800.0
+crystal = 800.0
+deuterium = 200.0
+cost_growth = 1.0
+base_seconds = 300.0
+time_growth = 1.0
+prereq_buildings = [{ building = "research_lab", level = 1 }]
+prereq_techs = [{ id = "energy", level = 1 }, { id = "ecology", level = 1 }]
+modifiers = []
+
+[[tech]]
+id = "shield_doctrine"
+name = "Shield doctrine"
+branch = "military"
+tier = 2
+exclusive_group = "defense_focus"
+max_level = 1
+metal = 200.0
+crystal = 600.0
+deuterium = 0.0
+cost_growth = 1.0
+base_seconds = 180.0
+time_growth = 1.0
+prereq_buildings = [{ building = "research_lab", level = 2 }]
+prereq_techs = [{ id = "armour", level = 1 }]
+modifiers = [{ kind = "shield_strength", per_level = 0.12 }]
+
+[[tech]]
+id = "armour_doctrine"
+name = "Armour doctrine"
+branch = "military"
+tier = 2
+exclusive_group = "defense_focus"
+max_level = 1
+metal = 600.0
+crystal = 200.0
+deuterium = 0.0
+cost_growth = 1.0
+base_seconds = 180.0
+time_growth = 1.0
+prereq_buildings = [{ building = "research_lab", level = 2 }]
+prereq_techs = [{ id = "armour", level = 1 }]
+modifiers = [{ kind = "armour", per_level = 0.12 }]
+
+[[tech]]
+id = "invasion_doctrine"
+name = "Invasion doctrine"
+branch = "military"
+tier = 5
+keystone = true
+max_level = 1
+metal = 800.0
+crystal = 400.0
+deuterium = 200.0
+cost_growth = 1.0
+base_seconds = 300.0
+time_growth = 1.0
+prereq_buildings = [{ building = "research_lab", level = 2 }]
+prereq_techs = [{ id = "armour", level = 1 }, { id = "combustion_drive", level = 1 }]
+modifiers = []
+
+[[tech]]
+id = "trade_empire"
+name = "Trade empire"
+branch = "society"
+tier = 2
+exclusive_group = "trade_focus"
+max_level = 1
+metal = 200.0
+crystal = 400.0
+deuterium = 100.0
+cost_growth = 1.0
+base_seconds = 180.0
+time_growth = 1.0
+prereq_buildings = [{ building = "research_lab", level = 1 }]
+prereq_techs = []
+modifiers = [{ kind = "crystal_output", per_level = 0.05 }]
+
+[[tech]]
+id = "smuggler_network"
+name = "Smuggler network"
+branch = "society"
+tier = 2
+exclusive_group = "trade_focus"
+max_level = 1
+metal = 200.0
+crystal = 200.0
+deuterium = 200.0
+cost_growth = 1.0
+base_seconds = 180.0
+time_growth = 1.0
+prereq_buildings = [{ building = "research_lab", level = 1 }]
+prereq_techs = []
+modifiers = [{ kind = "espionage", per_level = 1.0 }]
+
+[[tech]]
+id = "galactic_senate"
+name = "Galactic senate"
+branch = "society"
+tier = 5
+keystone = true
+max_level = 1
+metal = 400.0
+crystal = 800.0
+deuterium = 200.0
+cost_growth = 1.0
+base_seconds = 300.0
+time_growth = 1.0
+prereq_buildings = [{ building = "research_lab", level = 1 }]
+prereq_techs = [{ id = "espionage", level = 1 }]
+modifiers = []
+
+[[tech]]
+id = "ancient_drive"
+name = "Ancient drive"
+branch = "ancient"
+tier = 1
+hidden = true
+max_level = 1
+metal = 0.0
+crystal = 2000.0
+deuterium = 2000.0
+cost_growth = 1.0
+base_seconds = 600.0
+time_growth = 1.0
+prereq_buildings = [{ building = "research_lab", level = 1 }]
+prereq_techs = []
+modifiers = [{ kind = "drive_speed", per_level = 0.5 }]
+
+[[tech]]
+id = "ancient_weapon"
+name = "Ancient weapon"
+branch = "ancient"
+tier = 2
+hidden = true
+max_level = 1
+metal = 2000.0
+crystal = 2000.0
+deuterium = 0.0
+cost_growth = 1.0
+base_seconds = 600.0
+time_growth = 1.0
+prereq_buildings = [{ building = "research_lab", level = 1 }]
+prereq_techs = [{ id = "ancient_drive", level = 1 }]
+modifiers = [{ kind = "weapon_damage", per_level = 0.25 }]

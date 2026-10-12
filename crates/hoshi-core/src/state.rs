@@ -23,7 +23,9 @@ use crate::planets::{Colony, PlanetType, planet_profile};
 use crate::prestige::{
     PRESTIGE_KEPT, PRESTIGE_LOST, Prestige, PrestigeError, PrestigePreview, RunStats,
 };
-use crate::research::{ModifierKind, PrereqGap, ResearchError, ResearchJob};
+use crate::research::{
+    ModifierKind, PrereqGap, ResearchError, ResearchJob, TechBranch, TechNodeState,
+};
 use crate::ships::{Fleet, ShipError, ShipJob, ShipKind, ShipStats};
 use crate::wonders::{WonderError, WonderJob};
 use std::collections::BTreeMap;
@@ -170,6 +172,8 @@ pub struct GameState {
     pub buildings: Buildings,
     pub build_queue: Vec<BuildJob>,
     pub tech_levels: BTreeMap<String, u32>,
+    /// Exclusive group id → chosen tech id. Survives cancel; wiped on prestige.
+    pub exclusive_picks: BTreeMap<String, String>,
     pub research: Option<ResearchJob>,
     pub fleet: Fleet,
     pub ship_queue: Vec<ShipJob>,
@@ -232,6 +236,7 @@ impl GameState {
             buildings: config.starting_buildings,
             build_queue: Vec::new(),
             tech_levels: BTreeMap::new(),
+            exclusive_picks: BTreeMap::new(),
             research: None,
             fleet: Fleet::default(),
             ship_queue: Vec::new(),
@@ -691,6 +696,37 @@ impl GameState {
         if !gaps.is_empty() {
             return Err(ResearchError::MissingPrerequisites { gaps });
         }
+        match self.tech_node_state(tech) {
+            TechNodeState::Hidden => {
+                return Err(ResearchError::Hidden {
+                    id: tech.to_string(),
+                });
+            }
+            TechNodeState::Excluded => {
+                let group = self
+                    .config
+                    .techs
+                    .get(tech)
+                    .and_then(|s| s.exclusive_group.clone())
+                    .unwrap_or_default();
+                return Err(ResearchError::Excluded {
+                    id: tech.to_string(),
+                    group,
+                });
+            }
+            _ => {}
+        }
+        if self
+            .config
+            .techs
+            .get(tech)
+            .and_then(|s| s.max_level)
+            .is_some_and(|m| from_level >= m)
+        {
+            return Err(ResearchError::Complete {
+                id: tech.to_string(),
+            });
+        }
         if !self.resources.can_afford(cost) {
             return Err(ResearchError::InsufficientResources {
                 missing: self.resources.missing(cost),
@@ -698,6 +734,14 @@ impl GameState {
             });
         }
         self.resources = self.resources.saturating_sub(cost);
+        if let Some(group) = self
+            .config
+            .techs
+            .get(tech)
+            .and_then(|s| s.exclusive_group.clone())
+        {
+            self.exclusive_picks.insert(group, tech.to_string());
+        }
         self.research = Some(ResearchJob {
             tech: tech.to_string(),
             from_level,
@@ -1871,6 +1915,61 @@ impl GameState {
         self.tech_levels.get(id).copied().unwrap_or(0)
     }
 
+    pub fn ancient_unlocked(&self) -> bool {
+        (self.prestige.runs.len() as u32) >= self.config.techs.ancient_prestige_runs
+            && self.config.techs.ancient_prestige_runs > 0
+    }
+
+    pub fn keystone_complete(&self, branch: TechBranch) -> bool {
+        self.config
+            .techs
+            .keystone(branch)
+            .is_some_and(|spec| self.tech_level(&spec.id) > 0)
+    }
+
+    pub fn tech_node_state(&self, id: &str) -> TechNodeState {
+        let Some(spec) = self.config.techs.get(id) else {
+            return TechNodeState::Locked;
+        };
+        if spec.hidden && spec.branch == TechBranch::Ancient && !self.ancient_unlocked() {
+            return TechNodeState::Hidden;
+        }
+        if self.research.as_ref().is_some_and(|job| job.tech == id) {
+            return TechNodeState::InProgress;
+        }
+        if let Some(group) = spec.exclusive_group.as_deref()
+            && let Some(picked) = self.exclusive_picks.get(group)
+            && picked != id
+        {
+            return TechNodeState::Excluded;
+        }
+        let level = self.tech_level(id);
+        if level > 0 {
+            return TechNodeState::Researched;
+        }
+        if self.research_prereq_gaps(spec).is_empty() {
+            TechNodeState::Available
+        } else {
+            TechNodeState::Locked
+        }
+    }
+
+    /// Fill exclusive picks from researched members when a v20 save has none.
+    pub fn infer_exclusive_picks(&mut self) {
+        for spec in self.config.techs.iter() {
+            let Some(group) = spec.exclusive_group.as_deref() else {
+                continue;
+            };
+            if self.exclusive_picks.contains_key(group) {
+                continue;
+            }
+            if self.tech_level(&spec.id) > 0 {
+                self.exclusive_picks
+                    .insert(group.to_string(), spec.id.clone());
+            }
+        }
+    }
+
     /// Build queue length including purchased extra slots.
     pub fn build_queue_cap(&self) -> usize {
         self.config
@@ -1883,6 +1982,14 @@ impl GameState {
         self.resources.metal += metal;
         self.resources.crystal += crystal;
         self.resources.deuterium += deuterium;
+        if !self.prestige.runs.is_empty() {
+            let starting = self.config.techs.starting_techs.clone();
+            for id in starting {
+                let level = self.tech_levels.entry(id).or_insert(0);
+                *level = (*level).max(1);
+            }
+            self.infer_exclusive_picks();
+        }
     }
 
     fn building_levels(&self) -> u32 {
@@ -5177,6 +5284,75 @@ modifiers = []
             ResearchError::Busy {
                 current: "energy".into(),
             }
+        );
+    }
+
+    #[test]
+    fn exclusive_choice_excludes_the_other_and_survives_cancel() {
+        let mut state = GameState::new(0);
+        state.buildings.research_lab = 1;
+        state.tech_levels.insert("energy".into(), 1);
+        state.resources.metal = 10_000.0;
+        state.resources.crystal = 10_000.0;
+        state.resources.deuterium = 10_000.0;
+        assert_eq!(
+            state.tech_node_state("deep_core"),
+            crate::TechNodeState::Available
+        );
+        state.start_research("deep_core", 0).unwrap();
+        assert_eq!(
+            state
+                .exclusive_picks
+                .get("mining_method")
+                .map(String::as_str),
+            Some("deep_core")
+        );
+        assert_eq!(
+            state.tech_node_state("orbital_harvest"),
+            crate::TechNodeState::Excluded
+        );
+        state.cancel_research(0).unwrap();
+        assert_eq!(
+            state
+                .exclusive_picks
+                .get("mining_method")
+                .map(String::as_str),
+            Some("deep_core")
+        );
+        let err = state.start_research("orbital_harvest", 0).unwrap_err();
+        match err {
+            ResearchError::Excluded { id, group } => {
+                assert_eq!(id, "orbital_harvest");
+                assert_eq!(group, "mining_method");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        state.start_research("deep_core", 0).unwrap();
+        state.catch_up(state.research.as_ref().unwrap().completes_at);
+        assert!(state.tech_level("deep_core") >= 1);
+        assert!(!state.keystone_complete(crate::TechBranch::Industry));
+    }
+
+    #[test]
+    fn ancient_tech_stays_hidden_until_prestige_and_starting_techs_survive_reset() {
+        let mut state = GameState::new(0);
+        state.buildings.research_lab = 1;
+        assert_eq!(
+            state.tech_node_state("ancient_drive"),
+            crate::TechNodeState::Hidden
+        );
+        let err = state.start_research("ancient_drive", 0).unwrap_err();
+        match err {
+            ResearchError::Hidden { id } => assert_eq!(id, "ancient_drive"),
+            other => panic!("unexpected {other:?}"),
+        }
+        state.prestige.runs.push(crate::RunStats::new(1, 0));
+        state.prestige.currency = 10;
+        state.apply_prestige_start();
+        assert_eq!(state.tech_level("energy"), 1);
+        assert_eq!(
+            state.tech_node_state("ancient_drive"),
+            crate::TechNodeState::Available
         );
     }
 
