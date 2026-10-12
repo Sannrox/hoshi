@@ -24,6 +24,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: Portrait asset budget
         run: bash scripts/check-portrait-assets.sh
+      - name: Drafts stay out of the game content index
+        run: bash scripts/check-drafts-unshipped.sh
       - name: Build
         run: cargo build --locked --workspace --all-targets
       - name: Test

@@ -1,0 +1,16 @@
+[package]
+description = "Offline story-event authoring for hoshi. Never runs in the game."
+name = "hoshi-author"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+hoshi-core = { path = "../hoshi-core" }
+serde_json = "1.0.152"
+
+[[bin]]
+name = "hoshi-author"
+path = "src/main.rs"

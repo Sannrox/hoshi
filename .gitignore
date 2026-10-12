@@ -1,4 +1,5 @@
 /target
+content/drafts/*.toml
 .state/
 /.worktrees/
 *.db

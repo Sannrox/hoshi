@@ -36,6 +36,7 @@ the game is balanced without it.
 | `hoshi-core` | Rules, state, timers, offline progression, SQLite save |
 | `hoshi-tui` | The `hoshi` binary (ratatui) |
 | `hoshi-bridge` | GitHub and agent events into game events |
+| `hoshi-author` | Offline drafts of story events (`content/drafts/`); never runs in the game |
 
 ## Run
 
@@ -51,7 +52,7 @@ hoshi simulate --days 3
 
 prints a pacing report (first upgrade time, daily mine levels, bridge-effect ratio). Targets live in `docs/balance.md`.
 
-Scriptable JSON commands (`hoshi state`, `advise`, `build`, `research`, `cancel`, `fleet send`, `tick --advance`, `feedback`) share the TUI's core actions. See `docs/cli.md`. Playtest checklist: [docs/playtest.md](docs/playtest.md).
+Scriptable JSON commands (`hoshi state`, `advise`, `build`, `research`, `cancel`, `fleet send`, `tick --advance`, `feedback`) share the TUI's core actions. See `docs/cli.md`. Playtest checklist: [docs/playtest.md](docs/playtest.md). Writers draft story events with `hoshi-author events draft` ([docs/authoring.md](docs/authoring.md)); the game never calls a model.
 
 ## Develop
 
