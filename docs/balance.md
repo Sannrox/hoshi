@@ -7,7 +7,7 @@ Production, construction, raids, bridge-effect sizes, expedition weights, flight
 starting stockpiles, and staged wonders live in `crates/hoshi-core/data/balance.toml`.
 The file is embedded and validated on `BalanceConfig::default()`. Research stays in
 `research.toml`; ships stay in `ships.toml`; story events stay in `story.toml`;
-planet defences stay in `defences.toml`.
+planet defences stay in `defences.toml`; laws stay in `laws.toml`.
 Wonder ids must be unique; each wonder
 needs at least one stage with `duration_secs > 0` and a positive resource cost.
 
@@ -44,6 +44,17 @@ speed is `1 / (1 + overflow * unrest_per_overflow)` and pirate fleets gain
 `floor((heat_overflow + pollution_overflow) * raid_signature_per_overflow)`
 ships. Starter mines stay under the rocky sinks; heavy industry needs
 radiators and scrubbers. `hoshi simulate` prints that snapshot.
+
+## Laws
+
+`crates/hoshi-core/data/laws.toml` is the catalog. Each template has a parameter
+range, a jurisdiction (`empire` or `planet`), optional `phase_in_secs`, mechanical
+`effects` and declared `expected` metrics. An emission cap throttles industry
+when pollution load would exceed `ratio * sink`. A trade tariff adds to the
+market fee. Research priority multiplies research speed. Labour rules add to
+mine output modifiers. A metal levy drains metal per hour. None of these
+change physics constants; they change incentives and limits. `measure_secs`
+is how often expected vs actual is sampled.
 
 ## Pacing targets
 

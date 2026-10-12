@@ -1,18 +1,18 @@
-//! Overview, planet, shipyard, wonder, prestige, market, diplomacy and reports screens.
+//! Overview, planet, shipyard, wonder, prestige, market, diplomacy, laws and reports screens.
 //! Core owns the rules; this module only renders and turns keys into core commands.
 
 use crate::portraits::{self, PortraitView, Protocol, Slot};
 use crate::title::AwaySummary;
 use hoshi_core::{
-    BuildingKind, Coord, DefenceKind, Fleet, GameState, ResourceKind, Resources, ShipKind,
-    SpyReport, StoryEvent, WonderError, encode_galaxy_seed,
+    BuildingKind, Coord, DefenceKind, Fleet, GameState, Jurisdiction, JurisdictionKind, LawStatus,
+    ResourceKind, Resources, ShipKind, SpyReport, StoryEvent, WonderError, encode_galaxy_seed,
 };
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::{Block, Clear, Paragraph};
 use std::io::{IsTerminal, Write};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +24,7 @@ pub enum Screen {
     Prestige,
     Market,
     Diplomacy,
+    Laws,
     Reports,
 }
 
@@ -125,7 +126,8 @@ impl App {
                     Screen::Wonder => Screen::Prestige,
                     Screen::Prestige => Screen::Market,
                     Screen::Market => Screen::Diplomacy,
-                    Screen::Diplomacy => Screen::Reports,
+                    Screen::Diplomacy => Screen::Laws,
+                    Screen::Laws => Screen::Reports,
                     Screen::Reports => Screen::Overview,
                 };
                 self.selected = 0;
@@ -194,28 +196,31 @@ impl App {
     pub fn draw(&self, frame: &mut Frame<'_>) {
         let title = match self.screen {
             Screen::Overview => {
-                " hoshi  [overview] planet shipyard wonder prestige market diplomacy reports "
+                " hoshi  [overview] planet shipyard wonder prestige market diplomacy laws reports "
             }
             Screen::Planet => {
-                " hoshi  overview [planet] shipyard wonder prestige market diplomacy reports "
+                " hoshi  overview [planet] shipyard wonder prestige market diplomacy laws reports "
             }
             Screen::Shipyard => {
-                " hoshi  overview planet [shipyard] wonder prestige market diplomacy reports "
+                " hoshi  overview planet [shipyard] wonder prestige market diplomacy laws reports "
             }
             Screen::Wonder => {
-                " hoshi  overview planet shipyard [wonder] prestige market diplomacy reports "
+                " hoshi  overview planet shipyard [wonder] prestige market diplomacy laws reports "
             }
             Screen::Prestige => {
-                " hoshi  overview planet shipyard wonder [prestige] market diplomacy reports "
+                " hoshi  overview planet shipyard wonder [prestige] market diplomacy laws reports "
             }
             Screen::Market => {
-                " hoshi  overview planet shipyard wonder prestige [market] diplomacy reports "
+                " hoshi  overview planet shipyard wonder prestige [market] diplomacy laws reports "
             }
             Screen::Diplomacy => {
-                " hoshi  overview planet shipyard wonder prestige market [diplomacy] reports "
+                " hoshi  overview planet shipyard wonder prestige market [diplomacy] laws reports "
+            }
+            Screen::Laws => {
+                " hoshi  overview planet shipyard wonder prestige market diplomacy [laws] reports "
             }
             Screen::Reports => {
-                " hoshi  overview planet shipyard wonder prestige market diplomacy [reports] "
+                " hoshi  overview planet shipyard wonder prestige market diplomacy laws [reports] "
             }
         };
         let block = Block::bordered().title(title);
@@ -286,7 +291,7 @@ impl App {
             || self.story_event().is_some()
             || self.opened_report
         {
-            return Ok(());
+            return portraits::erase_inline_graphics(out);
         }
         let inner = ratatui::layout::Rect {
             x: frame.x.saturating_add(1),
@@ -329,10 +334,6 @@ impl App {
     }
 
     fn draw_away(&self, frame: &mut Frame<'_>, away: &AwaySummary) {
-        let area = frame.area();
-        let block = Block::bordered().title(" while you were away ");
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
         let mut lines = vec![
             Line::from(format!("elapsed {}s", away.elapsed_secs)),
             Line::from(format!(
@@ -348,14 +349,10 @@ impl App {
             lines.push(Line::from(event.clone()));
         }
         lines.push(Line::from("Enter dismisses. w on overview reopens."));
-        frame.render_widget(Paragraph::new(lines), inner);
+        render_overlay(frame, " while you were away ", lines);
     }
 
     fn draw_story(&self, frame: &mut Frame<'_>, event: &StoryEvent) {
-        let area = frame.area();
-        let block = Block::bordered().title(format!(" {} ", event.title));
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
         let mut lines = vec![Line::from(event.text.clone()), Line::from("")];
         for (i, choice) in event.choices.iter().enumerate() {
             let n = i + 1;
@@ -373,7 +370,7 @@ impl App {
         lines.push(Line::from(
             "1-9 chooses. Ignored too long uses the default.",
         ));
-        frame.render_widget(Paragraph::new(lines), inner);
+        render_overlay(frame, format!(" {} ", event.title), lines);
     }
 
     fn activate(&mut self, now_unix: u64) {
@@ -418,6 +415,7 @@ impl App {
             Screen::Prestige => self.activate_prestige(now_unix),
             Screen::Market => self.activate_market(now_unix),
             Screen::Diplomacy => self.activate_diplomacy(now_unix),
+            Screen::Laws => self.activate_law(now_unix),
             Screen::Reports => {
                 if self
                     .selected_outpost()
@@ -446,6 +444,47 @@ impl App {
         ships.add(ShipKind::EspionageProbe, 1);
         match self.state.launch_spy(ships, dest, 100, now_unix) {
             Ok(_) => self.status = format!("probe launched to {dest}"),
+            Err(e) => self.status = e.to_string(),
+        }
+    }
+
+    fn activate_law(&mut self, now_unix: u64) {
+        let templates: Vec<_> = self.state.config.laws.iter().cloned().collect();
+        if self.selected < templates.len() {
+            let spec = &templates[self.selected];
+            let jurisdiction = match spec.jurisdiction {
+                JurisdictionKind::Empire => Jurisdiction::Empire,
+                JurisdictionKind::Planet => Jurisdiction::Planet(self.selected_coord()),
+            };
+            match self
+                .state
+                .propose_law(&spec.id, spec.default, jurisdiction, 0, now_unix)
+            {
+                Ok(id) => self.status = format!("proposed {} #{id}", spec.title),
+                Err(e) => self.status = e.to_string(),
+            }
+            return;
+        }
+        let index = self.selected - templates.len();
+        let Some(law) = self.state.laws.laws.get(index).cloned() else {
+            return;
+        };
+        let result = match law.status {
+            LawStatus::Proposed | LawStatus::RepealProposed => self
+                .state
+                .approve_law(law.id, now_unix)
+                .map(|()| format!("approved {} #{}", law.template_id, law.id)),
+            LawStatus::Enacted => self
+                .state
+                .repeal_law(law.id, 0, now_unix)
+                .map(|()| format!("repeal proposed {} #{}", law.template_id, law.id)),
+            LawStatus::Repealed => {
+                self.status = "already repealed".into();
+                return;
+            }
+        };
+        match result {
+            Ok(msg) => self.status = msg,
             Err(e) => self.status = e.to_string(),
         }
     }
@@ -541,7 +580,7 @@ impl App {
                 self.confirming_prestige = false;
                 self.status.clear();
             }
-            Screen::Market | Screen::Diplomacy | Screen::Reports => {}
+            Screen::Market | Screen::Diplomacy | Screen::Laws | Screen::Reports => {}
         }
     }
 
@@ -554,6 +593,7 @@ impl App {
             Screen::Prestige => 1 + self.state.config.prestige.bonuses.len(),
             Screen::Market => TRADE_PAIRS.len(),
             Screen::Diplomacy => self.state.config.diplomacy.len(),
+            Screen::Laws => self.state.config.laws.len() + self.state.laws.laws.len(),
             Screen::Reports => self.state.outposts.len(),
         }
     }
@@ -619,6 +659,7 @@ impl App {
             Screen::Prestige => "tab screens  j/k select  enter buy/reset  x back  q quit",
             Screen::Market => "tab screens  j/k pair  +/- amount  enter trade  q quit",
             Screen::Diplomacy => "tab screens  j/k faction  enter tribute  q quit",
+            Screen::Laws => "tab screens  j/k law  enter propose/approve/repeal  q quit",
             Screen::Reports => "tab screens  j/k outpost  enter report  s send probe  q quit",
         })]
     }
@@ -632,6 +673,7 @@ impl App {
             Screen::Prestige => self.prestige_lines(height),
             Screen::Market => self.market_lines(height),
             Screen::Diplomacy => self.diplomacy_lines(height),
+            Screen::Laws => self.law_lines(height),
             Screen::Reports => self.report_lines(height),
         }
     }
@@ -1107,6 +1149,52 @@ impl App {
         append_windowed(&mut rows, &entries, self.selected, height)
     }
 
+    fn law_lines(&self, height: usize) -> Vec<Line<'static>> {
+        let mut rows = vec![Line::from(
+            "Laws  enter propose / approve / repeal  expected vs measured",
+        )];
+        let mut entries: Vec<Line<'static>> = Vec::new();
+        let mut i = 0;
+        for spec in self.state.config.laws.iter() {
+            let mark = if i == self.selected { '>' } else { ' ' };
+            entries.push(Line::from(format!(
+                "{mark} propose {}  {}={:.2}  {}",
+                spec.title,
+                spec.param_name,
+                spec.default,
+                match spec.jurisdiction {
+                    JurisdictionKind::Empire => "empire",
+                    JurisdictionKind::Planet => "planet",
+                }
+            )));
+            i += 1;
+        }
+        for law in &self.state.laws.laws {
+            let mark = if i == self.selected { '>' } else { ' ' };
+            let mut line = format!(
+                "{mark} #{} {} {} {}={:.2} {}",
+                law.id,
+                law.template_id,
+                law.status.as_key(),
+                "param",
+                law.param,
+                law.jurisdiction.as_key()
+            );
+            for sample in self.state.laws.latest_samples(law.id) {
+                line.push_str(&format!(
+                    "  {}: exp {:.1} act {:.1}",
+                    sample.metric.as_key(),
+                    sample.expected,
+                    sample.actual
+                ));
+            }
+            entries.push(Line::from(line));
+            i += 1;
+        }
+        let _ = i;
+        append_windowed(&mut rows, &entries, self.selected, height)
+    }
+
     fn diplomacy_lines(&self, height: usize) -> Vec<Line<'static>> {
         let cfg = &self.state.config.diplomacy;
         let mut rows = vec![Line::from(if cfg.enabled {
@@ -1191,19 +1279,15 @@ impl App {
     }
 
     fn draw_report(&self, frame: &mut Frame<'_>) {
-        let area = frame.area();
         let dest = self.selected_outpost();
         let title = dest
             .map(|c| format!(" spy {c} "))
             .unwrap_or_else(|| " spy ".into());
-        let block = Block::bordered().title(title);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
         let lines = match dest.and_then(|c| self.state.latest_report(c)) {
             Some(report) => report_overlay_lines(report, self.state.last_tick_unix),
             None => vec![Line::from("no spy report for this outpost")],
         };
-        frame.render_widget(Paragraph::new(lines), inner);
+        render_overlay(frame, title, lines);
     }
 
     fn wonder_status(&self) -> String {
@@ -1302,6 +1386,15 @@ fn waste_detail_line(
         line.push_str("  WARN");
     }
     line
+}
+
+fn render_overlay(frame: &mut Frame<'_>, title: impl Into<String>, lines: Vec<Line<'static>>) {
+    let area = frame.area();
+    frame.render_widget(Clear, area);
+    let block = Block::bordered().title(title.into());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn report_overlay_lines(report: &SpyReport, now: u64) -> Vec<Line<'static>> {
@@ -1480,8 +1573,9 @@ fn sparkline(values: &[f64], width: usize) -> String {
 mod tests {
     use super::*;
     use hoshi_core::{
-        BalanceConfig, Buildings, Clock, Colony, Coord, FakeClock, Fleet, GameState, PlanetType,
-        Resources, load_state, open_save, save_state,
+        BalanceConfig, Buildings, Clock, Colony, Coord, DiplomacyConfig, FakeClock, Fleet,
+        GameState, MarketConfig, PlanetType, RaidConfig, Resources, StoryCatalog, load_state,
+        open_save, save_state,
     };
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -1546,6 +1640,10 @@ mod tests {
         let text = render_text(&app, 80, 24);
         assert!(text.contains("while you were away"), "{text}");
         assert!(text.contains("elapsed 120s"), "{text}");
+        assert!(
+            !text.contains("Armour Technology"),
+            "away overlay left the research list visible:\n{text}"
+        );
         app.handle_key(KeyCode::Enter, 1_000);
         let text = render_text(&app, 80, 24);
         assert!(!text.contains("while you were away"), "{text}");
@@ -1666,6 +1764,7 @@ mod tests {
         let text = render_text(&app, 80, 24);
         assert!(text.contains(&format!("{build_left_later}s")), "{text}");
 
+        app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
@@ -1854,6 +1953,7 @@ mod tests {
         assert!(app.state.ship_queue.is_empty());
         assert_eq!(app.state.build_queue.len(), 1);
 
+        app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
@@ -2087,26 +2187,55 @@ mod tests {
     fn story_overlay_shows_text_and_number_keys_choose() {
         let mut app = App::new(GameState::new(1_000));
         app.state.story_pending = Some(hoshi_core::PendingStory {
-            event_id: "derelict".into(),
+            event_id: "dust_cloud".into(),
             offered_at: 1_000,
             timeout_at: 10_000,
         });
         let text = render_text(&app, 80, 24);
-        assert!(text.contains("Derelict hull"), "{text}");
-        assert!(text.contains("Cut it open"), "{text}");
-        assert!(text.contains("Tow it home"), "{text}");
+        assert!(text.contains("Dust cloud"), "{text}");
+        assert!(text.contains("Burn through"), "{text}");
+        assert!(text.contains("Wait it out"), "{text}");
+        assert!(
+            !text.contains("[overview]"),
+            "overlay left the screen chrome visible:\n{text}"
+        );
+        assert!(
+            !text.contains("Armour Technology"),
+            "overlay left the research list visible:\n{text}"
+        );
+        assert!(
+            !text.contains("Crystal"),
+            "overlay left resource lines visible:\n{text}"
+        );
         app.handle_key(KeyCode::Char('2'), 1_000);
         assert!(app.state.story_pending.is_none());
         assert!(
             app.state
                 .events
                 .iter()
-                .any(|e| e.text.contains("Derelict hull")),
+                .any(|e| e.text.contains("Dust cloud")),
             "{:?}",
             app.state.events
         );
         let text = render_text(&app, 80, 24);
-        assert!(!text.contains("Cut it open"), "{text}");
+        assert!(!text.contains("Burn through"), "{text}");
+        assert!(text.contains("[overview]"), "{text}");
+    }
+
+    #[test]
+    fn story_overlay_erases_inline_graphics() {
+        let mut app = App::new(GameState::new(1_000));
+        app.portraits.enabled = true;
+        app.portraits.protocol = Protocol::Graphics;
+        app.state.story_pending = Some(hoshi_core::PendingStory {
+            event_id: "dust_cloud".into(),
+            offered_at: 1_000,
+            timeout_at: 10_000,
+        });
+        let mut out = Vec::new();
+        app.paint_inline_graphics(&mut out, ratatui::layout::Rect::new(0, 0, 80, 24))
+            .unwrap();
+        assert_eq!(out, b"\x1b_Ga=d,d=A\x1b\\");
     }
 
     #[test]
@@ -2171,6 +2300,87 @@ mod tests {
     }
 
     #[test]
+    fn laws_screen_proposes_and_shows_expected_versus_actual() {
+        let cfg = BalanceConfig {
+            story: StoryCatalog::empty(),
+            raid: RaidConfig::inactive(),
+            market: MarketConfig::inactive(),
+            diplomacy: DiplomacyConfig::inactive(),
+            ..BalanceConfig::default()
+        };
+        let mut app = App::new(GameState::with_config(1_000, cfg));
+        for _ in 0..7 {
+            app.handle_key(KeyCode::Tab, 1_000);
+        }
+        assert_eq!(app.screen, Screen::Laws);
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("[laws]"), "{text}");
+        assert!(text.contains("Emission cap"), "{text}");
+        assert!(text.contains("Metal levy"), "{text}");
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(
+            app.state
+                .laws
+                .laws
+                .iter()
+                .any(|l| l.template_id == "emission_cap"),
+            "propose should create a law"
+        );
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("proposed"), "{text}");
+        assert!(text.contains("#0"), "{text}");
+        for _ in 0..5 {
+            app.handle_key(KeyCode::Char('j'), 1_000);
+        }
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert_eq!(
+            app.state.laws.laws[0].status,
+            hoshi_core::LawStatus::Enacted
+        );
+        app.handle_key(KeyCode::Char('j'), 4_600);
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("exp"), "{text}");
+        assert!(text.contains("act"), "{text}");
+    }
+
+    #[test]
+    fn laws_screen_proposes_planet_cap_on_selected_world() {
+        let mut state = GameState::new(1_000);
+        let coord = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 4,
+        };
+        state.colonies.push(Colony {
+            coord,
+            kind: PlanetType::Rocky,
+            size: 120,
+            resources: Resources::ZERO,
+            buildings: Buildings::default(),
+            fleet: Fleet::default(),
+            defences: hoshi_core::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            rare: None,
+            goods: Default::default(),
+        });
+        let mut app = App::new(state);
+        app.handle_key(KeyCode::Char(']'), 1_000);
+        for _ in 0..7 {
+            app.handle_key(KeyCode::Tab, 1_000);
+        }
+        assert_eq!(app.screen, Screen::Laws);
+        app.handle_key(KeyCode::Enter, 1_000);
+        let law = app
+            .state
+            .laws
+            .laws
+            .iter()
+            .find(|l| l.template_id == "emission_cap")
+            .expect("proposed emission cap");
+        assert_eq!(law.jurisdiction, Jurisdiction::Planet(coord));
+    }
+
+    #[test]
     fn reports_screen_lists_age_and_opens_the_latest() {
         let mut state = GameState::new(1_000);
         let dest = state.outposts[0].coord;
@@ -2194,7 +2404,7 @@ mod tests {
             size: Some(state.outposts[0].size),
         });
         let mut app = App::new(state);
-        for _ in 0..7 {
+        for _ in 0..8 {
             app.handle_key(KeyCode::Tab, 1_000);
         }
         assert_eq!(app.screen, Screen::Reports);
@@ -2206,6 +2416,10 @@ mod tests {
         app.handle_key(KeyCode::Enter, 1_000);
         let text = render_text(&app, 100, 32);
         assert!(text.contains(&format!("spy {dest}")), "{text}");
+        assert!(
+            !text.contains("[reports]"),
+            "spy overlay left the reports chrome visible:\n{text}"
+        );
         assert!(text.contains("detected yes"), "{text}");
         assert!(text.contains("lost 1/3"), "{text}");
         assert!(text.contains(&format!("garrison {garrison}")), "{text}");

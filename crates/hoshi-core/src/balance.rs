@@ -340,6 +340,7 @@ pub struct BalanceConfig {
     pub espionage: EspionageConfig,
     pub defences: crate::DefenceConfig,
     pub waste: WasteConfig,
+    pub laws: crate::LawConfig,
 }
 
 impl BalanceConfig {
@@ -1256,6 +1257,7 @@ impl File {
             espionage: self.espionage.into_config(),
             defences: crate::DefenceConfig::default(),
             waste: self.waste.map(FileWaste::into_config).unwrap_or_default(),
+            laws: crate::LawConfig::default(),
             market: crate::MarketConfig {
                 enabled: self.market.enabled,
                 tick_secs: self.market.tick_secs,

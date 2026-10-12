@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 19;
+pub const SCHEMA_VERSION: u32 = 20;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -159,7 +159,11 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM faction_log;
          DELETE FROM spy_report_ships;
          DELETE FROM spy_reports;
-         DELETE FROM planet_defences;",
+         DELETE FROM planet_defences;
+         DELETE FROM law_samples;
+         DELETE FROM law_approvals;
+         DELETE FROM law_actions;
+         DELETE FROM laws;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -433,6 +437,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
             insert_spy_ships(&tx, report.id, "defences", defences)?;
         }
     }
+    insert_laws(&tx, state)?;
     for (i, colony) in state.colonies.iter().enumerate() {
         let planet_id = (i as i64) + 2;
         tx.execute(
@@ -1030,6 +1035,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     load_market(conn, &mut state)?;
     load_diplomacy(conn, &mut state)?;
     load_spy_reports(conn, &mut state)?;
+    load_laws(conn, &mut state)?;
     state.sync_raid_schedule_after_standing(state.last_tick_unix);
 
     let mut stmt = conn.prepare(
@@ -1592,6 +1598,10 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "spy_reports" => "SELECT COUNT(*) FROM spy_reports",
         "spy_report_ships" => "SELECT COUNT(*) FROM spy_report_ships",
         "planet_defences" => "SELECT COUNT(*) FROM planet_defences",
+        "laws" => "SELECT COUNT(*) FROM laws",
+        "law_approvals" => "SELECT COUNT(*) FROM law_approvals",
+        "law_actions" => "SELECT COUNT(*) FROM law_actions",
+        "law_samples" => "SELECT COUNT(*) FROM law_samples",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -1629,7 +1639,11 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "faction_log")?
         + count_rows(conn, "spy_reports")?
         + count_rows(conn, "spy_report_ships")?
-        + count_rows(conn, "planet_defences")?)
+        + count_rows(conn, "planet_defences")?
+        + count_rows(conn, "laws")?
+        + count_rows(conn, "law_approvals")?
+        + count_rows(conn, "law_actions")?
+        + count_rows(conn, "law_samples")?)
 }
 
 fn migrate(conn: &Connection) -> Result<(), SaveError> {
@@ -1696,6 +1710,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 19 {
         migrate_v19(conn)?;
+    }
+    if found < 20 {
+        migrate_v20(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -2216,6 +2233,55 @@ fn migrate_v19(conn: &Connection) -> Result<(), SaveError> {
     Ok(())
 }
 
+fn migrate_v20(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS laws (
+            id INTEGER PRIMARY KEY,
+            template_id TEXT NOT NULL,
+            param REAL NOT NULL,
+            previous_param REAL,
+            owner TEXT NOT NULL,
+            jurisdiction TEXT NOT NULL,
+            proposed_at INTEGER NOT NULL,
+            effective_at INTEGER NOT NULL,
+            phase_in_secs INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            repeal_effective_at INTEGER,
+            enacted_at INTEGER,
+            repealed_at INTEGER,
+            baseline_output REAL NOT NULL DEFAULT 0,
+            baseline_pollution REAL NOT NULL DEFAULT 0,
+            baseline_research REAL NOT NULL DEFAULT 0,
+            last_sample_at INTEGER NOT NULL DEFAULT 0,
+            revenue_accrued REAL NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS law_approvals (
+            law_id INTEGER NOT NULL,
+            who TEXT NOT NULL,
+            at INTEGER NOT NULL,
+            PRIMARY KEY (law_id, who)
+        );
+        CREATE TABLE IF NOT EXISTS law_actions (
+            position INTEGER PRIMARY KEY,
+            at INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            law_id INTEGER NOT NULL,
+            actor TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS law_samples (
+            law_id INTEGER NOT NULL,
+            at INTEGER NOT NULL,
+            metric TEXT NOT NULL,
+            expected REAL NOT NULL,
+            actual REAL NOT NULL,
+            PRIMARY KEY (law_id, at, metric)
+        );
+        ",
+    )?;
+    Ok(())
+}
+
 fn load_spy_reports(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
     let mut stmt = conn.prepare(
         "SELECT id, galaxy, system, position, created_at, probes_sent, probes_lost,
@@ -2391,6 +2457,237 @@ fn load_diplomacy(conn: &Connection, state: &mut GameState) -> Result<(), SaveEr
             reason,
         });
     }
+    Ok(())
+}
+
+fn insert_laws(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<(), SaveError> {
+    for law in &state.laws.laws {
+        tx.execute(
+            "INSERT INTO laws (
+                id, template_id, param, previous_param, owner, jurisdiction,
+                proposed_at, effective_at, phase_in_secs, status, repeal_effective_at,
+                enacted_at, repealed_at, baseline_output, baseline_pollution,
+                baseline_research, last_sample_at, revenue_accrued
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+            params![
+                law.id as i64,
+                law.template_id,
+                law.param,
+                law.previous_param,
+                law.owner,
+                law.jurisdiction.as_key(),
+                law.proposed_at as i64,
+                law.effective_at as i64,
+                law.phase_in_secs as i64,
+                law.status.as_key(),
+                law.repeal_effective_at.map(|t| t as i64),
+                law.enacted_at.map(|t| t as i64),
+                law.repealed_at.map(|t| t as i64),
+                law.baseline_output,
+                law.baseline_pollution,
+                law.baseline_research,
+                law.last_sample_at as i64,
+                law.revenue_accrued,
+            ],
+        )?;
+        for approval in &law.approvals {
+            tx.execute(
+                "INSERT INTO law_approvals (law_id, who, at) VALUES (?1, ?2, ?3)",
+                params![law.id as i64, approval.who, approval.at as i64],
+            )?;
+        }
+        for sample in &law.samples {
+            tx.execute(
+                "INSERT INTO law_samples (law_id, at, metric, expected, actual)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    law.id as i64,
+                    sample.at as i64,
+                    sample.metric.as_key(),
+                    sample.expected,
+                    sample.actual,
+                ],
+            )?;
+        }
+    }
+    for (i, action) in state.laws.actions.iter().enumerate() {
+        tx.execute(
+            "INSERT INTO law_actions (position, at, kind, law_id, actor)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                i as i64,
+                action.at as i64,
+                action.kind.as_key(),
+                action.law_id as i64,
+                action.actor,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn load_laws(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, template_id, param, previous_param, owner, jurisdiction,
+                proposed_at, effective_at, phase_in_secs, status, repeal_effective_at,
+                enacted_at, repealed_at, baseline_output, baseline_pollution,
+                baseline_research, last_sample_at, revenue_accrued
+         FROM laws ORDER BY id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, f64>(2)?,
+            row.get::<_, Option<f64>>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, i64>(6)?,
+            row.get::<_, i64>(7)?,
+            row.get::<_, i64>(8)?,
+            row.get::<_, String>(9)?,
+            row.get::<_, Option<i64>>(10)?,
+            row.get::<_, Option<i64>>(11)?,
+            row.get::<_, Option<i64>>(12)?,
+            row.get::<_, f64>(13)?,
+            row.get::<_, f64>(14)?,
+            row.get::<_, f64>(15)?,
+            row.get::<_, i64>(16)?,
+            row.get::<_, f64>(17)?,
+        ))
+    })?;
+    let mut pending = Vec::new();
+    for row in rows {
+        pending.push(row?);
+    }
+    drop(stmt);
+    state.laws = crate::LawState::default();
+    for (
+        id,
+        template_id,
+        param,
+        previous_param,
+        owner,
+        jurisdiction,
+        proposed_at,
+        effective_at,
+        phase_in_secs,
+        status,
+        repeal_effective_at,
+        enacted_at,
+        repealed_at,
+        baseline_output,
+        baseline_pollution,
+        baseline_research,
+        last_sample_at,
+        revenue_accrued,
+    ) in pending
+    {
+        if !param.is_finite() {
+            return Err(SaveError::Corrupt("law param"));
+        }
+        let jurisdiction = crate::Jurisdiction::parse(&jurisdiction)
+            .ok_or(SaveError::Corrupt("law jurisdiction"))?;
+        let status = crate::LawStatus::from_key(&status).ok_or(SaveError::Corrupt("law status"))?;
+        let mut approvals = Vec::new();
+        let mut stmt =
+            conn.prepare("SELECT who, at FROM law_approvals WHERE law_id = ?1 ORDER BY at")?;
+        let rows = stmt.query_map(params![id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (who, at) = row?;
+            approvals.push(crate::LawApproval {
+                who,
+                at: unix_ts(at)?,
+            });
+        }
+        drop(stmt);
+        let mut samples = Vec::new();
+        let mut stmt = conn.prepare(
+            "SELECT at, metric, expected, actual FROM law_samples WHERE law_id = ?1 ORDER BY at",
+        )?;
+        let rows = stmt.query_map(params![id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, f64>(2)?,
+                row.get::<_, f64>(3)?,
+            ))
+        })?;
+        for row in rows {
+            let (at, metric, expected, actual) = row?;
+            let metric =
+                crate::LawMetric::from_key(&metric).ok_or(SaveError::Corrupt("law metric"))?;
+            samples.push(crate::LawSample {
+                at: unix_ts(at)?,
+                metric,
+                expected,
+                actual,
+            });
+        }
+        drop(stmt);
+        state.laws.laws.push(crate::Law {
+            id: unix_ts(id)?,
+            template_id,
+            param,
+            previous_param,
+            owner,
+            jurisdiction,
+            proposed_at: unix_ts(proposed_at)?,
+            effective_at: unix_ts(effective_at)?,
+            phase_in_secs: unix_ts(phase_in_secs)?,
+            status,
+            repeal_effective_at: match repeal_effective_at {
+                Some(t) => Some(unix_ts(t)?),
+                None => None,
+            },
+            enacted_at: match enacted_at {
+                Some(t) => Some(unix_ts(t)?),
+                None => None,
+            },
+            repealed_at: match repealed_at {
+                Some(t) => Some(unix_ts(t)?),
+                None => None,
+            },
+            approvals,
+            baseline_output,
+            baseline_pollution,
+            baseline_research,
+            last_sample_at: unix_ts(last_sample_at)?,
+            revenue_accrued,
+            samples,
+        });
+    }
+    let mut stmt =
+        conn.prepare("SELECT at, kind, law_id, actor FROM law_actions ORDER BY position")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    })?;
+    state.laws.actions.clear();
+    for row in rows {
+        let (at, kind, law_id, actor) = row?;
+        let kind = crate::LawActionKind::from_key(&kind).ok_or(SaveError::Corrupt("law action"))?;
+        state.laws.actions.push(crate::LawAction {
+            at: unix_ts(at)?,
+            kind,
+            law_id: unix_ts(law_id)?,
+            actor,
+        });
+    }
+    state.laws.next_id = state
+        .laws
+        .laws
+        .iter()
+        .map(|l| l.id)
+        .max()
+        .map(|id| id.saturating_add(1))
+        .unwrap_or(0);
     Ok(())
 }
 
@@ -3422,6 +3719,24 @@ mod tests {
         assert_eq!(loaded.colonies[0].defences, state.colonies[0].defences);
         assert_eq!(loaded, state);
         assert_eq!(count_rows(&conn, "planet_defences").unwrap(), 4);
+    }
+
+    #[test]
+    fn migrate_v20_retries_and_round_trips_laws() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v20(&conn).unwrap();
+        migrate_v20(&conn).unwrap();
+        let mut state = GameState::new(10);
+        let id = state
+            .propose_law("tax_rate", 25.0, crate::Jurisdiction::Empire, 0, 10)
+            .unwrap();
+        state.approve_law(id, 10).unwrap();
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.laws, state.laws);
+        assert_eq!(loaded, state);
+        assert_eq!(count_rows(&conn, "laws").unwrap(), 1);
+        assert_eq!(count_rows(&conn, "law_approvals").unwrap(), 1);
     }
 
     #[test]

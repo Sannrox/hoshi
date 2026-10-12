@@ -12,6 +12,7 @@ mod espionage;
 mod expedition;
 mod fleets;
 mod galaxy;
+mod laws;
 mod market;
 mod outposts;
 mod planets;
@@ -61,6 +62,11 @@ pub use fleets::{
 };
 pub use galaxy::{
     GALAXY_GENERATOR_VERSION, encode_galaxy_seed, parse_galaxy_seed, supports_galaxy_generator,
+};
+pub use laws::{
+    CLOCK as LAW_CLOCK, Jurisdiction, JurisdictionKind, Law, LawAction, LawActionKind, LawApproval,
+    LawConfig, LawEffectKind, LawError, LawMetric, LawMetrics, LawSample, LawState, LawStatus,
+    LawTemplate, PLAYER as LAW_PLAYER, emission_throttle,
 };
 pub use market::{MarketConfig, MarketError, MarketState, TradeQuote};
 pub use outposts::{
