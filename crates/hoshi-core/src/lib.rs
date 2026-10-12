@@ -21,6 +21,7 @@ mod moons;
 mod outposts;
 mod planets;
 mod prestige;
+mod production;
 mod research;
 mod save;
 mod ships;
@@ -91,6 +92,7 @@ pub use prestige::{
     PRESTIGE_KEPT, PRESTIGE_LOST, Prestige, PrestigeBonusSpec, PrestigeConfig, PrestigeError,
     PrestigePreview, RunStats,
 };
+pub use production::{LimitingFactor, ProductionReport, RecipeFlow};
 pub use research::{
     BuildingPrereq, ModifierKind, PrereqGap, ResearchError, ResearchJob, TechBranch, TechModifier,
     TechNodeState, TechPrereq, TechSpec, TechTree, TechTreeError,

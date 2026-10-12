@@ -1,4 +1,4 @@
-//! Overview, planet, shipyard, wonder, prestige, achievements, daily, market, diplomacy, laws, reports and map screens.
+//! Overview, planet, shipyard, wonder, prestige, achievements, daily, production, market, diplomacy, laws, reports and map screens.
 //! Core owns the rules; this module only renders and turns keys into core commands.
 
 use crate::clip::copy_to_clipboard;
@@ -27,6 +27,7 @@ pub enum Screen {
     Prestige,
     Achievements,
     Daily,
+    Production,
     Market,
     Diplomacy,
     Laws,
@@ -97,6 +98,7 @@ pub struct App {
     activity_open: bool,
     activity_scroll: usize,
     bridge_log: Vec<BridgeLine>,
+    prod_history: Vec<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,6 +146,7 @@ impl App {
             activity_open: false,
             activity_scroll: 0,
             bridge_log: Vec::new(),
+            prod_history: Vec::new(),
         }
     }
 
@@ -233,6 +236,11 @@ impl App {
             return Vec::new();
         };
         notify::encode(self.notify, self.state.last_tick_unix, &[notice])
+    }
+
+    pub fn catch_up_now(&mut self, now_unix: u64) {
+        self.state.catch_up(now_unix);
+        self.record_production_sample();
     }
 
     pub fn handle_key(&mut self, code: KeyCode, now_unix: u64) -> Action {
@@ -411,7 +419,8 @@ impl App {
             Screen::Wonder => Screen::Prestige,
             Screen::Prestige => Screen::Achievements,
             Screen::Achievements => Screen::Daily,
-            Screen::Daily => Screen::Market,
+            Screen::Daily => Screen::Production,
+            Screen::Production => Screen::Market,
             Screen::Market => Screen::Diplomacy,
             Screen::Diplomacy => Screen::Laws,
             Screen::Laws => Screen::Reports,
@@ -449,6 +458,7 @@ impl App {
             Screen::Prestige => HelpContext::Prestige,
             Screen::Achievements => HelpContext::Achievements,
             Screen::Daily => HelpContext::Daily,
+            Screen::Production => HelpContext::Production,
             Screen::Market => HelpContext::Market,
             Screen::Diplomacy => HelpContext::Diplomacy,
             Screen::Laws => HelpContext::Laws,
@@ -483,40 +493,43 @@ impl App {
     pub fn draw(&self, frame: &mut Frame<'_>) {
         let title = match self.screen {
             Screen::Overview => {
-                " hoshi  [overview] planet shipyard wonder prestige achieve daily market diplomacy laws reports map "
+                " hoshi  [overview] planet shipyard wonder prestige ach daily prod market diplo laws reports map "
             }
             Screen::Planet => {
-                " hoshi  overview [planet] shipyard wonder prestige achieve daily market diplomacy laws reports map "
+                " hoshi  overview [planet] shipyard wonder prestige ach daily prod market diplo laws reports map "
             }
             Screen::Shipyard => {
-                " hoshi  overview planet [shipyard] wonder prestige achieve daily market diplomacy laws reports map "
+                " hoshi  overview planet [shipyard] wonder prestige ach daily prod market diplo laws reports map "
             }
             Screen::Wonder => {
-                " hoshi  overview planet shipyard [wonder] prestige achieve daily market diplomacy laws reports map "
+                " hoshi  overview planet shipyard [wonder] prestige ach daily prod market diplo laws reports map "
             }
             Screen::Prestige => {
-                " hoshi  overview planet shipyard wonder [prestige] achieve daily market diplomacy laws reports map "
+                " hoshi  overview planet shipyard wonder [prestige] ach daily prod market diplo laws reports map "
             }
             Screen::Achievements => {
-                " hoshi  overview planet shipyard wonder prestige [achieve] daily market diplomacy laws reports map "
+                " hoshi  overview planet shipyard wonder prestige [ach] daily prod market diplo laws reports map "
             }
             Screen::Daily => {
-                " hoshi  overview planet shipyard wonder prestige achieve [daily] market diplomacy laws reports map "
+                " hoshi  overview planet shipyard wonder prestige ach [daily] prod market diplo laws reports map "
+            }
+            Screen::Production => {
+                " hoshi  overview planet shipyard wonder prestige ach daily [prod] market diplo laws reports map "
             }
             Screen::Market => {
-                " hoshi  overview planet shipyard wonder prestige achieve daily [market] diplomacy laws reports map "
+                " hoshi  overview planet shipyard wonder prestige ach daily prod [market] diplo laws reports map "
             }
             Screen::Diplomacy => {
-                " hoshi  overview planet shipyard wonder prestige achieve daily market [diplomacy] laws reports map "
+                " hoshi  overview planet shipyard wonder prestige ach daily prod market [diplo] laws reports map "
             }
             Screen::Laws => {
-                " hoshi  overview planet shipyard wonder prestige achieve daily market diplomacy [laws] reports map "
+                " hoshi  overview planet shipyard wonder prestige ach daily prod market diplo [laws] reports map "
             }
             Screen::Reports => {
-                " hoshi  overview planet shipyard wonder prestige achieve daily market diplomacy laws [reports] map "
+                " hoshi  overview planet shipyard wonder prestige ach daily prod market diplo laws [reports] map "
             }
             Screen::Map => {
-                " hoshi  overview planet shipyard wonder prestige achieve daily market diplomacy laws reports [map] "
+                " hoshi  overview planet shipyard wonder prestige ach daily prod market diplo laws reports [map] "
             }
         };
         let block = Block::bordered().title(title);
@@ -803,7 +816,7 @@ impl App {
             }
             Screen::Wonder => self.activate_wonder(now_unix),
             Screen::Prestige => self.activate_prestige(now_unix),
-            Screen::Achievements | Screen::Daily => {}
+            Screen::Achievements | Screen::Daily | Screen::Production => {}
             Screen::Market => self.activate_market(now_unix),
             Screen::Diplomacy => self.activate_diplomacy(now_unix),
             Screen::Laws => self.activate_law(now_unix),
@@ -1087,6 +1100,7 @@ impl App {
             Screen::Map => self.dispatch = None,
             Screen::Achievements
             | Screen::Daily
+            | Screen::Production
             | Screen::Market
             | Screen::Diplomacy
             | Screen::Laws
@@ -1103,6 +1117,13 @@ impl App {
             Screen::Prestige => 1 + self.state.config.prestige.bonuses.len(),
             Screen::Achievements => self.state.config.achievements.len(),
             Screen::Daily => self.state.daily.slots.len(),
+            Screen::Production => self
+                .state
+                .production_report()
+                .steps
+                .iter()
+                .filter(|step| step.planet == self.selected_coord())
+                .count(),
             Screen::Market => TRADE_PAIRS.len(),
             Screen::Diplomacy => self.state.config.diplomacy.len(),
             Screen::Laws => self.state.config.laws.len() + self.state.laws.laws.len(),
@@ -1273,7 +1294,9 @@ impl App {
             Screen::Prestige => {
                 format!("{tab} screens  {select}  {confirm} buy/reset  {cancel}  {quit}  {help}")
             }
-            Screen::Achievements | Screen::Daily => format!("{tab} screens  {select}  {quit}  {help}"),
+            Screen::Achievements | Screen::Daily | Screen::Production => {
+                format!("{tab} screens  {planets}  {select}  {quit}  {help}")
+            }
             Screen::Market => format!(
                 "{tab} screens  {select}  {}/{} amount  {confirm} trade  {quit}  {help}",
                 k.primary(Binding::Increase),
@@ -1355,6 +1378,7 @@ impl App {
             Screen::Prestige => self.prestige_lines(height),
             Screen::Achievements => self.achievement_lines(height),
             Screen::Daily => self.daily_lines(height),
+            Screen::Production => self.production_lines(height),
             Screen::Market => self.market_lines(height),
             Screen::Diplomacy => self.diplomacy_lines(height),
             Screen::Laws => self.law_lines(height),
@@ -1904,6 +1928,66 @@ impl App {
                 Line::from(format!(
                     "{mark} {name}  {}/{}{done}",
                     slot.progress, slot.target
+                ))
+            })
+            .collect();
+        append_windowed(&mut rows, &entries, self.selected, height)
+    }
+
+    fn record_production_sample(&mut self) {
+        let rate = self.state.production_report().metal_per_hour;
+        self.prod_history.push(rate);
+        const CAP: usize = 24;
+        if self.prod_history.len() > CAP {
+            let drop = self.prod_history.len() - CAP;
+            self.prod_history.drain(..drop);
+        }
+    }
+
+    fn production_lines(&self, height: usize) -> Vec<Line<'static>> {
+        let report = self.state.production_report();
+        let coord = self.selected_coord();
+        let mut rows = vec![
+            Line::from(format!(
+                "limit {}  {}",
+                report.limited_by.as_key(),
+                report.limited_by.suggestion()
+            )),
+            Line::from(format!(
+                "energy {:.0}/{:.0}  heat {:.0}/{:.0}  M{:.0} C{:.0} D{:.0}/h",
+                report.energy_supply,
+                report.energy_demand,
+                report.heat_load,
+                report.heat_sink,
+                report.metal_per_hour,
+                report.crystal_per_hour,
+                report.deuterium_per_hour
+            )),
+            Line::from(format!("rate {}", sparkline(&self.prod_history, 24))),
+        ];
+        let entries: Vec<Line<'static>> = report
+            .steps
+            .iter()
+            .filter(|step| step.planet == coord)
+            .enumerate()
+            .map(|(i, step)| {
+                let mark = if i == self.selected { '>' } else { ' ' };
+                let out = step
+                    .outputs_per_hour
+                    .iter()
+                    .map(|(id, n)| format!("{id} {n:.1}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let buf = step
+                    .buffers
+                    .iter()
+                    .map(|(id, n)| format!("{id} {n:.0}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                Line::from(format!(
+                    "{mark} {}  {out}  buf {buf}  {}",
+                    step.id,
+                    step.limited_by.as_key()
                 ))
             })
             .collect();
@@ -2806,6 +2890,7 @@ mod tests {
         app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
+        app.handle_key(KeyCode::Tab, clock.now_unix());
         assert_eq!(app.screen, Screen::Overview);
         let energy = app
             .overview_techs()
@@ -2880,7 +2965,7 @@ mod tests {
     }
 
     fn open_map(app: &mut App, now: u64) {
-        for _ in 0..11 {
+        for _ in 0..12 {
             app.handle_key(KeyCode::Tab, now);
         }
         assert_eq!(app.screen, Screen::Map);
@@ -2992,6 +3077,7 @@ mod tests {
         assert!(app.state.ship_queue.is_empty());
         assert_eq!(app.state.build_queue.len(), 1);
 
+        app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
@@ -3236,7 +3322,7 @@ mod tests {
         }
         assert_eq!(app.screen, Screen::Achievements);
         let text = render_text(&app, 100, 32);
-        assert!(text.contains("[achieve]"), "{text}");
+        assert!(text.contains("[ach]"), "{text}");
         assert!(text.contains("First cut"), "{text}");
         assert!(text.contains("earned"), "{text}");
         assert!(text.contains("???"), "{text}");
@@ -3268,6 +3354,37 @@ mod tests {
                     .unwrap_or(s.spec_id.as_str())
             )),
             "{text}"
+        );
+    }
+
+    #[test]
+    fn production_history_samples_on_idle_ticks() {
+        let mut app = App::new(GameState::new(1_000));
+        app.catch_up_now(1_000);
+        app.catch_up_now(2_000);
+        app.catch_up_now(3_000);
+        assert_eq!(app.prod_history.len(), 3);
+        app.catch_up_now(4_000);
+        assert_eq!(app.prod_history.len(), 4);
+    }
+
+    #[test]
+    fn production_screen_shows_limit_energy_heat_and_fits_80x24() {
+        let mut app = App::new(GameState::new(1_000));
+        for _ in 0..7 {
+            app.handle_key(KeyCode::Tab, 1_000);
+        }
+        assert_eq!(app.screen, Screen::Production);
+        let text = render_text(&app, 80, 24);
+        assert!(text.contains("[prod]"), "{text}");
+        assert!(text.contains("limit"), "{text}");
+        assert!(text.contains("energy"), "{text}");
+        assert!(text.contains("heat"), "{text}");
+        let wide = render_text(&app, 120, 32);
+        assert!(wide.contains("limit"), "{wide}");
+        assert!(
+            text.chars().any(|c| "▁▂▃▄▅▆▇█".contains(c)) || text.contains("rate"),
+            "history missing: {text}"
         );
     }
 
@@ -3331,7 +3448,7 @@ mod tests {
         let mut state = GameState::new(1_000);
         state.resources.metal = 1_000.0;
         let mut app = App::new(state);
-        for _ in 0..7 {
+        for _ in 0..8 {
             app.handle_key(KeyCode::Tab, 1_000);
         }
         assert_eq!(app.screen, Screen::Market);
@@ -3359,12 +3476,12 @@ mod tests {
         let mut state = GameState::new(1_000);
         state.resources.metal = 1_000.0;
         let mut app = App::new(state);
-        for _ in 0..8 {
+        for _ in 0..9 {
             app.handle_key(KeyCode::Tab, 1_000);
         }
         assert_eq!(app.screen, Screen::Diplomacy);
         let text = render_text(&app, 100, 32);
-        assert!(text.contains("[diplomacy]"), "{text}");
+        assert!(text.contains("[diplo]"), "{text}");
         assert!(text.contains("Traders' guild"), "{text}");
         assert!(text.contains("Pirate clans"), "{text}");
         assert!(text.contains("Ancient empire"), "{text}");
@@ -3397,7 +3514,7 @@ mod tests {
             ..BalanceConfig::default()
         };
         let mut app = App::new(GameState::with_config(1_000, cfg));
-        for _ in 0..9 {
+        for _ in 0..10 {
             app.handle_key(KeyCode::Tab, 1_000);
         }
         assert_eq!(app.screen, Screen::Laws);
@@ -3453,7 +3570,7 @@ mod tests {
         });
         let mut app = App::new(state);
         app.handle_key(KeyCode::Char(']'), 1_000);
-        for _ in 0..9 {
+        for _ in 0..10 {
             app.handle_key(KeyCode::Tab, 1_000);
         }
         assert_eq!(app.screen, Screen::Laws);
@@ -3492,7 +3609,7 @@ mod tests {
             size: Some(state.outposts[0].size),
         });
         let mut app = App::new(state);
-        for _ in 0..10 {
+        for _ in 0..11 {
             app.handle_key(KeyCode::Tab, 1_000);
         }
         assert_eq!(app.screen, Screen::Reports);
@@ -3659,7 +3776,7 @@ mod tests {
         assert!(overview.contains("copy galaxy seed"), "{overview}");
         assert!(overview.contains("?"), "{overview}");
         app.handle_key(KeyCode::Char('?'), 1_000);
-        for _ in 0..7 {
+        for _ in 0..8 {
             app.handle_key(KeyCode::Tab, 1_000);
         }
         app.handle_key(KeyCode::Char('?'), 1_000);

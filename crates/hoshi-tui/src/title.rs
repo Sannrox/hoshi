@@ -1492,6 +1492,7 @@ fn screens_for(binding: Binding) -> String {
         HelpContext::Prestige,
         HelpContext::Achievements,
         HelpContext::Daily,
+        HelpContext::Production,
         HelpContext::Market,
         HelpContext::Diplomacy,
         HelpContext::Laws,
