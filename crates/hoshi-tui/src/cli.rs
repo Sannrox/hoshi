@@ -3,8 +3,8 @@
 use hoshi_core::{
     BalanceConfig, BuildingKind, Clock, Coord, DefenceKind, FakeClock, Fleet, GameState,
     Jurisdiction, JurisdictionKind, MoonFacility, ResourceKind, SCHEMA_VERSION as SAVE_SCHEMA,
-    SaveError, ShipKind, SpyReport, SystemClock, load_or_new, load_or_new_with_seed, lock_save,
-    open_save, resolve_save_path, save_state,
+    SaveError, ShipKind, SpyReport, SystemClock, inspect_save, load_or_new, load_or_new_with_seed,
+    lock_save, open_save, resolve_save_path, save_is_locked, save_state,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -75,6 +75,9 @@ enum Command {
     },
     TutorialSkip,
     TutorialReset,
+    Feedback {
+        note: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,6 +188,9 @@ fn render(value: Value) -> String {
 
 fn run_cli_inner(args: &[String]) -> Result<Value, CliError> {
     let opts = parse_cli(args)?;
+    if let Command::Feedback { note } = &opts.command {
+        return run_feedback(opts.save.as_deref(), note);
+    }
     let save = resolve_save_path(
         opts.save.as_deref(),
         std::env::var_os("HOSHI_SAVE").as_deref(),
@@ -214,6 +220,70 @@ fn run_cli_inner(args: &[String]) -> Result<Value, CliError> {
     let value = apply(&mut state, now, &opts.command)?;
     save_state(&mut conn, &state).map_err(|e| CliError::Internal(e.to_string()))?;
     Ok(value)
+}
+
+fn strip_controls(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_control())
+        .take(4_000)
+        .collect()
+}
+
+fn feedback_log_path(save: &Path) -> PathBuf {
+    save.with_extension("feedback.log")
+}
+
+fn run_feedback(save_flag: Option<&Path>, note: &str) -> Result<Value, CliError> {
+    let save = resolve_save_path(save_flag, std::env::var_os("HOSHI_SAVE").as_deref());
+    let at = SystemClock.now_unix();
+    let mut state = json!(null);
+    let mut save_locked = false;
+    if save.exists() {
+        if save_is_locked(&save) {
+            save_locked = true;
+        } else {
+            match inspect_save(&save) {
+                Ok(glance) => {
+                    state = json!({
+                        "save_schema": glance.schema,
+                        "last_tick_unix": glance.last_tick_unix,
+                        "deterministic": glance.deterministic,
+                        "planets": glance.planets,
+                        "fleet_strength": glance.fleet_strength,
+                    });
+                }
+                Err(SaveError::Locked) => save_locked = true,
+                Err(err) => return Err(CliError::Internal(err.to_string())),
+            }
+        }
+    }
+    let entry = json!({
+        "at": at,
+        "version": env!("CARGO_PKG_VERSION"),
+        "note": note,
+        "save_locked": save_locked,
+        "state": state,
+    });
+    let log = feedback_log_path(&save);
+    if let Some(parent) = log.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).map_err(|e| CliError::Internal(e.to_string()))?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log)
+        .map_err(|e| CliError::Internal(e.to_string()))?;
+    use std::io::Write;
+    writeln!(file, "{entry}").map_err(|e| CliError::Internal(e.to_string()))?;
+    Ok(json!({
+        "schema_version": SCHEMA_VERSION,
+        "ok": true,
+        "message": "feedback recorded",
+        "log": log.file_name().and_then(|n| n.to_str()).unwrap_or("feedback.log"),
+        "save_locked": save_locked,
+    }))
 }
 
 fn now_for(state: &GameState) -> u64 {
@@ -404,6 +474,9 @@ fn apply(state: &mut GameState, now: u64, command: &Command) -> Result<Value, Cl
             state.reset_hints();
             Ok(ok_state(state, "tutorial reset"))
         }
+        Command::Feedback { .. } => Err(CliError::Internal(
+            "feedback is handled before apply".into(),
+        )),
         Command::MoonScan { planet } => {
             if !state.deterministic {
                 state.catch_up(now);
@@ -771,6 +844,12 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
         },
         "law" => parse_law_command(args),
         "moon" => parse_moon_command(args),
+        "feedback" => {
+            let note = args.get(1..).unwrap_or(&[]).join(" ");
+            Ok(Command::Feedback {
+                note: strip_controls(&note),
+            })
+        }
         "tutorial" => match args.get(1).map(String::as_str) {
             Some("skip") => {
                 expect_end(args, 2)?;
@@ -1231,6 +1310,31 @@ mod tests {
         assert_eq!(out.exit, EXIT_INVALID);
         let out = run_cli(&args(&["--save"]));
         assert_eq!(out.exit, EXIT_INVALID);
+    }
+
+    #[test]
+    fn feedback_appends_a_versioned_line_without_the_seed() {
+        let save = unique_save("feedback");
+        let (created, exit) = run_on(&save, &["--seed=7", "state"]);
+        assert_eq!(exit, EXIT_OK);
+        assert!(created.get("galaxy_seed").is_none());
+        let (value, exit) = run_on(&save, &["feedback", "mines", "felt", "slow"]);
+        assert_eq!(exit, EXIT_OK, "{value}");
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["message"], "feedback recorded");
+        let log = save.with_extension("feedback.log");
+        let text = std::fs::read_to_string(&log).unwrap();
+        let line: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+        assert_eq!(line["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(line["note"], "mines felt slow");
+        assert_eq!(line["state"]["save_schema"], SAVE_SCHEMA);
+        assert!(line.get("galaxy_seed").is_none());
+        assert!(line["state"].get("galaxy_seed").is_none());
+        let before = created["resources"]["metal"].clone();
+        let (after, _) = run_on(&save, &["state"]);
+        assert_eq!(after["resources"]["metal"], before);
+        let _ = std::fs::remove_file(&save);
+        let _ = std::fs::remove_file(&log);
     }
 
     #[test]
