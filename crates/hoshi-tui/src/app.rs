@@ -75,6 +75,17 @@ pub struct App {
     map_position: u16,
     dispatch: Option<DispatchForm>,
     tree_branch: TechBranch,
+    bridge_ui: bool,
+    activity_open: bool,
+    activity_scroll: usize,
+    bridge_log: Vec<BridgeLine>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BridgeLine {
+    source: String,
+    effect: String,
+    alert: bool,
 }
 
 impl App {
@@ -102,7 +113,34 @@ impl App {
             map_position: Coord::HOME.position,
             dispatch: None,
             tree_branch: TechBranch::Industry,
+            bridge_ui: false,
+            activity_open: false,
+            activity_scroll: 0,
+            bridge_log: Vec::new(),
         }
+    }
+
+    #[cfg(any(test, feature = "bridge"))]
+    pub fn set_bridge_ui(&mut self, enabled: bool) {
+        self.bridge_ui = enabled;
+        if !enabled {
+            self.activity_open = false;
+        }
+    }
+
+    #[cfg(any(test, feature = "bridge"))]
+    pub fn record_bridge(&mut self, source: &str, effect: &str, alert: bool) {
+        self.bridge_log.push(BridgeLine {
+            source: source.to_string(),
+            effect: effect.to_string(),
+            alert,
+        });
+        const CAP: usize = 100;
+        if self.bridge_log.len() > CAP {
+            let drop = self.bridge_log.len() - CAP;
+            self.bridge_log.drain(..drop);
+        }
+        self.activity_scroll = 0;
     }
 
     pub fn set_away(&mut self, summary: AwaySummary) {
@@ -122,6 +160,26 @@ impl App {
                 || self.keymap.matches(Binding::Confirm, code)
             {
                 self.help_open = false;
+            }
+            return Action::None;
+        }
+        if self.activity_open {
+            if self.keymap.matches(Binding::Quit, code) {
+                return Action::Quit;
+            }
+            if self.keymap.matches(Binding::Activity, code)
+                || self.keymap.matches(Binding::Cancel, code)
+                || self.keymap.matches(Binding::Confirm, code)
+            {
+                self.activity_open = false;
+                return Action::None;
+            }
+            if self.keymap.matches(Binding::SelectNext, code) {
+                let max = self.bridge_log.len().saturating_sub(1);
+                self.activity_scroll = (self.activity_scroll + 1).min(max);
+            }
+            if self.keymap.matches(Binding::SelectPrev, code) {
+                self.activity_scroll = self.activity_scroll.saturating_sub(1);
             }
             return Action::None;
         }
@@ -159,6 +217,10 @@ impl App {
                 Some(Binding::Quit) => return Action::Quit,
                 _ => {}
             }
+            return Action::None;
+        }
+        if self.bridge_ui && self.keymap.matches(Binding::Activity, code) {
+            self.activity_open = true;
             return Action::None;
         }
         match self.keymap.lookup(ctx, code) {
@@ -376,6 +438,9 @@ impl App {
         } else if let Some(form) = &self.dispatch {
             self.draw_dispatch(frame, form);
         }
+        if self.activity_open {
+            self.draw_activity(frame);
+        }
         if self.help_open {
             self.draw_help(frame);
         }
@@ -402,6 +467,7 @@ impl App {
             return Ok(());
         }
         if self.help_open
+            || self.activity_open
             || (self.away.is_some() && !self.away_hidden)
             || self.story_event().is_some()
             || self.opened_report
@@ -908,6 +974,36 @@ impl App {
         lines
     }
 
+    fn bridge_bar(&self) -> Option<Line<'static>> {
+        if !self.bridge_ui {
+            return None;
+        }
+        let now = self.state.last_tick_unix;
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(line) = self.bridge_log.last() {
+            let mark = if line.alert { "!" } else { " " };
+            parts.push(format!("{mark}{}  {}", line.source, line.effect));
+        } else {
+            parts.push("bridge idle".into());
+        }
+        if let Some(until) = self.state.activity.prod_boost_until
+            && now < until
+        {
+            parts.push(format!("mines {}s", until - now));
+        }
+        if let Some(until) = self.state.activity.research_boost_until
+            && now < until
+        {
+            parts.push(format!("lab {}s", until - now));
+        }
+        let style = if self.bridge_log.last().is_some_and(|l| l.alert) {
+            Style::default().add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        Some(Line::from(Span::styled(parts.join("  ·  "), style)))
+    }
+
     fn footer_lines(&self) -> Vec<Line<'static>> {
         let k = &self.keymap;
         let tab = k.primary(Binding::NextScreen);
@@ -925,7 +1021,16 @@ impl App {
         let cancel = k.primary(Binding::Cancel);
         let quit = format!("{} quit", k.primary(Binding::Quit));
         let help = format!("{} help", k.primary(Binding::Help));
-        vec![Line::from(match self.screen {
+        let activity = if self.bridge_ui {
+            format!("  {} log", k.primary(Binding::Activity))
+        } else {
+            String::new()
+        };
+        let mut rows = Vec::new();
+        if let Some(bar) = self.bridge_bar() {
+            rows.push(bar);
+        }
+        rows.push(Line::from(format!("{}{activity}", match self.screen {
             Screen::Overview => format!(
                 "{tab} screens  {planets}  {}/{} branch  {select}  {confirm} research  {cancel}  {} copy seed  {quit}  {help}",
                 k.primary(Binding::CursorLeft),
@@ -967,17 +1072,54 @@ impl App {
                 k.primary(Binding::SelectPrev),
                 k.primary(Binding::CursorRight)
             ),
-        })]
+        })));
+        rows
     }
 
     fn draw_help(&self, frame: &mut Frame<'_>) {
-        let lines = self
-            .keymap
-            .help_lines(self.help_context())
-            .into_iter()
-            .map(Line::from)
-            .collect();
-        render_overlay(frame, " help ", lines);
+        let mut lines = self.keymap.help_lines(self.help_context());
+        if self.bridge_ui {
+            lines.insert(
+                2,
+                format!("  {}  activity log", self.keymap.display(Binding::Activity)),
+            );
+        }
+        render_overlay(frame, " help ", lines.into_iter().map(Line::from).collect());
+    }
+
+    fn draw_activity(&self, frame: &mut Frame<'_>) {
+        let mut lines = vec![
+            Line::from("latest bridge events (source · effect)"),
+            Line::from(""),
+        ];
+        if self.bridge_log.is_empty() {
+            lines.push(Line::from("no events yet"));
+        } else {
+            let newest_first: Vec<&BridgeLine> = self.bridge_log.iter().rev().collect();
+            let start = self
+                .activity_scroll
+                .min(newest_first.len().saturating_sub(1));
+            for line in newest_first.into_iter().skip(start).take(16) {
+                let mark = if line.alert { "!" } else { " " };
+                let style = if line.alert {
+                    Style::default().add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                lines.push(Line::from(Span::styled(
+                    format!("{mark}{}  {}", line.source, line.effect),
+                    style,
+                )));
+            }
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(format!(
+            "{} closes   {}/{} scroll",
+            self.keymap.primary(Binding::Cancel),
+            self.keymap.primary(Binding::SelectNext),
+            self.keymap.primary(Binding::SelectPrev)
+        )));
+        render_overlay(frame, " activity ", lines);
     }
 
     fn list_lines(&self, height: usize) -> Vec<Line<'static>> {
@@ -3051,6 +3193,79 @@ mod tests {
         assert_eq!(app.handle_key(KeyCode::Char('q'), 50), Action::None);
         assert_eq!(app.handle_key(KeyCode::Char('p'), 50), Action::Quit);
         assert!(Keymap::from_overrides([("quit", "j")]).is_err());
+    }
+
+    #[test]
+    fn bridge_status_bar_is_off_until_enabled() {
+        let mut app = App::new(GameState::new(1_000));
+        let off = render_text(&app, 80, 24);
+        assert!(!off.contains("bridge idle"), "{off}");
+        app.handle_key(KeyCode::Char('?'), 1_000);
+        let help = render_text(&app, 80, 24);
+        assert!(!help.contains("activity log"), "{help}");
+        app.handle_key(KeyCode::Char('?'), 1_000);
+        app.set_bridge_ui(true);
+        let idle = render_text(&app, 80, 24);
+        assert!(idle.contains("bridge idle"), "{idle}");
+    }
+
+    #[test]
+    fn bridge_status_shows_latest_event_boosts_and_opens_the_panel() {
+        let mut app = App::new(GameState::new(1_000));
+        app.set_bridge_ui(true);
+        app.state.activity.prod_boost_until = Some(1_540);
+        app.record_bridge("github", "activity: production +20% for 540s", false);
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("github"), "{text}");
+        assert!(text.contains("mines 540s"), "{text}");
+        app.handle_key(KeyCode::Char('?'), 1_000);
+        let help = render_text(&app, 80, 24);
+        assert!(help.contains("activity log"), "{help}");
+        app.handle_key(KeyCode::Char('?'), 1_000);
+        app.handle_key(KeyCode::Char('a'), 1_000);
+        let panel = render_text(&app, 80, 24);
+        assert!(panel.contains("activity"), "{panel}");
+        assert!(panel.contains("github"), "{panel}");
+        assert!(
+            !panel.contains("[overview]"),
+            "activity overlay left the chrome visible:\n{panel}"
+        );
+    }
+
+    #[test]
+    fn bridge_panel_keeps_the_last_hundred_and_highlights_raids() {
+        let mut app = App::new(GameState::new(1_000));
+        app.set_bridge_ui(true);
+        for i in 0..120 {
+            app.record_bridge("shell", &format!("event {i}"), false);
+        }
+        app.record_bridge("github", "activity: raid incoming", true);
+        app.handle_key(KeyCode::Char('a'), 1_000);
+        let panel = render_text(&app, 80, 24);
+        assert!(panel.contains("raid incoming"), "{panel}");
+        assert!(panel.contains("!github"), "{panel}");
+        assert!(!panel.contains("event 0"), "{panel}");
+        assert!(!panel.contains("event 19"), "{panel}");
+        let bar = render_text(&app, 100, 24);
+        assert!(bar.contains("!github"), "{bar}");
+    }
+
+    #[test]
+    fn activity_key_does_not_preempt_a_story_choice() {
+        let mut app = App::new(GameState::new(1_000));
+        app.set_bridge_ui(true);
+        app.state.story_pending = Some(hoshi_core::PendingStory {
+            event_id: "dust_cloud".into(),
+            offered_at: 1_000,
+            timeout_at: 10_000,
+        });
+        app.handle_key(KeyCode::Char('a'), 1_000);
+        let text = render_text(&app, 80, 24);
+        assert!(text.contains("Dust cloud"), "{text}");
+        assert!(text.contains("Burn through"), "{text}");
+        assert!(!text.contains("no events yet"), "{text}");
+        app.handle_key(KeyCode::Char('2'), 1_000);
+        assert!(app.state.story_pending.is_none());
     }
 
     fn close_standing(app: &App, id: &str, expected: f64) {

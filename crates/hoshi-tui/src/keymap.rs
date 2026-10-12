@@ -23,6 +23,7 @@ pub enum Binding {
     Toggle,
     CursorLeft,
     CursorRight,
+    Activity,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,6 +84,7 @@ impl Binding {
         Binding::Toggle,
         Binding::CursorLeft,
         Binding::CursorRight,
+        Binding::Activity,
     ];
 
     fn config_key(self) -> &'static str {
@@ -106,6 +108,7 @@ impl Binding {
             Binding::Toggle => "toggle",
             Binding::CursorLeft => "cursor_left",
             Binding::CursorRight => "cursor_right",
+            Binding::Activity => "activity",
         }
     }
 
@@ -137,6 +140,7 @@ impl Binding {
             Binding::Toggle => vec![KeyCode::Char(' ')],
             Binding::CursorLeft => vec![KeyCode::Char('h'), KeyCode::Left],
             Binding::CursorRight => vec![KeyCode::Char('l'), KeyCode::Right],
+            Binding::Activity => vec![KeyCode::Char('a')],
         }
     }
 }
@@ -311,6 +315,7 @@ impl HelpContext {
             Binding::Toggle => "toggle / cycle",
             Binding::CursorLeft => "cursor left / previous branch",
             Binding::CursorRight => "cursor right / next branch",
+            Binding::Activity => "activity log",
         }
     }
 }
@@ -486,6 +491,39 @@ impl Keymap {
                             format_key(&code)
                         ));
                     }
+                    if self.keys_of(Binding::Activity).contains(&code) {
+                        return Err(format!(
+                            "conflict: activity uses {}, reserved for story choices",
+                            format_key(&code)
+                        ));
+                    }
+                }
+            }
+        }
+        for ctx in [
+            HelpContext::Overview,
+            HelpContext::Planet,
+            HelpContext::Shipyard,
+            HelpContext::Wonder,
+            HelpContext::Prestige,
+            HelpContext::Achievements,
+            HelpContext::Market,
+            HelpContext::Diplomacy,
+            HelpContext::Laws,
+            HelpContext::Reports,
+            HelpContext::Map,
+            HelpContext::Dispatch,
+            HelpContext::Away,
+            HelpContext::Story,
+            HelpContext::ReportView,
+        ] {
+            for code in self.keys_of(Binding::Activity) {
+                if let Some(other) = self.lookup(ctx, *code) {
+                    return Err(format!(
+                        "conflict: {} and activity both use {}",
+                        other.config_key(),
+                        format_key(code)
+                    ));
                 }
             }
         }
@@ -573,6 +611,9 @@ mod tests {
     fn story_digits_cannot_be_stolen() {
         let err = Keymap::from_overrides([("help", "1")]).unwrap_err();
         assert!(err.contains("story"), "{err}");
+        let activity = Keymap::from_overrides([("activity", "1")]).unwrap_err();
+        assert!(activity.contains("story"), "{activity}");
+        assert!(activity.contains("activity"), "{activity}");
     }
 
     #[test]
