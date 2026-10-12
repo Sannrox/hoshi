@@ -4,6 +4,7 @@
 use crate::activity::{ActivityChannelConfig, ActivityEffectsConfig};
 use crate::buildings::{BuildingKind, Buildings};
 use crate::chains::{ChainConfig, FileChains};
+use crate::espionage::{EspionageConfig, EspionageTier};
 use crate::expedition::{ExpeditionConfig, ExpeditionWeights};
 use crate::fleets::FlightConfig;
 use crate::outposts::{OutpostConfig, RarePlanetBonus};
@@ -321,6 +322,7 @@ pub struct BalanceConfig {
     pub story: crate::StoryCatalog,
     pub market: crate::MarketConfig,
     pub diplomacy: crate::DiplomacyConfig,
+    pub espionage: EspionageConfig,
 }
 
 impl BalanceConfig {
@@ -376,6 +378,8 @@ struct File {
     chains: FileChains,
     #[serde(default)]
     market: FileMarket,
+    #[serde(default)]
+    espionage: FileEspionage,
 }
 
 #[derive(Deserialize)]
@@ -482,6 +486,95 @@ impl Default for FileMarket {
             crystal_mean: default_market_crystal(),
             deuterium_mean: default_market_deut(),
             cargo_free: default_market_cargo(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct FileEspionage {
+    #[serde(default = "default_spy_target")]
+    target_level: f64,
+    #[serde(default = "default_spy_probe_weight")]
+    probe_weight: f64,
+    #[serde(default = "default_spy_level_weight")]
+    level_weight: f64,
+    #[serde(default = "default_spy_detect_base")]
+    detect_base: f64,
+    #[serde(default = "default_spy_detect_probe")]
+    detect_per_probe: f64,
+    #[serde(default = "default_spy_detect_level")]
+    detect_per_level: f64,
+    #[serde(default = "default_spy_destroy")]
+    destroy_chance: f64,
+    #[serde(default)]
+    tiers: Vec<FileEspionageTier>,
+}
+
+#[derive(Deserialize)]
+struct FileEspionageTier {
+    id: String,
+    min_score: f64,
+}
+
+fn default_spy_target() -> f64 {
+    1.0
+}
+fn default_spy_probe_weight() -> f64 {
+    1.0
+}
+fn default_spy_level_weight() -> f64 {
+    1.0
+}
+fn default_spy_detect_base() -> f64 {
+    0.05
+}
+fn default_spy_detect_probe() -> f64 {
+    0.08
+}
+fn default_spy_detect_level() -> f64 {
+    0.12
+}
+fn default_spy_destroy() -> f64 {
+    0.5
+}
+
+impl Default for FileEspionage {
+    fn default() -> Self {
+        Self {
+            target_level: default_spy_target(),
+            probe_weight: default_spy_probe_weight(),
+            level_weight: default_spy_level_weight(),
+            detect_base: default_spy_detect_base(),
+            detect_per_probe: default_spy_detect_probe(),
+            detect_per_level: default_spy_detect_level(),
+            destroy_chance: default_spy_destroy(),
+            tiers: Vec::new(),
+        }
+    }
+}
+
+impl FileEspionage {
+    fn into_config(self) -> EspionageConfig {
+        let tiers = if self.tiers.is_empty() {
+            EspionageConfig::default().tiers
+        } else {
+            self.tiers
+                .into_iter()
+                .map(|row| EspionageTier {
+                    id: row.id,
+                    min_score: row.min_score,
+                })
+                .collect()
+        };
+        EspionageConfig {
+            target_level: self.target_level,
+            probe_weight: self.probe_weight,
+            level_weight: self.level_weight,
+            detect_base: self.detect_base,
+            detect_per_probe: self.detect_per_probe,
+            detect_per_level: self.detect_per_level,
+            destroy_chance: self.destroy_chance,
+            tiers,
         }
     }
 }
@@ -1089,6 +1182,7 @@ impl File {
             chains: self.chains.into_config().map_err(BalanceError::Invalid)?,
             story: crate::StoryCatalog::default(),
             diplomacy: crate::DiplomacyConfig::default(),
+            espionage: self.espionage.into_config(),
             market: crate::MarketConfig {
                 enabled: self.market.enabled,
                 tick_secs: self.market.tick_secs,
@@ -1467,6 +1561,53 @@ impl BalanceConfig {
             finite_positive("market.crystal_mean", self.market.crystal_mean)?;
             finite_positive("market.deuterium_mean", self.market.deuterium_mean)?;
             nonneg_finite("market.cargo_free", self.market.cargo_free)?;
+        }
+        if !self.espionage.target_level.is_finite() {
+            return Err(BalanceError::Invalid(
+                "espionage.target_level must be finite".into(),
+            ));
+        }
+        finite_positive("espionage.probe_weight", self.espionage.probe_weight)?;
+        if !self.espionage.level_weight.is_finite() {
+            return Err(BalanceError::Invalid(
+                "espionage.level_weight must be finite".into(),
+            ));
+        }
+        nonneg_finite("espionage.detect_base", self.espionage.detect_base)?;
+        nonneg_finite(
+            "espionage.detect_per_probe",
+            self.espionage.detect_per_probe,
+        )?;
+        nonneg_finite(
+            "espionage.detect_per_level",
+            self.espionage.detect_per_level,
+        )?;
+        nonneg_finite("espionage.destroy_chance", self.espionage.destroy_chance)?;
+        if self.espionage.destroy_chance > 1.0 {
+            return Err(BalanceError::Invalid(
+                "espionage.destroy_chance must be <= 1".into(),
+            ));
+        }
+        // Empty `[[espionage.tiers]]` uses the built-in activity..garrison bands.
+        let mut tier_ids = std::collections::HashSet::new();
+        for tier in &self.espionage.tiers {
+            if tier.id.is_empty() {
+                return Err(BalanceError::Invalid(
+                    "espionage.tiers id must not be empty".into(),
+                ));
+            }
+            if !tier_ids.insert(tier.id.as_str()) {
+                return Err(BalanceError::Invalid(format!(
+                    "duplicate espionage tier {}",
+                    tier.id
+                )));
+            }
+            if !tier.min_score.is_finite() {
+                return Err(BalanceError::Invalid(format!(
+                    "espionage.tiers {} min_score must be finite",
+                    tier.id
+                )));
+            }
         }
         Ok(())
     }

@@ -128,6 +128,8 @@ pub struct Mission {
     pub attack: bool,
     /// Action lands troops. Refused while defences remain.
     pub invade: bool,
+    /// Action writes a spy report and may lose probes.
+    pub spy: bool,
 }
 
 /// A repeating transport between two owned planets.
@@ -190,6 +192,7 @@ pub enum FleetError {
     UnknownOutpost,
     DefencesRemain,
     NeedTroopTransport,
+    NeedEspionageProbe,
     ColonyCap {
         used: u32,
         cap: u32,
@@ -244,6 +247,9 @@ impl fmt::Display for FleetError {
             }
             FleetError::NeedTroopTransport => {
                 write!(f, "invasion needs a troop transport")
+            }
+            FleetError::NeedEspionageProbe => {
+                write!(f, "spy mission needs an espionage probe")
             }
             FleetError::ColonyCap { used, cap } => {
                 write!(f, "colony cap reached ({used}/{cap})")

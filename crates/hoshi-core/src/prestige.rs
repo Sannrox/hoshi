@@ -207,6 +207,7 @@ pub const PRESTIGE_LOST: &[&str] = &[
     "colonies",
     "wonders",
     "missions",
+    "spy reports",
 ];
 
 /// Why a prestige action was refused.

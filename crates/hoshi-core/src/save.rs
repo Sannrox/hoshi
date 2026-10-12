@@ -19,7 +19,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 17;
+pub const SCHEMA_VERSION: u32 = 18;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -155,7 +155,9 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM market_prices;
          DELETE FROM market_history;
          DELETE FROM faction_standing;
-         DELETE FROM faction_log;",
+         DELETE FROM faction_log;
+         DELETE FROM spy_report_ships;
+         DELETE FROM spy_reports;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -244,8 +246,8 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 id, origin_g, origin_s, origin_p, dest_g, dest_s, dest_p,
                 speed_percent, phase, launched_at, outbound_secs, hold_secs,
                 phase_ends_at, fuel_paid, colonize, expedition_seed, expedition_applied,
-                cargo_metal, cargo_crystal, cargo_deuterium, transport, attack, invade
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+                cargo_metal, cargo_crystal, cargo_deuterium, transport, attack, invade, spy
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
             params![
                 mission.id as i64,
                 mission.origin.galaxy as i64,
@@ -270,6 +272,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 mission.transport as i64,
                 mission.attack as i64,
                 mission.invade as i64,
+                mission.spy as i64,
             ],
         )?;
         for kind in ShipKind::ALL {
@@ -389,6 +392,43 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 change.reason,
             ],
         )?;
+    }
+    for report in &state.spy_reports {
+        tx.execute(
+            "INSERT INTO spy_reports (
+                id, galaxy, system, position, created_at, probes_sent, probes_lost,
+                detected, score, tier, metal, crystal, deuterium, garrison, kind, size,
+                revealed_resources, revealed_fleet, revealed_defences, revealed_garrison
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+            params![
+                report.id as i64,
+                report.target.galaxy as i64,
+                report.target.system as i64,
+                report.target.position as i64,
+                report.created_at as i64,
+                report.probes_sent as i64,
+                report.probes_lost as i64,
+                i64::from(report.detected),
+                report.score,
+                report.tier,
+                report.resources.map(|r| r.metal).unwrap_or(0.0),
+                report.resources.map(|r| r.crystal).unwrap_or(0.0),
+                report.resources.map(|r| r.deuterium).unwrap_or(0.0),
+                report.garrison.map(|g| g as i64).unwrap_or(0),
+                report.kind.map(|k| k.as_key()),
+                report.size.map(|s| s as i64),
+                i64::from(report.resources.is_some()),
+                i64::from(report.fleet.is_some()),
+                i64::from(report.defences.is_some()),
+                i64::from(report.garrison.is_some()),
+            ],
+        )?;
+        if let Some(fleet) = report.fleet {
+            insert_spy_ships(&tx, report.id, "fleet", fleet)?;
+        }
+        if let Some(defences) = report.defences {
+            insert_spy_ships(&tx, report.id, "defences", defences)?;
+        }
     }
     for (i, colony) in state.colonies.iter().enumerate() {
         let planet_id = (i as i64) + 2;
@@ -517,6 +557,25 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
         )?;
     }
     tx.commit()?;
+    Ok(())
+}
+
+fn insert_spy_ships(
+    conn: &Connection,
+    report_id: u64,
+    role: &str,
+    fleet: Fleet,
+) -> Result<(), SaveError> {
+    for kind in ShipKind::ALL {
+        let count = fleet.get(kind);
+        if count == 0 {
+            continue;
+        }
+        conn.execute(
+            "INSERT INTO spy_report_ships (report_id, role, kind, count) VALUES (?1, ?2, ?3, ?4)",
+            params![report_id as i64, role, kind.as_key(), count],
+        )?;
+    }
     Ok(())
 }
 
@@ -760,7 +819,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         "SELECT id, origin_g, origin_s, origin_p, dest_g, dest_s, dest_p,
                 speed_percent, phase, launched_at, outbound_secs, hold_secs,
                 phase_ends_at, fuel_paid, colonize, expedition_seed, expedition_applied,
-                cargo_metal, cargo_crystal, cargo_deuterium, transport, attack, invade
+                cargo_metal, cargo_crystal, cargo_deuterium, transport, attack, invade, spy
          FROM missions ORDER BY id",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -788,6 +847,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             row.get::<_, i64>(20)?,
             row.get::<_, i64>(21)?,
             row.get::<_, i64>(22)?,
+            row.get::<_, i64>(23)?,
         ))
     })?;
     let mut missions = Vec::new();
@@ -816,6 +876,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             transport,
             attack,
             invade,
+            spy,
         ) = row?;
         let phase =
             MissionPhase::from_key(&phase).ok_or(SaveError::Corrupt("unknown mission phase"))?;
@@ -861,6 +922,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             transport: transport != 0,
             attack: attack != 0,
             invade: invade != 0,
+            spy: spy != 0,
         });
     }
     state.missions = missions;
@@ -934,6 +996,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
 
     load_market(conn, &mut state)?;
     load_diplomacy(conn, &mut state)?;
+    load_spy_reports(conn, &mut state)?;
     state.sync_raid_schedule_after_standing(state.last_tick_unix);
 
     let mut stmt = conn.prepare(
@@ -1492,6 +1555,8 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "market_history" => "SELECT COUNT(*) FROM market_history",
         "faction_standing" => "SELECT COUNT(*) FROM faction_standing",
         "faction_log" => "SELECT COUNT(*) FROM faction_log",
+        "spy_reports" => "SELECT COUNT(*) FROM spy_reports",
+        "spy_report_ships" => "SELECT COUNT(*) FROM spy_report_ships",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -1526,7 +1591,9 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "market_prices")?
         + count_rows(conn, "market_history")?
         + count_rows(conn, "faction_standing")?
-        + count_rows(conn, "faction_log")?)
+        + count_rows(conn, "faction_log")?
+        + count_rows(conn, "spy_reports")?
+        + count_rows(conn, "spy_report_ships")?)
 }
 
 fn migrate(conn: &Connection) -> Result<(), SaveError> {
@@ -1587,6 +1654,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 17 {
         migrate_v17(conn)?;
+    }
+    if found < 18 {
+        migrate_v18(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -2048,6 +2118,189 @@ fn migrate_v17(conn: &Connection) -> Result<(), SaveError> {
         ",
     )?;
     Ok(())
+}
+
+fn migrate_v18(conn: &Connection) -> Result<(), SaveError> {
+    if !missions_has_column(conn, "spy")? {
+        conn.execute(
+            "ALTER TABLE missions ADD COLUMN spy INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS spy_reports (
+            id INTEGER PRIMARY KEY,
+            galaxy INTEGER NOT NULL,
+            system INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+            probes_sent INTEGER NOT NULL,
+            probes_lost INTEGER NOT NULL,
+            detected INTEGER NOT NULL,
+            score REAL NOT NULL,
+            tier TEXT NOT NULL,
+            metal REAL NOT NULL DEFAULT 0,
+            crystal REAL NOT NULL DEFAULT 0,
+            deuterium REAL NOT NULL DEFAULT 0,
+            garrison INTEGER NOT NULL DEFAULT 0,
+            kind TEXT,
+            size INTEGER,
+            revealed_resources INTEGER NOT NULL DEFAULT 0,
+            revealed_fleet INTEGER NOT NULL DEFAULT 0,
+            revealed_defences INTEGER NOT NULL DEFAULT 0,
+            revealed_garrison INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS spy_report_ships (
+            report_id INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            count INTEGER NOT NULL,
+            PRIMARY KEY (report_id, role, kind)
+        );
+        ",
+    )?;
+    Ok(())
+}
+
+fn load_spy_reports(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, galaxy, system, position, created_at, probes_sent, probes_lost,
+                detected, score, tier, metal, crystal, deuterium, garrison, kind, size,
+                revealed_resources, revealed_fleet, revealed_defences, revealed_garrison
+         FROM spy_reports ORDER BY id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, i64>(5)?,
+            row.get::<_, i64>(6)?,
+            row.get::<_, i64>(7)?,
+            row.get::<_, f64>(8)?,
+            row.get::<_, String>(9)?,
+            row.get::<_, f64>(10)?,
+            row.get::<_, f64>(11)?,
+            row.get::<_, f64>(12)?,
+            row.get::<_, i64>(13)?,
+            row.get::<_, Option<String>>(14)?,
+            row.get::<_, Option<i64>>(15)?,
+            row.get::<_, i64>(16)?,
+            row.get::<_, i64>(17)?,
+            row.get::<_, i64>(18)?,
+            row.get::<_, i64>(19)?,
+        ))
+    })?;
+    let mut pending = Vec::new();
+    for row in rows {
+        pending.push(row?);
+    }
+    drop(stmt);
+    state.spy_reports.clear();
+    for (
+        id,
+        g,
+        s,
+        p,
+        created_at,
+        probes_sent,
+        probes_lost,
+        detected,
+        score,
+        tier,
+        metal,
+        crystal,
+        deuterium,
+        garrison,
+        kind,
+        size,
+        revealed_resources,
+        revealed_fleet,
+        revealed_defences,
+        revealed_garrison,
+    ) in pending
+    {
+        if !score.is_finite() {
+            return Err(SaveError::Corrupt("spy score"));
+        }
+        let target = Coord {
+            galaxy: u16_coord(g)?,
+            system: u16_coord(s)?,
+            position: u16_coord(p)?,
+        };
+        let kind = match kind {
+            Some(key) => {
+                Some(PlanetType::from_key(&key).ok_or(SaveError::Corrupt("spy planet type"))?)
+            }
+            None => None,
+        };
+        let size = match size {
+            Some(v) => Some(u8::try_from(v).map_err(|_| SaveError::Corrupt("spy size"))?),
+            None => None,
+        };
+        let fleet = if revealed_fleet != 0 {
+            Some(read_spy_ships(conn, id, "fleet")?)
+        } else {
+            None
+        };
+        let defences = if revealed_defences != 0 {
+            Some(read_spy_ships(conn, id, "defences")?)
+        } else {
+            None
+        };
+        state.spy_reports.push(crate::SpyReport {
+            id: unix_ts(id)?,
+            target,
+            created_at: unix_ts(created_at)?,
+            probes_sent: u32::try_from(probes_sent)
+                .map_err(|_| SaveError::Corrupt("probes sent"))?,
+            probes_lost: u32::try_from(probes_lost)
+                .map_err(|_| SaveError::Corrupt("probes lost"))?,
+            detected: detected != 0,
+            score,
+            tier,
+            resources: (revealed_resources != 0).then_some(Resources {
+                metal,
+                crystal,
+                deuterium,
+            }),
+            fleet,
+            defences,
+            garrison: if revealed_garrison != 0 {
+                Some(u32::try_from(garrison).map_err(|_| SaveError::Corrupt("spy garrison"))?)
+            } else {
+                None
+            },
+            kind,
+            size,
+        });
+    }
+    state.next_report_id = state
+        .spy_reports
+        .iter()
+        .map(|r| r.id)
+        .max()
+        .map(|id| id.saturating_add(1))
+        .unwrap_or(0);
+    Ok(())
+}
+
+fn read_spy_ships(conn: &Connection, report_id: i64, role: &str) -> Result<Fleet, SaveError> {
+    let mut stmt = conn
+        .prepare("SELECT kind, count FROM spy_report_ships WHERE report_id = ?1 AND role = ?2")?;
+    let rows = stmt.query_map(params![report_id, role], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
+    })?;
+    let mut fleet = Fleet::default();
+    for row in rows {
+        let (kind, count) = row?;
+        let kind = ShipKind::from_key(&kind).ok_or(SaveError::Corrupt("unknown ship kind"))?;
+        fleet.add(kind, count);
+    }
+    Ok(fleet)
 }
 
 fn load_diplomacy(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
@@ -3024,6 +3277,46 @@ mod tests {
         assert!(meta_has_column(&conn, "last_diplomacy_at").unwrap());
         assert_eq!(count_rows(&conn, "faction_standing").unwrap(), 3);
         assert_eq!(count_rows(&conn, "faction_log").unwrap(), 1);
+    }
+
+    #[test]
+    fn migrate_v18_retries_and_round_trips_spy_reports() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v18(&conn).unwrap();
+        migrate_v18(&conn).unwrap();
+        let mut state = GameState::new(3);
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 8,
+        };
+        let mut fleet = Fleet::default();
+        fleet.add(ShipKind::LightFighter, 3);
+        state.spy_reports.push(crate::SpyReport {
+            id: 2,
+            target: dest,
+            created_at: 40,
+            probes_sent: 4,
+            probes_lost: 1,
+            detected: true,
+            score: 3.0,
+            tier: "defences".into(),
+            resources: Some(Resources::ZERO),
+            fleet: Some(fleet),
+            defences: Some(fleet),
+            garrison: None,
+            kind: Some(PlanetType::Rocky),
+            size: Some(12),
+        });
+        state.next_report_id = 3;
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.spy_reports, state.spy_reports);
+        assert_eq!(loaded.next_report_id, 3);
+        assert_eq!(loaded, state);
+        assert!(missions_has_column(&conn, "spy").unwrap());
+        assert_eq!(count_rows(&conn, "spy_reports").unwrap(), 1);
+        assert_eq!(count_rows(&conn, "spy_report_ships").unwrap(), 2);
     }
 
     #[test]

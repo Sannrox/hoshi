@@ -10,6 +10,7 @@ use crate::combat::{
     CombatReport, CombatWinner, next_u64, plunder_from, rapid_fire_table, resolve_combat,
     resolve_ground, stats_from_catalog,
 };
+use crate::espionage::{SpyReport, resolve_spy, reveals};
 use crate::expedition::{ExpeditionResult, roll_expedition};
 use crate::fleets::{
     Coord, FleetError, Mission, MissionPhase, TradeRoute, distance, flight_secs, fuel_cost,
@@ -201,6 +202,8 @@ pub struct GameState {
     pub last_market_at: u64,
     pub diplomacy: crate::DiplomacyState,
     pub last_diplomacy_at: u64,
+    pub spy_reports: Vec<crate::SpyReport>,
+    pub next_report_id: u64,
     pub config: BalanceConfig,
 }
 
@@ -259,6 +262,8 @@ impl GameState {
             last_market_at: 0,
             diplomacy: crate::DiplomacyState::from_config(&config.diplomacy),
             last_diplomacy_at: 0,
+            spy_reports: Vec::new(),
+            next_report_id: 0,
             config,
         };
         state.apply_prestige_start();
@@ -910,6 +915,7 @@ impl GameState {
             transport: false,
             attack: false,
             invade: false,
+            spy: false,
         });
         Ok(())
     }
@@ -1219,6 +1225,7 @@ impl GameState {
             transport: true,
             attack: false,
             invade: false,
+            spy: false,
         });
         Ok(id)
     }
@@ -1377,6 +1384,36 @@ impl GameState {
         };
         mission.invade = true;
         Ok(mission.id)
+    }
+
+    /// Send probes to an outpost. Arrival writes a report; detection may destroy probes.
+    pub fn launch_spy(
+        &mut self,
+        ships: Fleet,
+        dest: Coord,
+        speed_percent: u8,
+        now_unix: u64,
+    ) -> Result<u64, FleetError> {
+        self.catch_up(now_unix);
+        if self.outpost(dest).is_none() {
+            return Err(FleetError::UnknownOutpost);
+        }
+        if ships.get(ShipKind::EspionageProbe) == 0 {
+            return Err(FleetError::NeedEspionageProbe);
+        }
+        self.launch_fleet(ships, dest, speed_percent, 0, now_unix)?;
+        let Some(mission) = self.missions.last_mut() else {
+            return Err(FleetError::EmptyFleet);
+        };
+        mission.spy = true;
+        Ok(mission.id)
+    }
+
+    pub fn latest_report(&self, coord: Coord) -> Option<&SpyReport> {
+        self.spy_reports
+            .iter()
+            .filter(|r| r.target == coord)
+            .max_by_key(|r| (r.created_at, r.id))
     }
 
     pub fn outpost(&self, coord: Coord) -> Option<&Outpost> {
@@ -2211,6 +2248,9 @@ impl GameState {
                     if self.try_invade_at(index, done_at) {
                         continue;
                     }
+                    if self.try_spy_at(index, done_at) {
+                        continue;
+                    }
                     if self.missions[index].transport {
                         let dest = self.missions[index].dest;
                         let cargo = self.missions[index].cargo;
@@ -2390,6 +2430,62 @@ impl GameState {
         let stats = self.ship_stats(ShipKind::LightFighter);
         let unit = (stats.attack + stats.hull).max(1.0);
         self.fleet_combat_points() / unit
+    }
+
+    /// Write a spy report on arrival. Returns true when every ship was lost.
+    fn try_spy_at(&mut self, index: usize, done_at: u64) -> bool {
+        if !self.missions[index].spy {
+            return false;
+        }
+        let dest = self.missions[index].dest;
+        let probes = self.missions[index].ships.get(ShipKind::EspionageProbe);
+        let own = self.modifier(ModifierKind::Espionage);
+        let outcome = resolve_spy(probes, own, &mut self.rng_seed, &self.config.espionage);
+        let show_resources = reveals(&outcome.tier, "resources", &self.config.espionage);
+        let show_fleet = reveals(&outcome.tier, "fleet", &self.config.espionage);
+        let show_defences = reveals(&outcome.tier, "defences", &self.config.espionage);
+        let show_garrison = reveals(&outcome.tier, "garrison", &self.config.espionage);
+        // Outposts have no parked visiting fleet; orbital ships live in `defences`.
+        let (kind, size, defences, garrison) = match self.outpost(dest) {
+            Some(outpost) => (
+                Some(outpost.kind),
+                Some(outpost.size),
+                outpost.defences,
+                Some(outpost.garrison),
+            ),
+            None => (None, None, Fleet::default(), None),
+        };
+        let resources = show_resources.then_some(Resources::ZERO);
+        let fleet = show_fleet.then_some(Fleet::default());
+        let defences = show_defences.then_some(defences);
+        let garrison = if show_garrison { garrison } else { None };
+        let id = self.next_report_id;
+        self.next_report_id = self.next_report_id.saturating_add(1);
+        self.spy_reports.push(SpyReport {
+            id,
+            target: dest,
+            created_at: done_at,
+            probes_sent: probes,
+            probes_lost: outcome.probes_lost,
+            detected: outcome.detected,
+            score: outcome.score,
+            tier: outcome.tier.clone(),
+            resources,
+            fleet,
+            defences,
+            garrison,
+            kind,
+            size,
+        });
+        self.push_event(done_at, format_spy_report(&outcome, dest, probes));
+        self.missions[index]
+            .ships
+            .saturating_sub(ShipKind::EspionageProbe, outcome.probes_lost);
+        if self.missions[index].ships.is_empty() {
+            self.missions.remove(index);
+            return true;
+        }
+        false
     }
 
     /// Fight outpost defences. Returns true when the attacking fleet is gone.
@@ -3615,6 +3711,14 @@ fn fleet_losses(before: Fleet, after: Fleet) -> Fleet {
     lost
 }
 
+fn format_spy_report(outcome: &crate::SpyOutcome, dest: Coord, sent: u32) -> String {
+    let detected = if outcome.detected { "yes" } else { "no" };
+    format!(
+        "outpost {dest}: spy. score {:.0} {}. detected {detected}. lost {}/{sent}",
+        outcome.score, outcome.tier, outcome.probes_lost
+    )
+}
+
 fn format_outpost_attack(report: &crate::CombatReport, dest: Coord) -> String {
     format!(
         "outpost {dest}: attack. {} rounds. lost {}. defences lost {}. winner {}",
@@ -3812,6 +3916,7 @@ mod tests {
             story: crate::StoryCatalog::empty(),
             market: crate::MarketConfig::inactive(),
             diplomacy: crate::DiplomacyConfig::inactive(),
+            espionage: crate::EspionageConfig::default(),
         }
     }
 
@@ -5900,6 +6005,115 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         );
         assert_eq!(state.colonies.len(), 0);
         assert!(state.outpost(dest).is_some());
+    }
+
+    fn probes(n: u32) -> Fleet {
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::EspionageProbe, n);
+        ships
+    }
+
+    #[test]
+    fn spy_report_tiers_follow_probes_and_research() {
+        let mut cfg = outpost_config();
+        cfg.espionage.destroy_chance = 0.0;
+        cfg.espionage.detect_base = 0.0;
+        cfg.espionage.detect_per_probe = 0.0;
+        cfg.techs = TechTree::parse(
+            r#"
+[[tech]]
+id = "espionage"
+name = "Espionage"
+metal = 1.0
+crystal = 1.0
+deuterium = 0.0
+cost_growth = 2.0
+base_seconds = 1.0
+time_growth = 2.0
+prereq_buildings = []
+prereq_techs = []
+modifiers = [{ kind = "espionage", per_level = 1.0 }]
+"#,
+        )
+        .expect("espionage tech");
+        let mut low = GameState::with_config(0, cfg.clone());
+        low.resources.deuterium = 10_000.0;
+        let dest = low.outposts[0].coord;
+        low.fleet.add(ShipKind::EspionageProbe, 1);
+        low.launch_spy(probes(1), dest, 100, 0).unwrap();
+        let arrives = low.missions[0].phase_ends_at;
+        low.catch_up(arrives);
+        let one = low.latest_report(dest).expect("report");
+        assert_eq!(one.tier, "activity");
+        assert!(one.resources.is_none());
+        assert!(one.garrison.is_none());
+        assert_eq!(one.age_secs(low.last_tick_unix), 0);
+        fly_home(&mut low);
+        let aged = low.latest_report(dest).expect("report");
+        assert!(aged.age_secs(low.last_tick_unix) > 0);
+
+        let mut high = GameState::with_config(0, cfg);
+        high.resources.deuterium = 10_000.0;
+        high.tech_levels.insert("espionage".into(), 4);
+        let dest = high.outposts[0].coord;
+        let garrison = high.outposts[0].garrison;
+        let defences = high.outposts[0].defences;
+        high.fleet.add(ShipKind::EspionageProbe, 1);
+        high.launch_spy(probes(1), dest, 100, 0).unwrap();
+        fly_home(&mut high);
+        let full = high.latest_report(dest).expect("report");
+        assert_eq!(full.tier, "garrison");
+        assert_eq!(full.resources, Some(Resources::ZERO));
+        assert_eq!(full.fleet, Some(Fleet::default()));
+        assert_eq!(full.defences, Some(defences));
+        assert_eq!(full.garrison, Some(garrison));
+        assert!(
+            high.events.iter().any(|e| e.text.contains("spy")
+                && e.text.contains("detected")
+                && e.text.contains("lost")),
+            "{:?}",
+            high.events
+        );
+    }
+
+    #[test]
+    fn spy_detection_is_deterministic_for_a_seed() {
+        let cfg = outpost_config();
+        let mut a = GameState::with_seed(0, cfg.clone(), 99);
+        let mut b = GameState::with_seed(0, cfg, 99);
+        a.resources.deuterium = 10_000.0;
+        b.resources.deuterium = 10_000.0;
+        let dest = a.outposts[0].coord;
+        a.fleet.add(ShipKind::EspionageProbe, 6);
+        b.fleet.add(ShipKind::EspionageProbe, 6);
+        a.launch_spy(probes(6), dest, 100, 0).unwrap();
+        b.launch_spy(probes(6), dest, 100, 0).unwrap();
+        fly_home(&mut a);
+        fly_home(&mut b);
+        let ra = a.latest_report(dest).unwrap();
+        let rb = b.latest_report(dest).unwrap();
+        assert_eq!(ra.detected, rb.detected);
+        assert_eq!(ra.probes_lost, rb.probes_lost);
+        assert_eq!(ra.tier, rb.tier);
+        assert_eq!(ra.score, rb.score);
+        if !ra.detected {
+            assert_eq!(ra.probes_lost, 0);
+        }
+        assert!(ra.probes_lost <= 6);
+    }
+
+    #[test]
+    fn spy_refuses_without_probes() {
+        let mut state = GameState::with_config(0, outpost_config());
+        state.resources.deuterium = 10_000.0;
+        let dest = state.outposts[0].coord;
+        state.fleet.add(ShipKind::LightFighter, 1);
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::LightFighter, 1);
+        assert_eq!(
+            state.launch_spy(ships, dest, 100, 0),
+            Err(FleetError::NeedEspionageProbe)
+        );
     }
 
     #[test]

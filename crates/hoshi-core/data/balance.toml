@@ -307,6 +307,36 @@ crystal = 0.0
 deuterium = 0.50
 energy = 0.0
 
+[espionage]
+# score = probes * probe_weight + (own_espionage - target_level) * level_weight
+target_level = 1.0
+probe_weight = 1.0
+level_weight = 1.0
+detect_base = 0.05
+detect_per_probe = 0.08
+detect_per_level = 0.12
+destroy_chance = 0.5
+
+[[espionage.tiers]]
+id = "activity"
+min_score = 0.0
+
+[[espionage.tiers]]
+id = "resources"
+min_score = 1.0
+
+[[espionage.tiers]]
+id = "fleet"
+min_score = 2.0
+
+[[espionage.tiers]]
+id = "defences"
+min_score = 3.0
+
+[[espionage.tiers]]
+id = "garrison"
+min_score = 4.0
+
 [outposts]
 count = 8
 min_ships = 1
