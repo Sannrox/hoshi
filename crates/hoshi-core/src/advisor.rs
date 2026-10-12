@@ -40,6 +40,16 @@ pub fn polish_advice(text: &str, endpoint: &str, allow_lan: bool) -> String {
 
 /// One request for every suggestion so the overlay stays inside the model budget.
 pub fn polish_all(texts: &[String], endpoint: &str, allow_lan: bool) -> Vec<String> {
+    polish_all_named(texts, endpoint, allow_lan, "")
+}
+
+/// Same as [`polish_all`], sending `model` in the JSON body when non-empty.
+pub fn polish_all_named(
+    texts: &[String],
+    endpoint: &str,
+    allow_lan: bool,
+    model: &str,
+) -> Vec<String> {
     if texts.is_empty() {
         return Vec::new();
     }
@@ -49,7 +59,7 @@ pub fn polish_all(texts: &[String], endpoint: &str, allow_lan: bool) -> Vec<Stri
     #[cfg(feature = "advisor-model")]
     {
         let mut slots: Vec<Option<String>> = texts.iter().cloned().map(Some).collect();
-        crate::rephrase_lines_allow(&mut slots, endpoint, allow_lan);
+        crate::rephrase_lines_named(&mut slots, endpoint, allow_lan, model);
         return slots
             .into_iter()
             .zip(texts.iter())
@@ -58,13 +68,18 @@ pub fn polish_all(texts: &[String], endpoint: &str, allow_lan: bool) -> Vec<Stri
     }
     #[cfg(not(feature = "advisor-model"))]
     {
-        let _ = (endpoint, allow_lan);
+        let _ = (endpoint, allow_lan, model);
         texts.to_vec()
     }
 }
 
-fn endpoint_allowed(endpoint: &str, allow_lan: bool) -> bool {
+/// True when the URL is loopback, or a private IPv4 host with `allow_lan`.
+pub fn advisor_endpoint_allowed(endpoint: &str, allow_lan: bool) -> bool {
     crate::commentary::model_connect_addr(endpoint, allow_lan).is_some()
+}
+
+fn endpoint_allowed(endpoint: &str, allow_lan: bool) -> bool {
+    advisor_endpoint_allowed(endpoint, allow_lan)
 }
 
 fn push_energy(state: &GameState, out: &mut Vec<Advice>) {

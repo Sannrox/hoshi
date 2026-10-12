@@ -40,7 +40,9 @@ pub use activity::{
     ActivityApply, ActivityChannel, ActivityChannelConfig, ActivityEffectsConfig, ActivityPulse,
     ActivityTracker,
 };
-pub use advisor::{Advice, advise, polish_advice, polish_all};
+pub use advisor::{
+    Advice, advise, advisor_endpoint_allowed, polish_advice, polish_all, polish_all_named,
+};
 pub use balance::{
     BalanceConfig, BalanceError, BuildingCatalog, BuildingSpec, EnergyProducerSpec, PacingTargets,
     ProducerSpec, RaidConfig, StorageSpec,
@@ -53,7 +55,8 @@ pub use combat::{
     plunder_from, rapid_fire_table, resolve_combat, resolve_ground,
 };
 pub use commentary::{
-    CommentaryCatalog, CommentaryError, rephrase_lines, rephrase_lines_allow, rephrase_local,
+    CommentaryCatalog, CommentaryError, probe_model_endpoint, rephrase_lines, rephrase_lines_allow,
+    rephrase_lines_named, rephrase_local,
 };
 pub use daily::{
     DailyAction, DailyBoard, DailyConfig, DailyError, DailyKind, DailySlot, DailySpec,
