@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- Story, away, and spy overlays clear the screen underneath so numbered choices stay readable. Inline portraits are erased while an overlay is open.
+
 ### Added
 
 - Industrial waste heat and pollution. Load is mine energy plus per-recipe extras in `balance.toml`; each planet type has a heat and pollution sink. Overflow slows work and adds pirate ships. Radiators, scrubbers, energy research (heat sink) and ecology research (pollution sink) restore capacity. The planet screen warns before overflow; `hoshi simulate` reports a heavy-industry snapshot that needs mitigation and stays viable with it.
