@@ -1,9 +1,9 @@
 //! Scriptable JSON commands. Same core actions as the TUI; no extra powers.
 
 use hoshi_core::{
-    BalanceConfig, BuildingKind, Clock, Coord, FakeClock, Fleet, GameState, ResourceKind,
-    SCHEMA_VERSION as SAVE_SCHEMA, SaveError, ShipKind, SpyReport, SystemClock, load_or_new,
-    load_or_new_with_seed, lock_save, open_save, resolve_save_path, save_state,
+    BalanceConfig, BuildingKind, Clock, Coord, DefenceKind, FakeClock, Fleet, GameState,
+    ResourceKind, SCHEMA_VERSION as SAVE_SCHEMA, SaveError, ShipKind, SpyReport, SystemClock,
+    load_or_new, load_or_new_with_seed, lock_save, open_save, resolve_save_path, save_state,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -345,6 +345,10 @@ fn state_value(state: &GameState) -> Value {
     for kind in ShipKind::ALL {
         fleet.insert(kind.as_key().into(), json!(state.fleet.get(kind)));
     }
+    let mut defences = serde_json::Map::new();
+    for kind in DefenceKind::ALL {
+        defences.insert(kind.as_key().into(), json!(state.defences.get(kind)));
+    }
     let mut techs = serde_json::Map::new();
     for spec in state.config.techs.iter() {
         techs.insert(spec.id.clone(), json!(state.tech_level(&spec.id)));
@@ -397,6 +401,7 @@ fn state_value(state: &GameState) -> Value {
             "levels": techs,
         },
         "fleet": fleet,
+        "defences": defences,
         "missions": state.missions.iter().map(|m| json!({
             "id": m.id,
             "origin": m.origin.to_string(),

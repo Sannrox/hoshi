@@ -138,7 +138,9 @@ Weapon names may be fictional. The numbers should still be physical:
 
 The seeded round resolver can stay. New stats should map onto those
 quantities so a heavier hull is slower and a hotter gun needs more radiator
-or a longer wait.
+or a longer wait. Planet layers (orbital stations, a dome that absorbs a
+round of fire, then batteries, then garrison) are still the same hull and
+shield points in sequence, not a separate physics model.
 
 ## Economics maths
 

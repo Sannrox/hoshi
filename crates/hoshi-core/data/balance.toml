@@ -1,6 +1,7 @@
 # Economy, raid, activity, expedition, flight and pacing.
 # Loaded and validated by hoshi-core on BalanceConfig::default().
 # Research and ships stay in research.toml and ships.toml.
+# Planet defences stay in defences.toml.
 
 version = 1
 

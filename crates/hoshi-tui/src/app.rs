@@ -3,8 +3,8 @@
 
 use crate::title::AwaySummary;
 use hoshi_core::{
-    BuildingKind, Coord, Fleet, GameState, ResourceKind, Resources, ShipKind, SpyReport,
-    StoryEvent, WonderError, encode_galaxy_seed,
+    BuildingKind, Coord, DefenceKind, Fleet, GameState, ResourceKind, Resources, ShipKind,
+    SpyReport, StoryEvent, WonderError, encode_galaxy_seed,
 };
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
@@ -332,10 +332,18 @@ impl App {
                 }
             }
             Screen::Shipyard => {
-                let Some(kind) = ShipKind::ALL.get(self.selected).copied() else {
+                if let Some(kind) = ShipKind::ALL.get(self.selected).copied() {
+                    match self.state.enqueue_ships(kind, 1, now_unix) {
+                        Ok(()) => self.status.clear(),
+                        Err(e) => self.status = e.to_string(),
+                    }
+                    return;
+                }
+                let di = self.selected.saturating_sub(ShipKind::ALL.len());
+                let Some(kind) = DefenceKind::ALL.get(di).copied() else {
                     return;
                 };
-                match self.state.enqueue_ships(kind, 1, now_unix) {
+                match self.state.enqueue_defence(kind, 1, now_unix) {
                     Ok(()) => self.status.clear(),
                     Err(e) => self.status = e.to_string(),
                 }
@@ -483,7 +491,7 @@ impl App {
     fn list_len(&self) -> usize {
         match self.screen {
             Screen::Planet => BuildingKind::ALL.len(),
-            Screen::Shipyard => ShipKind::ALL.len(),
+            Screen::Shipyard => ShipKind::ALL.len() + DefenceKind::ALL.len(),
             Screen::Overview => self.state.config.techs.iter().count(),
             Screen::Wonder => self.state.config.wonders.len(),
             Screen::Prestige => 1 + self.state.config.prestige.bonuses.len(),
@@ -642,16 +650,22 @@ impl App {
             rows.push(Line::from(format!(
                 "  {}. {} x{}  {timer}",
                 i + 1,
-                job.ship,
+                job.label(),
                 job.remaining
             )));
         }
-        rows.push(Line::from("Ships"));
-        let entries: Vec<Line<'static>> = ShipKind::ALL
+        rows.push(Line::from("Ships and defences"));
+        let mut entries: Vec<Line<'static>> = ShipKind::ALL
             .iter()
             .enumerate()
             .map(|(i, &kind)| self.ship_row(i, kind))
             .collect();
+        entries.extend(
+            DefenceKind::ALL
+                .iter()
+                .enumerate()
+                .map(|(i, &kind)| self.defence_row(ShipKind::ALL.len() + i, kind)),
+        );
         append_windowed(&mut rows, &entries, self.selected, height)
     }
 
@@ -752,6 +766,31 @@ impl App {
             stats.attack
         );
         styled_row(text, self.ship_block_reason(kind, cost))
+    }
+
+    fn defence_row(&self, index: usize, kind: DefenceKind) -> Line<'static> {
+        let spec = self.state.config.defences.get(kind);
+        let cost = spec.unit_cost();
+        let secs = spec.duration_secs();
+        let owned = self.state.defences.get(kind);
+        let mark = if index == self.selected { '>' } else { ' ' };
+        let text = format!(
+            "{mark} {kind}  x{owned}  {}  {secs}s  atk {:.0}",
+            cost_label(cost),
+            spec.attack
+        );
+        styled_row(text, self.defence_block_reason(kind, cost))
+    }
+
+    fn defence_block_reason(&self, kind: DefenceKind, cost: Resources) -> Option<String> {
+        let spec = self.state.config.defences.get(kind);
+        if self.state.buildings.shipyard < spec.shipyard {
+            return Some(format!("need shipyard {}", spec.shipyard));
+        }
+        if !self.state.resources.can_afford(cost) {
+            return Some(missing_label(self.state.resources.missing(cost)));
+        }
+        None
     }
 
     fn ship_block_reason(&self, kind: ShipKind, cost: Resources) -> Option<String> {
@@ -862,7 +901,7 @@ impl App {
                 format!(
                     "Ships      {}  {} x{}  {left}s  ({}/{} queued)",
                     self.state.fleet.total(),
-                    job.ship,
+                    job.label(),
                     job.remaining,
                     self.state.ship_queue.len(),
                     self.state.config.max_ship_queue
@@ -1598,7 +1637,7 @@ mod tests {
             .unwrap();
         app.handle_key(KeyCode::Enter, 1_000);
         assert_eq!(app.state.ship_queue.len(), 1);
-        assert_eq!(app.state.ship_queue[0].ship, ShipKind::LightFighter);
+        assert_eq!(app.state.ship_queue[0].ship, Some(ShipKind::LightFighter));
         let text = render_text(&app, 100, 32);
         assert!(text.contains("1. light fighter x1"), "{text}");
         assert!(text.contains("Queue 1/5"), "{text}");
@@ -1688,6 +1727,33 @@ mod tests {
     }
 
     #[test]
+    fn shipyard_lists_defences_and_queues_a_cannon() {
+        let mut state = GameState::new(1_000);
+        state.buildings.shipyard = 1;
+        state.resources.metal = 100_000.0;
+        state.resources.crystal = 100_000.0;
+        state.resources.deuterium = 100_000.0;
+        let mut app = App::new(state);
+        open_shipyard(&mut app, 1_000);
+        let text = render_text(&app, 100, 40);
+        assert!(text.contains("light cannon"), "{text}");
+        assert!(text.contains("orbital station"), "{text}");
+        app.selected = ShipKind::ALL.len()
+            + DefenceKind::ALL
+                .iter()
+                .position(|k| *k == DefenceKind::LightCannon)
+                .unwrap();
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert_eq!(app.state.ship_queue.len(), 1);
+        assert_eq!(
+            app.state.ship_queue[0].defence,
+            Some(DefenceKind::LightCannon)
+        );
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("1. light cannon x1"), "{text}");
+    }
+
+    #[test]
     fn quit_saves_the_game() {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1736,6 +1802,7 @@ mod tests {
             },
             buildings: Buildings::default(),
             fleet: Fleet::default(),
+            defences: hoshi_core::DefenceGrid::default(),
             build_queue: Vec::new(),
             rare: None,
             goods: std::collections::BTreeMap::new(),
@@ -1775,6 +1842,7 @@ mod tests {
             resources: Resources::ZERO,
             buildings: Buildings::default(),
             fleet: Fleet::default(),
+            defences: hoshi_core::DefenceGrid::default(),
             build_queue: Vec::new(),
             rare: Some("rich_vein".into()),
             goods: std::collections::BTreeMap::new(),

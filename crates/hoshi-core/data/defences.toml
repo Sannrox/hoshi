@@ -1,0 +1,113 @@
+# Planet defences. Counts (or levels for dome/station) are built through the shipyard queue.
+
+rebuild_chance = 0.70
+missile_per_pirate = 0.0
+missile_damage = 50.0
+intercept_chance = 0.50
+tactical_ground_mult = 1.0
+dome_recharge_share = 0.20
+hangar_per_station = 2
+
+[[defence]]
+id = "light_cannon"
+name = "Light cannon"
+role = "battery"
+metal = 200.0
+crystal = 0.0
+deuterium = 0.0
+base_seconds = 60.0
+shipyard = 1
+attack = 40.0
+shield = 20.0
+hull = 200.0
+
+[[defence]]
+id = "heavy_cannon"
+name = "Heavy cannon"
+role = "battery"
+metal = 500.0
+crystal = 150.0
+deuterium = 0.0
+base_seconds = 120.0
+shipyard = 2
+attack = 120.0
+shield = 40.0
+hull = 500.0
+
+[[defence]]
+id = "ion_cannon"
+name = "Ion cannon"
+role = "battery"
+metal = 200.0
+crystal = 600.0
+deuterium = 0.0
+base_seconds = 180.0
+shipyard = 4
+attack = 150.0
+shield = 80.0
+hull = 400.0
+
+[[defence]]
+id = "missile_silo"
+name = "Missile silo"
+role = "missile"
+metal = 150.0
+crystal = 50.0
+deuterium = 20.0
+base_seconds = 90.0
+shipyard = 1
+attack = 80.0
+shield = 10.0
+hull = 200.0
+
+[[defence]]
+id = "interceptor"
+name = "Interceptor"
+role = "interceptor"
+metal = 100.0
+crystal = 100.0
+deuterium = 0.0
+base_seconds = 45.0
+shipyard = 1
+attack = 20.0
+shield = 10.0
+hull = 100.0
+
+[[defence]]
+id = "shield_dome"
+name = "Shield dome"
+role = "dome"
+metal = 1000.0
+crystal = 1000.0
+deuterium = 0.0
+base_seconds = 300.0
+shipyard = 3
+attack = 0.0
+shield = 0.0
+hull = 2000.0
+
+[[defence]]
+id = "orbital_station"
+name = "Orbital station"
+role = "orbital"
+metal = 2000.0
+crystal = 1500.0
+deuterium = 500.0
+base_seconds = 600.0
+shipyard = 4
+attack = 200.0
+shield = 200.0
+hull = 2000.0
+
+[[defence]]
+id = "garrison"
+name = "Garrison"
+role = "garrison"
+metal = 50.0
+crystal = 0.0
+deuterium = 0.0
+base_seconds = 30.0
+shipyard = 1
+attack = 0.0
+shield = 0.0
+hull = 0.0

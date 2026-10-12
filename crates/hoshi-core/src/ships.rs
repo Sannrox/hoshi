@@ -1,5 +1,6 @@
 //! Ship types and the per-planet shipyard queue.
 
+use crate::defences::DefenceKind;
 use crate::research::TechPrereq;
 use crate::state::Resources;
 use serde::Deserialize;
@@ -269,11 +270,34 @@ impl Fleet {
 /// One shipyard batch. Only the head has a timer; ships in that batch complete one by one.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShipJob {
-    pub ship: ShipKind,
+    pub ship: Option<ShipKind>,
+    pub defence: Option<DefenceKind>,
     pub remaining: u32,
     pub unit_paid: Resources,
     pub started_at: Option<u64>,
     pub completes_at: Option<u64>,
+}
+
+impl ShipJob {
+    pub fn label(&self) -> String {
+        if let Some(kind) = self.defence {
+            kind.to_string()
+        } else if let Some(kind) = self.ship {
+            kind.to_string()
+        } else {
+            "yard".into()
+        }
+    }
+
+    pub fn kind_key(&self) -> &'static str {
+        if let Some(kind) = self.defence {
+            kind.as_key()
+        } else if let Some(kind) = self.ship {
+            kind.as_key()
+        } else {
+            "yard"
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

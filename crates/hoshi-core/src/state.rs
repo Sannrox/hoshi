@@ -10,6 +10,7 @@ use crate::combat::{
     CombatReport, CombatWinner, next_u64, plunder_from, rapid_fire_table, resolve_combat,
     resolve_ground, stats_from_catalog,
 };
+use crate::defences::{DefenceKind, PlanetBattle, resolve_planet_battle};
 use crate::espionage::{SpyReport, resolve_spy, reveals};
 use crate::expedition::{ExpeditionResult, roll_expedition};
 use crate::fleets::{
@@ -172,6 +173,7 @@ pub struct GameState {
     pub research: Option<ResearchJob>,
     pub fleet: Fleet,
     pub ship_queue: Vec<ShipJob>,
+    pub defences: crate::DefenceGrid,
     pub home: Coord,
     pub home_kind: PlanetType,
     pub home_size: u8,
@@ -232,6 +234,7 @@ impl GameState {
             research: None,
             fleet: Fleet::default(),
             ship_queue: Vec::new(),
+            defences: crate::DefenceGrid::default(),
             home: Coord::HOME,
             home_kind,
             home_size,
@@ -747,7 +750,8 @@ impl GameState {
         }
         self.resources = self.resources.saturating_sub(cost);
         self.ship_queue.push(ShipJob {
-            ship: kind,
+            ship: Some(kind),
+            defence: None,
             remaining: count,
             unit_paid: unit,
             started_at: None,
@@ -757,6 +761,68 @@ impl GameState {
             self.start_ship_head(now);
         }
         Ok(())
+    }
+
+    /// Pay for a defence batch and append it to the same shipyard queue.
+    pub fn enqueue_defence(
+        &mut self,
+        kind: DefenceKind,
+        count: u32,
+        now_unix: u64,
+    ) -> Result<(), ShipError> {
+        self.catch_up(now_unix);
+        let now = self.last_tick_unix;
+        if count == 0 {
+            return Err(ShipError::ZeroCount);
+        }
+        let spec = self.config.defences.get(kind);
+        let yard = self.buildings.shipyard;
+        if yard < spec.shipyard {
+            return Err(ShipError::NeedShipyard {
+                required: spec.shipyard,
+                actual: yard,
+            });
+        }
+        let cap = self.config.max_ship_queue;
+        if self.ship_queue.len() >= cap {
+            return Err(ShipError::QueueFull { cap });
+        }
+        let unit = spec.unit_cost();
+        let n = f64::from(count);
+        let cost = Resources {
+            metal: unit.metal * n,
+            crystal: unit.crystal * n,
+            deuterium: unit.deuterium * n,
+        };
+        if !self.resources.can_afford(cost) {
+            return Err(ShipError::InsufficientResources {
+                missing: self.resources.missing(cost),
+                cost,
+            });
+        }
+        self.resources = self.resources.saturating_sub(cost);
+        self.ship_queue.push(ShipJob {
+            ship: None,
+            defence: Some(kind),
+            remaining: count,
+            unit_paid: unit,
+            started_at: None,
+            completes_at: None,
+        });
+        if self.ship_queue.len() == 1 {
+            self.start_ship_head(now);
+        }
+        Ok(())
+    }
+
+    pub fn defence_cost(&self, kind: DefenceKind, count: u32) -> Resources {
+        let unit = self.config.defences.get(kind).unit_cost();
+        let n = f64::from(count);
+        Resources {
+            metal: unit.metal * n,
+            crystal: unit.crystal * n,
+            deuterium: unit.deuterium * n,
+        }
     }
 
     pub fn cancel_ships(&mut self, index: usize, now_unix: u64) -> Result<Resources, ShipError> {
@@ -2213,7 +2279,7 @@ impl GameState {
         if job.completes_at.is_some() {
             return;
         }
-        let duration = self.ship_time_secs(job.ship);
+        let duration = self.yard_time_secs(job);
         let now = now_unix.max(self.last_tick_unix);
         let job = &mut self.ship_queue[0];
         job.started_at = Some(now);
@@ -2406,6 +2472,7 @@ impl GameState {
             resources: Resources::ZERO,
             buildings: Buildings::default(),
             fleet: ships,
+            defences: crate::DefenceGrid::default(),
             build_queue: Vec::new(),
             rare: None,
             goods: BTreeMap::new(),
@@ -2551,9 +2618,10 @@ impl GameState {
             .get(ShipKind::TroopTransport)
             .saturating_mul(self.config.outposts.troop_strength);
         let garrison = self.outposts[outpost_idx].garrison;
+        let mult = self.config.defences.tactical_ground_mult;
         let ground = resolve_ground(
-            troops,
-            garrison,
+            scale_ground(troops, mult),
+            scale_ground(garrison, mult),
             self.config.outposts.variance,
             &mut self.rng_seed,
         );
@@ -2586,6 +2654,7 @@ impl GameState {
             resources: Resources::ZERO,
             buildings: Buildings::default(),
             fleet: ships,
+            defences: crate::DefenceGrid::default(),
             build_queue: Vec::new(),
             rare: outpost.rare,
             goods: BTreeMap::new(),
@@ -2618,42 +2687,86 @@ impl GameState {
         let atk_stats = stats_from_catalog(&self.config.ships);
         let def_stats = self.player_combat_stats();
         let rf = rapid_fire_table(&self.config.ships);
-        let report = resolve_combat(
-            pirates,
-            self.fleet,
-            &atk_stats,
-            &def_stats,
-            self.config.raid.max_rounds,
-            &rf,
-            &mut self.rng_seed,
-        );
-        self.fleet = report.defender_after;
-        let plunder = if report.winner == CombatWinner::Attacker {
-            let taken = plunder_from(
-                self.resources,
-                self.config.raid.plunder_share,
-                self.config.raid.plunder_cap,
+        let report = if self.defences.is_empty() {
+            let report = resolve_combat(
+                pirates,
+                self.fleet,
+                &atk_stats,
+                &def_stats,
+                self.config.raid.max_rounds,
+                &rf,
+                &mut self.rng_seed,
             );
-            self.resources = self.resources.saturating_sub(taken);
-            taken
+            self.fleet = report.defender_after;
+            let plunder = self.take_raid_plunder(report.winner);
+            self.apply_raid_standing(report.winner, done_at);
+            self.push_event(done_at, format_raid_report(&report, plunder));
+            report
         } else {
-            Resources::ZERO
+            let parked = self.fleet;
+            let hangar = def_stats[ShipKind::LightFighter.index()];
+            let battle = resolve_planet_battle(
+                pirates,
+                parked,
+                self.defences,
+                &atk_stats,
+                &def_stats,
+                hangar,
+                &self.config.defences,
+                self.config.outposts.troop_strength,
+                self.config.raid.max_rounds,
+                &rf,
+                &mut self.rng_seed,
+            );
+            self.fleet = battle.fleet_after;
+            self.defences = battle.defences_after;
+            let plunder = self.take_raid_plunder(battle.winner);
+            self.apply_raid_standing(battle.winner, done_at);
+            self.push_event(
+                done_at,
+                format_layered_raid(pirates, parked, &battle, plunder),
+            );
+            CombatReport {
+                rounds: battle.orbital_rounds,
+                attacker_before: pirates,
+                defender_before: parked,
+                attacker_after: battle.attacker_after,
+                defender_after: battle.fleet_after,
+                winner: battle.winner,
+                ground: battle.ground.clone(),
+            }
         };
-        let delta_fn: fn(&crate::FactionSpec) -> f64 = if report.winner == CombatWinner::Defender {
-            |f| f.raid_win_delta
-        } else {
-            |f| f.raid_loss_delta
-        };
-        self.apply_faction_delta("pirates", delta_fn, "raid", done_at);
-        self.push_event(done_at, format_raid_report(&report, plunder));
         self.next_raid_at = self
             .raid_interval_secs()
             .map(|wait| done_at.saturating_add(wait));
         report
     }
 
+    fn take_raid_plunder(&mut self, winner: CombatWinner) -> Resources {
+        if winner != CombatWinner::Attacker {
+            return Resources::ZERO;
+        }
+        let taken = plunder_from(
+            self.resources,
+            self.config.raid.plunder_share,
+            self.config.raid.plunder_cap,
+        );
+        self.resources = self.resources.saturating_sub(taken);
+        taken
+    }
+
+    fn apply_raid_standing(&mut self, winner: CombatWinner, done_at: u64) {
+        let delta_fn: fn(&crate::FactionSpec) -> f64 = if winner == CombatWinner::Defender {
+            |f| f.raid_win_delta
+        } else {
+            |f| f.raid_loss_delta
+        };
+        self.apply_faction_delta("pirates", delta_fn, "raid", done_at);
+    }
+
     fn pirate_fleet(&self) -> Fleet {
-        let points = self.fleet_combat_points();
+        let points =
+            self.fleet_combat_points() + self.defences.combat_points(&self.config.defences);
         let scaled = (points * self.config.raid.strength_factor).floor().max(0.0) as u32;
         let n = scaled.max(self.config.raid.min_ships);
         let mut fleet = Fleet::default();
@@ -3150,9 +3263,14 @@ impl GameState {
         let Some(job) = self.ship_queue.first() else {
             return;
         };
-        let kind = job.ship;
-        let duration = self.ship_time_secs(kind);
-        self.fleet.add(kind, 1);
+        let duration = self.yard_time_secs(job);
+        let ship = job.ship;
+        let defence = job.defence;
+        if let Some(kind) = defence {
+            self.defences.add(kind, 1);
+        } else if let Some(kind) = ship {
+            self.fleet.add(kind, 1);
+        }
         let job = &mut self.ship_queue[0];
         job.remaining = job.remaining.saturating_sub(1);
         if job.remaining == 0 {
@@ -3162,6 +3280,21 @@ impl GameState {
         }
         job.started_at = Some(done_at);
         job.completes_at = Some(done_at.saturating_add(duration));
+    }
+
+    fn yard_time_secs(&self, job: &ShipJob) -> u64 {
+        if let Some(kind) = job.defence {
+            let speed = self
+                .owned_coords()
+                .into_iter()
+                .filter_map(|coord| self.rare_bonus_at(coord).map(|row| row.shipyard_speed))
+                .fold(0.0_f64, f64::max);
+            ship_duration(self.config.defences.get(kind).duration_secs(), speed)
+        } else if let Some(kind) = job.ship {
+            self.ship_time_secs(kind)
+        } else {
+            1
+        }
     }
 
     fn produce_until(&mut self, now_unix: u64) {
@@ -3757,6 +3890,65 @@ fn format_raid_report(report: &crate::CombatReport, plunder: Resources) -> Strin
     )
 }
 
+fn format_layered_raid(
+    pirates: Fleet,
+    parked: Fleet,
+    battle: &PlanetBattle,
+    plunder: Resources,
+) -> String {
+    let intercept = if battle.intercept_in > 0 {
+        format!(
+            "intercept {}/{}. ",
+            battle.intercept_down, battle.intercept_in
+        )
+    } else {
+        String::new()
+    };
+    let dome = if battle.dome_collapsed {
+        format!("dome collapsed absorbed {:.0}", battle.dome_absorbed)
+    } else if battle.dome_absorbed > 0.0 {
+        format!("dome held absorbed {:.0}", battle.dome_absorbed)
+    } else {
+        "dome none".into()
+    };
+    let ground = match &battle.ground {
+        Some(g) => format!(
+            "ground troops {} vs garrison {} winner {}",
+            g.attacker_strength,
+            g.defender_strength,
+            g.winner.as_key()
+        ),
+        None => "ground none".into(),
+    };
+    format!(
+        "raid: pirates {} vs {}. {intercept}orbital stations {}->{} hangar {}->{} {} rounds. {dome}. batteries {}->{}. {ground}. lost {}. pirates lost {}. rebuilt {}. winner {}. plunder M{:.0} C{:.0} D{:.0}",
+        fleet_label(pirates),
+        fleet_label(parked),
+        battle.stations_before,
+        battle.stations_after,
+        battle.hangar_before,
+        battle.hangar_after,
+        battle.orbital_rounds,
+        battle.batteries_before,
+        battle.batteries_after,
+        fleet_label(fleet_losses(parked, battle.fleet_after)),
+        fleet_label(fleet_losses(pirates, battle.attacker_after)),
+        battle.rebuilt,
+        battle.winner.as_key(),
+        plunder.metal,
+        plunder.crystal,
+        plunder.deuterium
+    )
+}
+
+fn scale_ground(strength: u32, mult: f64) -> u32 {
+    if strength == 0 {
+        0
+    } else {
+        ((f64::from(strength) * mult).floor() as u32).max(1)
+    }
+}
+
 fn ship_duration(base_secs: u64, shipyard_speed: f64) -> u64 {
     let base = base_secs as f64;
     (base / (1.0 + shipyard_speed).max(1.0)).ceil().max(1.0) as u64
@@ -3917,6 +4109,7 @@ mod tests {
             market: crate::MarketConfig::inactive(),
             diplomacy: crate::DiplomacyConfig::inactive(),
             espionage: crate::EspionageConfig::default(),
+            defences: crate::DefenceConfig::default(),
         }
     }
 
@@ -4878,6 +5071,91 @@ modifiers = []
     }
 
     #[test]
+    fn defences_complete_through_the_shipyard_queue() {
+        let mut cfg = test_config();
+        cfg.starting_buildings.shipyard = 1;
+        cfg.starting_resources.metal = 10_000.0;
+        let mut state = GameState::with_config(0, cfg);
+        state
+            .enqueue_defence(DefenceKind::LightCannon, 2, 0)
+            .unwrap();
+        assert_eq!(state.ship_queue[0].defence, Some(DefenceKind::LightCannon));
+        let first = state.ship_queue[0].completes_at.unwrap();
+        state.catch_up(first);
+        assert_eq!(state.defences.get(DefenceKind::LightCannon), 1);
+        let second = state.ship_queue[0].completes_at.unwrap();
+        state.catch_up(second);
+        assert_eq!(state.defences.get(DefenceKind::LightCannon), 2);
+        assert!(state.ship_queue.is_empty());
+    }
+
+    #[test]
+    fn raid_with_defences_is_deterministic_and_reports_layers() {
+        let mut a = GameState::new(0);
+        a.defences.add(DefenceKind::LightCannon, 6);
+        a.defences.add(DefenceKind::OrbitalStation, 1);
+        a.defences.add(DefenceKind::ShieldDome, 1);
+        a.defences.add(DefenceKind::Garrison, 4);
+        a.fleet.add(ShipKind::LightFighter, 2);
+        let mut b = a.clone();
+        let r1 = a.trigger_raid(0);
+        let r2 = b.trigger_raid(0);
+        assert_eq!(r1, r2);
+        assert_eq!(a.defences, b.defences);
+        assert_eq!(a.fleet, b.fleet);
+        let text = a
+            .events
+            .iter()
+            .find(|e| e.text.contains("raid:"))
+            .expect("raid report")
+            .text
+            .as_str();
+        assert!(text.contains("orbital stations"), "{text}");
+        assert!(text.contains("dome"), "{text}");
+        assert!(text.contains("batteries"), "{text}");
+        assert!(text.contains("rebuilt"), "{text}");
+        assert!(text.contains("winner"), "{text}");
+        assert!(text.contains("lost"), "{text}");
+        assert!(text.contains("pirates lost"), "{text}");
+    }
+
+    #[test]
+    fn layered_raid_does_not_plunder_while_the_fleet_still_stands() {
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.strength_factor = 0.0;
+        cfg.raid.min_ships = 1;
+        let mut state = GameState::with_config(0, cfg);
+        state.resources.metal = 1_000.0;
+        state.fleet.add(ShipKind::Battleship, 8);
+        state.defences.add(DefenceKind::LightCannon, 1);
+        let before = state.resources.metal;
+        let report = state.trigger_raid(0);
+        assert_ne!(report.winner, CombatWinner::Attacker);
+        assert!(!report.defender_after.is_empty());
+        assert_eq!(state.resources.metal, before);
+        let text = state
+            .events
+            .iter()
+            .find(|e| e.text.contains("raid:"))
+            .expect("raid report")
+            .text
+            .as_str();
+        assert!(text.contains("plunder M0"), "{text}");
+    }
+
+    #[test]
+    fn raid_strength_grows_with_planet_defences() {
+        let mut bare = GameState::new(0);
+        bare.fleet.add(ShipKind::LightFighter, 10);
+        let n_bare = bare.trigger_raid(0).attacker_before.total();
+        let mut armed = GameState::new(0);
+        armed.fleet.add(ShipKind::LightFighter, 10);
+        armed.defences.add(DefenceKind::LightCannon, 20);
+        let n_armed = armed.trigger_raid(0).attacker_before.total();
+        assert!(n_armed > n_bare, "armed={n_armed} bare={n_bare}");
+    }
+
+    #[test]
     fn raid_during_offline_gap_matches_step_by_step() {
         let cfg = BalanceConfig {
             planet_types: crate::PlanetTypeCatalog {
@@ -5462,6 +5740,7 @@ modifiers = [{ kind = "expedition_slots", per_level = 1.0 }]
             },
             buildings: Buildings::default(),
             fleet: Fleet::default(),
+            defences: crate::DefenceGrid::default(),
             build_queue: Vec::new(),
             rare: None,
             goods: BTreeMap::new(),
@@ -6220,6 +6499,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
             resources: Resources::ZERO,
             buildings: Buildings::default(),
             fleet: Fleet::default(),
+            defences: crate::DefenceGrid::default(),
             build_queue: Vec::new(),
             rare: Some("shipyard_world".into()),
             goods: BTreeMap::new(),
@@ -6423,6 +6703,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
                     shipyard: 0,
                 },
                 fleet: Fleet::default(),
+                defences: crate::DefenceGrid::default(),
                 build_queue: Vec::new(),
                 rare: None,
                 goods: BTreeMap::new(),
@@ -6459,6 +6740,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
             resources: Resources::ZERO,
             buildings: Buildings::default(),
             fleet: Fleet::default(),
+            defences: crate::DefenceGrid::default(),
             build_queue: Vec::new(),
             rare: None,
             goods: BTreeMap::new(),

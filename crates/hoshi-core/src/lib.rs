@@ -6,6 +6,7 @@ mod buildings;
 mod chains;
 mod clock;
 mod combat;
+mod defences;
 mod diplomacy;
 mod espionage;
 mod expedition;
@@ -37,6 +38,10 @@ pub use clock::{Clock, FakeClock, SystemClock};
 pub use combat::{
     CombatReport, CombatWinner, GroundReport, next_u64, plunder_from, rapid_fire_table,
     resolve_combat, resolve_ground,
+};
+pub use defences::{
+    DEFENCE_KINDS, DefenceConfig, DefenceGrid, DefenceKind, DefenceRole, DefenceSpec, PlanetBattle,
+    apply_rebuild, intercept_missiles, resolve_planet_battle,
 };
 pub use diplomacy::{
     DiplomacyConfig, DiplomacyError, DiplomacyState, FactionSpec, FactionTier, StandingChange,

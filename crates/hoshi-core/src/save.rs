@@ -1,5 +1,6 @@
 //! SQLite save file. Schema version is `PRAGMA user_version`.
 
+use crate::DefenceKind;
 use crate::activity::{ActivityChannel, ActivityTracker};
 use crate::balance::BalanceConfig;
 use crate::buildings::{BuildJob, BuildingKind, Buildings};
@@ -19,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 18;
+pub const SCHEMA_VERSION: u32 = 19;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -157,7 +158,8 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM faction_standing;
          DELETE FROM faction_log;
          DELETE FROM spy_report_ships;
-         DELETE FROM spy_reports;",
+         DELETE FROM spy_reports;
+         DELETE FROM planet_defences;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -221,6 +223,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
             params![kind.as_key(), state.fleet.get(kind)],
         )?;
     }
+    insert_defences(&tx, 1, state.defences)?;
     for (i, job) in state.ship_queue.iter().enumerate() {
         tx.execute(
             "INSERT INTO ship_queue (
@@ -230,7 +233,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
              ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 i as i64,
-                job.ship.as_key(),
+                job.kind_key(),
                 job.remaining,
                 job.unit_paid.metal,
                 job.unit_paid.crystal,
@@ -467,6 +470,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 params![planet_id, kind.as_key(), colony.fleet.get(kind)],
             )?;
         }
+        insert_defences(&tx, planet_id, colony.defences)?;
         insert_build_queue(&tx, planet_id, &colony.build_queue)?;
     }
     if let Some(job) = &state.wonder {
@@ -577,6 +581,38 @@ fn insert_spy_ships(
         )?;
     }
     Ok(())
+}
+
+fn insert_defences(
+    conn: &Connection,
+    planet_id: i64,
+    grid: crate::DefenceGrid,
+) -> Result<(), SaveError> {
+    for kind in DefenceKind::ALL {
+        let count = grid.get(kind);
+        if count == 0 {
+            continue;
+        }
+        conn.execute(
+            "INSERT INTO planet_defences (planet_id, kind, count) VALUES (?1, ?2, ?3)",
+            params![planet_id, kind.as_key(), count],
+        )?;
+    }
+    Ok(())
+}
+
+fn read_defences(conn: &Connection, planet_id: i64) -> Result<crate::DefenceGrid, SaveError> {
+    let mut grid = crate::DefenceGrid::default();
+    let mut stmt = conn.prepare("SELECT kind, count FROM planet_defences WHERE planet_id = ?1")?;
+    let rows = stmt.query_map(params![planet_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
+    })?;
+    for row in rows {
+        let (key, count) = row?;
+        let kind = DefenceKind::from_key(&key).ok_or(SaveError::Corrupt("unknown defence kind"))?;
+        grid.set(kind, count);
+    }
+    Ok(grid)
 }
 
 fn insert_goods(
@@ -781,6 +817,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         fleet.add(kind, count);
     }
     state.fleet = fleet;
+    state.defences = read_defences(conn, 1)?;
 
     let mut stmt = conn.prepare(
         "SELECT kind, remaining, paid_metal, paid_crystal, paid_deuterium, started_at, completes_at
@@ -800,9 +837,16 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     })?;
     for job in jobs {
         let (kind, remaining, metal, crystal, deuterium, started_at, completes_at) = job?;
-        let ship = ShipKind::from_key(&kind).ok_or(SaveError::Corrupt("unknown ship kind"))?;
+        let (ship, defence) = if let Some(ship) = ShipKind::from_key(&kind) {
+            (Some(ship), None)
+        } else if let Some(defence) = DefenceKind::from_key(&kind) {
+            (None, Some(defence))
+        } else {
+            return Err(SaveError::Corrupt("unknown yard kind"));
+        };
         queue.push(ShipJob {
             ship,
+            defence,
             remaining,
             unit_paid: Resources {
                 metal,
@@ -1065,6 +1109,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             resources,
             buildings,
             fleet,
+            defences: read_defences(conn, planet_id)?,
             build_queue: read_build_queue(conn, planet_id)?,
             rare,
             goods: read_goods(conn, planet_id)?,
@@ -1557,6 +1602,7 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "faction_log" => "SELECT COUNT(*) FROM faction_log",
         "spy_reports" => "SELECT COUNT(*) FROM spy_reports",
         "spy_report_ships" => "SELECT COUNT(*) FROM spy_report_ships",
+        "planet_defences" => "SELECT COUNT(*) FROM planet_defences",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -1593,7 +1639,8 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "faction_standing")?
         + count_rows(conn, "faction_log")?
         + count_rows(conn, "spy_reports")?
-        + count_rows(conn, "spy_report_ships")?)
+        + count_rows(conn, "spy_report_ships")?
+        + count_rows(conn, "planet_defences")?)
 }
 
 fn migrate(conn: &Connection) -> Result<(), SaveError> {
@@ -1657,6 +1704,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 18 {
         migrate_v18(conn)?;
+    }
+    if found < 19 {
+        migrate_v19(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -2163,6 +2213,20 @@ fn migrate_v18(conn: &Connection) -> Result<(), SaveError> {
     Ok(())
 }
 
+fn migrate_v19(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS planet_defences (
+            planet_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            count INTEGER NOT NULL,
+            PRIMARY KEY (planet_id, kind)
+        );
+        ",
+    )?;
+    Ok(())
+}
+
 fn load_spy_reports(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
     let mut stmt = conn.prepare(
         "SELECT id, galaxy, system, position, created_at, probes_sent, probes_lost,
@@ -2657,6 +2721,7 @@ mod tests {
                 ..crate::Buildings::default()
             },
             fleet: colony_fleet,
+            defences: crate::DefenceGrid::default(),
             rare: None,
             goods: BTreeMap::new(),
             build_queue: vec![BuildJob {
@@ -3182,6 +3247,7 @@ mod tests {
             resources: Resources::ZERO,
             buildings: crate::Buildings::default(),
             fleet: crate::Fleet::default(),
+            defences: crate::DefenceGrid::default(),
             build_queue: Vec::new(),
             rare: None,
             goods: BTreeMap::from([("water_ice".into(), 7.0)]),
@@ -3317,6 +3383,56 @@ mod tests {
         assert!(missions_has_column(&conn, "spy").unwrap());
         assert_eq!(count_rows(&conn, "spy_reports").unwrap(), 1);
         assert_eq!(count_rows(&conn, "spy_report_ships").unwrap(), 2);
+    }
+
+    #[test]
+    fn migrate_v19_retries_and_round_trips_planet_defences() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v19(&conn).unwrap();
+        migrate_v19(&conn).unwrap();
+        let mut state = GameState::new(3);
+        state.defences.add(crate::DefenceKind::LightCannon, 4);
+        state.defences.add(crate::DefenceKind::ShieldDome, 2);
+        state.defences.add(crate::DefenceKind::Garrison, 9);
+        state.ship_queue.push(ShipJob {
+            ship: None,
+            defence: Some(crate::DefenceKind::IonCannon),
+            remaining: 2,
+            unit_paid: Resources {
+                metal: 200.0,
+                crystal: 600.0,
+                deuterium: 0.0,
+            },
+            started_at: Some(10),
+            completes_at: Some(190),
+        });
+        state.colonies.push(crate::Colony {
+            coord: crate::Coord {
+                galaxy: 1,
+                system: 1,
+                position: 2,
+            },
+            kind: crate::PlanetType::Rocky,
+            size: 80,
+            resources: Resources::ZERO,
+            buildings: crate::Buildings::default(),
+            fleet: crate::Fleet::default(),
+            defences: {
+                let mut grid = crate::DefenceGrid::default();
+                grid.add(crate::DefenceKind::OrbitalStation, 1);
+                grid
+            },
+            build_queue: Vec::new(),
+            rare: None,
+            goods: BTreeMap::new(),
+        });
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.defences, state.defences);
+        assert_eq!(loaded.ship_queue, state.ship_queue);
+        assert_eq!(loaded.colonies[0].defences, state.colonies[0].defences);
+        assert_eq!(loaded, state);
+        assert_eq!(count_rows(&conn, "planet_defences").unwrap(), 4);
     }
 
     #[test]
