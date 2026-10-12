@@ -8,6 +8,7 @@
 
 ### Added
 
+- Title Prestige appears once a reset is available: unspent currency, owned bonuses, and a shop that buys with confirmation into the richest save. New game lists those bonuses and applies their starting extras to the new slot.
 - New game shows a live galaxy preview for a pasted seed code (home type, size, outposts, generator). Checksum mismatches say so; blank still rolls a random seed. Load and the title menu copy the slot's shareable code with `y`. Saves from before galaxy seeds omit the code instead of showing seed 0.
 - Title screen Achievements lists earned and locked rows from every save without taking the write lock. Hidden rows stay ??? until earned; measurable progress (colonies, fleet, prestige, raids, conquests, wonders) uses the best save. Totals cover playtime, battles, wonders, and galaxies finished by wonder or score, including prestige history.
 - Title Settings has a keybindings page: list every remappable action by the screens that use it, press a new key to rebind, see conflicts without saving, and reset one action or all keys with confirmation. Changes land in `config.toml` and apply without a restart.

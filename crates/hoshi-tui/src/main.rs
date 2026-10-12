@@ -420,7 +420,7 @@ fn title_then_play(
     no_portraits: bool,
 ) -> Result<(), LaunchError> {
     let mut title = Title::new(dir, clock.now_unix());
-    title.set_outposts(balance.outposts.clone());
+    title.set_balance(balance.clone());
     let mut terminal = ratatui::init();
     let result = loop {
         title.set_now(clock.now_unix());
@@ -526,7 +526,13 @@ fn play_path(
     let mut state = if let Some(spec) = new_spec {
         apply_difficulty(&mut config, &spec.difficulty);
         let seed = spec.seed.unwrap_or(now.wrapping_mul(0x9E37_79B9_7F4A_7C15));
-        let state = GameState::new_live_galaxy(now, config, seed);
+        let mut state = GameState::new_live_galaxy(now, config, seed);
+        if spec.prestige.lifetime > 0
+            || !spec.prestige.owned.is_empty()
+            || !spec.prestige.runs.is_empty()
+        {
+            state.inherit_prestige(spec.prestige);
+        }
         save_state(&mut conn, &state)?;
         state
     } else {

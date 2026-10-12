@@ -2031,18 +2031,31 @@ impl GameState {
 
     /// Idle-game score used by the prestige formula in config.
     pub fn prestige_score(&self) -> u32 {
-        let cfg = &self.config.prestige;
-        let colonies = self.colonies.len() as u32;
-        let wonders = self.completed_wonders.len() as u32;
-        self.building_levels()
-            .saturating_add(self.research_levels())
-            .saturating_add(colonies.saturating_mul(cfg.colony_weight))
-            .saturating_add(wonders.saturating_mul(cfg.wonder_weight))
+        self.config.prestige.run_score(
+            self.building_levels(),
+            self.research_levels(),
+            self.colonies.len() as u32,
+            self.completed_wonders.len() as u32,
+        )
     }
 
     pub fn can_prestige(&self) -> bool {
-        !self.completed_wonders.is_empty()
-            || self.prestige_score() >= self.config.prestige.min_score
+        self.config
+            .prestige
+            .can_reset(self.completed_wonders.len() as u32, self.prestige_score())
+    }
+
+    /// Copy meta progress onto a fresh galaxy and apply starting bonuses.
+    pub fn inherit_prestige(&mut self, mut prestige: Prestige) {
+        let next_index = if prestige.runs.is_empty() && prestige.lifetime == 0 {
+            1
+        } else {
+            prestige.current.index.saturating_add(1).max(1)
+        };
+        prestige.current = RunStats::new(next_index, self.last_tick_unix);
+        self.resources = self.config.starting_resources;
+        self.prestige = prestige;
+        self.apply_prestige_start();
     }
 
     fn prestige_earned_for(&self, score: u32) -> u32 {
@@ -7260,6 +7273,22 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
             "bonus {with_bonus} plain {}",
             plain.production_per_hour(ResourceKind::Metal)
         );
+    }
+
+    #[test]
+    fn inherit_prestige_applies_starting_cache_to_a_new_galaxy() {
+        let mut source = GameState::with_config(0, prestige_test_config());
+        source.prestige.currency = 1;
+        source.buy_prestige_bonus("starter_cache", 0).unwrap();
+        source.prestige.lifetime = 4;
+        source.prestige.runs.push(crate::RunStats::new(1, 0));
+        let mut next = GameState::new_live_galaxy(10, prestige_test_config(), 7);
+        let before = next.resources.metal;
+        next.inherit_prestige(source.prestige.clone());
+        assert!(next.resources.metal > before);
+        assert_eq!(next.prestige.owned_count("starter_cache"), 1);
+        assert_eq!(next.prestige.current.index, 2);
+        assert_eq!(next.prestige.lifetime, 4);
     }
 
     #[test]

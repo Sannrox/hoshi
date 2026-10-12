@@ -4,9 +4,9 @@ use crate::clip::copy_to_clipboard;
 use crate::config::UserConfig;
 use crate::keymap::{Binding, HelpContext, Keymap};
 use hoshi_core::{
-    AchievementConfig, BalanceConfig, CareerGlance, OutpostConfig, SaveError, SaveGlance,
-    encode_galaxy_seed, inspect_career, inspect_save, lock_save, parse_galaxy_seed, preview_galaxy,
-    save_is_locked,
+    AchievementConfig, BalanceConfig, CareerGlance, Prestige, PrestigeConfig, PrestigeError,
+    SaveError, SaveGlance, encode_galaxy_seed, inspect_career, inspect_save, load_state, lock_save,
+    open_save, parse_galaxy_seed, preview_galaxy, save_is_locked, save_state,
 };
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
@@ -15,16 +15,6 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 use std::path::{Path, PathBuf};
-
-const MENU: [&str; 7] = [
-    "Continue",
-    "New game",
-    "Load game",
-    "Settings",
-    "Achievements",
-    "Credits",
-    "Quit",
-];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TitleAction {
@@ -41,6 +31,7 @@ enum Page {
     Settings,
     Keys,
     Achievements,
+    Prestige,
     Credits,
 }
 
@@ -164,7 +155,12 @@ pub struct Title {
     career: CareerGlance,
     stats_selected: usize,
     achievements: AchievementConfig,
-    outposts: OutpostConfig,
+    balance: BalanceConfig,
+    prestige_cfg: PrestigeConfig,
+    prestige_selected: usize,
+    prestige_confirm: bool,
+    prestige_source: Option<PathBuf>,
+    prestige_menu: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -201,7 +197,12 @@ impl Title {
             career: CareerGlance::default(),
             stats_selected: 0,
             achievements: AchievementConfig::default(),
-            outposts: BalanceConfig::default().outposts,
+            balance: BalanceConfig::default(),
+            prestige_cfg: PrestigeConfig::default(),
+            prestige_selected: 0,
+            prestige_confirm: false,
+            prestige_source: None,
+            prestige_menu: false,
         };
         title.refresh_slots();
         title
@@ -221,8 +222,57 @@ impl Title {
         self.now_unix = now_unix;
     }
 
-    pub fn set_outposts(&mut self, outposts: OutpostConfig) {
-        self.outposts = outposts;
+    pub fn set_balance(&mut self, balance: BalanceConfig) {
+        self.prestige_cfg = balance.prestige.clone();
+        self.balance = balance;
+    }
+
+    fn menu_items(&self) -> Vec<&'static str> {
+        let mut items = vec![
+            "Continue",
+            "New game",
+            "Load game",
+            "Settings",
+            "Achievements",
+        ];
+        if self.prestige_visible() {
+            items.push("Prestige");
+        }
+        items.push("Credits");
+        items.push("Quit");
+        items
+    }
+
+    fn prestige_visible(&self) -> bool {
+        self.prestige_menu
+    }
+
+    fn prestige_summary(&self) -> String {
+        if !self.prestige_visible() {
+            return String::new();
+        }
+        let owned: Vec<String> = self
+            .prestige_cfg
+            .bonuses
+            .iter()
+            .filter_map(|spec| {
+                let n = self.career.prestige.owned_count(&spec.id);
+                (n > 0).then(|| format!("{}×{}", n, spec.name.to_ascii_lowercase()))
+            })
+            .collect();
+        if owned.is_empty() {
+            format!(
+                "prestige run {}  {} unspent  no bonuses yet",
+                self.career.prestige.current.index, self.career.prestige.currency
+            )
+        } else {
+            format!(
+                "prestige run {}  {} unspent  {}",
+                self.career.prestige.current.index,
+                self.career.prestige.currency,
+                owned.join(", ")
+            )
+        }
     }
 
     fn seed_preview_line(&self) -> String {
@@ -232,7 +282,7 @@ impl Title {
                 hoshi_core::GALAXY_GENERATOR_VERSION
             ),
             Ok(Some(seed)) => {
-                let preview = preview_galaxy(seed, &self.outposts);
+                let preview = preview_galaxy(seed, &self.balance.outposts);
                 format!(
                     "{}  {} size {}  outposts {}  generator {}",
                     preview.code,
@@ -248,6 +298,34 @@ impl Title {
 
     fn refresh_slots(&mut self) {
         self.slots = list_slots(&self.dir, self.now_unix);
+        self.career = CareerGlance::default();
+        self.prestige_source = None;
+        self.prestige_menu = false;
+        let mut best_lifetime = 0u32;
+        let mut best_currency = 0u32;
+        let mut source_prestige: Option<Prestige> = None;
+        for slot in &self.slots {
+            if let Ok(glance) = inspect_career(&slot.path) {
+                let ready = glance.reset_available(&self.prestige_cfg);
+                if ready {
+                    self.prestige_menu = true;
+                    let take = source_prestige.is_none()
+                        || glance.prestige.lifetime > best_lifetime
+                        || (glance.prestige.lifetime == best_lifetime
+                            && glance.prestige.currency > best_currency);
+                    if take {
+                        best_lifetime = glance.prestige.lifetime;
+                        best_currency = glance.prestige.currency;
+                        self.prestige_source = Some(slot.path.clone());
+                        source_prestige = Some(glance.prestige.clone());
+                    }
+                }
+                self.career.merge(glance);
+            }
+        }
+        if let Some(prestige) = source_prestige {
+            self.career.prestige = prestige;
+        }
     }
 
     pub fn handle_key(&mut self, code: KeyCode) -> TitleAction {
@@ -276,6 +354,7 @@ impl Title {
             Page::Settings => self.handle_settings(code),
             Page::Keys => self.handle_keys(code),
             Page::Achievements => self.handle_achievements(code),
+            Page::Prestige => self.handle_prestige(code),
             Page::Credits => {
                 if let Some(Binding::Confirm | Binding::Cancel) =
                     self.config.keys.lookup(HelpContext::TitleCredits, code)
@@ -297,6 +376,7 @@ impl Title {
             Page::Settings => HelpContext::TitleSettings,
             Page::Keys => HelpContext::TitleKeys,
             Page::Achievements => HelpContext::TitleAchievements,
+            Page::Prestige => HelpContext::TitlePrestige,
             Page::Credits => HelpContext::TitleCredits,
         }
     }
@@ -309,43 +389,56 @@ impl Title {
                 TitleAction::None
             }
             Some(Binding::SelectNext) => {
-                self.selected = (self.selected + 1) % MENU.len();
+                let n = self.menu_items().len();
+                self.selected = (self.selected + 1) % n;
                 TitleAction::None
             }
             Some(Binding::SelectPrev) => {
-                self.selected = (self.selected + MENU.len() - 1) % MENU.len();
+                let n = self.menu_items().len();
+                self.selected = (self.selected + n - 1) % n;
                 TitleAction::None
             }
-            Some(Binding::Confirm) => match self.selected {
-                0 => self.continue_last(),
-                1 => {
-                    self.page = Page::New;
-                    self.status.clear();
-                    self.pick_default_name();
-                    TitleAction::None
+            Some(Binding::Confirm) => {
+                let item = self
+                    .menu_items()
+                    .get(self.selected)
+                    .copied()
+                    .unwrap_or("Quit");
+                match item {
+                    "Continue" => self.continue_last(),
+                    "New game" => {
+                        self.page = Page::New;
+                        self.status.clear();
+                        self.pick_default_name();
+                        TitleAction::None
+                    }
+                    "Load game" => {
+                        self.refresh_slots();
+                        self.page = Page::Load;
+                        self.selected = 0;
+                        self.status.clear();
+                        TitleAction::None
+                    }
+                    "Settings" => {
+                        self.page = Page::Settings;
+                        self.selected = 0;
+                        TitleAction::None
+                    }
+                    "Achievements" => {
+                        self.open_achievements();
+                        TitleAction::None
+                    }
+                    "Prestige" => {
+                        self.open_prestige();
+                        TitleAction::None
+                    }
+                    "Credits" => {
+                        self.page = Page::Credits;
+                        TitleAction::None
+                    }
+                    _ => TitleAction::Quit,
                 }
-                2 => {
-                    self.refresh_slots();
-                    self.page = Page::Load;
-                    self.selected = 0;
-                    self.status.clear();
-                    TitleAction::None
-                }
-                3 => {
-                    self.page = Page::Settings;
-                    self.selected = 0;
-                    TitleAction::None
-                }
-                4 => {
-                    self.open_achievements();
-                    TitleAction::None
-                }
-                5 => {
-                    self.page = Page::Credits;
-                    TitleAction::None
-                }
-                _ => TitleAction::Quit,
-            },
+            }
             _ => TitleAction::None,
         }
     }
@@ -758,11 +851,99 @@ impl Title {
 
     fn refresh_career(&mut self) {
         self.refresh_slots();
-        self.career = CareerGlance::default();
-        for slot in &self.slots {
-            if let Ok(glance) = inspect_career(&slot.path) {
-                self.career.merge(glance);
+    }
+
+    fn open_prestige(&mut self) {
+        self.refresh_slots();
+        if !self.prestige_visible() {
+            self.status = "prestige is locked until a reset is available".into();
+            return;
+        }
+        self.page = Page::Prestige;
+        self.prestige_selected = 0;
+        self.prestige_confirm = false;
+        self.status.clear();
+    }
+
+    fn handle_prestige(&mut self, code: KeyCode) -> TitleAction {
+        let items = self.prestige_cfg.bonuses.len().max(1);
+        match self.config.keys.lookup(HelpContext::TitlePrestige, code) {
+            Some(Binding::Cancel) => {
+                if self.prestige_confirm {
+                    self.prestige_confirm = false;
+                    self.status.clear();
+                } else {
+                    self.page = Page::Menu;
+                    if let Some(idx) = self
+                        .menu_items()
+                        .iter()
+                        .position(|item| *item == "Prestige")
+                    {
+                        self.selected = idx;
+                    }
+                    self.status.clear();
+                }
             }
+            Some(Binding::SelectNext) => {
+                self.prestige_confirm = false;
+                self.prestige_selected = (self.prestige_selected + 1) % items;
+            }
+            Some(Binding::SelectPrev) => {
+                self.prestige_confirm = false;
+                self.prestige_selected = (self.prestige_selected + items - 1) % items;
+            }
+            Some(Binding::Confirm) => {
+                if self.prestige_confirm {
+                    self.buy_selected_bonus();
+                    self.prestige_confirm = false;
+                } else {
+                    self.prestige_confirm = true;
+                    if let Some(spec) = self.prestige_cfg.bonuses.get(self.prestige_selected) {
+                        self.status = format!(
+                            "buy {} for {}? enter again to confirm",
+                            spec.name, spec.cost
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+        TitleAction::None
+    }
+
+    fn buy_selected_bonus(&mut self) {
+        let Some(spec) = self
+            .prestige_cfg
+            .bonuses
+            .get(self.prestige_selected)
+            .cloned()
+        else {
+            return;
+        };
+        let Some(path) = self.prestige_source.clone() else {
+            self.status = "no save to store prestige".into();
+            return;
+        };
+        if save_is_locked(&path) {
+            self.status = "save is locked".into();
+            return;
+        }
+        let result = (|| -> Result<(), String> {
+            let _lock = lock_save(&path).map_err(|e| e.to_string())?;
+            let mut conn = open_save(&path).map_err(|e| e.to_string())?;
+            let mut state = load_state(&conn, self.balance.clone()).map_err(|e| e.to_string())?;
+            state
+                .buy_prestige_bonus(&spec.id, self.now_unix)
+                .map_err(|e: PrestigeError| e.to_string())?;
+            save_state(&mut conn, &state).map_err(|e| e.to_string())?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                self.refresh_slots();
+                self.status = format!("bought {}", spec.name);
+            }
+            Err(msg) => self.status = msg,
         }
     }
 
@@ -954,7 +1135,7 @@ impl Title {
         lines.push(Line::from(""));
         match self.page {
             Page::Menu => {
-                for (i, item) in MENU.iter().enumerate() {
+                for (i, item) in self.menu_items().into_iter().enumerate() {
                     lines.push(menu_line(item, i == self.selected));
                 }
                 lines.push(Line::from(""));
@@ -982,6 +1163,10 @@ impl Title {
                     self.new_field == NewField::Difficulty,
                 ));
                 lines.push(Line::from(self.seed_preview_line()));
+                let summary = self.prestige_summary();
+                if !summary.is_empty() {
+                    lines.push(Line::from(summary));
+                }
                 lines.push(Line::from(format!(
                     "{} on difficulty creates the slot. {} back. {} help.",
                     self.config.keys.primary(Binding::Confirm),
@@ -1115,6 +1300,32 @@ impl Title {
                     lines.push(Line::from(line));
                 }
             }
+            Page::Prestige => {
+                lines.push(Line::from(format!(
+                    "Prestige  run {}  {} unspent  lifetime {}",
+                    self.career.prestige.current.index,
+                    self.career.prestige.currency,
+                    self.career.prestige.lifetime
+                )));
+                lines.push(Line::from(format!(
+                    "{} buy (confirm twice)  {} back  {} help",
+                    self.config.keys.primary(Binding::Confirm),
+                    self.config.keys.primary(Binding::Cancel),
+                    self.config.keys.primary(Binding::Help)
+                )));
+                for (i, spec) in self.prestige_cfg.bonuses.iter().enumerate() {
+                    let mark = if i == self.prestige_selected {
+                        ">"
+                    } else {
+                        " "
+                    };
+                    let owned = self.career.prestige.owned_count(&spec.id);
+                    lines.push(Line::from(format!(
+                        "{mark} {}  cost {}  owned {owned}",
+                        spec.name, spec.cost
+                    )));
+                }
+            }
             Page::Credits => {
                 lines.push(Line::from(
                     "hoshi  an idle space-strategy game for the terminal",
@@ -1162,6 +1373,7 @@ impl Title {
                 .unwrap_or_else(|| self.dir.join(format!("{}.sqlite", self.new_name))),
             seed: parse_seed(&self.new_seed).ok().flatten(),
             difficulty: self.new_difficulty.as_label().to_string(),
+            prestige: self.career.prestige.clone(),
         }
     }
 }
@@ -1171,6 +1383,7 @@ pub struct NewGameSpec {
     pub path: PathBuf,
     pub seed: Option<u64>,
     pub difficulty: String,
+    pub prestige: Prestige,
 }
 
 pub fn parse_seed(text: &str) -> Result<Option<u64>, String> {
@@ -1285,6 +1498,7 @@ fn screens_for(binding: Binding) -> String {
         HelpContext::TitleSettings,
         HelpContext::TitleKeys,
         HelpContext::TitleAchievements,
+        HelpContext::TitlePrestige,
         HelpContext::TitleCredits,
     ];
     let mut names: Vec<&str> = CTX
@@ -1446,7 +1660,8 @@ pub fn research_levels(state: &hoshi_core::GameState) -> u32 {
 mod tests {
     use super::*;
     use hoshi_core::{
-        BalanceConfig, GameState, SCHEMA_VERSION, lock_save, open_save, save_is_locked, save_state,
+        BalanceConfig, GameState, SCHEMA_VERSION, load_state, lock_save, open_save, save_is_locked,
+        save_state,
     };
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -1696,6 +1911,44 @@ mod tests {
         let closed = render(&title, 80, 24);
         assert!(closed.contains("Continue"), "{closed}");
         assert!(!closed.contains("keys for this screen"), "{closed}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prestige_page_is_hidden_until_a_reset_is_available() {
+        let dir = unique_dir();
+        write_save(&dir, "fresh", &GameState::new(1));
+        let title = Title::new(dir.clone(), 1);
+        let text = render(&title, 80, 24);
+        assert!(!text.contains("Prestige"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prestige_page_buys_with_confirmation_and_new_game_lists_bonuses() {
+        let dir = unique_dir();
+        let mut state = GameState::new(10);
+        state.completed_wonders.push("observatory".into());
+        state.prestige.currency = 3;
+        state.prestige.lifetime = 3;
+        state.prestige.runs.push(hoshi_core::RunStats::new(1, 0));
+        write_save(&dir, "alpha", &state);
+        let mut title = Title::new(dir.clone(), 20);
+        let menu = render(&title, 80, 24);
+        assert!(menu.contains("Prestige"), "{menu}");
+        title.page = Page::Prestige;
+        title.handle_key(KeyCode::Enter);
+        assert!(title.status.contains("confirm"), "{}", title.status);
+        title.handle_key(KeyCode::Enter);
+        assert!(title.status.contains("bought"), "{}", title.status);
+        let conn = open_save(&dir.join("alpha.sqlite")).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.prestige.owned_count("starter_cache"), 1);
+        title.page = Page::New;
+        let new_text = render(&title, 80, 24);
+        assert!(new_text.contains("starter cache"), "{new_text}");
+        let spec = title.new_game_spec();
+        assert_eq!(spec.prestige.owned_count("starter_cache"), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
