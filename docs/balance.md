@@ -8,7 +8,7 @@ starting stockpiles, and staged wonders live in `crates/hoshi-core/data/balance.
 The file is embedded and validated on `BalanceConfig::default()`. Research stays in
 `research.toml`; ships stay in `ships.toml`; story events stay in `story.toml`;
 planet defences stay in `defences.toml`; laws stay in `laws.toml`; daily goals
-stay in `missions.toml`.
+stay in `missions.toml`; light tactical combat stays in `tactics.toml`.
 Wonder ids must be unique; each wonder
 needs at least one stage with `duration_secs > 0` and a positive resource cost.
 
@@ -71,6 +71,10 @@ is how often expected vs actual is sampled.
 Defaults: first upgrade in 5 minutes, at least one metal mine level per day,
 bridge pulses must not multiply stored metal by more than 8, and each branch
 keystone within 14 days.
+
+## Tactics
+
+`crates/hoshi-core/data/tactics.toml` is the light combat layer on the fleet resolver. Neutral formation, stance and open terrain are identity: the same seed matches the plain resolver. Wedge, wall and screen scale attack and shields; aggressive, defensive and hit-and-run do the same plus accuracy. Terrain can cut accuracy (nebula), reduce damage to fighters (asteroid) or make retreat fail (gravity well). Every ship and defence has a fighter/bomber/capital role for rock-paper-scissors, applied only when a side leaves Neutral. Auto-retreat and reserve commits apply while the player is away. Admiral traits (`none`, `flanker`, `stalwart`) spend XP up to `xp_trait_cap`. `hoshi simulate` fails if one formation and stance pair wins every sample.
 
 ## Espionage
 

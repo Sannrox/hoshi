@@ -29,6 +29,7 @@ mod ships;
 mod simulate;
 mod state;
 mod story;
+mod tactics;
 mod tutorial;
 mod waste;
 mod wonders;
@@ -51,8 +52,9 @@ pub use buildings::{BuildError, BuildJob, BuildingKind, Buildings};
 pub use chains::{ChainConfig, GoodKind, GoodSpec, Recipe, component_kind};
 pub use clock::{Clock, FakeClock, SystemClock};
 pub use combat::{
-    CombatFrame, CombatLog, CombatReport, CombatWinner, GroundReport, MAX_COMBAT_LOGS, next_u64,
-    plunder_from, rapid_fire_table, resolve_combat, resolve_ground,
+    CombatFrame, CombatLog, CombatModifiers, CombatReport, CombatWinner, GroundReport,
+    MAX_COMBAT_LOGS, RoundAction, next_u64, plunder_from, rapid_fire_table, resolve_combat,
+    resolve_combat_with, resolve_ground, stats_from_catalog,
 };
 pub use commentary::{
     CommentaryCatalog, CommentaryError, model_connect_addr, probe_model_endpoint, rephrase_lines,
@@ -116,10 +118,14 @@ pub use ships::{
 };
 pub use simulate::{
     DaySnapshot, HeavyIndustryReport, PrestigeSimRow, SimReport, heavy_industry_check,
-    simulate_greedy,
+    simulate_greedy, tactics_no_combo_dominates,
 };
 pub use state::{GameEvent, GameState, ResourceKind, Resources};
 pub use story::{PendingStory, StoryCatalog, StoryChoice, StoryError, StoryEvent};
+pub use tactics::{
+    Admiral, AdmiralTrait, FleetTactics, Formation, PendingTactical, Stance, TacticalPlan,
+    TacticsConfig, TacticsError, Terrain, auto_action, resolve_tactical,
+};
 pub use tutorial::{
     HintScreen, HintSpec, HintTrigger, TutorialBoard, TutorialCatalog, TutorialError,
 };

@@ -65,6 +65,10 @@
       "type": "array",
       "description": "Orbital moons of owned planets, with phalanx and jump-gate levels."
     },
+    "tactics": {
+      "type": "object",
+      "description": "Home fleet formation, stance, auto-retreat threshold and admiral."
+    },
     "laws": {
       "type": "array",
       "description": "Proposed, enacted and repealed laws with approvals and latest expected vs measured samples."

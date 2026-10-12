@@ -251,11 +251,13 @@ impl App {
     }
 
     pub fn catch_up_now(&mut self, now_unix: u64) {
+        self.state.interactive_tactics = true;
         self.state.catch_up(now_unix);
         self.record_production_sample();
     }
 
     pub fn handle_key(&mut self, code: KeyCode, now_unix: u64) -> Action {
+        self.state.interactive_tactics = true;
         self.state.catch_up(now_unix);
         self.clamp_planet();
         if self.help_open {
@@ -319,6 +321,9 @@ impl App {
                 _ => {}
             }
             return Action::None;
+        }
+        if self.state.pending_tactical.is_some() {
+            return self.handle_tactical_key(code, now_unix);
         }
         if self.story_event().is_some() {
             match self.keymap.lookup(ctx, code) {
@@ -470,6 +475,9 @@ impl App {
         if self.away.is_some() && !self.away_hidden {
             return HelpContext::Away;
         }
+        if self.state.pending_tactical.is_some() {
+            return HelpContext::Tactical;
+        }
         if self.story_event().is_some() {
             return HelpContext::Story;
         }
@@ -600,6 +608,8 @@ impl App {
             && !self.away_hidden
         {
             self.draw_away(frame, away);
+        } else if self.state.pending_tactical.is_some() {
+            self.draw_tactical(frame);
         } else if let Some(event) = self.story_event() {
             self.draw_story(frame, event);
         } else if self.opened_report {
@@ -642,6 +652,7 @@ impl App {
             || self.activity_open
             || self.advisor_open
             || (self.away.is_some() && !self.away_hidden)
+            || self.state.pending_tactical.is_some()
             || self.story_event().is_some()
             || self.opened_report
             || self.dispatch.is_some()
@@ -786,6 +797,63 @@ impl App {
             self.keymap.primary(Binding::ShowAway)
         )));
         render_overlay(frame, " while you were away ", lines);
+    }
+
+    fn handle_tactical_key(&mut self, code: KeyCode, now_unix: u64) -> Action {
+        match self.keymap.lookup(HelpContext::Tactical, code) {
+            Some(Binding::Quit) => Action::Quit,
+            Some(Binding::Confirm) => {
+                self.state
+                    .queue_tactical_action(hoshi_core::RoundAction::Hold);
+                self.state.progress_tactical(now_unix);
+                Action::None
+            }
+            Some(Binding::Cancel) => {
+                self.state
+                    .queue_tactical_action(hoshi_core::RoundAction::Retreat);
+                self.state.progress_tactical(now_unix);
+                Action::None
+            }
+            Some(Binding::Toggle) => {
+                self.state
+                    .queue_tactical_action(hoshi_core::RoundAction::CommitReserves);
+                self.state.progress_tactical(now_unix);
+                Action::None
+            }
+            _ => Action::None,
+        }
+    }
+
+    fn draw_tactical(&self, frame: &mut Frame<'_>) {
+        let Some(pending) = &self.state.pending_tactical else {
+            return;
+        };
+        let round = pending.actions.len().saturating_add(1);
+        let admiral = self
+            .state
+            .admirals
+            .iter()
+            .find(|a| Some(a.id) == self.state.home_admiral_id);
+        let mut lines = vec![
+            Line::from(format!(
+                "round {round}  {} / {}",
+                pending.def_plan.formation, pending.def_plan.stance
+            )),
+            Line::from(format!(
+                "pirates {}   you {}",
+                pending.attacker.total(),
+                pending.defender.total()
+            )),
+        ];
+        if let Some(adm) = admiral {
+            lines.push(Line::from(format!(
+                "admiral {}  {}  xp {}",
+                adm.name, adm.trait_id, adm.xp
+            )));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from("enter hold   x retreat   space commit"));
+        render_overlay(frame, " tactical ", lines);
     }
 
     fn draw_story(&self, frame: &mut Frame<'_>, event: &StoryEvent) {
@@ -3682,6 +3750,8 @@ mod tests {
             garrison: Some(garrison),
             kind: Some(state.outposts[0].kind),
             size: Some(state.outposts[0].size),
+            formation: Some("neutral".into()),
+            stance: Some("neutral".into()),
         });
         let mut app = App::new(state);
         for _ in 0..11 {

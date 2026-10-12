@@ -49,6 +49,59 @@ pub struct CombatReport {
     pub layered: bool,
 }
 
+/// One keypress between rounds. Hold continues; retreat ends the fight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoundAction {
+    Hold,
+    Retreat,
+    CommitReserves,
+}
+
+impl RoundAction {
+    pub fn as_key(self) -> &'static str {
+        match self {
+            RoundAction::Hold => "hold",
+            RoundAction::Retreat => "retreat",
+            RoundAction::CommitReserves => "commit",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Some(match key {
+            "hold" => RoundAction::Hold,
+            "retreat" => RoundAction::Retreat,
+            "commit" | "commit_reserves" => RoundAction::CommitReserves,
+            _ => return None,
+        })
+    }
+}
+
+/// Side-wide multipliers. Identity values leave [`resolve_combat`] unchanged.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CombatModifiers {
+    pub attack: f64,
+    pub shield: f64,
+    pub hull: f64,
+    pub accuracy: f64,
+    pub small_incoming: f64,
+    pub rps: [[f64; SHIP_KINDS]; SHIP_KINDS],
+    pub small: [bool; SHIP_KINDS],
+}
+
+impl CombatModifiers {
+    pub fn identity() -> Self {
+        Self {
+            attack: 1.0,
+            shield: 1.0,
+            hull: 1.0,
+            accuracy: 1.0,
+            small_incoming: 1.0,
+            rps: [[1.0; SHIP_KINDS]; SHIP_KINDS],
+            small: [false; SHIP_KINDS],
+        }
+    }
+}
+
 /// One animation step. Counts are surviving ships after that round.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CombatFrame {
@@ -126,6 +179,16 @@ impl CombatReport {
             &mut rng,
         )
     }
+}
+
+fn scale_stats(stats: &[ShipStats; SHIP_KINDS], m: &CombatModifiers) -> [ShipStats; SHIP_KINDS] {
+    let mut out = *stats;
+    for slot in &mut out {
+        slot.attack *= m.attack;
+        slot.shield *= m.shield;
+        slot.hull *= m.hull;
+    }
+    out
 }
 
 /// Strength comparison with seeded variance. Same seed replays the same rolls.
@@ -235,6 +298,8 @@ fn shoot(
     fire: &[usize],
     targets: &mut [Unit],
     rapid_fire: &[[u32; SHIP_KINDS]; SHIP_KINDS],
+    firer_mod: &CombatModifiers,
+    target_mod: &CombatModifiers,
     rng: &mut u64,
 ) {
     for &i in fire {
@@ -245,7 +310,19 @@ fn shoot(
             }
             let pick = live[(next_u64(rng) as usize) % live.len()];
             let target_kind = targets[pick].kind;
-            targets[pick].hit(firers[i].attack);
+            let mut skip = false;
+            if firer_mod.accuracy < 1.0 - 1e-12 {
+                let u = (next_u64(rng) as f64) / (u64::MAX as f64);
+                skip = u > firer_mod.accuracy.clamp(0.0, 1.0);
+            }
+            if !skip {
+                let mut dmg =
+                    firers[i].attack * firer_mod.rps[firers[i].kind.index()][target_kind.index()];
+                if target_mod.small[target_kind.index()] {
+                    dmg *= target_mod.small_incoming;
+                }
+                targets[pick].hit(dmg);
+            }
             let value = rapid_fire[firers[i].kind.index()][target_kind.index()];
             if value < 2 {
                 break;
@@ -269,9 +346,41 @@ pub fn resolve_combat(
     rapid_fire: &[[u32; SHIP_KINDS]; SHIP_KINDS],
     rng: &mut u64,
 ) -> CombatReport {
+    resolve_combat_with(
+        attacker,
+        defender,
+        attacker_stats,
+        defender_stats,
+        max_rounds,
+        rapid_fire,
+        rng,
+        &CombatModifiers::identity(),
+        &CombatModifiers::identity(),
+        &[],
+        Fleet::default(),
+    )
+}
+
+/// Same as [`resolve_combat`], with per-side modifiers and between-round actions.
+#[allow(clippy::too_many_arguments)]
+pub fn resolve_combat_with(
+    attacker: Fleet,
+    defender: Fleet,
+    attacker_stats: &[ShipStats; SHIP_KINDS],
+    defender_stats: &[ShipStats; SHIP_KINDS],
+    max_rounds: u8,
+    rapid_fire: &[[u32; SHIP_KINDS]; SHIP_KINDS],
+    rng: &mut u64,
+    attacker_mod: &CombatModifiers,
+    defender_mod: &CombatModifiers,
+    actions: &[RoundAction],
+    mut reserves: Fleet,
+) -> CombatReport {
     let seed = *rng;
-    let mut attackers = expand(attacker, attacker_stats);
-    let mut defenders = expand(defender, defender_stats);
+    let atk_stats = scale_stats(attacker_stats, attacker_mod);
+    let def_stats = scale_stats(defender_stats, defender_mod);
+    let mut attackers = expand(attacker, &atk_stats);
+    let mut defenders = expand(defender, &def_stats);
     let mut frames = vec![CombatFrame {
         round: 0,
         attacker,
@@ -280,6 +389,7 @@ pub fn resolve_combat(
         explosions: 0,
     }];
     let mut rounds = 0;
+    let mut retreated = false;
     if !attackers.is_empty() && !defenders.is_empty() {
         while rounds < max_rounds {
             if living(&attackers).is_empty() || living(&defenders).is_empty() {
@@ -294,8 +404,24 @@ pub fn resolve_combat(
             let def_fire = living(&defenders);
             let shots = (atk_fire.len() + def_fire.len()) as u32;
             let before = compress(&attackers).total() + compress(&defenders).total();
-            shoot(&attackers, &atk_fire, &mut defenders, rapid_fire, rng);
-            shoot(&defenders, &def_fire, &mut attackers, rapid_fire, rng);
+            shoot(
+                &attackers,
+                &atk_fire,
+                &mut defenders,
+                rapid_fire,
+                attacker_mod,
+                defender_mod,
+                rng,
+            );
+            shoot(
+                &defenders,
+                &def_fire,
+                &mut attackers,
+                rapid_fire,
+                defender_mod,
+                attacker_mod,
+                rng,
+            );
             rounds += 1;
             let attacker_now = compress(&attackers);
             let defender_now = compress(&defenders);
@@ -307,11 +433,30 @@ pub fn resolve_combat(
                 shots,
                 explosions: before.saturating_sub(after),
             });
+            match actions
+                .get((rounds - 1) as usize)
+                .copied()
+                .unwrap_or(RoundAction::Hold)
+            {
+                RoundAction::Hold => {}
+                RoundAction::Retreat => {
+                    retreated = true;
+                    break;
+                }
+                RoundAction::CommitReserves => {
+                    if !reserves.is_empty() {
+                        defenders.extend(expand(reserves, &def_stats));
+                        reserves = Fleet::default();
+                    }
+                }
+            }
         }
     }
     let attacker_after = compress(&attackers);
     let defender_after = compress(&defenders);
-    let winner = if defender_after.is_empty() && !attacker_after.is_empty() {
+    let winner = if retreated {
+        CombatWinner::Draw
+    } else if defender_after.is_empty() && !attacker_after.is_empty() {
         CombatWinner::Attacker
     } else if attacker_after.is_empty() && !defender_after.is_empty() {
         CombatWinner::Defender
@@ -407,6 +552,73 @@ mod tests {
         assert_eq!(report.attacker_after.get(ShipKind::LightFighter), 1);
         assert_eq!(report.defender_after.get(ShipKind::LightFighter), 1);
         assert_eq!(report.winner, CombatWinner::Draw);
+    }
+
+    #[test]
+    fn identity_modifiers_match_the_plain_resolver() {
+        let mut a = 11;
+        let mut b = 11;
+        let left = resolve_combat(
+            lf(4),
+            lf(3),
+            &stats(),
+            &stats(),
+            6,
+            &[[0; SHIP_KINDS]; SHIP_KINDS],
+            &mut a,
+        );
+        let right = resolve_combat_with(
+            lf(4),
+            lf(3),
+            &stats(),
+            &stats(),
+            6,
+            &[[0; SHIP_KINDS]; SHIP_KINDS],
+            &mut b,
+            &CombatModifiers::identity(),
+            &CombatModifiers::identity(),
+            &[],
+            Fleet::default(),
+        );
+        assert_eq!(left, right);
+    }
+
+    #[test]
+    fn scripted_retreat_is_deterministic() {
+        let mut a = 3;
+        let mut b = 3;
+        let actions = [RoundAction::Hold, RoundAction::Retreat, RoundAction::Hold];
+        let left = resolve_combat_with(
+            lf(5),
+            lf(5),
+            &stats(),
+            &stats(),
+            6,
+            &[[0; SHIP_KINDS]; SHIP_KINDS],
+            &mut a,
+            &CombatModifiers::identity(),
+            &CombatModifiers::identity(),
+            &actions,
+            Fleet::default(),
+        );
+        let right = resolve_combat_with(
+            lf(5),
+            lf(5),
+            &stats(),
+            &stats(),
+            6,
+            &[[0; SHIP_KINDS]; SHIP_KINDS],
+            &mut b,
+            &CombatModifiers::identity(),
+            &CombatModifiers::identity(),
+            &actions,
+            Fleet::default(),
+        );
+        assert_eq!(left, right);
+        assert_eq!(left.rounds, 2);
+        assert_eq!(left.winner, CombatWinner::Draw);
+        assert!(left.attacker_after.total() > 0);
+        assert!(left.defender_after.total() > 0);
     }
 
     #[test]

@@ -1,0 +1,127 @@
+# Light tactical layer. Neutral formation/stance/terrain is identity vs the plain resolver.
+
+min_rounds = 3
+max_rounds = 6
+hit_and_run_after = 3
+default_retreat_below = 0.4
+xp_per_battle = 1
+xp_on_win = 2
+xp_trait_cap = 20
+spy_tactics_tier = "fleet"
+
+[rps]
+fighter_vs_bomber = 1.25
+fighter_vs_capital = 0.8
+bomber_vs_capital = 1.25
+bomber_vs_fighter = 0.8
+capital_vs_fighter = 1.25
+capital_vs_bomber = 0.8
+
+[formation.neutral]
+attack = 1.0
+shield = 1.0
+hull = 1.0
+
+[formation.wedge]
+attack = 1.12
+shield = 0.95
+hull = 1.0
+
+[formation.wall]
+attack = 0.95
+shield = 1.15
+hull = 1.0
+
+[formation.screen]
+attack = 1.0
+shield = 1.05
+hull = 1.05
+
+[stance.neutral]
+attack = 1.0
+shield = 1.0
+hull = 1.0
+accuracy = 1.0
+
+[stance.aggressive]
+attack = 1.18
+shield = 0.9
+hull = 0.9
+accuracy = 1.0
+
+[stance.defensive]
+attack = 0.9
+shield = 1.2
+hull = 1.05
+accuracy = 1.0
+
+[stance.hit_and_run]
+attack = 1.08
+shield = 0.95
+hull = 1.0
+accuracy = 1.0
+
+[terrain.open]
+accuracy = 1.0
+small_incoming = 1.0
+retreat_ok = 1.0
+
+[terrain.nebula]
+accuracy = 0.85
+small_incoming = 1.0
+retreat_ok = 1.0
+
+[terrain.asteroid]
+accuracy = 1.0
+small_incoming = 0.8
+retreat_ok = 1.0
+
+[terrain.gravity_well]
+accuracy = 1.0
+small_incoming = 1.0
+retreat_ok = 0.5
+
+[role]
+light_fighter = "fighter"
+heavy_fighter = "fighter"
+cruiser = "bomber"
+battleship = "capital"
+small_cargo = "none"
+large_cargo = "none"
+recycler = "none"
+espionage_probe = "fighter"
+explorer = "none"
+colony_ship = "none"
+troop_transport = "none"
+light_cannon = "fighter"
+heavy_cannon = "bomber"
+ion_cannon = "capital"
+missile_silo = "bomber"
+interceptor = "fighter"
+shield_dome = "capital"
+orbital_station = "capital"
+garrison = "none"
+
+[[trait]]
+id = "none"
+name = "Untried"
+attack = 1.0
+shield = 1.0
+xp = 0
+portrait = "admiral-neutral"
+
+[[trait]]
+id = "flanker"
+name = "Flanker"
+attack = 1.1
+shield = 1.0
+xp = 4
+portrait = "admiral-pleased"
+
+[[trait]]
+id = "stalwart"
+name = "Stalwart"
+attack = 1.0
+shield = 1.12
+xp = 4
+portrait = "admiral-alarmed"

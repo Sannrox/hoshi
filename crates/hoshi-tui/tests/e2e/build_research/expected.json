@@ -231,9 +231,21 @@
     "deuterium": 100.0,
     "metal": 477.42499999999995
   },
-  "save_schema": 26,
+  "save_schema": 27,
   "schema_version": 1,
   "spy_reports": [],
+  "tactics": {
+    "admiral": {
+      "id": 1,
+      "name": "Home fleet",
+      "trait": "none",
+      "xp": 0
+    },
+    "formation": "neutral",
+    "pending": false,
+    "retreat_below": 0.4,
+    "stance": "neutral"
+  },
   "tutorial": {
     "enabled": false,
     "pending": null,

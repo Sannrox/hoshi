@@ -169,6 +169,7 @@ silent extra departure; they extend this list.
 | Construction stockpiles named metal / crystal / deuterium | Three columns keep the TUI and save small; chains already have real material names underneath. |
 | Solar output ignores orbital radius | Energy is already a cap; radius falloff is a follow-up, not a hidden extra. |
 | Round-based combat with rapid-fire tables | Seeded, short, offline-safe fights. Map new stats onto energy and mass rather than replacing the resolver. |
+| Formation, stance and role modifiers | Light tactics scale the existing resolver; Neutral is identity. Battles never wait for input. |
 | Instantaneous heat and pollution (no stored slag or thermal inertia) | Catch-up stays a single pass; overflow is a work-speed and raid-signature modifier. |
 | FTL, if any | Only through late-game gates or a listed wonder. Default travel is sublight on the flight clock. |
 | Moons from battle debris | A moon is an orbital facility of its parent planet, not a new galaxy slot. Formation is a seeded roll on hull lost so fights stay fast and deterministic. |

@@ -7,7 +7,7 @@ use crate::balance::BalanceConfig;
 use crate::buildings::{BuildError, BuildJob, BuildingKind, Buildings};
 use crate::chains::{RecipeRun, apply_recipes};
 use crate::combat::{
-    CombatReport, CombatWinner, next_u64, plunder_from, rapid_fire_table, resolve_combat,
+    CombatReport, CombatWinner, RoundAction, next_u64, plunder_from, rapid_fire_table,
     resolve_ground, stats_from_catalog,
 };
 use crate::daily::{DailyAction, DailyBoard, mine_kind};
@@ -224,6 +224,15 @@ pub struct GameState {
     pub moons: Vec<crate::Moon>,
     pub debris: BTreeMap<Coord, f64>,
     pub tutorial: crate::TutorialBoard,
+    pub fleet_tactics: crate::FleetTactics,
+    pub admirals: Vec<crate::Admiral>,
+    pub home_admiral_id: Option<u64>,
+    pub next_admiral_id: u64,
+    pub reserves: crate::Fleet,
+    pub pending_tactical: Option<crate::PendingTactical>,
+    /// When true, home raids pause between rounds for a keypress. Catch-up and
+    /// saves always auto-finish; the TUI sets this for the live session only.
+    pub interactive_tactics: bool,
     pub config: BalanceConfig,
 }
 
@@ -295,6 +304,21 @@ impl GameState {
             moons: Vec::new(),
             debris: BTreeMap::new(),
             tutorial: crate::TutorialBoard::default(),
+            fleet_tactics: crate::FleetTactics {
+                retreat_below: config.tactics.default_retreat_below,
+                ..crate::FleetTactics::default()
+            },
+            admirals: vec![crate::Admiral {
+                id: 1,
+                name: "Home fleet".into(),
+                trait_id: "none".into(),
+                xp: 0,
+            }],
+            home_admiral_id: Some(1),
+            next_admiral_id: 2,
+            reserves: crate::Fleet::default(),
+            pending_tactical: None,
+            interactive_tactics: false,
             config,
         };
         state.apply_prestige_start();
@@ -357,6 +381,11 @@ impl GameState {
             } else {
                 None
             };
+            let tactical_at = self
+                .pending_tactical
+                .as_ref()
+                .map(|p| p.next_at)
+                .filter(|&t| t > self.last_tick_unix);
             let prod_boost_at = self
                 .activity
                 .prod_boost_until
@@ -382,7 +411,7 @@ impl GameState {
                             min_time(min_time(build_at, research_at), ship_at),
                             mission_at,
                         ),
-                        raid_at,
+                        min_time(raid_at, tactical_at),
                     ),
                     route_at,
                 ),
@@ -458,6 +487,9 @@ impl GameState {
             }
             if raid_at == Some(done_at) {
                 self.resolve_raid_at(done_at);
+            }
+            if tactical_at == Some(done_at) {
+                self.progress_tactical(done_at);
             }
             if prod_boost_at == Some(done_at) {
                 self.activity.prod_boost_until = None;
@@ -2576,18 +2608,7 @@ impl GameState {
             }
             ExpeditionResult::Pirates { enemy } => {
                 let mut fight_seed = seed.wrapping_add(0xA5A5_A5A5_A5A5_A5A5);
-                let atk_stats = self.player_combat_stats();
-                let def_stats = stats_from_catalog(&self.config.ships);
-                let rf = rapid_fire_table(&self.config.ships);
-                let report = resolve_combat(
-                    ships,
-                    enemy,
-                    &atk_stats,
-                    &def_stats,
-                    self.config.raid.max_rounds,
-                    &rf,
-                    &mut fight_seed,
-                );
+                let report = self.resolve_player_attack(ships, enemy, &mut fight_seed);
                 self.push_combat_log(done_at, report.clone());
                 let dest = self.missions[index].dest;
                 self.note_fight_debris(done_at, dest, &report);
@@ -2721,6 +2742,16 @@ impl GameState {
             garrison,
             kind,
             size,
+            formation: if show_fleet {
+                Some(crate::Formation::Neutral.as_key().into())
+            } else {
+                None
+            },
+            stance: if show_fleet {
+                Some(crate::Stance::Neutral.as_key().into())
+            } else {
+                None
+            },
         });
         self.push_event(done_at, format_spy_report(&outcome, dest, probes));
         self.missions[index]
@@ -2744,18 +2775,9 @@ impl GameState {
         };
         let ships = self.missions[index].ships;
         let defences = self.outposts[outpost_idx].defences;
-        let atk_stats = self.player_combat_stats();
-        let def_stats = stats_from_catalog(&self.config.ships);
-        let rf = rapid_fire_table(&self.config.ships);
-        let report = resolve_combat(
-            ships,
-            defences,
-            &atk_stats,
-            &def_stats,
-            self.config.raid.max_rounds,
-            &rf,
-            &mut self.rng_seed,
-        );
+        let mut rng = self.rng_seed;
+        let report = self.resolve_player_attack(ships, defences, &mut rng);
+        self.rng_seed = rng;
         self.outposts[outpost_idx].defences = report.defender_after;
         self.missions[index].ships = report.attacker_after;
         self.push_combat_log(done_at, report.clone());
@@ -2872,28 +2894,251 @@ impl GameState {
     }
 
     fn resolve_raid_at(&mut self, done_at: u64) -> CombatReport {
+        self.finish_pending_tactical();
+        if self.interactive_tactics && self.defences.is_empty() {
+            self.begin_home_raid_pending(done_at);
+            if let Some(pending) = &self.pending_tactical {
+                return CombatReport {
+                    rounds: 0,
+                    attacker_before: pending.attacker,
+                    defender_before: pending.defender,
+                    attacker_after: pending.attacker,
+                    defender_after: pending.defender,
+                    winner: CombatWinner::Draw,
+                    ground: None,
+                    seed: pending.seed,
+                    frames: Vec::new(),
+                    layered: false,
+                };
+            }
+        }
+        self.resolve_raid_now(done_at)
+    }
+
+    fn begin_home_raid_pending(&mut self, done_at: u64) {
+        let pirates = self.pirate_fleet();
+        self.next_raid_at = None;
+        self.pending_tactical = Some(crate::PendingTactical {
+            seed: self.rng_seed,
+            attacker: pirates,
+            defender: self.fleet,
+            reserves: self.reserves,
+            atk_plan: crate::TacticalPlan::default(),
+            def_plan: self.player_plan(),
+            actions: Vec::new(),
+            next_at: done_at.saturating_add(1),
+            queued: None,
+        });
+    }
+
+    /// Hold, retreat, or commit reserves for the current round. Ignored when idle.
+    pub fn queue_tactical_action(&mut self, action: RoundAction) {
+        if let Some(pending) = &mut self.pending_tactical {
+            pending.queued = Some(action);
+        }
+    }
+
+    /// Apply queued or auto-defaults until `now`, or until a live pause.
+    pub fn progress_tactical(&mut self, now: u64) {
+        loop {
+            let Some(pending) = self.pending_tactical.clone() else {
+                return;
+            };
+            if pending.next_at > now {
+                return;
+            }
+            let action = pending.queued.unwrap_or_else(|| {
+                if pending.def_plan.formation == crate::Formation::Neutral
+                    && pending.def_plan.stance == crate::Stance::Neutral
+                {
+                    return RoundAction::Hold;
+                }
+                let peek = self.peek_tactical(&pending);
+                let round = pending.actions.len() as u8;
+                crate::auto_action(
+                    pending.defender,
+                    peek.defender_after,
+                    pending.reserves,
+                    self.fleet_tactics,
+                    pending.def_plan.stance,
+                    round.max(1),
+                    &self.config.tactics,
+                )
+            });
+            if let Some(slot) = &mut self.pending_tactical {
+                slot.queued = None;
+                slot.actions.push(action);
+            }
+            let report = self.peek_tactical(&self.pending_tactical.clone().expect("pending"));
+            let finished = report.winner != CombatWinner::Draw
+                || report.rounds >= self.config.tactics.max_rounds
+                || action == RoundAction::Retreat
+                || report.attacker_after.is_empty()
+                || report.defender_after.is_empty();
+            if finished {
+                self.finish_home_raid(now.max(pending.next_at), report);
+                return;
+            }
+            if let Some(slot) = &mut self.pending_tactical {
+                slot.next_at = slot.next_at.saturating_add(1);
+            }
+            if self.interactive_tactics {
+                return;
+            }
+        }
+    }
+
+    /// Resolve any in-progress fight with auto-defaults. Battles never block a save.
+    pub fn finish_pending_tactical(&mut self) {
+        if self.pending_tactical.is_none() {
+            return;
+        }
+        let interactive = self.interactive_tactics;
+        self.interactive_tactics = false;
+        let until = self
+            .pending_tactical
+            .as_ref()
+            .map(|p| {
+                p.next_at
+                    .saturating_add(u64::from(self.config.tactics.max_rounds) + 1)
+            })
+            .unwrap_or(self.last_tick_unix);
+        self.progress_tactical(until);
+        self.interactive_tactics = interactive;
+    }
+
+    pub fn set_formation(&mut self, key: &str) -> Result<(), crate::TacticsError> {
+        let formation = crate::Formation::from_key(key)
+            .ok_or_else(|| crate::TacticsError::Unknown(format!("formation {key}")))?;
+        self.fleet_tactics.formation = formation;
+        Ok(())
+    }
+
+    pub fn set_stance(&mut self, key: &str) -> Result<(), crate::TacticsError> {
+        let stance = crate::Stance::from_key(key)
+            .ok_or_else(|| crate::TacticsError::Unknown(format!("stance {key}")))?;
+        self.fleet_tactics.stance = stance;
+        Ok(())
+    }
+
+    pub fn set_retreat_below(&mut self, value: f64) -> Result<(), crate::TacticsError> {
+        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+            return Err(crate::TacticsError::Unknown("retreat must be 0..=1".into()));
+        }
+        self.fleet_tactics.retreat_below = value;
+        Ok(())
+    }
+
+    fn player_plan(&self) -> crate::TacticalPlan {
+        crate::TacticalPlan {
+            formation: self.fleet_tactics.formation,
+            stance: self.fleet_tactics.stance,
+            terrain: crate::Terrain::Open,
+        }
+    }
+
+    fn home_admiral(&self) -> Option<&crate::Admiral> {
+        let id = self.home_admiral_id?;
+        self.admirals.iter().find(|a| a.id == id)
+    }
+
+    fn grant_admiral_xp(&mut self, winner: CombatWinner) {
+        let Some(id) = self.home_admiral_id else {
+            return;
+        };
+        let mut xp = self.config.tactics.xp_per_battle;
+        if winner == CombatWinner::Defender {
+            xp = xp.saturating_add(self.config.tactics.xp_on_win);
+        }
+        let cap = self.config.tactics.xp_trait_cap;
+        let next_trait = {
+            let Some(adm) = self.admirals.iter().find(|a| a.id == id) else {
+                return;
+            };
+            let new_xp = adm.xp.saturating_add(xp).min(cap);
+            self.config.tactics.next_trait(new_xp, &adm.trait_id)
+        };
+        if let Some(adm) = self.admirals.iter_mut().find(|a| a.id == id) {
+            adm.xp = adm.xp.saturating_add(xp).min(cap);
+            adm.trait_id = next_trait;
+        }
+    }
+
+    fn resolve_player_attack(
+        &self,
+        attacker: Fleet,
+        defender: Fleet,
+        rng: &mut u64,
+    ) -> CombatReport {
+        let atk_stats = self.player_combat_stats();
+        let def_stats = stats_from_catalog(&self.config.ships);
+        let rf = rapid_fire_table(&self.config.ships);
+        crate::resolve_tactical(
+            attacker,
+            defender,
+            &atk_stats,
+            &def_stats,
+            &rf,
+            rng,
+            &self.config.tactics,
+            self.player_plan(),
+            crate::TacticalPlan::default(),
+            crate::FleetTactics::default(),
+            self.home_admiral(),
+            None,
+            &[],
+            Fleet::default(),
+        )
+    }
+
+    fn peek_tactical(&self, pending: &crate::PendingTactical) -> CombatReport {
+        let atk_stats = stats_from_catalog(&self.config.ships);
+        let def_stats = self.player_combat_stats();
+        let rf = rapid_fire_table(&self.config.ships);
+        let mut rng = pending.seed;
+        crate::resolve_tactical(
+            pending.attacker,
+            pending.defender,
+            &atk_stats,
+            &def_stats,
+            &rf,
+            &mut rng,
+            &self.config.tactics,
+            pending.atk_plan,
+            pending.def_plan,
+            self.fleet_tactics,
+            None,
+            self.home_admiral(),
+            &pending.actions,
+            pending.reserves,
+        )
+    }
+
+    fn resolve_raid_now(&mut self, done_at: u64) -> CombatReport {
         let pirates = self.pirate_fleet();
         let atk_stats = stats_from_catalog(&self.config.ships);
         let def_stats = self.player_combat_stats();
         let rf = rapid_fire_table(&self.config.ships);
-        let report = if self.defences.is_empty() {
-            let report = resolve_combat(
+        if self.defences.is_empty() {
+            let mut rng = self.rng_seed;
+            let report = crate::resolve_tactical(
                 pirates,
                 self.fleet,
                 &atk_stats,
                 &def_stats,
-                self.config.raid.max_rounds,
                 &rf,
-                &mut self.rng_seed,
+                &mut rng,
+                &self.config.tactics,
+                crate::TacticalPlan::default(),
+                self.player_plan(),
+                self.fleet_tactics,
+                None,
+                self.home_admiral(),
+                &[],
+                self.reserves,
             );
-            self.fleet = report.defender_after;
-            let plunder = self.take_raid_plunder(report.winner);
-            self.apply_raid_standing(report.winner, done_at);
-            if report.winner != CombatWinner::Attacker {
-                self.raids_survived = self.raids_survived.saturating_add(1);
-            }
-            self.push_event(done_at, format_raid_report(&report, plunder));
-            report
+            self.rng_seed = rng;
+            self.finish_home_raid(done_at, report)
         } else {
             let parked = self.fleet;
             let hangar = def_stats[ShipKind::LightFighter.index()];
@@ -2922,7 +3167,7 @@ impl GameState {
                 done_at,
                 format_layered_raid(pirates, parked, &battle, plunder),
             );
-            CombatReport {
+            let report = CombatReport {
                 rounds: battle.orbital_rounds,
                 attacker_before: pirates,
                 defender_before: parked,
@@ -2934,8 +3179,44 @@ impl GameState {
                 frames: Vec::new(),
                 layered: false,
             }
-            .with_seed_and_endpoints(seed)
-        };
+            .with_seed_and_endpoints(seed);
+            self.schedule_next_raid(done_at, report)
+        }
+    }
+
+    fn finish_home_raid(&mut self, done_at: u64, report: CombatReport) -> CombatReport {
+        if let Some(pending) = self.pending_tactical.take() {
+            let mut rng = pending.seed;
+            let _ = crate::resolve_tactical(
+                pending.attacker,
+                pending.defender,
+                &stats_from_catalog(&self.config.ships),
+                &self.player_combat_stats(),
+                &rapid_fire_table(&self.config.ships),
+                &mut rng,
+                &self.config.tactics,
+                pending.atk_plan,
+                pending.def_plan,
+                self.fleet_tactics,
+                None,
+                self.home_admiral(),
+                &pending.actions,
+                pending.reserves,
+            );
+            self.rng_seed = rng;
+        }
+        self.fleet = report.defender_after;
+        let plunder = self.take_raid_plunder(report.winner);
+        self.apply_raid_standing(report.winner, done_at);
+        if report.winner != CombatWinner::Attacker {
+            self.raids_survived = self.raids_survived.saturating_add(1);
+        }
+        self.grant_admiral_xp(report.winner);
+        self.push_event(done_at, format_raid_report(&report, plunder));
+        self.schedule_next_raid(done_at, report)
+    }
+
+    fn schedule_next_raid(&mut self, done_at: u64, report: CombatReport) -> CombatReport {
         self.next_raid_at = self
             .raid_interval_secs()
             .map(|wait| done_at.saturating_add(wait));
@@ -4585,6 +4866,7 @@ mod tests {
             achievements: crate::AchievementConfig::empty(),
             daily: crate::DailyConfig::empty(),
             moons: crate::MoonConfig::inactive(),
+            tactics: crate::TacticsConfig::default(),
         }
     }
 
@@ -7022,6 +7304,8 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         assert_eq!(one.tier, "activity");
         assert!(one.resources.is_none());
         assert!(one.garrison.is_none());
+        assert!(one.formation.is_none());
+        assert!(one.stance.is_none());
         assert_eq!(one.age_secs(low.last_tick_unix), 0);
         fly_home(&mut low);
         let aged = low.latest_report(dest).expect("report");
@@ -7042,6 +7326,8 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         assert_eq!(full.fleet, Some(Fleet::default()));
         assert_eq!(full.defences, Some(defences));
         assert_eq!(full.garrison, Some(garrison));
+        assert_eq!(full.formation.as_deref(), Some("neutral"));
+        assert_eq!(full.stance.as_deref(), Some("neutral"));
         assert!(
             high.events.iter().any(|e| e.text.contains("spy")
                 && e.text.contains("detected")
@@ -7985,5 +8271,41 @@ label = "Leave it"
         state.catch_up(10);
         state.choose_story("take", 12).unwrap();
         assert_eq!(state.next_raid_at, None);
+    }
+
+    #[test]
+    fn interactive_raid_auto_finishes_without_blocking() {
+        let mut cfg = test_config();
+        cfg.raid.enabled = true;
+        cfg.raid.first_delay_secs = 10;
+        let mut state = GameState::with_config(0, cfg);
+        state.fleet.add(ShipKind::LightFighter, 4);
+        state.interactive_tactics = true;
+        state.next_raid_at = Some(10);
+        state.catch_up(10);
+        assert!(state.pending_tactical.is_some());
+        state.finish_pending_tactical();
+        assert!(state.pending_tactical.is_none());
+        assert!(state.combat_logs.last().is_some());
+        assert!(state.admirals[0].xp > 0);
+    }
+
+    #[test]
+    fn queued_retreat_ends_a_live_fight() {
+        let mut cfg = test_config();
+        cfg.raid.enabled = true;
+        let mut state = GameState::with_config(0, cfg);
+        state.fleet.add(ShipKind::LightFighter, 8);
+        state.interactive_tactics = true;
+        state.next_raid_at = Some(5);
+        state.catch_up(5);
+        assert!(state.pending_tactical.is_some());
+        state.queue_tactical_action(RoundAction::Retreat);
+        state.progress_tactical(6);
+        assert!(state.pending_tactical.is_none());
+        assert_eq!(
+            state.combat_logs.last().unwrap().report.winner,
+            CombatWinner::Draw
+        );
     }
 }

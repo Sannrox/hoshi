@@ -632,6 +632,7 @@ fn play_path(
         app.catch_up_now(clock.now_unix());
         write_notify(app.poll_notify());
         if last_save.elapsed() >= SAVE_INTERVAL {
+            app.state.finish_pending_tactical();
             if let Err(e) = save_state(&mut conn, &app.state) {
                 break Err(std::io::Error::other(e.to_string()));
             }
@@ -669,6 +670,7 @@ fn play_path(
         }
     };
     ratatui::restore();
+    app.state.finish_pending_tactical();
     save_state(&mut conn, &app.state)?;
     result?;
     Ok(())
