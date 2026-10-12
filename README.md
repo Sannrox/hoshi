@@ -12,8 +12,9 @@ while your coding agents work.
 
 hoshi is a complete game on its own: economy, research, fleets, colonies,
 story events, trade, wonders, prestige, daily missions and achievements. No
-account, network connection or AI service is needed. A shared universe is
-not in scope ([ADR 0004](docs/decisions/0004-no-shared-universe.md)).
+account, network connection or AI service is needed. The local game stays
+single-player ([ADR 0004](docs/decisions/0004-no-shared-universe.md)); a shared
+universe exists only as a shard hosted on Chisei ([ADR 0005](docs/decisions/0005-shared-shard-on-chisei.md)).
 
 ## Optional: your agents play along
 

@@ -1,6 +1,6 @@
 # ADR 0004: No shared universe
 
-- Status: Accepted
+- Status: Partially superseded by [0005](0005-shared-shard-on-chisei.md)
 - Date: 2026-10-12
 - Follows: [0002](0002-terminal-idle-game-with-event-bridge.md)
 - Source: [#18](https://github.com/Sannrox/hoshi/issues/18)
