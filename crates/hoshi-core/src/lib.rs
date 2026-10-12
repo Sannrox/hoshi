@@ -7,6 +7,7 @@ mod buildings;
 mod chains;
 mod clock;
 mod combat;
+mod daily;
 mod defences;
 mod diplomacy;
 mod espionage;
@@ -44,6 +45,9 @@ pub use clock::{Clock, FakeClock, SystemClock};
 pub use combat::{
     CombatFrame, CombatLog, CombatReport, CombatWinner, GroundReport, MAX_COMBAT_LOGS, next_u64,
     plunder_from, rapid_fire_table, resolve_combat, resolve_ground,
+};
+pub use daily::{
+    DailyAction, DailyBoard, DailyConfig, DailyError, DailyKind, DailySlot, DailySpec,
 };
 pub use defences::{
     DEFENCE_KINDS, DefenceConfig, DefenceGrid, DefenceKind, DefenceRole, DefenceSpec, PlanetBattle,

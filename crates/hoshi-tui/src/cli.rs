@@ -502,6 +502,20 @@ fn state_value(state: &GameState) -> Value {
         "achievements": state.achievements.iter().map(|(id, at)| {
             json!({"id": id, "unlocked_at": at})
         }).collect::<Vec<_>>(),
+        "daily": {
+            "day_index": state.daily.day_index,
+            "streak": state.daily.streak,
+            "resets_in_secs": state.daily_resets_in(),
+            "slots": state.daily.slots.iter().map(|slot| {
+                json!({
+                    "id": slot.spec_id,
+                    "name": state.config.daily.get(&slot.spec_id).map(|s| s.name.clone()).unwrap_or_default(),
+                    "progress": slot.progress,
+                    "target": slot.target,
+                    "done": slot.done(),
+                })
+            }).collect::<Vec<_>>(),
+        },
         "laws": state.laws.laws.iter().map(|law| {
             json!({
                 "id": law.id,
@@ -974,6 +988,8 @@ mod tests {
         assert!(!text.contains("galaxy_seed"));
         assert!(value["research"]["exclusive_picks"].is_object());
         assert!(value["achievements"].is_array());
+        assert!(value["daily"]["slots"].is_array());
+        assert_eq!(value["daily"]["slots"].as_array().unwrap().len(), 3);
         let _ = std::fs::remove_file(&save);
     }
 

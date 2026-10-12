@@ -53,6 +53,10 @@
       "type": "array",
       "description": "Unlocked achievements with unix timestamps. Hidden locked rows are omitted."
     },
+    "daily": {
+      "type": "object",
+      "description": "In-game daily goals for the current day: streak, time until reset, and slot progress."
+    },
     "laws": {
       "type": "array",
       "description": "Proposed, enacted and repealed laws with approvals and latest expected vs measured samples."

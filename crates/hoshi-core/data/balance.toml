@@ -631,6 +631,15 @@ warn_ratio = 0.8
 unrest_per_overflow = 0.8
 raid_signature_per_overflow = 0.05
 
+[daily]
+day_secs = 86400
+reset_offset_secs = 0
+slots = 3
+streak_cap = 7
+streak_metal = 80.0
+streak_crystal = 40.0
+streak_deuterium = 0.0
+
 [market]
 enabled = true
 tick_secs = 3600

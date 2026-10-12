@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 23;
+pub const SCHEMA_VERSION: u32 = 24;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -169,7 +169,9 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM achievement_stats;
          DELETE FROM combat_log_ships;
          DELETE FROM combat_log_frames;
-         DELETE FROM combat_logs;",
+         DELETE FROM combat_logs;
+         DELETE FROM daily_slots;
+         DELETE FROM daily_meta;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -461,6 +463,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
         params![state.raids_survived, state.outposts_conquered],
     )?;
     insert_combat_logs(&tx, state)?;
+    insert_daily(&tx, state)?;
     for (i, colony) in state.colonies.iter().enumerate() {
         let planet_id = (i as i64) + 2;
         tx.execute(
@@ -1074,6 +1077,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     load_laws(conn, &mut state)?;
     load_achievements(conn, &mut state)?;
     load_combat_logs(conn, &mut state)?;
+    load_daily(conn, &mut state)?;
     state.sync_raid_schedule_after_standing(state.last_tick_unix);
 
     let mut stmt = conn.prepare(
@@ -1903,6 +1907,8 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "combat_logs" => "SELECT COUNT(*) FROM combat_logs",
         "combat_log_frames" => "SELECT COUNT(*) FROM combat_log_frames",
         "combat_log_ships" => "SELECT COUNT(*) FROM combat_log_ships",
+        "daily_meta" => "SELECT COUNT(*) FROM daily_meta",
+        "daily_slots" => "SELECT COUNT(*) FROM daily_slots",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -1950,7 +1956,9 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "achievement_stats")?
         + count_rows(conn, "combat_logs")?
         + count_rows(conn, "combat_log_frames")?
-        + count_rows(conn, "combat_log_ships")?)
+        + count_rows(conn, "combat_log_ships")?
+        + count_rows(conn, "daily_meta")?
+        + count_rows(conn, "daily_slots")?)
 }
 
 fn migrate(conn: &Connection) -> Result<(), SaveError> {
@@ -2029,6 +2037,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 23 {
         migrate_v23(conn)?;
+    }
+    if found < 24 {
+        migrate_v24(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -2662,6 +2673,92 @@ fn migrate_v23(conn: &Connection) -> Result<(), SaveError> {
         );
         ",
     )?;
+    Ok(())
+}
+
+fn migrate_v24(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS daily_meta (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            day_index INTEGER,
+            streak INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS daily_slots (
+            ord INTEGER PRIMARY KEY,
+            spec_id TEXT NOT NULL,
+            progress INTEGER NOT NULL,
+            target INTEGER NOT NULL,
+            rewarded INTEGER NOT NULL
+        );
+        ",
+    )?;
+    Ok(())
+}
+
+fn insert_daily(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<(), SaveError> {
+    tx.execute(
+        "INSERT INTO daily_meta (id, day_index, streak) VALUES (1, ?1, ?2)",
+        params![state.daily.day_index.map(|d| d as i64), state.daily.streak,],
+    )?;
+    for (ord, slot) in state.daily.slots.iter().enumerate() {
+        tx.execute(
+            "INSERT INTO daily_slots (ord, spec_id, progress, target, rewarded)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                ord as i64,
+                slot.spec_id,
+                slot.progress,
+                slot.target,
+                i64::from(slot.rewarded),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn load_daily(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
+    if !table_exists(conn, "daily_meta") {
+        state.daily = crate::DailyBoard::default();
+        state.sync_daily(state.last_tick_unix);
+        return Ok(());
+    }
+    state.daily = crate::DailyBoard::default();
+    if let Some((day, streak)) = conn
+        .query_row(
+            "SELECT day_index, streak FROM daily_meta WHERE id = 1",
+            [],
+            |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()?
+    {
+        state.daily.day_index = unix_ts_opt(day)?;
+        state.daily.streak = u32_field(streak, "daily streak")?;
+    }
+    if table_exists(conn, "daily_slots") {
+        let mut stmt = conn
+            .prepare("SELECT spec_id, progress, target, rewarded FROM daily_slots ORDER BY ord")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?;
+        for row in rows {
+            let (spec_id, progress, target, rewarded) = row?;
+            state.daily.slots.push(crate::DailySlot {
+                spec_id,
+                progress: u32_field(progress, "daily progress")?,
+                target: u32_field(target, "daily target")?,
+                rewarded: rewarded != 0,
+            });
+        }
+    }
+    if state.daily.slots.is_empty() {
+        state.sync_daily(state.last_tick_unix);
+    }
     Ok(())
 }
 
@@ -4448,6 +4545,28 @@ mod tests {
         assert_eq!(
             log.frames.last().map(|f| f.defender),
             Some(log.defender_after)
+        );
+    }
+
+    #[test]
+    fn migrate_v24_round_trips_daily() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v24(&conn).unwrap();
+        migrate_v24(&conn).unwrap();
+        let mut state = GameState::new(10);
+        state.daily.streak = 3;
+        state.daily.slots[0].progress = 1;
+        state.daily.slots[0].rewarded = true;
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.daily.day_index, state.daily.day_index);
+        assert_eq!(loaded.daily.streak, 3);
+        assert_eq!(loaded.daily.slots[0].progress, 1);
+        assert!(loaded.daily.slots[0].rewarded);
+        assert_eq!(count_rows(&conn, "daily_meta").unwrap(), 1);
+        assert_eq!(
+            count_rows(&conn, "daily_slots").unwrap(),
+            i64::try_from(state.daily.slots.len()).unwrap()
         );
     }
 

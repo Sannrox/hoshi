@@ -10,6 +10,7 @@ use crate::combat::{
     CombatReport, CombatWinner, next_u64, plunder_from, rapid_fire_table, resolve_combat,
     resolve_ground, stats_from_catalog,
 };
+use crate::daily::{DailyAction, DailyBoard, mine_kind};
 use crate::defences::{DefenceKind, PlanetBattle, resolve_planet_battle};
 use crate::espionage::{SpyReport, resolve_spy, reveals};
 use crate::expedition::{ExpeditionResult, roll_expedition};
@@ -219,6 +220,7 @@ pub struct GameState {
     pub outposts_conquered: u32,
     /// Recent fights, newest last. Rebuilt from seed plus opening fleets.
     pub combat_logs: Vec<crate::CombatLog>,
+    pub daily: DailyBoard,
     pub config: BalanceConfig,
 }
 
@@ -286,9 +288,11 @@ impl GameState {
             raids_survived: 0,
             outposts_conquered: 0,
             combat_logs: Vec::new(),
+            daily: DailyBoard::default(),
             config,
         };
         state.apply_prestige_start();
+        state.sync_daily(now_unix);
         state
     }
 
@@ -309,6 +313,8 @@ impl GameState {
             &[Coord::HOME],
             version,
         );
+        state.daily = DailyBoard::default();
+        state.sync_daily(now_unix);
         state
     }
 
@@ -406,6 +412,9 @@ impl GameState {
                 let job = self.build_queue.remove(0);
                 self.buildings.increment(job.building);
                 self.start_head(done_at);
+                if mine_kind(job.building) {
+                    self.note_daily(DailyAction::MineUpgrade, done_at);
+                }
             }
             let colony_done: Vec<usize> = self
                 .colonies
@@ -420,12 +429,16 @@ impl GameState {
                 let job = self.colonies[i].build_queue.remove(0);
                 self.colonies[i].buildings.increment(job.building);
                 self.start_colony_head(i, done_at);
+                if mine_kind(job.building) {
+                    self.note_daily(DailyAction::MineUpgrade, done_at);
+                }
             }
             if research_at == Some(done_at)
                 && let Some(job) = self.research.take()
             {
                 let level = self.tech_levels.entry(job.tech).or_insert(0);
                 *level = level.saturating_add(1);
+                self.note_daily(DailyAction::ResearchComplete, done_at);
             }
             if ship_at == Some(done_at) {
                 self.complete_one_ship(done_at);
@@ -1103,12 +1116,16 @@ impl GameState {
         }
         let dest = self.expedition_dest();
         self.launch_fleet(ships, dest, speed_percent, hold_secs, now_unix)?;
-        let Some(mission) = self.missions.last_mut() else {
-            return Err(FleetError::EmptyFleet);
+        let id = {
+            let Some(mission) = self.missions.last_mut() else {
+                return Err(FleetError::EmptyFleet);
+            };
+            mission.expedition_seed = Some(next_u64(&mut self.rng_seed));
+            mission.expedition_applied = false;
+            mission.id
         };
-        mission.expedition_seed = Some(next_u64(&mut self.rng_seed));
-        mission.expedition_applied = false;
-        Ok(mission.id)
+        self.note_daily(DailyAction::ExpeditionLaunch, now_unix);
+        Ok(id)
     }
 
     pub fn owned_coords(&self) -> Vec<Coord> {
@@ -2157,6 +2174,8 @@ impl GameState {
         );
         next.resources = next.config.starting_resources;
         next.apply_prestige_start();
+        next.daily = DailyBoard::default();
+        next.sync_daily(now);
         next.push_event(
             now,
             format!(
@@ -2907,6 +2926,9 @@ impl GameState {
             .raid_interval_secs()
             .map(|wait| done_at.saturating_add(wait));
         self.push_combat_log(done_at, report.clone());
+        if report.winner != CombatWinner::Attacker {
+            self.note_daily(DailyAction::RaidWon, done_at);
+        }
         self.evaluate_achievements(done_at);
         report
     }
@@ -3197,6 +3219,7 @@ impl GameState {
             .set(recv, (got + quote.recv_amount).min(cap).max(got));
         self.market.apply_trade_impact(&quote, &self.config.market);
         self.apply_faction_delta("traders", |f| f.trade_delta, "trade", self.last_tick_unix);
+        self.note_daily(DailyAction::Trade, self.last_tick_unix);
         self.push_event(
             self.last_tick_unix,
             format!(
@@ -3581,6 +3604,7 @@ impl GameState {
         }
         self.collect_law_tax(hours, from, now_unix);
         self.last_tick_unix = now_unix;
+        self.sync_daily(now_unix);
     }
 
     fn produce_chains(&mut self, hours: f64, home_factor: f64, boost: f64, from: u64, to: u64) {
@@ -4544,6 +4568,7 @@ mod tests {
             waste: crate::WasteConfig::default(),
             laws: crate::LawConfig::default(),
             achievements: crate::AchievementConfig::empty(),
+            daily: crate::DailyConfig::empty(),
         }
     }
 

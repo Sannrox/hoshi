@@ -20,6 +20,34 @@
     "shipyard": 0,
     "solar_plant": 1
   },
+  "daily": {
+    "day_index": 2,
+    "resets_in_secs": 82800,
+    "slots": [
+      {
+        "done": false,
+        "id": "win_raid",
+        "name": "Hold the pirates",
+        "progress": 0,
+        "target": 1
+      },
+      {
+        "done": false,
+        "id": "upgrade_mine",
+        "name": "Upgrade a mine",
+        "progress": 0,
+        "target": 1
+      },
+      {
+        "done": false,
+        "id": "send_trade",
+        "name": "Make a trade",
+        "progress": 0,
+        "target": 1
+      }
+    ],
+    "streak": 0
+  },
   "defences": {
     "garrison": 0,
     "heavy_cannon": 0,
@@ -39,6 +67,10 @@
   "events": [
     {
       "at": 180,
+      "text": "daily: Upgrade a mine complete"
+    },
+    {
+      "at": 180,
       "text": "achievement: First cut"
     },
     {
@@ -47,7 +79,7 @@
     },
     {
       "at": 3600,
-      "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder M229 C250 D0. winner attacker"
+      "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder M249 C260 D0. winner attacker"
     },
     {
       "at": 32400,
@@ -55,7 +87,7 @@
     },
     {
       "at": 32400,
-      "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder M313 C213 D0. winner attacker"
+      "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder M323 C218 D0. winner attacker"
     },
     {
       "at": 61200,
@@ -63,7 +95,7 @@
     },
     {
       "at": 61200,
-      "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder M354 C194 D0. winner attacker"
+      "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder M359 C197 D0. winner attacker"
     },
     {
       "at": 88200,
@@ -75,7 +107,7 @@
     },
     {
       "at": 90000,
-      "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder M375 C185 D0. winner attacker"
+      "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder M378 C186 D0. winner attacker"
     },
     {
       "at": 118800,
@@ -83,7 +115,7 @@
     },
     {
       "at": 118800,
-      "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder M386 C181 D0. winner attacker"
+      "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder M387 C181 D0. winner attacker"
     },
     {
       "at": 140400,
@@ -91,7 +123,7 @@
     },
     {
       "at": 140400,
-      "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder M341 C156 D0. winner attacker"
+      "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder M342 C157 D0. winner attacker"
     },
     {
       "at": 162000,
@@ -234,11 +266,11 @@
     }
   },
   "resources": {
-    "crystal": 232.15234375,
+    "crystal": 232.30859375,
     "deuterium": 0.0,
-    "metal": 517.1458984375
+    "metal": 517.4583984375
   },
-  "save_schema": 23,
+  "save_schema": 24,
   "schema_version": 1,
   "spy_reports": [],
   "waste": {

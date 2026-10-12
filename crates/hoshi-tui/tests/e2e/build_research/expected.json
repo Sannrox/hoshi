@@ -28,6 +28,34 @@
     "shipyard": 0,
     "solar_plant": 1
   },
+  "daily": {
+    "day_index": 0,
+    "resets_in_secs": 85800,
+    "slots": [
+      {
+        "done": true,
+        "id": "finish_research",
+        "name": "Finish research",
+        "progress": 1,
+        "target": 1
+      },
+      {
+        "done": false,
+        "id": "send_trade",
+        "name": "Make a trade",
+        "progress": 0,
+        "target": 1
+      },
+      {
+        "done": true,
+        "id": "upgrade_mine",
+        "name": "Upgrade a mine",
+        "progress": 1,
+        "target": 1
+      }
+    ],
+    "streak": 0
+  },
   "defences": {
     "garrison": 0,
     "heavy_cannon": 0,
@@ -47,11 +75,19 @@
   "events": [
     {
       "at": 180,
+      "text": "daily: Upgrade a mine complete"
+    },
+    {
+      "at": 180,
       "text": "achievement: First cut"
     },
     {
       "at": 180,
       "text": "achievement: Lab open"
+    },
+    {
+      "at": 240,
+      "text": "daily: Finish research complete"
     },
     {
       "at": 240,
@@ -190,11 +226,11 @@
     }
   },
   "resources": {
-    "crystal": 681.1666666666667,
+    "crystal": 741.1666666666667,
     "deuterium": 100.0,
-    "metal": 417.42499999999995
+    "metal": 477.42499999999995
   },
-  "save_schema": 23,
+  "save_schema": 24,
   "schema_version": 1,
   "spy_reports": [],
   "waste": {
