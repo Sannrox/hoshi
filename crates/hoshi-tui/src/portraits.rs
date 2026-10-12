@@ -341,6 +341,12 @@ pub fn paint_inline_graphics(
     out.flush()
 }
 
+/// Drop previously placed inline images so a full-screen overlay is not covered.
+pub fn erase_inline_graphics(out: &mut impl Write) -> io::Result<()> {
+    write!(out, "\x1b_Ga=d,d=A\x1b\\")?;
+    out.flush()
+}
+
 fn base64_encode(bytes: &[u8]) -> String {
     const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();

@@ -12,7 +12,7 @@ use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::{Block, Clear, Paragraph};
 use std::io::{IsTerminal, Write};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -286,7 +286,7 @@ impl App {
             || self.story_event().is_some()
             || self.opened_report
         {
-            return Ok(());
+            return portraits::erase_inline_graphics(out);
         }
         let inner = ratatui::layout::Rect {
             x: frame.x.saturating_add(1),
@@ -329,10 +329,6 @@ impl App {
     }
 
     fn draw_away(&self, frame: &mut Frame<'_>, away: &AwaySummary) {
-        let area = frame.area();
-        let block = Block::bordered().title(" while you were away ");
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
         let mut lines = vec![
             Line::from(format!("elapsed {}s", away.elapsed_secs)),
             Line::from(format!(
@@ -348,14 +344,10 @@ impl App {
             lines.push(Line::from(event.clone()));
         }
         lines.push(Line::from("Enter dismisses. w on overview reopens."));
-        frame.render_widget(Paragraph::new(lines), inner);
+        render_overlay(frame, " while you were away ", lines);
     }
 
     fn draw_story(&self, frame: &mut Frame<'_>, event: &StoryEvent) {
-        let area = frame.area();
-        let block = Block::bordered().title(format!(" {} ", event.title));
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
         let mut lines = vec![Line::from(event.text.clone()), Line::from("")];
         for (i, choice) in event.choices.iter().enumerate() {
             let n = i + 1;
@@ -373,7 +365,7 @@ impl App {
         lines.push(Line::from(
             "1-9 chooses. Ignored too long uses the default.",
         ));
-        frame.render_widget(Paragraph::new(lines), inner);
+        render_overlay(frame, format!(" {} ", event.title), lines);
     }
 
     fn activate(&mut self, now_unix: u64) {
@@ -1191,19 +1183,15 @@ impl App {
     }
 
     fn draw_report(&self, frame: &mut Frame<'_>) {
-        let area = frame.area();
         let dest = self.selected_outpost();
         let title = dest
             .map(|c| format!(" spy {c} "))
             .unwrap_or_else(|| " spy ".into());
-        let block = Block::bordered().title(title);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
         let lines = match dest.and_then(|c| self.state.latest_report(c)) {
             Some(report) => report_overlay_lines(report, self.state.last_tick_unix),
             None => vec![Line::from("no spy report for this outpost")],
         };
-        frame.render_widget(Paragraph::new(lines), inner);
+        render_overlay(frame, title, lines);
     }
 
     fn wonder_status(&self) -> String {
@@ -1302,6 +1290,15 @@ fn waste_detail_line(
         line.push_str("  WARN");
     }
     line
+}
+
+fn render_overlay(frame: &mut Frame<'_>, title: impl Into<String>, lines: Vec<Line<'static>>) {
+    let area = frame.area();
+    frame.render_widget(Clear, area);
+    let block = Block::bordered().title(title.into());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn report_overlay_lines(report: &SpyReport, now: u64) -> Vec<Line<'static>> {
@@ -1546,6 +1543,10 @@ mod tests {
         let text = render_text(&app, 80, 24);
         assert!(text.contains("while you were away"), "{text}");
         assert!(text.contains("elapsed 120s"), "{text}");
+        assert!(
+            !text.contains("Armour Technology"),
+            "away overlay left the research list visible:\n{text}"
+        );
         app.handle_key(KeyCode::Enter, 1_000);
         let text = render_text(&app, 80, 24);
         assert!(!text.contains("while you were away"), "{text}");
@@ -2087,26 +2088,55 @@ mod tests {
     fn story_overlay_shows_text_and_number_keys_choose() {
         let mut app = App::new(GameState::new(1_000));
         app.state.story_pending = Some(hoshi_core::PendingStory {
-            event_id: "derelict".into(),
+            event_id: "dust_cloud".into(),
             offered_at: 1_000,
             timeout_at: 10_000,
         });
         let text = render_text(&app, 80, 24);
-        assert!(text.contains("Derelict hull"), "{text}");
-        assert!(text.contains("Cut it open"), "{text}");
-        assert!(text.contains("Tow it home"), "{text}");
+        assert!(text.contains("Dust cloud"), "{text}");
+        assert!(text.contains("Burn through"), "{text}");
+        assert!(text.contains("Wait it out"), "{text}");
+        assert!(
+            !text.contains("[overview]"),
+            "overlay left the screen chrome visible:\n{text}"
+        );
+        assert!(
+            !text.contains("Armour Technology"),
+            "overlay left the research list visible:\n{text}"
+        );
+        assert!(
+            !text.contains("Crystal"),
+            "overlay left resource lines visible:\n{text}"
+        );
         app.handle_key(KeyCode::Char('2'), 1_000);
         assert!(app.state.story_pending.is_none());
         assert!(
             app.state
                 .events
                 .iter()
-                .any(|e| e.text.contains("Derelict hull")),
+                .any(|e| e.text.contains("Dust cloud")),
             "{:?}",
             app.state.events
         );
         let text = render_text(&app, 80, 24);
-        assert!(!text.contains("Cut it open"), "{text}");
+        assert!(!text.contains("Burn through"), "{text}");
+        assert!(text.contains("[overview]"), "{text}");
+    }
+
+    #[test]
+    fn story_overlay_erases_inline_graphics() {
+        let mut app = App::new(GameState::new(1_000));
+        app.portraits.enabled = true;
+        app.portraits.protocol = Protocol::Graphics;
+        app.state.story_pending = Some(hoshi_core::PendingStory {
+            event_id: "dust_cloud".into(),
+            offered_at: 1_000,
+            timeout_at: 10_000,
+        });
+        let mut out = Vec::new();
+        app.paint_inline_graphics(&mut out, ratatui::layout::Rect::new(0, 0, 80, 24))
+            .unwrap();
+        assert_eq!(out, b"\x1b_Ga=d,d=A\x1b\\");
     }
 
     #[test]
@@ -2206,6 +2236,10 @@ mod tests {
         app.handle_key(KeyCode::Enter, 1_000);
         let text = render_text(&app, 100, 32);
         assert!(text.contains(&format!("spy {dest}")), "{text}");
+        assert!(
+            !text.contains("[reports]"),
+            "spy overlay left the reports chrome visible:\n{text}"
+        );
         assert!(text.contains("detected yes"), "{text}");
         assert!(text.contains("lost 1/3"), "{text}");
         assert!(text.contains(&format!("garrison {garrison}")), "{text}");
