@@ -1406,6 +1406,9 @@ pub struct SaveGlance {
     pub deterministic: bool,
     pub planets: u32,
     pub fleet_strength: u32,
+    /// `None` when the save predates schema v5 and never stored a galaxy seed.
+    pub galaxy_seed: Option<u64>,
+    pub generator_version: u32,
 }
 
 pub fn inspect_save(path: &Path) -> Result<SaveGlance, SaveError> {
@@ -1469,12 +1472,37 @@ pub fn inspect_save(path: &Path) -> Result<SaveGlance, SaveError> {
     } else {
         0
     };
+    let galaxy_seed = if schema >= 5 {
+        Some(
+            conn.query_row("SELECT galaxy_seed FROM meta WHERE id = 1", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .optional()?
+            .unwrap_or(0) as u64,
+        )
+    } else {
+        None
+    };
+    let generator_version = if schema >= 14 {
+        conn.query_row(
+            "SELECT generator_version FROM meta WHERE id = 1",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .and_then(|v| u32::try_from(v).ok())
+        .unwrap_or(1)
+    } else {
+        1
+    };
     Ok(SaveGlance {
         schema,
         last_tick_unix: unix_ts(last_tick)?,
         deterministic,
         planets: 1 + colonies,
         fleet_strength: u32::try_from(fleet).unwrap_or(0),
+        galaxy_seed,
+        generator_version,
     })
 }
 
@@ -4517,6 +4545,8 @@ mod tests {
         assert!(!glance.deterministic);
         assert_eq!(glance.planets, 1);
         assert_eq!(glance.fleet_strength, 4);
+        assert_eq!(glance.galaxy_seed, Some(0));
+        assert_eq!(glance.generator_version, crate::GALAXY_GENERATOR_VERSION);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(save_lock_path(&path));
     }
@@ -4619,9 +4649,30 @@ mod tests {
         drop(conn);
         let glance = inspect_save(&harness).unwrap();
         assert!(glance.deterministic);
+        assert_eq!(glance.galaxy_seed, Some(3));
+
+        let legacy = unique_path("inspect-pre-seed");
+        let conn = Connection::open(&legacy).unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE meta (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                last_tick_unix INTEGER NOT NULL,
+                rng_seed INTEGER NOT NULL
+            );
+            INSERT INTO meta (id, last_tick_unix, rng_seed) VALUES (1, 50, 1);
+            PRAGMA user_version = 4;
+            ",
+        )
+        .unwrap();
+        drop(conn);
+        let glance = inspect_save(&legacy).unwrap();
+        assert_eq!(glance.schema, 4);
+        assert_eq!(glance.galaxy_seed, None);
 
         let _ = std::fs::remove_file(&newer);
         let _ = std::fs::remove_file(&corrupt);
         let _ = std::fs::remove_file(&harness);
+        let _ = std::fs::remove_file(&legacy);
     }
 }

@@ -8,6 +8,7 @@
 
 ### Added
 
+- New game shows a live galaxy preview for a pasted seed code (home type, size, outposts, generator). Checksum mismatches say so; blank still rolls a random seed. Load and the title menu copy the slot's shareable code with `y`. Saves from before galaxy seeds omit the code instead of showing seed 0.
 - Title screen Achievements lists earned and locked rows from every save without taking the write lock. Hidden rows stay ??? until earned; measurable progress (colonies, fleet, prestige, raids, conquests, wonders) uses the best save. Totals cover playtime, battles, wonders, and galaxies finished by wonder or score, including prestige history.
 - Title Settings has a keybindings page: list every remappable action by the screens that use it, press a new key to rebind, see conflicts without saving, and reset one action or all keys with confirmation. Changes land in `config.toml` and apply without a restart.
 - Optional terminal notifications (off by default). Settings toggle plus `notify_*` keys in `config.toml`. A finished build, an incoming raid, or a returning fleet rings the bell and sends OSC 9/777; quiet hours skip them. Offline catch-up emits one summary instead of one line per event. Terminals that ignore OSC stay playable.

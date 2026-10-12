@@ -90,7 +90,7 @@ fn decode_code(compact: &str) -> Result<u64, String> {
     let mut payload = [0u8; 13];
     payload.copy_from_slice(&syms[..13]);
     if checksum(&payload) != syms[13] {
-        return Err("invalid seed".into());
+        return Err("checksum mismatch".into());
     }
     // 13×5-bit groups are 65 bits; a 64-bit seed only uses the low 4 bits of the first group.
     if payload[0] > 15 {
@@ -101,6 +101,31 @@ fn decode_code(compact: &str) -> Result<u64, String> {
         seed = (seed << 5) | u64::from(v);
     }
     Ok(seed)
+}
+
+/// Home world and outpost count for a seed at this build's generator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GalaxyPreview {
+    pub seed: u64,
+    pub code: String,
+    pub generator: u32,
+    pub home_kind: crate::PlanetType,
+    pub home_size: u8,
+    pub outposts: u32,
+}
+
+pub fn preview_galaxy(seed: u64, outposts: &crate::OutpostConfig) -> GalaxyPreview {
+    let version = GALAXY_GENERATOR_VERSION;
+    let (home_kind, home_size) = crate::planet_profile(seed, crate::Coord::HOME, version);
+    let outposts = crate::generate_outposts(seed, 0, outposts, &[crate::Coord::HOME], version);
+    GalaxyPreview {
+        seed,
+        code: encode_galaxy_seed(seed),
+        generator: version,
+        home_kind,
+        home_size,
+        outposts: outposts.len() as u32,
+    }
 }
 
 fn decode_char(b: u8) -> Option<u8> {
@@ -146,7 +171,8 @@ mod tests {
         let last = bad.len() - 1;
         bad[last] = if bad[last] == '0' { '1' } else { '0' };
         let tampered: String = bad.into_iter().collect();
-        assert!(parse_galaxy_seed(&tampered).is_err(), "{tampered}");
+        let err = parse_galaxy_seed(&tampered).unwrap_err();
+        assert!(err.contains("checksum"), "{tampered} {err}");
         assert!(parse_galaxy_seed("nope").is_err());
         assert!(parse_galaxy_seed("abc").is_err());
     }
@@ -208,6 +234,11 @@ mod tests {
                 planet_profile(parsed, Coord::HOME, GALAXY_GENERATOR_VERSION);
             assert_eq!((home_kind, home_size), (kind, size), "seed {seed} {code}");
             let cfg = BalanceConfig::default();
+            let preview = preview_galaxy(parsed, &cfg.outposts);
+            assert_eq!(preview.home_kind, kind, "{code}");
+            assert_eq!(preview.home_size, size, "{code}");
+            assert_eq!(preview.generator, GALAXY_GENERATOR_VERSION);
+            assert_eq!(preview.code, code);
             let a = generate_outposts(
                 parsed,
                 0,
