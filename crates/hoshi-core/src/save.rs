@@ -1516,6 +1516,12 @@ pub struct CareerGlance {
     pub galaxies_wonder: u32,
     pub galaxies_score: u32,
     pub prestige_runs: u32,
+    pub prestige: Prestige,
+    pub prestige_currency: u32,
+    pub prestige_lifetime: u32,
+    pub prestige_owned: BTreeMap<String, u32>,
+    pub building_levels: u32,
+    pub research_levels: u32,
     pub colonies: u32,
     pub fleet_ships: u32,
     pub raids_survived: u32,
@@ -1549,11 +1555,44 @@ impl CareerGlance {
         self.galaxies_wonder = self.galaxies_wonder.saturating_add(other.galaxies_wonder);
         self.galaxies_score = self.galaxies_score.saturating_add(other.galaxies_score);
         self.prestige_runs = self.prestige_runs.max(other.prestige_runs);
+        let take_other = other.prestige.lifetime > self.prestige.lifetime
+            || (other.prestige.lifetime == self.prestige.lifetime
+                && other.prestige.currency > self.prestige.currency);
+        if take_other {
+            self.prestige = other.prestige;
+        }
+        self.prestige_currency = self.prestige_currency.max(other.prestige_currency);
+        self.prestige_lifetime = self.prestige_lifetime.max(other.prestige_lifetime);
+        for (id, count) in other.prestige_owned {
+            self.prestige_owned
+                .entry(id)
+                .and_modify(|had| *had = (*had).max(count))
+                .or_insert(count);
+        }
+        self.building_levels = self.building_levels.max(other.building_levels);
+        self.research_levels = self.research_levels.max(other.research_levels);
         self.colonies = self.colonies.max(other.colonies);
         self.fleet_ships = self.fleet_ships.max(other.fleet_ships);
         self.raids_survived = self.raids_survived.max(other.raids_survived);
         self.outposts_conquered = self.outposts_conquered.max(other.outposts_conquered);
         self.wonder_ids.extend(other.wonder_ids);
+    }
+
+    /// Eligibility for this glance alone. Do not use merged career counts:
+    /// those are maxima across saves and would fabricate a reset.
+    pub fn reset_available(&self, cfg: &crate::PrestigeConfig) -> bool {
+        if self.prestige_runs > 0 || self.prestige_lifetime > 0 || !self.prestige.owned.is_empty() {
+            return true;
+        }
+        cfg.can_reset(
+            self.wonder_ids.len() as u32,
+            cfg.run_score(
+                self.building_levels,
+                self.research_levels,
+                self.colonies,
+                self.wonder_ids.len() as u32,
+            ),
+        )
     }
 }
 
@@ -1607,6 +1646,28 @@ pub fn inspect_career(path: &Path) -> Result<CareerGlance, SaveError> {
         }
     }
     let current_wonders = wonder_ids.len() as u32;
+    let building_levels = if table_exists(&conn, "buildings") {
+        conn.query_row("SELECT COALESCE(SUM(level), 0) FROM buildings", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .ok()
+        .and_then(|n| u32::try_from(n).ok())
+        .unwrap_or(0)
+    } else {
+        0
+    };
+    let research_levels = if table_exists(&conn, "tech_levels") {
+        conn.query_row(
+            "SELECT COALESCE(SUM(level), 0) FROM tech_levels",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .ok()
+        .and_then(|n| u32::try_from(n).ok())
+        .unwrap_or(0)
+    } else {
+        0
+    };
     let colonies = if table_exists(&conn, "colonies") {
         u32::try_from(count_rows(&conn, "colonies")?).unwrap_or(0)
     } else {
@@ -1660,6 +1721,12 @@ pub fn inspect_career(path: &Path) -> Result<CareerGlance, SaveError> {
         galaxies_wonder,
         galaxies_score,
         prestige_runs: prestige.runs.len() as u32,
+        prestige_currency: prestige.currency,
+        prestige_lifetime: prestige.lifetime,
+        prestige_owned: prestige.owned.clone(),
+        prestige,
+        building_levels,
+        research_levels,
         colonies,
         fleet_ships,
         raids_survived,
@@ -4560,6 +4627,9 @@ mod tests {
         state.achievements.insert("first_cut".into(), 7);
         state.completed_wonders.push("observatory".into());
         state.fleet.add(crate::ShipKind::LightFighter, 4);
+        state.prestige.currency = 4;
+        state.prestige.lifetime = 7;
+        state.prestige.owned.insert("mine_focus".into(), 2);
         state.prestige.runs.push(crate::RunStats {
             index: 1,
             started_at: 10,
@@ -4585,6 +4655,9 @@ mod tests {
         assert_eq!(career.galaxies_wonder, 1);
         assert_eq!(career.galaxies_score, 0);
         assert_eq!(career.prestige_runs, 1);
+        assert_eq!(career.prestige_currency, 4);
+        assert_eq!(career.prestige_lifetime, 7);
+        assert_eq!(career.prestige_owned.get("mine_focus"), Some(&2));
         assert_eq!(career.fleet_ships, 4);
         let mut other = CareerGlance::default();
         other.unlocks.insert("first_cut".into(), 3);
@@ -4599,6 +4672,26 @@ mod tests {
         assert_eq!(merged.galaxies_score, 2);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(save_lock_path(&path));
+    }
+
+    #[test]
+    fn reset_available_is_per_save_not_merged_maxima() {
+        let cfg = crate::PrestigeConfig::default();
+        let mut a = CareerGlance {
+            building_levels: cfg.min_score.saturating_sub(1),
+            ..CareerGlance::default()
+        };
+        let b = CareerGlance {
+            research_levels: cfg.min_score.saturating_sub(1),
+            ..CareerGlance::default()
+        };
+        assert!(!a.reset_available(&cfg));
+        assert!(!b.reset_available(&cfg));
+        a.merge(b);
+        assert!(
+            a.reset_available(&cfg),
+            "merged maxima can look eligible; callers must score each save"
+        );
     }
 
     #[test]

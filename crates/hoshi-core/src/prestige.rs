@@ -89,6 +89,23 @@ impl PrestigeConfig {
     pub fn bonus(&self, id: &str) -> Option<&PrestigeBonusSpec> {
         self.bonuses.iter().find(|row| row.id == id)
     }
+
+    pub fn run_score(
+        &self,
+        building_levels: u32,
+        research_levels: u32,
+        colonies: u32,
+        wonders: u32,
+    ) -> u32 {
+        building_levels
+            .saturating_add(research_levels)
+            .saturating_add(colonies.saturating_mul(self.colony_weight))
+            .saturating_add(wonders.saturating_mul(self.wonder_weight))
+    }
+
+    pub fn can_reset(&self, wonders: u32, score: u32) -> bool {
+        wonders > 0 || score >= self.min_score
+    }
 }
 
 /// Closed or in-progress run totals. `ended_at` is set when the run resets.
@@ -129,6 +146,12 @@ pub struct Prestige {
     pub owned: BTreeMap<String, u32>,
     pub runs: Vec<RunStats>,
     pub current: RunStats,
+}
+
+impl Default for Prestige {
+    fn default() -> Self {
+        Self::new(0)
+    }
 }
 
 impl Prestige {
