@@ -1,0 +1,50 @@
+name: Playtest feedback
+description: Record a playtest round (fun, pacing, clarity) without personal data.
+title: "playtest: "
+labels: ["status:triage"]
+body:
+  - type: markdown
+    attributes:
+      value: Use the checklist in docs/playtest.md. Omit hostnames, home paths, and other private environment details. Do not attach save files.
+  - type: textarea
+    id: session
+    attributes:
+      label: Session
+      description: How you launched (new game, continue, harness CLI), roughly how long you played, and which checklist steps you reached.
+    validations:
+      required: true
+  - type: textarea
+    id: fun
+    attributes:
+      label: Fun
+      description: What made you come back? What felt like a chore?
+    validations:
+      required: true
+  - type: textarea
+    id: pacing
+    attributes:
+      label: Pacing
+      description: How long until the first meaningful choice? When were you waiting versus doing?
+    validations:
+      required: true
+  - type: textarea
+    id: clarity
+    attributes:
+      label: Clarity
+      description: What was confusing?
+    validations:
+      required: true
+  - type: textarea
+    id: follow_up
+    attributes:
+      label: Follow-up
+      description: Bugs or changes this round should become. Link existing issues when you have them.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I followed docs/playtest.md.
+          required: true
+        - label: I omitted hostnames, home paths, save files, and other private environment details.
+          required: true

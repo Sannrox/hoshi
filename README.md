@@ -51,7 +51,7 @@ hoshi simulate --days 3
 
 prints a pacing report (first upgrade time, daily mine levels, bridge-effect ratio). Targets live in `docs/balance.md`.
 
-Scriptable JSON commands (`hoshi state`, `build`, `research`, `cancel`, `fleet send`, `tick --advance`) share the TUI's core actions. See `docs/cli.md`.
+Scriptable JSON commands (`hoshi state`, `build`, `research`, `cancel`, `fleet send`, `tick --advance`, `feedback`) share the TUI's core actions. See `docs/cli.md`. Playtest checklist: [docs/playtest.md](docs/playtest.md).
 
 ## Develop
 

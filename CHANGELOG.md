@@ -8,6 +8,7 @@
 
 ### Added
 
+- First playable loop: `docs/playtest.md` checklist (launch, build, research, raid, offline return), `hoshi feedback` to append a local versioned note, and a Playtest feedback GitHub issue template.
 - Guided first hour: a skippable opening plus contextual hints from `hints.toml` (mine finished, energy short, lab, storage, research, raid, fleet, shipyard). `g` jumps to the screen, `x` dismisses, `s` skips the rest. Progress is in the save (schema v26); Settings can hide hints or reset them.
 - Moons form from battle debris around an owned planet (`[moons]`). Phalanx sensors list fleets in range; jump gates move parked fleets instantly between moons, with a cooldown and a refusal if the target has no gate. The planet switcher and galaxy map label moons. Save schema v25.
 - Daily goals: three seeded picks per in-game day from `missions.toml`, with progress during catch-up, capped streak rewards in `[daily]`, a TUI daily screen, and `state` JSON. Save schema v24.
