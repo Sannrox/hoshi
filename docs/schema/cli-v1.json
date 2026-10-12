@@ -27,6 +27,10 @@
     "research": { "type": "object" },
     "fleet": { "type": "object" },
     "missions": { "type": "array" },
+    "spy_reports": {
+      "type": "array",
+      "description": "Stored spy reports with age_secs. Each outpost also carries its latest report."
+    },
     "planets": { "type": "array" },
     "events": { "type": "array" },
     "raid": {

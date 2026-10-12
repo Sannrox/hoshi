@@ -2,7 +2,7 @@
 
 use hoshi_core::{
     BalanceConfig, BuildingKind, Clock, Coord, FakeClock, Fleet, GameState, ResourceKind,
-    SCHEMA_VERSION as SAVE_SCHEMA, SaveError, ShipKind, SystemClock, load_or_new,
+    SCHEMA_VERSION as SAVE_SCHEMA, SaveError, ShipKind, SpyReport, SystemClock, load_or_new,
     load_or_new_with_seed, lock_save, open_save, resolve_save_path, save_state,
 };
 use serde_json::{Value, json};
@@ -61,6 +61,7 @@ enum MissionKind {
     Invade,
     Colonize,
     Expedition,
+    Spy,
 }
 
 #[derive(Debug)]
@@ -272,6 +273,11 @@ fn apply(state: &mut GameState, now: u64, command: &Command) -> Result<Value, Cl
                         .launch_expedition(*ships, hold, 100, now)
                         .map_err(|e| CliError::Refused(e.to_string()))?;
                 }
+                MissionKind::Spy => {
+                    let _ = state
+                        .launch_spy(*ships, *to, 100, now)
+                        .map_err(|e| CliError::Refused(e.to_string()))?;
+                }
             }
             Ok(ok_state(state, "fleet launched"))
         }
@@ -404,7 +410,9 @@ fn state_value(state: &GameState) -> Value {
             "defences": o.defences.total(),
             "garrison": o.garrison,
             "rare": o.rare,
+            "report": state.latest_report(o.coord).map(|r| spy_report_value(r, state.last_tick_unix)),
         })).collect::<Vec<_>>(),
+        "spy_reports": state.spy_reports.iter().map(|r| spy_report_value(r, state.last_tick_unix)).collect::<Vec<_>>(),
         "events": events,
         "raid": raid,
         "prestige": {
@@ -416,6 +424,40 @@ fn state_value(state: &GameState) -> Value {
             "owned": state.prestige.owned,
         },
     })
+}
+
+fn spy_report_value(report: &SpyReport, now: u64) -> Value {
+    json!({
+        "id": report.id,
+        "target": report.target.to_string(),
+        "age_secs": report.age_secs(now),
+        "tier": report.tier,
+        "detected": report.detected,
+        "probes_sent": report.probes_sent,
+        "probes_lost": report.probes_lost,
+        "score": report.score,
+        "kind": report.kind.map(|k| k.as_key()),
+        "size": report.size,
+        "resources": report.resources.map(|r| json!({
+            "metal": r.metal,
+            "crystal": r.crystal,
+            "deuterium": r.deuterium,
+        })),
+        "fleet": report.fleet.map(fleet_counts),
+        "defences": report.defences.map(fleet_counts),
+        "garrison": report.garrison,
+    })
+}
+
+fn fleet_counts(fleet: Fleet) -> Value {
+    let mut map = serde_json::Map::new();
+    for kind in ShipKind::ALL {
+        let n = fleet.get(kind);
+        if n > 0 {
+            map.insert(kind.as_key().into(), json!(n));
+        }
+    }
+    Value::Object(map)
 }
 
 fn parse_cli(args: &[String]) -> Result<CliOpts, CliError> {
@@ -622,6 +664,7 @@ fn parse_mission(text: &str) -> Result<MissionKind, CliError> {
         "invade" => Ok(MissionKind::Invade),
         "colonize" => Ok(MissionKind::Colonize),
         "expedition" => Ok(MissionKind::Expedition),
+        "spy" => Ok(MissionKind::Spy),
         other => Err(CliError::Invalid(format!("unknown mission {other}"))),
     }
 }
@@ -727,6 +770,22 @@ mod tests {
                 assert_eq!(to.position, 8);
                 assert_eq!(mission, MissionKind::Attack);
                 assert_eq!(ships.get(ShipKind::LightFighter), 2);
+            }
+            other => panic!("{other:?}"),
+        }
+        let opts = parse_cli(&args(&[
+            "fleet",
+            "send",
+            "1:1:1",
+            "1:1:8",
+            "spy",
+            "espionage_probe:3",
+        ]))
+        .unwrap();
+        match opts.command {
+            Command::FleetSend { mission, ships, .. } => {
+                assert_eq!(mission, MissionKind::Spy);
+                assert_eq!(ships.get(ShipKind::EspionageProbe), 3);
             }
             other => panic!("{other:?}"),
         }

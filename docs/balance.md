@@ -41,6 +41,10 @@ Construction stockpiles stay the three resource columns (`metal` / `crystal` / `
 Defaults: first upgrade in 5 minutes, at least one metal mine level per day, and
 bridge pulses must not multiply stored metal by more than 8.
 
+## Espionage
+
+`[espionage]` scores a probe wave as `probes * probe_weight + (own_espionage - target_level) * level_weight`. Own espionage is the existing research/faction modifier. The report tier is the highest `[[espionage.tiers]]` whose `min_score` the score still meets (activity, resources, fleet, defences, garrison). Detection chance is `detect_base + probes * detect_per_probe - (own - target) * detect_per_level`, clamped to `[0, 1]`. A detection then rolls `destroy_chance` once per probe. The TUI reports screen lists outposts with report age; Enter opens the latest report; `s` sends one probe.
+
 ## Outposts
 
 `[outposts]` places pirate worlds from the galaxy seed. `min_ships` and

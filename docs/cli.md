@@ -30,9 +30,11 @@ hoshi --save PATH prestige reset
 
 Planet is `home` or `galaxy:system:position`. Building and ship ids match the
 config keys (`metal_mine`, `light_fighter`). Queue item is `0`, `build:0`, or
-`research`. Mission is `attack`, `invade`, `colonize`, or `expedition`. Ships look like
+`research`. Mission is `attack`, `invade`, `colonize`, `expedition`, or `spy`. Ships look like
 `light_fighter:2`. `attack` fights an outpost's defences; `invade` lands troop
-transports and is refused while defences remain. `colonize` takes exactly `colony_ship:1`. Extra arguments
+transports and is refused while defences remain. `spy` sends espionage probes and
+writes a report; `state` lists reports with age and attaches the latest report to
+each outpost so attack and invade can read it. `colonize` takes exactly `colony_ship:1`. Extra arguments
 on `state`, `build`, `research`, and `cancel` are invalid. Duration is seconds,
 or `30s` / `3m` / `1h` / `1d`.
 

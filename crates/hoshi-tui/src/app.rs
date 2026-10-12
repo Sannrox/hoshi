@@ -1,10 +1,10 @@
-//! Overview, planet, shipyard, wonder, prestige, market and diplomacy screens.
+//! Overview, planet, shipyard, wonder, prestige, market, diplomacy and reports screens.
 //! Core owns the rules; this module only renders and turns keys into core commands.
 
 use crate::title::AwaySummary;
 use hoshi_core::{
-    BuildingKind, Coord, GameState, ResourceKind, Resources, ShipKind, StoryEvent, WonderError,
-    encode_galaxy_seed,
+    BuildingKind, Coord, Fleet, GameState, ResourceKind, Resources, ShipKind, SpyReport,
+    StoryEvent, WonderError, encode_galaxy_seed,
 };
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
@@ -23,6 +23,7 @@ pub enum Screen {
     Prestige,
     Market,
     Diplomacy,
+    Reports,
 }
 
 const TRADE_PAIRS: [(ResourceKind, ResourceKind); 6] = [
@@ -50,6 +51,7 @@ pub struct App {
     trade_amount: f64,
     away: Option<AwaySummary>,
     away_hidden: bool,
+    opened_report: bool,
 }
 
 impl App {
@@ -64,6 +66,7 @@ impl App {
             trade_amount: 10.0,
             away: None,
             away_hidden: false,
+            opened_report: false,
         }
     }
 
@@ -96,6 +99,16 @@ impl App {
             }
             return Action::None;
         }
+        if self.opened_report {
+            match code {
+                KeyCode::Enter | KeyCode::Char('x') | KeyCode::Esc => {
+                    self.opened_report = false;
+                }
+                KeyCode::Char('q') => return Action::Quit,
+                _ => {}
+            }
+            return Action::None;
+        }
         match code {
             KeyCode::Char('q') => return Action::Quit,
             KeyCode::Char('w') if self.screen == Screen::Overview && self.away.is_some() => {
@@ -109,11 +122,13 @@ impl App {
                     Screen::Wonder => Screen::Prestige,
                     Screen::Prestige => Screen::Market,
                     Screen::Market => Screen::Diplomacy,
-                    Screen::Diplomacy => Screen::Overview,
+                    Screen::Diplomacy => Screen::Reports,
+                    Screen::Reports => Screen::Overview,
                 };
                 self.selected = 0;
                 self.status.clear();
                 self.confirming_prestige = false;
+                self.opened_report = false;
             }
             KeyCode::Char(']') => self.cycle_planet(1),
             KeyCode::Char('[') => self.cycle_planet(-1),
@@ -134,6 +149,9 @@ impl App {
             }
             KeyCode::Char('-') if self.screen == Screen::Market => {
                 self.trade_amount = (self.trade_amount - 10.0).max(10.0);
+            }
+            KeyCode::Char('s') if self.screen == Screen::Reports && !self.opened_report => {
+                self.send_probe(now_unix);
             }
             KeyCode::Enter => self.activate(now_unix),
             KeyCode::Char('x') => self.cancel(now_unix),
@@ -173,25 +191,28 @@ impl App {
     pub fn draw(&self, frame: &mut Frame<'_>) {
         let title = match self.screen {
             Screen::Overview => {
-                " hoshi  [overview] planet shipyard wonder prestige market diplomacy "
+                " hoshi  [overview] planet shipyard wonder prestige market diplomacy reports "
             }
             Screen::Planet => {
-                " hoshi  overview [planet] shipyard wonder prestige market diplomacy "
+                " hoshi  overview [planet] shipyard wonder prestige market diplomacy reports "
             }
             Screen::Shipyard => {
-                " hoshi  overview planet [shipyard] wonder prestige market diplomacy "
+                " hoshi  overview planet [shipyard] wonder prestige market diplomacy reports "
             }
             Screen::Wonder => {
-                " hoshi  overview planet shipyard [wonder] prestige market diplomacy "
+                " hoshi  overview planet shipyard [wonder] prestige market diplomacy reports "
             }
             Screen::Prestige => {
-                " hoshi  overview planet shipyard wonder [prestige] market diplomacy "
+                " hoshi  overview planet shipyard wonder [prestige] market diplomacy reports "
             }
             Screen::Market => {
-                " hoshi  overview planet shipyard wonder prestige [market] diplomacy "
+                " hoshi  overview planet shipyard wonder prestige [market] diplomacy reports "
             }
             Screen::Diplomacy => {
-                " hoshi  overview planet shipyard wonder prestige market [diplomacy] "
+                " hoshi  overview planet shipyard wonder prestige market [diplomacy] reports "
+            }
+            Screen::Reports => {
+                " hoshi  overview planet shipyard wonder prestige market diplomacy [reports] "
             }
         };
         let block = Block::bordered().title(title);
@@ -219,6 +240,8 @@ impl App {
             self.draw_away(frame, away);
         } else if let Some(event) = self.story_event() {
             self.draw_story(frame, event);
+        } else if self.opened_report {
+            self.draw_report(frame);
         }
     }
 
@@ -330,6 +353,35 @@ impl App {
             Screen::Prestige => self.activate_prestige(now_unix),
             Screen::Market => self.activate_market(now_unix),
             Screen::Diplomacy => self.activate_diplomacy(now_unix),
+            Screen::Reports => {
+                if self
+                    .selected_outpost()
+                    .and_then(|c| self.state.latest_report(c))
+                    .is_some()
+                {
+                    self.opened_report = true;
+                    self.status.clear();
+                } else {
+                    self.status = "no spy report for this outpost".into();
+                }
+            }
+        }
+    }
+
+    fn selected_outpost(&self) -> Option<Coord> {
+        self.state.outposts.get(self.selected).map(|o| o.coord)
+    }
+
+    fn send_probe(&mut self, now_unix: u64) {
+        let Some(dest) = self.selected_outpost() else {
+            self.status = "no outpost selected".into();
+            return;
+        };
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::EspionageProbe, 1);
+        match self.state.launch_spy(ships, dest, 100, now_unix) {
+            Ok(_) => self.status = format!("probe launched to {dest}"),
+            Err(e) => self.status = e.to_string(),
         }
     }
 
@@ -424,7 +476,7 @@ impl App {
                 self.confirming_prestige = false;
                 self.status.clear();
             }
-            Screen::Market | Screen::Diplomacy => {}
+            Screen::Market | Screen::Diplomacy | Screen::Reports => {}
         }
     }
 
@@ -437,6 +489,7 @@ impl App {
             Screen::Prestige => 1 + self.state.config.prestige.bonuses.len(),
             Screen::Market => TRADE_PAIRS.len(),
             Screen::Diplomacy => self.state.config.diplomacy.len(),
+            Screen::Reports => self.state.outposts.len(),
         }
     }
 
@@ -500,6 +553,7 @@ impl App {
             Screen::Prestige => "tab screens  j/k select  enter buy/reset  x back  q quit",
             Screen::Market => "tab screens  j/k pair  +/- amount  enter trade  q quit",
             Screen::Diplomacy => "tab screens  j/k faction  enter tribute  q quit",
+            Screen::Reports => "tab screens  j/k outpost  enter report  s send probe  q quit",
         })]
     }
 
@@ -512,6 +566,7 @@ impl App {
             Screen::Prestige => self.prestige_lines(height),
             Screen::Market => self.market_lines(height),
             Screen::Diplomacy => self.diplomacy_lines(height),
+            Screen::Reports => self.report_lines(height),
         }
     }
 
@@ -1000,6 +1055,53 @@ impl App {
         append_windowed(&mut rows, &entries, self.selected, height)
     }
 
+    fn report_lines(&self, height: usize) -> Vec<Line<'static>> {
+        let now = self.state.last_tick_unix;
+        let mut rows = vec![Line::from("[reports]")];
+        if self.state.outposts.is_empty() {
+            rows.push(Line::from("No pirate outposts"));
+            return rows;
+        }
+        let entries: Vec<Line<'static>> = self
+            .state
+            .outposts
+            .iter()
+            .enumerate()
+            .map(|(i, outpost)| {
+                let mark = if i == self.selected { '>' } else { ' ' };
+                match self.state.latest_report(outpost.coord) {
+                    Some(report) => Line::from(format!(
+                        "{mark} {}  {}  age {}s  lost {}/{}{}",
+                        outpost.coord,
+                        report.tier,
+                        report.age_secs(now),
+                        report.probes_lost,
+                        report.probes_sent,
+                        if report.detected { "  detected" } else { "" }
+                    )),
+                    None => Line::from(format!("{mark} {}  no report", outpost.coord)),
+                }
+            })
+            .collect();
+        append_windowed(&mut rows, &entries, self.selected, height)
+    }
+
+    fn draw_report(&self, frame: &mut Frame<'_>) {
+        let area = frame.area();
+        let dest = self.selected_outpost();
+        let title = dest
+            .map(|c| format!(" spy {c} "))
+            .unwrap_or_else(|| " spy ".into());
+        let block = Block::bordered().title(title);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let lines = match dest.and_then(|c| self.state.latest_report(c)) {
+            Some(report) => report_overlay_lines(report, self.state.last_tick_unix),
+            None => vec![Line::from("no spy report for this outpost")],
+        };
+        frame.render_widget(Paragraph::new(lines), inner);
+    }
+
     fn wonder_status(&self) -> String {
         match &self.state.wonder {
             Some(job) => {
@@ -1054,6 +1156,58 @@ fn resource_line(name: &str, state: &GameState, kind: ResourceKind) -> Line<'sta
         state.production_per_hour(kind),
         state.storage_cap(kind)
     ))
+}
+
+fn report_overlay_lines(report: &SpyReport, now: u64) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(format!(
+            "{}  age {}s  score {:.0}",
+            report.tier,
+            report.age_secs(now),
+            report.score
+        )),
+        Line::from(format!(
+            "detected {}  lost {}/{}",
+            if report.detected { "yes" } else { "no" },
+            report.probes_lost,
+            report.probes_sent
+        )),
+    ];
+    if let (Some(kind), Some(size)) = (report.kind, report.size) {
+        lines.push(Line::from(format!("planet {} size {size}", kind.as_key())));
+    }
+    if let Some(res) = report.resources {
+        lines.push(Line::from(format!(
+            "resources M{:.0} C{:.0} D{:.0}",
+            res.metal, res.crystal, res.deuterium
+        )));
+    }
+    if let Some(fleet) = report.fleet {
+        lines.push(Line::from(format!("fleet {}", fleet_brief(fleet))));
+    }
+    if let Some(defences) = report.defences {
+        lines.push(Line::from(format!("defences {}", fleet_brief(defences))));
+    }
+    if let Some(garrison) = report.garrison {
+        lines.push(Line::from(format!("garrison {garrison}")));
+    }
+    lines.push(Line::from("Enter closes"));
+    lines
+}
+
+fn fleet_brief(fleet: Fleet) -> String {
+    let parts: Vec<String> = ShipKind::ALL
+        .iter()
+        .filter_map(|&kind| {
+            let n = fleet.get(kind);
+            (n > 0).then(|| format!("{}:{n}", kind.as_key()))
+        })
+        .collect();
+    if parts.is_empty() {
+        "none".into()
+    } else {
+        parts.join(" ")
+    }
 }
 
 fn cost_label(cost: Resources) -> String {
@@ -1343,6 +1497,7 @@ mod tests {
         app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
+        app.handle_key(KeyCode::Tab, clock.now_unix());
         assert_eq!(app.screen, Screen::Overview);
         let energy = app
             .state
@@ -1520,6 +1675,7 @@ mod tests {
         assert!(app.state.ship_queue.is_empty());
         assert_eq!(app.state.build_queue.len(), 1);
 
+        app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
@@ -1782,6 +1938,51 @@ mod tests {
         );
         assert!(text.contains("Recent:"), "{text}");
         assert!(text.contains("pirates"), "{text}");
+    }
+
+    #[test]
+    fn reports_screen_lists_age_and_opens_the_latest() {
+        let mut state = GameState::new(1_000);
+        let dest = state.outposts[0].coord;
+        let garrison = state.outposts[0].garrison;
+        let mut fleet = Fleet::default();
+        fleet.add(ShipKind::LightFighter, 2);
+        state.spy_reports.push(hoshi_core::SpyReport {
+            id: 1,
+            target: dest,
+            created_at: 900,
+            probes_sent: 3,
+            probes_lost: 1,
+            detected: true,
+            score: 4.0,
+            tier: "garrison".into(),
+            resources: Some(Resources::ZERO),
+            fleet: Some(fleet),
+            defences: Some(fleet),
+            garrison: Some(garrison),
+            kind: Some(state.outposts[0].kind),
+            size: Some(state.outposts[0].size),
+        });
+        let mut app = App::new(state);
+        for _ in 0..7 {
+            app.handle_key(KeyCode::Tab, 1_000);
+        }
+        assert_eq!(app.screen, Screen::Reports);
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("[reports]"), "{text}");
+        assert!(text.contains(&dest.to_string()), "{text}");
+        assert!(text.contains("age 100s"), "{text}");
+        assert!(text.contains("garrison"), "{text}");
+        app.handle_key(KeyCode::Enter, 1_000);
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains(&format!("spy {dest}")), "{text}");
+        assert!(text.contains("detected yes"), "{text}");
+        assert!(text.contains("lost 1/3"), "{text}");
+        assert!(text.contains(&format!("garrison {garrison}")), "{text}");
+        app.handle_key(KeyCode::Enter, 1_000);
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("[reports]"), "{text}");
+        assert!(!text.contains("detected yes"), "{text}");
     }
 
     fn close_standing(app: &App, id: &str, expected: f64) {

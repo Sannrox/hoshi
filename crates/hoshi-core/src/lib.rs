@@ -7,6 +7,7 @@ mod chains;
 mod clock;
 mod combat;
 mod diplomacy;
+mod espionage;
 mod expedition;
 mod fleets;
 mod galaxy;
@@ -39,6 +40,10 @@ pub use combat::{
 };
 pub use diplomacy::{
     DiplomacyConfig, DiplomacyError, DiplomacyState, FactionSpec, FactionTier, StandingChange,
+};
+pub use espionage::{
+    EspionageConfig, EspionageTier, SpyOutcome, SpyReport, detection_chance, resolve_spy, reveals,
+    spy_score, spy_tier,
 };
 pub use expedition::{
     ExpeditionConfig, ExpeditionKind, ExpeditionResult, ExpeditionWeights, fleet_points,

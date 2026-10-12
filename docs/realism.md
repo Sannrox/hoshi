@@ -115,6 +115,14 @@ spot. Mitigation (radiators, recycling, moving industry to airless moons)
 costs energy and materials. This layer is not in the live rules yet; see
 known gaps.
 
+## Intel
+
+A probe is a ship. It flies on the same distance and drive rules as any other
+mission. What it learns is a score from how many probes arrived and the
+espionage research gap, not a narrative reveal. Detection and destruction are
+seeded chances from config. A stored report ages; later attacks read that
+snapshot, not live omniscience.
+
 ## Combat maths
 
 Weapon names may be fictional. The numbers should still be physical:
