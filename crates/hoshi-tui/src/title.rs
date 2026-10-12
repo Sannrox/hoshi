@@ -3,7 +3,8 @@
 use crate::config::UserConfig;
 use crate::keymap::{Binding, HelpContext, Keymap};
 use hoshi_core::{
-    SaveError, SaveGlance, inspect_save, lock_save, parse_galaxy_seed, save_is_locked,
+    AchievementConfig, CareerGlance, SaveError, SaveGlance, inspect_career, inspect_save,
+    lock_save, parse_galaxy_seed, save_is_locked,
 };
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
@@ -13,11 +14,12 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 use std::path::{Path, PathBuf};
 
-const MENU: [&str; 6] = [
+const MENU: [&str; 7] = [
     "Continue",
     "New game",
     "Load game",
     "Settings",
+    "Achievements",
     "Credits",
     "Quit",
 ];
@@ -36,6 +38,7 @@ enum Page {
     Load,
     Settings,
     Keys,
+    Achievements,
     Credits,
 }
 
@@ -148,6 +151,9 @@ pub struct Title {
     keys_selected: usize,
     listening: bool,
     reset_confirm: Option<ResetConfirm>,
+    career: CareerGlance,
+    stats_selected: usize,
+    achievements: AchievementConfig,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,6 +187,9 @@ impl Title {
             keys_selected: 0,
             listening: false,
             reset_confirm: None,
+            career: CareerGlance::default(),
+            stats_selected: 0,
+            achievements: AchievementConfig::default(),
         };
         title.refresh_slots();
         title
@@ -229,6 +238,7 @@ impl Title {
             Page::Load => self.handle_load(code),
             Page::Settings => self.handle_settings(code),
             Page::Keys => self.handle_keys(code),
+            Page::Achievements => self.handle_achievements(code),
             Page::Credits => {
                 if let Some(Binding::Confirm | Binding::Cancel) =
                     self.config.keys.lookup(HelpContext::TitleCredits, code)
@@ -249,6 +259,7 @@ impl Title {
             Page::Load => HelpContext::TitleLoad,
             Page::Settings => HelpContext::TitleSettings,
             Page::Keys => HelpContext::TitleKeys,
+            Page::Achievements => HelpContext::TitleAchievements,
             Page::Credits => HelpContext::TitleCredits,
         }
     }
@@ -285,6 +296,10 @@ impl Title {
                     TitleAction::None
                 }
                 4 => {
+                    self.open_achievements();
+                    TitleAction::None
+                }
+                5 => {
                     self.page = Page::Credits;
                     TitleAction::None
                 }
@@ -661,6 +676,46 @@ impl Title {
         Ok(())
     }
 
+    fn open_achievements(&mut self) {
+        self.refresh_career();
+        self.page = Page::Achievements;
+        self.stats_selected = 0;
+        self.status.clear();
+    }
+
+    fn refresh_career(&mut self) {
+        self.refresh_slots();
+        self.career = CareerGlance::default();
+        for slot in &self.slots {
+            if let Ok(glance) = inspect_career(&slot.path) {
+                self.career.merge(glance);
+            }
+        }
+    }
+
+    fn handle_achievements(&mut self, code: KeyCode) -> TitleAction {
+        let items = self.achievements.len().max(1);
+        match self
+            .config
+            .keys
+            .lookup(HelpContext::TitleAchievements, code)
+        {
+            Some(Binding::Cancel) => {
+                self.page = Page::Menu;
+                self.selected = 4;
+                self.status.clear();
+            }
+            Some(Binding::SelectNext) => {
+                self.stats_selected = (self.stats_selected + 1) % items;
+            }
+            Some(Binding::SelectPrev) => {
+                self.stats_selected = (self.stats_selected + items - 1) % items;
+            }
+            _ => {}
+        }
+        TitleAction::None
+    }
+
     fn handle_settings(&mut self, code: KeyCode) -> TitleAction {
         let items = 7;
         match self.config.keys.lookup(HelpContext::TitleSettings, code) {
@@ -948,6 +1003,42 @@ impl Title {
                 };
                 lines.push(Line::from(format!("{reset_mark} reset all keys")));
             }
+            Page::Achievements => {
+                let earned = self.career.unlocks.len();
+                let total = self.achievements.len();
+                lines.push(Line::from(format!(
+                    "Achievements and stats  {} back  {} help",
+                    self.config.keys.primary(Binding::Cancel),
+                    self.config.keys.primary(Binding::Help)
+                )));
+                lines.push(Line::from(format!(
+                    "play {}s  battles {}  wonders {}",
+                    self.career.playtime_secs, self.career.battles, self.career.wonders
+                )));
+                lines.push(Line::from(format!(
+                    "galaxies  wonder {}  score {}",
+                    self.career.galaxies_wonder, self.career.galaxies_score
+                )));
+                lines.push(Line::from(format!("earned {earned}/{total}")));
+                let specs: Vec<_> = self.achievements.iter().collect();
+                let start = self.stats_selected.saturating_sub(6);
+                let meters = self.career.meters();
+                for (i, spec) in specs.into_iter().enumerate().skip(start).take(10) {
+                    let mark = if i == self.stats_selected { ">" } else { " " };
+                    let unlocked = self.career.unlocks.contains_key(&spec.id);
+                    let title = spec.listed_title(unlocked);
+                    let line = if unlocked {
+                        format!("{mark} {title}")
+                    } else if spec.hidden {
+                        format!("{mark} ???")
+                    } else if let Some((current, target)) = spec.condition.measured(&meters) {
+                        format!("{mark} {title}  {current:.0}/{target:.0}")
+                    } else {
+                        format!("{mark} {title}")
+                    };
+                    lines.push(Line::from(line));
+                }
+            }
             Page::Credits => {
                 lines.push(Line::from(
                     "hoshi  an idle space-strategy game for the terminal",
@@ -1117,6 +1208,7 @@ fn screens_for(binding: Binding) -> String {
         HelpContext::TitleRename,
         HelpContext::TitleSettings,
         HelpContext::TitleKeys,
+        HelpContext::TitleAchievements,
         HelpContext::TitleCredits,
     ];
     let mut names: Vec<&str> = CTX
@@ -1277,7 +1369,9 @@ pub fn research_levels(state: &hoshi_core::GameState) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hoshi_core::{BalanceConfig, GameState, SCHEMA_VERSION, lock_save, open_save, save_state};
+    use hoshi_core::{
+        BalanceConfig, GameState, SCHEMA_VERSION, lock_save, open_save, save_is_locked, save_state,
+    };
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1328,6 +1422,7 @@ mod tests {
         assert!(text.contains("New game"), "{text}");
         assert!(text.contains("Load game"), "{text}");
         assert!(text.contains("Settings"), "{text}");
+        assert!(text.contains("Achievements"), "{text}");
         assert!(
             text.contains("> Continue") || text.contains("Continue"),
             "{text}"
@@ -1568,6 +1663,44 @@ mod tests {
         title.handle_key(KeyCode::Enter);
         title.handle_key(KeyCode::Enter);
         assert_eq!(title.config.keys, Keymap::defaults());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn achievements_page_lists_unlocks_hides_locked_and_aggregates_stats() {
+        let dir = unique_dir();
+        let mut alpha = GameState::new(50);
+        alpha.last_tick_unix = 150;
+        alpha.achievements.insert("first_cut".into(), 7);
+        write_save(&dir, "alpha", &alpha);
+        let mut beta = GameState::new(20);
+        beta.last_tick_unix = 80;
+        beta.achievements.insert("lab_open".into(), 9);
+        beta.completed_wonders.push("observatory".into());
+        write_save(&dir, "beta", &beta);
+        let mut title = Title::new(dir.clone(), 200);
+        for _ in 0..4 {
+            title.handle_key(KeyCode::Down);
+        }
+        title.handle_key(KeyCode::Enter);
+        let text = render(&title, 80, 24);
+        assert!(text.contains("Achievements and stats"), "{text}");
+        assert!(text.contains("First cut"), "{text}");
+        assert!(text.contains("Lab open"), "{text}");
+        assert!(text.contains("160s"), "{text}");
+        assert!(text.contains("wonders 1"), "{text}");
+        assert!(text.contains("earned 2/"), "{text}");
+        let hidden = title
+            .achievements
+            .iter()
+            .position(|spec| spec.hidden)
+            .expect("hidden achievement");
+        title.stats_selected = hidden;
+        let hidden_text = render(&title, 80, 24);
+        assert!(hidden_text.contains("???"), "{hidden_text}");
+        assert!(!hidden_text.contains("Armada"), "{hidden_text}");
+        assert!(!save_is_locked(&dir.join("alpha.sqlite")));
+        assert!(!save_is_locked(&dir.join("beta.sqlite")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

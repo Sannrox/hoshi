@@ -53,6 +53,7 @@ pub enum HelpContext {
     TitleRename,
     TitleSettings,
     TitleKeys,
+    TitleAchievements,
     TitleCredits,
 }
 
@@ -181,6 +182,7 @@ impl HelpContext {
             HelpContext::TitleRename => "rename",
             HelpContext::TitleSettings => "settings",
             HelpContext::TitleKeys => "keys",
+            HelpContext::TitleAchievements => "title stats",
             HelpContext::TitleCredits => "credits",
         }
     }
@@ -351,6 +353,12 @@ impl HelpContext {
                 Binding::SelectNext,
                 Binding::SelectPrev,
                 Binding::DeleteSlot,
+            ],
+            HelpContext::TitleAchievements => &[
+                Binding::Help,
+                Binding::Cancel,
+                Binding::SelectNext,
+                Binding::SelectPrev,
             ],
             HelpContext::TitleCredits => &[Binding::Help, Binding::Confirm, Binding::Cancel],
         }
@@ -546,6 +554,7 @@ impl Keymap {
             HelpContext::TitleRename,
             HelpContext::TitleSettings,
             HelpContext::TitleKeys,
+            HelpContext::TitleAchievements,
             HelpContext::TitleCredits,
         ] {
             let mut seen: Vec<(KeyCode, Binding)> = Vec::new();

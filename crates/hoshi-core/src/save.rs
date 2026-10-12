@@ -1478,6 +1478,168 @@ pub fn inspect_save(path: &Path) -> Result<SaveGlance, SaveError> {
     })
 }
 
+/// Read-only career totals from one save. Does not migrate, create, or take the write lock.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CareerGlance {
+    pub unlocks: BTreeMap<String, u64>,
+    pub playtime_secs: u64,
+    pub battles: u32,
+    pub wonders: u32,
+    pub galaxies_wonder: u32,
+    pub galaxies_score: u32,
+    pub prestige_runs: u32,
+    pub colonies: u32,
+    pub fleet_ships: u32,
+    pub raids_survived: u32,
+    pub outposts_conquered: u32,
+    pub wonder_ids: std::collections::BTreeSet<String>,
+}
+
+impl CareerGlance {
+    pub fn meters(&self) -> crate::CareerMeters {
+        crate::CareerMeters {
+            colonies: self.colonies,
+            fleet_ships: self.fleet_ships,
+            prestige_runs: self.prestige_runs,
+            raids_survived: self.raids_survived,
+            outposts_conquered: self.outposts_conquered,
+            wonders: self.wonders,
+            wonder_ids: self.wonder_ids.clone(),
+        }
+    }
+
+    pub fn merge(&mut self, other: Self) {
+        for (id, at) in other.unlocks {
+            self.unlocks
+                .entry(id)
+                .and_modify(|had| *had = (*had).min(at))
+                .or_insert(at);
+        }
+        self.playtime_secs = self.playtime_secs.saturating_add(other.playtime_secs);
+        self.battles = self.battles.saturating_add(other.battles);
+        self.wonders = self.wonders.saturating_add(other.wonders);
+        self.galaxies_wonder = self.galaxies_wonder.saturating_add(other.galaxies_wonder);
+        self.galaxies_score = self.galaxies_score.saturating_add(other.galaxies_score);
+        self.prestige_runs = self.prestige_runs.max(other.prestige_runs);
+        self.colonies = self.colonies.max(other.colonies);
+        self.fleet_ships = self.fleet_ships.max(other.fleet_ships);
+        self.raids_survived = self.raids_survived.max(other.raids_survived);
+        self.outposts_conquered = self.outposts_conquered.max(other.outposts_conquered);
+        self.wonder_ids.extend(other.wonder_ids);
+    }
+}
+
+pub fn inspect_career(path: &Path) -> Result<CareerGlance, SaveError> {
+    if save_is_locked(path) {
+        return Err(SaveError::Locked);
+    }
+    if !path.exists() {
+        return Err(SaveError::Corrupt("missing save"));
+    }
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let schema: u32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if schema > SCHEMA_VERSION {
+        return Err(SaveError::SchemaTooNew {
+            found: schema,
+            current: SCHEMA_VERSION,
+        });
+    }
+    let last_tick: i64 = conn
+        .query_row("SELECT last_tick_unix FROM meta WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .optional()?
+        .ok_or(SaveError::Corrupt("missing meta row"))?;
+    let last_tick = unix_ts(last_tick)?;
+    let prestige = if table_exists(&conn, "prestige") {
+        read_prestige(&conn, last_tick)?
+    } else {
+        Prestige::new(last_tick)
+    };
+    let mut playtime_secs = last_tick.saturating_sub(prestige.current.started_at);
+    let mut galaxies_wonder = 0u32;
+    let mut galaxies_score = 0u32;
+    let mut past_wonders = 0u32;
+    for run in &prestige.runs {
+        let ended = run.ended_at.unwrap_or(last_tick);
+        playtime_secs = playtime_secs.saturating_add(ended.saturating_sub(run.started_at));
+        past_wonders = past_wonders.saturating_add(run.wonders);
+        if run.wonders > 0 {
+            galaxies_wonder += 1;
+        } else {
+            galaxies_score += 1;
+        }
+    }
+    let mut wonder_ids = std::collections::BTreeSet::new();
+    if table_exists(&conn, "wonder_done") {
+        let mut stmt = conn.prepare("SELECT wonder_id FROM wonder_done")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        for row in rows {
+            wonder_ids.insert(row?);
+        }
+    }
+    let current_wonders = wonder_ids.len() as u32;
+    let colonies = if table_exists(&conn, "colonies") {
+        u32::try_from(count_rows(&conn, "colonies")?).unwrap_or(0)
+    } else {
+        0
+    };
+    let fleet_ships = if table_exists(&conn, "ships") {
+        conn.query_row("SELECT COALESCE(SUM(count), 0) FROM ships", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .ok()
+        .and_then(|n| u32::try_from(n).ok())
+        .unwrap_or(0)
+    } else {
+        0
+    };
+    let battles = if table_exists(&conn, "combat_logs") {
+        u32::try_from(count_rows(&conn, "combat_logs")?).unwrap_or(0)
+    } else {
+        0
+    };
+    let mut unlocks = BTreeMap::new();
+    if table_exists(&conn, "achievements") {
+        let mut stmt = conn.prepare("SELECT id, unlocked_at FROM achievements")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (id, unlocked_at) = row?;
+            unlocks.insert(id, unix_ts(unlocked_at)?);
+        }
+    }
+    let mut raids_survived = 0;
+    let mut outposts_conquered = 0;
+    if table_exists(&conn, "achievement_stats")
+        && let Some((raids, conquests)) = conn
+            .query_row(
+                "SELECT raids_survived, outposts_conquered FROM achievement_stats WHERE id = 1",
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()?
+    {
+        raids_survived = u32_field(raids, "raids survived")?;
+        outposts_conquered = u32_field(conquests, "outposts conquered")?;
+    }
+    Ok(CareerGlance {
+        unlocks,
+        playtime_secs,
+        battles,
+        wonders: current_wonders.saturating_add(past_wonders),
+        galaxies_wonder,
+        galaxies_score,
+        prestige_runs: prestige.runs.len() as u32,
+        colonies,
+        fleet_ships,
+        raids_survived,
+        outposts_conquered,
+        wonder_ids,
+    })
+}
+
 fn table_exists(conn: &Connection, name: &str) -> bool {
     conn.query_row(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -4355,6 +4517,56 @@ mod tests {
         assert!(!glance.deterministic);
         assert_eq!(glance.planets, 1);
         assert_eq!(glance.fleet_strength, 4);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(save_lock_path(&path));
+    }
+
+    #[test]
+    fn inspect_career_reads_without_writing_and_merges_saves() {
+        let path = unique_path("career");
+        let mut conn = open_save(&path).unwrap();
+        let mut state = GameState::new(50);
+        state.last_tick_unix = 150;
+        state.achievements.insert("first_cut".into(), 7);
+        state.completed_wonders.push("observatory".into());
+        state.fleet.add(crate::ShipKind::LightFighter, 4);
+        state.prestige.runs.push(crate::RunStats {
+            index: 1,
+            started_at: 10,
+            ended_at: Some(40),
+            score: 80,
+            prestige_earned: 4,
+            wonders: 1,
+            colonies: 1,
+            building_levels: 8,
+            research_levels: 2,
+        });
+        save_state(&mut conn, &state).unwrap();
+        drop(conn);
+        let schema_before = inspect_save(&path).unwrap().schema;
+        assert!(!save_is_locked(&path));
+        let career = inspect_career(&path).unwrap();
+        assert!(!save_is_locked(&path));
+        assert_eq!(inspect_save(&path).unwrap().schema, schema_before);
+        assert_eq!(career.unlocks.get("first_cut"), Some(&7));
+        assert_eq!(career.playtime_secs, 130);
+        assert_eq!(career.wonders, 2);
+        assert!(career.wonder_ids.contains("observatory"));
+        assert_eq!(career.galaxies_wonder, 1);
+        assert_eq!(career.galaxies_score, 0);
+        assert_eq!(career.prestige_runs, 1);
+        assert_eq!(career.fleet_ships, 4);
+        let mut other = CareerGlance::default();
+        other.unlocks.insert("first_cut".into(), 3);
+        other.unlocks.insert("lab_open".into(), 9);
+        other.playtime_secs = 20;
+        other.galaxies_score = 2;
+        let mut merged = career;
+        merged.merge(other);
+        assert_eq!(merged.unlocks.get("first_cut"), Some(&3));
+        assert_eq!(merged.unlocks.get("lab_open"), Some(&9));
+        assert_eq!(merged.playtime_secs, 150);
+        assert_eq!(merged.galaxies_score, 2);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(save_lock_path(&path));
     }

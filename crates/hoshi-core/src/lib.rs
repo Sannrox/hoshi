@@ -28,7 +28,7 @@ mod waste;
 mod wonders;
 
 pub use achievements::{
-    AchievementCondition, AchievementConfig, AchievementError, AchievementSpec,
+    AchievementCondition, AchievementConfig, AchievementError, AchievementSpec, CareerMeters,
 };
 pub use activity::{
     ActivityApply, ActivityChannel, ActivityChannelConfig, ActivityEffectsConfig, ActivityPulse,
@@ -86,9 +86,10 @@ pub use research::{
     TechNodeState, TechPrereq, TechSpec, TechTree, TechTreeError,
 };
 pub use save::{
-    SCHEMA_VERSION, SaveError, SaveGlance, SaveLock, default_save_dir, default_save_path,
-    inspect_save, load_or_new, load_or_new_with_seed, load_state, lock_save, open_save,
-    resolve_save_path, save_is_locked, save_lock_path, save_state,
+    CareerGlance, SCHEMA_VERSION, SaveError, SaveGlance, SaveLock, default_save_dir,
+    default_save_path, inspect_career, inspect_save, load_or_new, load_or_new_with_seed,
+    load_state, lock_save, open_save, resolve_save_path, save_is_locked, save_lock_path,
+    save_state,
 };
 pub use ships::{
     Fleet, SHIP_KINDS, ShipCatalog, ShipCatalogError, ShipError, ShipJob, ShipKind, ShipSpec,
