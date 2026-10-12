@@ -3,8 +3,8 @@
 use hoshi_core::{
     BalanceConfig, BuildingKind, Clock, Coord, DefenceKind, FakeClock, Fleet, GameState,
     Jurisdiction, JurisdictionKind, MoonFacility, ResourceKind, SCHEMA_VERSION as SAVE_SCHEMA,
-    SaveError, ShipKind, SpyReport, SystemClock, inspect_save, load_or_new, load_or_new_with_seed,
-    lock_save, open_save, resolve_save_path, save_is_locked, save_state,
+    SaveError, ShipKind, SpyReport, SystemClock, advise, inspect_save, load_or_new,
+    load_or_new_with_seed, lock_save, open_save, resolve_save_path, save_is_locked, save_state,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -78,6 +78,7 @@ enum Command {
     Feedback {
         note: String,
     },
+    Advise,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,6 +156,7 @@ pub fn is_cli_invocation(args: &[String]) -> bool {
             || a == "--continue"
             || a == "new"
             || a == "--commentary"
+            || a == "--advisor"
             || a == "--no-portraits"
         {
             i += 1;
@@ -479,6 +481,21 @@ fn apply(state: &mut GameState, now: u64, command: &Command) -> Result<Value, Cl
         Command::Feedback { .. } => Err(CliError::Internal(
             "feedback is handled before apply".into(),
         )),
+        Command::Advise => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            let tips = advise(state);
+            Ok(json!({
+                "schema_version": SCHEMA_VERSION,
+                "ok": true,
+                "message": "advisor",
+                "suggestions": tips
+                    .iter()
+                    .map(|a| json!({ "id": a.id, "text": a.text }))
+                    .collect::<Vec<_>>(),
+            }))
+        }
         Command::MoonScan { planet } => {
             if !state.deterministic {
                 state.catch_up(now);
@@ -792,6 +809,10 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
         "state" => {
             expect_end(args, 1)?;
             Ok(Command::State)
+        }
+        "advise" => {
+            expect_end(args, 1)?;
+            Ok(Command::Advise)
         }
         "build" => {
             let planet = parse_coord(nth(args, 1, "build <planet> <building>")?)?;
@@ -1305,6 +1326,7 @@ mod tests {
         assert!(!is_cli_invocation(&args(&["--continue"])));
         assert!(!is_cli_invocation(&args(&["new"])));
         assert!(!is_cli_invocation(&args(&["--commentary"])));
+        assert!(!is_cli_invocation(&args(&["--advisor"])));
         assert!(!is_cli_invocation(&args(&["--no-portraits"])));
         let out = run_cli(&args(&["stete"]));
         assert_eq!(out.exit, EXIT_INVALID);
@@ -1342,9 +1364,32 @@ mod tests {
     }
 
     #[test]
+    fn advise_lists_suggestions_without_acting() {
+        let save = unique_save("advise");
+        let (created, exit) = run_on(&save, &["--seed=1", "state"]);
+        assert_eq!(exit, EXIT_OK);
+        let metal = created["resources"]["metal"].clone();
+        let (value, exit) = run_on(&save, &["advise"]);
+        assert_eq!(exit, EXIT_OK, "{value}");
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["message"], "advisor");
+        let tips = value["suggestions"].as_array().expect("suggestions");
+        assert!(!tips.is_empty());
+        assert!(
+            tips.iter()
+                .all(|row| row.get("id").is_some() && row.get("text").is_some())
+        );
+        let (after, _) = run_on(&save, &["state"]);
+        assert_eq!(after["resources"]["metal"], metal);
+        assert_eq!(after["build_queue"], created["build_queue"]);
+        let _ = std::fs::remove_file(&save);
+    }
+
+    #[test]
     fn extra_args_are_invalid() {
         for parts in [
             &["state", "typo"][..],
+            &["advise", "typo"],
             &["build", "home", "metal_mine", "typo"],
             &["research", "energy", "typo"],
             &["cancel", "0", "typo"],

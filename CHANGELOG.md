@@ -8,6 +8,7 @@
 
 ### Added
 
+- Optional local AI advisor: rule-based next-move suggestions from player-visible state. Off until Settings `ai_advisor`, `config.toml`, or `--advisor`. Overlay key `i`; `hoshi advise` prints JSON. Never acts. Optional `--features advisor-model` rephrases every suggestion in one HTTP request with a 100ms budget. Loopback only unless `advisor_allow_lan` is set for a private IPv4 URL; public hosts stay refused.
 - Production screen: live chain rates, buffers, energy and heat, and the limiting factor (input, energy, heat, pollution, full storage, or transport delay) with a short rate history. Fits 80×24.
 - Combat replay commentary from `commentary.toml` (twelve event types, template variants). Off by default; `commentary = true` in config or `--commentary`. Lines are chosen from the fight seed before playback so the overlay never waits on I/O. Optional `commentary-model` sends one loopback request with a 100ms budget and falls back to templates.
 - First playable loop: `docs/playtest.md` checklist (launch, build, research, raid, offline return), `hoshi feedback` to append a local versioned note, and a Playtest feedback GitHub issue template.

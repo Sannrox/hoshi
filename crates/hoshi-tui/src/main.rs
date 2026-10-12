@@ -352,6 +352,7 @@ fn run() -> Result<(), LaunchError> {
     let continue_flag = args.iter().any(|a| a == "--continue");
     let no_portraits = args.iter().any(|a| a == "--no-portraits");
     let commentary_flag = args.iter().any(|a| a == "--commentary");
+    let advisor_flag = args.iter().any(|a| a == "--advisor");
     let balance =
         load_balance(balance_override(parse_path_flag(args.iter(), "--balance")).as_deref())
             .map_err(|e| LaunchError {
@@ -363,6 +364,9 @@ fn run() -> Result<(), LaunchError> {
         let mut cfg = config::UserConfig::load(&config_dir_for_save(&path));
         if commentary_flag {
             cfg.commentary = true;
+        }
+        if advisor_flag {
+            cfg.ai_advisor = true;
         }
         return play_path(
             &path,
@@ -380,6 +384,9 @@ fn run() -> Result<(), LaunchError> {
         if commentary_flag {
             cfg.commentary = true;
         }
+        if advisor_flag {
+            cfg.ai_advisor = true;
+        }
         return play_path(
             &path,
             balance,
@@ -389,7 +396,14 @@ fn run() -> Result<(), LaunchError> {
             &cfg,
         );
     }
-    title_then_play(dir, balance, &clock, no_portraits, commentary_flag)
+    title_then_play(
+        dir,
+        balance,
+        &clock,
+        no_portraits,
+        commentary_flag,
+        advisor_flag,
+    )
 }
 
 fn config_dir_for_save(path: &Path) -> PathBuf {
@@ -426,10 +440,14 @@ fn title_then_play(
     clock: &SystemClock,
     no_portraits: bool,
     commentary_flag: bool,
+    advisor_flag: bool,
 ) -> Result<(), LaunchError> {
     let mut title = Title::new(dir, clock.now_unix());
     if commentary_flag {
         title.config.commentary = true;
+    }
+    if advisor_flag {
+        title.config.ai_advisor = true;
     }
     title.set_balance(balance.clone());
     let mut terminal = ratatui::init();
@@ -570,6 +588,9 @@ fn play_path(
     app.show_tutorial = user.tutorial;
     app.commentary = user.commentary;
     app.commentary_model_url = user.commentary_model_url.clone();
+    app.ai_advisor = user.ai_advisor;
+    app.advisor_model_url = user.advisor_model_url.clone();
+    app.advisor_allow_lan = user.advisor_allow_lan;
     app.set_notify(user.notify_prefs());
     #[cfg(feature = "bridge")]
     app.set_bridge_ui(user.bridge);

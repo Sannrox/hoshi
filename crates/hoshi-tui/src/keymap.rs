@@ -26,6 +26,7 @@ pub enum Binding {
     CursorLeft,
     CursorRight,
     Activity,
+    Advisor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +96,7 @@ impl Binding {
         Binding::CursorLeft,
         Binding::CursorRight,
         Binding::Activity,
+        Binding::Advisor,
     ];
 
     pub fn config_key(self) -> &'static str {
@@ -121,6 +123,7 @@ impl Binding {
             Binding::CursorLeft => "cursor_left",
             Binding::CursorRight => "cursor_right",
             Binding::Activity => "activity",
+            Binding::Advisor => "advisor",
         }
     }
 
@@ -155,6 +158,7 @@ impl Binding {
             Binding::CursorLeft => vec![KeyCode::Char('h'), KeyCode::Left],
             Binding::CursorRight => vec![KeyCode::Char('l'), KeyCode::Right],
             Binding::Activity => vec![KeyCode::Char('a')],
+            Binding::Advisor => vec![KeyCode::Char('i')],
         }
     }
 }
@@ -403,6 +407,7 @@ impl HelpContext {
             Binding::CursorLeft => "cursor left / previous branch",
             Binding::CursorRight => "cursor right / next branch",
             Binding::Activity => "activity log",
+            Binding::Advisor => "advisor",
         }
     }
 }
@@ -607,7 +612,21 @@ impl Keymap {
                             format_key(&code)
                         ));
                     }
+                    if self.keys_of(Binding::Advisor).contains(&code) {
+                        return Err(format!(
+                            "conflict: advisor uses {}, reserved for story choices",
+                            format_key(&code)
+                        ));
+                    }
                 }
+            }
+        }
+        for code in self.keys_of(Binding::Advisor) {
+            if self.keys_of(Binding::Activity).contains(code) {
+                return Err(format!(
+                    "conflict: activity and advisor both use {}",
+                    format_key(code)
+                ));
             }
         }
         for ctx in [
@@ -634,6 +653,15 @@ impl Keymap {
                 if let Some(other) = self.lookup(ctx, *code) {
                     return Err(format!(
                         "conflict: {} and activity both use {}",
+                        other.config_key(),
+                        format_key(code)
+                    ));
+                }
+            }
+            for code in self.keys_of(Binding::Advisor) {
+                if let Some(other) = self.lookup(ctx, *code) {
+                    return Err(format!(
+                        "conflict: {} and advisor both use {}",
                         other.config_key(),
                         format_key(code)
                     ));
@@ -739,6 +767,13 @@ mod tests {
         let err = Keymap::from_overrides([("quit", "j")]).unwrap_err();
         assert!(err.contains("conflict"), "{err}");
         assert!(err.contains("select_next") || err.contains("quit"), "{err}");
+    }
+
+    #[test]
+    fn advisor_cannot_share_the_activity_key() {
+        let err = Keymap::from_overrides([("advisor", "a")]).unwrap_err();
+        assert!(err.contains("conflict"), "{err}");
+        assert!(err.contains("activity") || err.contains("advisor"), "{err}");
     }
 
     #[test]

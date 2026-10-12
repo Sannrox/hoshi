@@ -1520,7 +1520,7 @@ fn screens_for(binding: Binding) -> String {
         .filter(|ctx| ctx.bindings().contains(&binding))
         .map(HelpContext::name)
         .collect();
-    if binding == Binding::Activity {
+    if binding == Binding::Activity || binding == Binding::Advisor {
         names.insert(0, "play");
     }
     if names.is_empty() {

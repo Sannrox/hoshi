@@ -9,8 +9,8 @@ use crate::title::AwaySummary;
 use hoshi_core::{
     BuildingKind, CombatLog, CombatWinner, CommentaryCatalog, Coord, DefenceKind, Fleet, GameState,
     HintScreen, Jurisdiction, JurisdictionKind, LawStatus, ResourceKind, Resources, ShipKind,
-    SpyReport, StoryEvent, TechBranch, TechNodeState, WonderError, encode_galaxy_seed,
-    rephrase_lines,
+    SpyReport, StoryEvent, TechBranch, TechNodeState, WonderError, advise, encode_galaxy_seed,
+    polish_all, rephrase_lines,
 };
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
@@ -92,10 +92,15 @@ pub struct App {
     pub show_tutorial: bool,
     pub commentary: bool,
     pub commentary_model_url: String,
+    pub ai_advisor: bool,
+    pub advisor_model_url: String,
+    pub advisor_allow_lan: bool,
     notify: NotifyPrefs,
     watch: NotifyWatch,
     bridge_ui: bool,
     activity_open: bool,
+    advisor_open: bool,
+    advisor_lines: Vec<String>,
     activity_scroll: usize,
     bridge_log: Vec<BridgeLine>,
     prod_history: Vec<f64>,
@@ -140,10 +145,15 @@ impl App {
             show_tutorial: true,
             commentary: false,
             commentary_model_url: String::new(),
+            ai_advisor: false,
+            advisor_model_url: String::new(),
+            advisor_allow_lan: false,
             notify: NotifyPrefs::default(),
             watch,
             bridge_ui: false,
             activity_open: false,
+            advisor_open: false,
+            advisor_lines: Vec::new(),
             activity_scroll: 0,
             bridge_log: Vec::new(),
             prod_history: Vec::new(),
@@ -258,6 +268,19 @@ impl App {
             }
             return Action::None;
         }
+        if self.advisor_open {
+            if self.keymap.matches(Binding::Quit, code) {
+                return Action::Quit;
+            }
+            if self.keymap.matches(Binding::Advisor, code)
+                || self.keymap.matches(Binding::Cancel, code)
+                || self.keymap.matches(Binding::Confirm, code)
+            {
+                self.advisor_open = false;
+                return Action::None;
+            }
+            return Action::None;
+        }
         if self.activity_open {
             if self.keymap.matches(Binding::Quit, code) {
                 return Action::Quit;
@@ -343,6 +366,10 @@ impl App {
         }
         if self.bridge_ui && self.keymap.matches(Binding::Activity, code) {
             self.activity_open = true;
+            return Action::None;
+        }
+        if self.ai_advisor && self.keymap.matches(Binding::Advisor, code) {
+            self.open_advisor();
             return Action::None;
         }
         match self.keymap.lookup(ctx, code) {
@@ -581,6 +608,9 @@ impl App {
         if self.activity_open {
             self.draw_activity(frame);
         }
+        if self.advisor_open {
+            self.draw_advisor(frame);
+        }
         if self.help_open {
             self.draw_help(frame);
         }
@@ -608,6 +638,7 @@ impl App {
         }
         if self.help_open
             || self.activity_open
+            || self.advisor_open
             || (self.away.is_some() && !self.away_hidden)
             || self.story_event().is_some()
             || self.opened_report
@@ -1257,6 +1288,11 @@ impl App {
         } else {
             String::new()
         };
+        let advisor = if self.ai_advisor {
+            format!("  {} advisor", k.primary(Binding::Advisor))
+        } else {
+            String::new()
+        };
         let mut rows = Vec::new();
         if self.show_tutorial
             && let Some(hint) = self.state.pending_hint()
@@ -1274,7 +1310,7 @@ impl App {
         if let Some(bar) = self.bridge_bar() {
             rows.push(bar);
         }
-        rows.push(Line::from(format!("{}{activity}", match self.screen {
+        rows.push(Line::from(format!("{}{activity}{advisor}", match self.screen {
             Screen::Overview => format!(
                 "{tab} screens  {planets}  {}/{} branch  {select}  {confirm} research  {} replay  {cancel}  {} copy seed  {quit}  {help}",
                 k.primary(Binding::CursorLeft),
@@ -1331,7 +1367,43 @@ impl App {
                 format!("  {}  activity log", self.keymap.display(Binding::Activity)),
             );
         }
+        if self.ai_advisor {
+            lines.insert(
+                2,
+                format!("  {}  advisor", self.keymap.display(Binding::Advisor)),
+            );
+        }
         render_overlay(frame, " help ", lines.into_iter().map(Line::from).collect());
+    }
+
+    fn open_advisor(&mut self) {
+        let tips = advise(&self.state);
+        self.advisor_lines = polish_all(
+            &tips.into_iter().map(|row| row.text).collect::<Vec<_>>(),
+            &self.advisor_model_url,
+            self.advisor_allow_lan,
+        );
+        self.advisor_open = true;
+    }
+
+    fn draw_advisor(&self, frame: &mut Frame<'_>) {
+        let mut lines = vec![
+            Line::from("advisor (suggestions only; nothing is queued)"),
+            Line::from(""),
+        ];
+        if self.advisor_lines.is_empty() {
+            lines.push(Line::from("no suggestions"));
+        } else {
+            for (i, text) in self.advisor_lines.iter().enumerate() {
+                lines.push(Line::from(format!("{}. {text}", i + 1)));
+            }
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(format!(
+            "{} closes",
+            self.keymap.primary(Binding::Cancel)
+        )));
+        render_overlay(frame, " advisor ", lines);
     }
 
     fn draw_activity(&self, frame: &mut Frame<'_>) {
@@ -3806,6 +3878,36 @@ mod tests {
         app.set_bridge_ui(true);
         let idle = render_text(&app, 80, 24);
         assert!(idle.contains("bridge idle"), "{idle}");
+    }
+
+    #[test]
+    fn advisor_is_off_until_enabled() {
+        let mut app = App::new(GameState::new(1_000));
+        app.show_tutorial = false;
+        app.handle_key(KeyCode::Char('i'), 1_000);
+        let still = render_text(&app, 80, 24);
+        assert!(!still.contains("suggestions only"), "{still}");
+        app.handle_key(KeyCode::Char('?'), 1_000);
+        let help = render_text(&app, 80, 24);
+        assert!(!help.contains("advisor"), "{help}");
+        app.handle_key(KeyCode::Char('?'), 1_000);
+        app.ai_advisor = true;
+        app.screen = Screen::Daily;
+        let footer = render_text(&app, 80, 24);
+        assert!(footer.contains("advisor"), "{footer}");
+        app.handle_key(KeyCode::Char('?'), 1_000);
+        let help = render_text(&app, 80, 24);
+        assert!(help.contains("advisor"), "{help}");
+        app.handle_key(KeyCode::Char('?'), 1_000);
+        let before = app.state.clone();
+        app.handle_key(KeyCode::Char('i'), 1_000);
+        let panel = render_text(&app, 80, 24);
+        assert!(panel.contains("suggestions only"), "{panel}");
+        assert!(
+            !panel.contains("[daily]"),
+            "advisor overlay left the chrome visible:\n{panel}"
+        );
+        assert_eq!(app.state, before);
     }
 
     #[test]

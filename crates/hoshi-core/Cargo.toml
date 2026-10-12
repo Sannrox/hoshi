@@ -10,6 +10,7 @@ publish.workspace = true
 [features]
 default = []
 commentary-model = []
+advisor-model = ["commentary-model"]
 
 [dependencies]
 rusqlite = { version = "0.37", features = ["bundled"] }

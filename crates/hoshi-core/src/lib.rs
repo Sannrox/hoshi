@@ -2,6 +2,7 @@
 
 mod achievements;
 mod activity;
+mod advisor;
 mod balance;
 mod buildings;
 mod chains;
@@ -39,6 +40,7 @@ pub use activity::{
     ActivityApply, ActivityChannel, ActivityChannelConfig, ActivityEffectsConfig, ActivityPulse,
     ActivityTracker,
 };
+pub use advisor::{Advice, advise, polish_advice, polish_all};
 pub use balance::{
     BalanceConfig, BalanceError, BuildingCatalog, BuildingSpec, EnergyProducerSpec, PacingTargets,
     ProducerSpec, RaidConfig, StorageSpec,
@@ -50,7 +52,9 @@ pub use combat::{
     CombatFrame, CombatLog, CombatReport, CombatWinner, GroundReport, MAX_COMBAT_LOGS, next_u64,
     plunder_from, rapid_fire_table, resolve_combat, resolve_ground,
 };
-pub use commentary::{CommentaryCatalog, CommentaryError, rephrase_lines, rephrase_local};
+pub use commentary::{
+    CommentaryCatalog, CommentaryError, rephrase_lines, rephrase_lines_allow, rephrase_local,
+};
 pub use daily::{
     DailyAction, DailyBoard, DailyConfig, DailyError, DailyKind, DailySlot, DailySpec,
 };
