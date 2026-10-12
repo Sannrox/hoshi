@@ -24,6 +24,8 @@ pub struct UserConfig {
     pub notify_fleet: bool,
     pub notify_quiet_start: Option<u8>,
     pub notify_quiet_end: Option<u8>,
+    pub commentary: bool,
+    pub commentary_model_url: String,
     pub keys: Keymap,
 }
 
@@ -47,6 +49,8 @@ impl Default for UserConfig {
             notify_fleet: true,
             notify_quiet_start: None,
             notify_quiet_end: None,
+            commentary: false,
+            commentary_model_url: String::new(),
             keys: Keymap::defaults(),
         }
     }
@@ -105,6 +109,10 @@ impl UserConfig {
                 "notify_fleet" => cfg.notify_fleet = value == "true",
                 "notify_quiet_start" => cfg.notify_quiet_start = parse_hour(value),
                 "notify_quiet_end" => cfg.notify_quiet_end = parse_hour(value),
+                "commentary" => cfg.commentary = value == "true",
+                "commentary_model_url" => {
+                    cfg.commentary_model_url = value.trim_matches('"').to_string();
+                }
                 key if key.starts_with("keys.") => {
                     key_overrides.push((key[5..].to_string(), value.to_string()));
                 }
@@ -133,7 +141,7 @@ impl UserConfig {
             _ => String::new(),
         };
         let text = format!(
-            "reduced_motion = {}\nno_animation = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}\ntutorial = {}\nreset_tutorial = {}\nnotify = {}\nnotify_build = {}\nnotify_raid = {}\nnotify_fleet = {}\n{quiet}{}\n",
+            "reduced_motion = {}\nno_animation = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}\ntutorial = {}\nreset_tutorial = {}\nnotify = {}\nnotify_build = {}\nnotify_raid = {}\nnotify_fleet = {}\ncommentary = {}\ncommentary_model_url = \"{}\"\n{quiet}{}\n",
             self.reduced_motion,
             self.no_animation,
             self.high_contrast,
@@ -148,6 +156,8 @@ impl UserConfig {
             self.notify_build,
             self.notify_raid,
             self.notify_fleet,
+            self.commentary,
+            self.commentary_model_url.replace('"', ""),
             self.keys.to_config_lines().trim_end(),
         );
         std::fs::write(Self::path(dir), text)
@@ -195,6 +205,8 @@ mod tests {
         assert!(loaded.tutorial);
         assert!(!loaded.reset_tutorial);
         assert!(!loaded.notify);
+        assert!(!loaded.commentary);
+        assert!(loaded.commentary_model_url.is_empty());
         assert!(loaded.portraits);
         assert_eq!(loaded.portrait_protocol, ProtocolChoice::Auto);
         let mut cfg = loaded;
@@ -202,12 +214,16 @@ mod tests {
         cfg.portraits = false;
         cfg.portrait_protocol = ProtocolChoice::Off;
         cfg.last_slot = Some("alpha".into());
+        cfg.commentary = true;
+        cfg.commentary_model_url = "http://127.0.0.1:8080/v1".into();
         cfg.save(&dir).unwrap();
         let again = UserConfig::load(&dir);
         assert!(again.reduced_motion);
         assert_eq!(again.last_slot.as_deref(), Some("alpha"));
         assert!(!again.bridge);
         assert!(!again.notify);
+        assert!(again.commentary);
+        assert_eq!(again.commentary_model_url, "http://127.0.0.1:8080/v1");
         assert!(!again.portraits);
         assert_eq!(again.portrait_protocol, ProtocolChoice::Off);
         assert_eq!(again.keys, Keymap::defaults());

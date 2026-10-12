@@ -7,9 +7,10 @@ use crate::notify::{self, Prefs as NotifyPrefs, Watch as NotifyWatch};
 use crate::portraits::{self, PortraitView, Protocol, Slot};
 use crate::title::AwaySummary;
 use hoshi_core::{
-    BuildingKind, CombatLog, CombatWinner, Coord, DefenceKind, Fleet, GameState, HintScreen,
-    Jurisdiction, JurisdictionKind, LawStatus, ResourceKind, Resources, ShipKind, SpyReport,
-    StoryEvent, TechBranch, TechNodeState, WonderError, encode_galaxy_seed,
+    BuildingKind, CombatLog, CombatWinner, CommentaryCatalog, Coord, DefenceKind, Fleet, GameState,
+    HintScreen, Jurisdiction, JurisdictionKind, LawStatus, ResourceKind, Resources, ShipKind,
+    SpyReport, StoryEvent, TechBranch, TechNodeState, WonderError, encode_galaxy_seed,
+    rephrase_lines,
 };
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
@@ -48,6 +49,7 @@ struct ReplayView {
     log: CombatLog,
     frame: usize,
     paused: bool,
+    commentary: Vec<Option<String>>,
 }
 
 const TRADE_PAIRS: [(ResourceKind, ResourceKind); 6] = [
@@ -87,6 +89,8 @@ pub struct App {
     pub reduced_motion: bool,
     pub no_animation: bool,
     pub show_tutorial: bool,
+    pub commentary: bool,
+    pub commentary_model_url: String,
     notify: NotifyPrefs,
     watch: NotifyWatch,
     bridge_ui: bool,
@@ -132,6 +136,8 @@ impl App {
             reduced_motion: false,
             no_animation: false,
             show_tutorial: true,
+            commentary: false,
+            commentary_model_url: String::new(),
             notify: NotifyPrefs::default(),
             watch,
             bridge_ui: false,
@@ -188,10 +194,20 @@ impl App {
         };
         let last = log.report.frames.len().saturating_sub(1);
         let still = self.reduced_motion || self.no_animation;
+        let commentary = if self.commentary {
+            let mut lines = CommentaryCatalog::bundled().lines_for(&log.report);
+            if !self.commentary_model_url.is_empty() {
+                rephrase_lines(&mut lines, &self.commentary_model_url);
+            }
+            lines
+        } else {
+            Vec::new()
+        };
         self.replay = Some(ReplayView {
             frame: if still { last } else { 0 },
             paused: still,
             log,
+            commentary,
         });
         self.away_hidden = true;
     }
@@ -688,6 +704,9 @@ impl App {
                 "shots {}  shields flare  {} explode",
                 snap.shots, snap.explosions
             )));
+        }
+        if let Some(line) = replay.commentary.get(idx).and_then(|s| s.as_deref()) {
+            lines.push(Line::from(line.to_string()));
         }
         lines.push(Line::from(""));
         lines.push(Line::from(format!(
@@ -2696,6 +2715,38 @@ mod tests {
         app.handle_key(KeyCode::Char('r'), 1_000);
         assert!(app.replay_active());
         assert!(app.away_hidden);
+    }
+
+    #[test]
+    fn replay_commentary_is_off_until_enabled() {
+        let mut state = GameState::new(1_000);
+        state.fleet.add(ShipKind::LightFighter, 6);
+        state.trigger_raid(1_000);
+        let mut app = App::new(state);
+        app.handle_key(KeyCode::Char('r'), 1_000);
+        assert!(
+            app.replay
+                .as_ref()
+                .unwrap()
+                .commentary
+                .iter()
+                .all(Option::is_none)
+                || app.replay.as_ref().unwrap().commentary.is_empty()
+        );
+        app.replay = None;
+        app.commentary = true;
+        app.handle_key(KeyCode::Char('r'), 1_000);
+        let (last, line) = {
+            let replay = app.replay.as_ref().unwrap();
+            assert!(replay.commentary.iter().any(Option::is_some));
+            let last = replay.commentary.len().saturating_sub(1);
+            let line = replay.commentary[last].clone().expect("closing line");
+            (last, line)
+        };
+        app.replay.as_mut().unwrap().frame = last;
+        let text = render_text(&app, 80, 24);
+        assert!(text.contains("combat replay"), "{text}");
+        assert!(text.contains(&line), "{text}");
     }
 
     #[test]
