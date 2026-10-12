@@ -7,9 +7,9 @@ use crate::notify::{self, Prefs as NotifyPrefs, Watch as NotifyWatch};
 use crate::portraits::{self, PortraitView, Protocol, Slot};
 use crate::title::AwaySummary;
 use hoshi_core::{
-    BuildingKind, CombatLog, CombatWinner, Coord, DefenceKind, Fleet, GameState, Jurisdiction,
-    JurisdictionKind, LawStatus, ResourceKind, Resources, ShipKind, SpyReport, StoryEvent,
-    TechBranch, TechNodeState, WonderError, encode_galaxy_seed,
+    BuildingKind, CombatLog, CombatWinner, Coord, DefenceKind, Fleet, GameState, HintScreen,
+    Jurisdiction, JurisdictionKind, LawStatus, ResourceKind, Resources, ShipKind, SpyReport,
+    StoryEvent, TechBranch, TechNodeState, WonderError, encode_galaxy_seed,
 };
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
@@ -86,6 +86,7 @@ pub struct App {
     replay: Option<ReplayView>,
     pub reduced_motion: bool,
     pub no_animation: bool,
+    pub show_tutorial: bool,
     notify: NotifyPrefs,
     watch: NotifyWatch,
     bridge_ui: bool,
@@ -130,6 +131,7 @@ impl App {
             replay: None,
             reduced_motion: false,
             no_animation: false,
+            show_tutorial: true,
             notify: NotifyPrefs::default(),
             watch,
             bridge_ui: false,
@@ -291,6 +293,29 @@ impl App {
                 _ => {}
             }
             return Action::None;
+        }
+        if self.dispatch.is_none()
+            && self.show_tutorial
+            && let Some(hint) = self.state.pending_hint()
+        {
+            if matches!(code, KeyCode::Char('g')) {
+                self.screen = match hint.screen {
+                    HintScreen::Overview => Screen::Overview,
+                    HintScreen::Planet => Screen::Planet,
+                    HintScreen::Shipyard => Screen::Shipyard,
+                    HintScreen::Map => Screen::Map,
+                };
+                self.state.dismiss_hint(&hint.id);
+                return Action::None;
+            }
+            if matches!(code, KeyCode::Char('s')) {
+                self.state.skip_tutorial();
+                return Action::None;
+            }
+            if self.keymap.matches(Binding::Cancel, code) {
+                self.state.dismiss_hint(&hint.id);
+                return Action::None;
+            }
         }
         if self.bridge_ui && self.keymap.matches(Binding::Activity, code) {
             self.activity_open = true;
@@ -484,7 +509,7 @@ impl App {
         let (content, portrait) = portraits::split_area(inner);
 
         let header = self.header_lines();
-        let footer = self.footer_lines();
+        let footer = self.footer_lines(content.width as usize);
         let header_h = header.len() as u16;
         let footer_h = footer.len() as u16;
         let chunks = Layout::vertical([
@@ -1170,7 +1195,7 @@ impl App {
         Some(Line::from(Span::styled(parts.join("  ·  "), style)))
     }
 
-    fn footer_lines(&self) -> Vec<Line<'static>> {
+    fn footer_lines(&self, width: usize) -> Vec<Line<'static>> {
         let k = &self.keymap;
         let tab = k.primary(Binding::NextScreen);
         let planets = format!(
@@ -1193,6 +1218,19 @@ impl App {
             String::new()
         };
         let mut rows = Vec::new();
+        if self.show_tutorial
+            && let Some(hint) = self.state.pending_hint()
+        {
+            for line in wrap_text(&format!("Hint: {}", hint.title), width) {
+                rows.push(Line::from(line));
+            }
+            for line in wrap_text(&hint.body, width) {
+                rows.push(Line::from(line));
+            }
+            for line in wrap_text("x dismiss  g show me  s skip tutorial", width) {
+                rows.push(Line::from(line));
+            }
+        }
         if let Some(bar) = self.bridge_bar() {
             rows.push(bar);
         }
@@ -2342,6 +2380,52 @@ fn append_windowed(
     std::mem::take(rows)
 }
 
+fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![text.to_string()];
+    }
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        for chunk in wrap_chunks(word, width) {
+            if line.is_empty() {
+                line = chunk;
+            } else if line.chars().count() + 1 + chunk.chars().count() <= width {
+                line.push(' ');
+                line.push_str(&chunk);
+            } else {
+                lines.push(std::mem::take(&mut line));
+                line = chunk;
+            }
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
+fn wrap_chunks(word: &str, width: usize) -> Vec<String> {
+    if word.chars().count() <= width {
+        return vec![word.to_string()];
+    }
+    let mut out = Vec::new();
+    let mut buf = String::new();
+    for c in word.chars() {
+        if buf.chars().count() == width {
+            out.push(std::mem::take(&mut buf));
+        }
+        buf.push(c);
+    }
+    if !buf.is_empty() {
+        out.push(buf);
+    }
+    out
+}
+
 fn sparkline(values: &[f64], width: usize) -> String {
     const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
     if values.is_empty() || width == 0 {
@@ -3470,6 +3554,47 @@ mod tests {
         assert!(text.contains("fleet #"), "{text}");
         assert!(text.contains("outbound"), "{text}");
         assert!(text.contains("launched to 1:1:2"), "{text}");
+    }
+
+    #[test]
+    fn tutorial_opening_fits_80x24_and_skip_clears_it() {
+        let state = GameState::new_live_galaxy(1_000, BalanceConfig::default(), 1);
+        let mut app = App::new(state);
+        let text = render_text(&app, 80, 24);
+        assert!(text.contains("Hint:"), "{text}");
+        assert!(text.contains("Welcome"), "{text}");
+        assert!(text.contains("Skip"), "{text}");
+        assert!(text.contains("dismiss"), "{text}");
+        app.handle_key(KeyCode::Char('g'), 1_000);
+        assert_eq!(app.screen, Screen::Overview);
+        let after = render_text(&app, 80, 24);
+        assert!(!after.contains("Welcome"), "{after}");
+        app.handle_key(KeyCode::Char('s'), 1_000);
+        let skipped = render_text(&app, 80, 24);
+        assert!(!skipped.contains("Hint:"), "{skipped}");
+    }
+
+    #[test]
+    fn tutorial_keys_wait_while_an_overlay_is_open() {
+        let state = GameState::new_live_galaxy(1_000, BalanceConfig::default(), 1);
+        let mut app = App::new(state);
+        app.set_away(AwaySummary {
+            elapsed_secs: 10,
+            metal: 0.0,
+            crystal: 0.0,
+            deuterium: 0.0,
+            builds: 0,
+            research: 0,
+            fleets_returned: 0,
+            expeditions: 0,
+            raids: 0,
+            events: vec!["away".into()],
+        });
+        app.handle_key(KeyCode::Char('x'), 1_000);
+        assert!(app.away_hidden);
+        assert_eq!(app.state.pending_hint().unwrap().id, "opening");
+        app.handle_key(KeyCode::Char('x'), 1_000);
+        assert!(app.state.pending_hint().is_none_or(|h| h.id != "opening"));
     }
 
     #[test]

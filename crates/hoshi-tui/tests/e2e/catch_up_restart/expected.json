@@ -271,9 +271,14 @@
     "deuterium": 0.0,
     "metal": 517.4583984375
   },
-  "save_schema": 25,
+  "save_schema": 26,
   "schema_version": 1,
   "spy_reports": [],
+  "tutorial": {
+    "enabled": false,
+    "pending": null,
+    "skipped": false
+  },
   "waste": {
     "heat_load": 23.4,
     "heat_sink": 80.0,

@@ -26,6 +26,7 @@ mod ships;
 mod simulate;
 mod state;
 mod story;
+mod tutorial;
 mod waste;
 mod wonders;
 
@@ -108,5 +109,8 @@ pub use simulate::{
 };
 pub use state::{GameEvent, GameState, ResourceKind, Resources};
 pub use story::{PendingStory, StoryCatalog, StoryChoice, StoryError, StoryEvent};
+pub use tutorial::{
+    HintScreen, HintSpec, HintTrigger, TutorialBoard, TutorialCatalog, TutorialError,
+};
 pub use waste::{WasteConfig, WasteReport, report as waste_report};
 pub use wonders::{WonderError, WonderJob, WonderModifier, WonderSpec, WonderStage};

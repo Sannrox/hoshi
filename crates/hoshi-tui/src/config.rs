@@ -16,6 +16,8 @@ pub struct UserConfig {
     pub portrait_protocol: ProtocolChoice,
     pub last_slot: Option<String>,
     pub away_threshold_secs: u64,
+    pub tutorial: bool,
+    pub reset_tutorial: bool,
     pub notify: bool,
     pub notify_build: bool,
     pub notify_raid: bool,
@@ -37,6 +39,8 @@ impl Default for UserConfig {
             portrait_protocol: ProtocolChoice::Auto,
             last_slot: None,
             away_threshold_secs: 60,
+            tutorial: true,
+            reset_tutorial: false,
             notify: false,
             notify_build: true,
             notify_raid: true,
@@ -93,6 +97,8 @@ impl UserConfig {
                         cfg.away_threshold_secs = n;
                     }
                 }
+                "tutorial" => cfg.tutorial = value != "false",
+                "reset_tutorial" => cfg.reset_tutorial = value == "true",
                 "notify" => cfg.notify = value == "true",
                 "notify_build" => cfg.notify_build = value == "true",
                 "notify_raid" => cfg.notify_raid = value == "true",
@@ -127,7 +133,7 @@ impl UserConfig {
             _ => String::new(),
         };
         let text = format!(
-            "reduced_motion = {}\nno_animation = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}\nnotify = {}\nnotify_build = {}\nnotify_raid = {}\nnotify_fleet = {}\n{quiet}{}\n",
+            "reduced_motion = {}\nno_animation = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}\ntutorial = {}\nreset_tutorial = {}\nnotify = {}\nnotify_build = {}\nnotify_raid = {}\nnotify_fleet = {}\n{quiet}{}\n",
             self.reduced_motion,
             self.no_animation,
             self.high_contrast,
@@ -136,6 +142,8 @@ impl UserConfig {
             self.portraits,
             self.portrait_protocol.as_key(),
             self.away_threshold_secs,
+            self.tutorial,
+            self.reset_tutorial,
             self.notify,
             self.notify_build,
             self.notify_raid,
@@ -184,6 +192,8 @@ mod tests {
         let loaded = UserConfig::load(&dir);
         assert!(!loaded.bridge);
         assert!(!loaded.ai_advisor);
+        assert!(loaded.tutorial);
+        assert!(!loaded.reset_tutorial);
         assert!(!loaded.notify);
         assert!(loaded.portraits);
         assert_eq!(loaded.portrait_protocol, ProtocolChoice::Auto);

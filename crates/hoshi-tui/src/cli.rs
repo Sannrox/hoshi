@@ -73,6 +73,8 @@ enum Command {
     MoonScan {
         planet: Coord,
     },
+    TutorialSkip,
+    TutorialReset,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -394,6 +396,14 @@ fn apply(state: &mut GameState, now: u64, command: &Command) -> Result<Value, Cl
                 .map_err(|e| CliError::Refused(e.to_string()))?;
             Ok(ok_state(state, "jumped"))
         }
+        Command::TutorialSkip => {
+            state.skip_tutorial();
+            Ok(ok_state(state, "tutorial skipped"))
+        }
+        Command::TutorialReset => {
+            state.reset_hints();
+            Ok(ok_state(state, "tutorial reset"))
+        }
         Command::MoonScan { planet } => {
             if !state.deterministic {
                 state.catch_up(now);
@@ -562,6 +572,11 @@ fn state_value(state: &GameState) -> Value {
                     "done": slot.done(),
                 })
             }).collect::<Vec<_>>(),
+        },
+        "tutorial": {
+            "enabled": state.tutorial.enabled,
+            "skipped": state.tutorial.skipped,
+            "pending": state.pending_hint().map(|h| h.id),
         },
         "moons": state.moons.iter().map(|moon| {
             json!({
@@ -756,6 +771,20 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
         },
         "law" => parse_law_command(args),
         "moon" => parse_moon_command(args),
+        "tutorial" => match args.get(1).map(String::as_str) {
+            Some("skip") => {
+                expect_end(args, 2)?;
+                Ok(Command::TutorialSkip)
+            }
+            Some("reset") => {
+                expect_end(args, 2)?;
+                Ok(Command::TutorialReset)
+            }
+            Some(other) => Err(CliError::Invalid(format!(
+                "unknown tutorial command {other}"
+            ))),
+            None => Err(CliError::Invalid("tutorial needs skip or reset".into())),
+        },
         "tick" => {
             let mut advance = None;
             let mut i = 1;

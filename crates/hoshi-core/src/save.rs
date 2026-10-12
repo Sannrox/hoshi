@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 25;
+pub const SCHEMA_VERSION: u32 = 26;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -173,7 +173,9 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM daily_slots;
          DELETE FROM daily_meta;
          DELETE FROM moons;
-         DELETE FROM debris;",
+         DELETE FROM debris;
+         DELETE FROM tutorial_seen;
+         DELETE FROM tutorial_meta;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -467,6 +469,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
     insert_combat_logs(&tx, state)?;
     insert_daily(&tx, state)?;
     insert_moons(&tx, state)?;
+    insert_tutorial(&tx, state)?;
     for (i, colony) in state.colonies.iter().enumerate() {
         let planet_id = (i as i64) + 2;
         tx.execute(
@@ -1082,6 +1085,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     load_combat_logs(conn, &mut state)?;
     load_daily(conn, &mut state)?;
     load_moons(conn, &mut state)?;
+    load_tutorial(conn, &mut state)?;
     state.sync_raid_schedule_after_standing(state.last_tick_unix);
 
     let mut stmt = conn.prepare(
@@ -1326,7 +1330,8 @@ pub fn load_or_new(
         if leftover != 0 {
             return Err(SaveError::Corrupt("missing meta row"));
         }
-        let state = GameState::with_config(now_unix, config);
+        let mut state = GameState::with_config(now_unix, config);
+        state.tutorial = crate::TutorialBoard::start();
         save_state(conn, &state)?;
         return Ok(state);
     }
@@ -1915,6 +1920,8 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "daily_slots" => "SELECT COUNT(*) FROM daily_slots",
         "moons" => "SELECT COUNT(*) FROM moons",
         "debris" => "SELECT COUNT(*) FROM debris",
+        "tutorial_meta" => "SELECT COUNT(*) FROM tutorial_meta",
+        "tutorial_seen" => "SELECT COUNT(*) FROM tutorial_seen",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -1966,7 +1973,9 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "daily_meta")?
         + count_rows(conn, "daily_slots")?
         + count_rows(conn, "moons")?
-        + count_rows(conn, "debris")?)
+        + count_rows(conn, "debris")?
+        + count_rows(conn, "tutorial_meta")?
+        + count_rows(conn, "tutorial_seen")?)
 }
 
 fn migrate(conn: &Connection) -> Result<(), SaveError> {
@@ -2051,6 +2060,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 25 {
         migrate_v25(conn)?;
+    }
+    if found < 26 {
+        migrate_v26(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -2731,6 +2743,22 @@ fn migrate_v25(conn: &Connection) -> Result<(), SaveError> {
     Ok(())
 }
 
+fn migrate_v26(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS tutorial_meta (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            enabled INTEGER NOT NULL DEFAULT 0,
+            skipped INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS tutorial_seen (
+            hint_id TEXT PRIMARY KEY
+        );
+        ",
+    )?;
+    Ok(())
+}
+
 fn insert_daily(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<(), SaveError> {
     tx.execute(
         "INSERT INTO daily_meta (id, day_index, streak) VALUES (1, ?1, ?2)",
@@ -2880,6 +2908,49 @@ fn load_moons(conn: &Connection, state: &mut GameState) -> Result<(), SaveError>
                 },
                 amount,
             );
+        }
+    }
+    Ok(())
+}
+
+fn insert_tutorial(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<(), SaveError> {
+    tx.execute(
+        "INSERT INTO tutorial_meta (id, enabled, skipped) VALUES (1, ?1, ?2)",
+        params![
+            i64::from(state.tutorial.enabled),
+            i64::from(state.tutorial.skipped),
+        ],
+    )?;
+    for id in &state.tutorial.seen {
+        tx.execute(
+            "INSERT INTO tutorial_seen (hint_id) VALUES (?1)",
+            params![id],
+        )?;
+    }
+    Ok(())
+}
+
+fn load_tutorial(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
+    state.tutorial = crate::TutorialBoard::default();
+    if !table_exists(conn, "tutorial_meta") {
+        return Ok(());
+    }
+    if let Some((enabled, skipped)) = conn
+        .query_row(
+            "SELECT enabled, skipped FROM tutorial_meta WHERE id = 1",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()?
+    {
+        state.tutorial.enabled = enabled != 0;
+        state.tutorial.skipped = skipped != 0;
+    }
+    if table_exists(conn, "tutorial_seen") {
+        let mut stmt = conn.prepare("SELECT hint_id FROM tutorial_seen")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        for row in rows {
+            state.tutorial.seen.insert(row?);
         }
     }
     Ok(())
@@ -4152,6 +4223,8 @@ mod tests {
         let state = load_or_new(&mut conn, 1_234, BalanceConfig::default()).unwrap();
         assert_eq!(state.last_tick_unix, 1_234);
         assert_eq!(state.resources, GameState::new(1_234).resources);
+        assert!(state.tutorial.enabled);
+        assert!(!state.tutorial.skipped);
         let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
         assert_eq!(loaded, state);
     }
@@ -4669,6 +4742,22 @@ mod tests {
             log.frames.last().map(|f| f.defender),
             Some(log.defender_after)
         );
+    }
+
+    #[test]
+    fn migrate_v26_round_trips_tutorial() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v26(&conn).unwrap();
+        migrate_v26(&conn).unwrap();
+        let mut state = GameState::new(10);
+        state.tutorial.enabled = true;
+        state.tutorial.seen.insert("opening".into());
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert!(loaded.tutorial.enabled);
+        assert!(loaded.tutorial.seen.contains("opening"));
+        assert_eq!(count_rows(&conn, "tutorial_meta").unwrap(), 1);
+        assert_eq!(count_rows(&conn, "tutorial_seen").unwrap(), 1);
     }
 
     #[test]
