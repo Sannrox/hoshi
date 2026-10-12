@@ -1,6 +1,7 @@
 //! Overview, planet, shipyard, wonder, prestige, market, diplomacy and reports screens.
 //! Core owns the rules; this module only renders and turns keys into core commands.
 
+use crate::portraits::{self, PortraitView, Protocol, Slot};
 use crate::title::AwaySummary;
 use hoshi_core::{
     BuildingKind, Coord, DefenceKind, Fleet, GameState, ResourceKind, Resources, ShipKind,
@@ -43,6 +44,7 @@ pub enum Action {
 
 pub struct App {
     pub state: GameState,
+    pub portraits: PortraitView,
     screen: Screen,
     selected: usize,
     planet_index: usize,
@@ -58,6 +60,7 @@ impl App {
     pub fn new(state: GameState) -> Self {
         Self {
             state,
+            portraits: PortraitView::default(),
             screen: Screen::Overview,
             selected: 0,
             planet_index: 0,
@@ -218,22 +221,36 @@ impl App {
         let block = Block::bordered().title(title);
         let inner = block.inner(frame.area());
         frame.render_widget(block, frame.area());
+        let (content, portrait) = portraits::split_area(inner);
 
         let header = self.header_lines();
         let footer = self.footer_lines();
         let header_h = header.len() as u16;
         let footer_h = footer.len() as u16;
         let chunks = Layout::vertical([
-            Constraint::Length(header_h.min(inner.height)),
+            Constraint::Length(header_h.min(content.height)),
             Constraint::Min(1),
-            Constraint::Length(footer_h.min(inner.height.saturating_sub(header_h))),
+            Constraint::Length(footer_h.min(content.height.saturating_sub(header_h))),
         ])
-        .split(inner);
+        .split(content);
 
         frame.render_widget(Paragraph::new(header), chunks[0]);
         let list_h = chunks[1].height as usize;
         frame.render_widget(Paragraph::new(self.list_lines(list_h)), chunks[1]);
         frame.render_widget(Paragraph::new(footer), chunks[2]);
+        if let Some(area) = portrait {
+            let art = Layout::vertical([
+                Constraint::Length(portraits::ASCII_ROWS as u16),
+                Constraint::Min(0),
+            ])
+            .split(area);
+            let slot = self.current_portrait_slot();
+            let mood = portraits::mood_for(slot, &self.state.events);
+            frame.render_widget(
+                Paragraph::new(portraits::portrait_lines(self.portraits, slot, mood)),
+                art[0],
+            );
+        }
         if let Some(away) = &self.away
             && !self.away_hidden
         {
@@ -243,6 +260,46 @@ impl App {
         } else if self.opened_report {
             self.draw_report(frame);
         }
+    }
+
+    fn current_portrait_slot(&self) -> Slot {
+        let coord = self.selected_coord();
+        portraits::slot_for_screen(
+            self.screen == Screen::Planet,
+            self.screen == Screen::Shipyard,
+            self.state.planet_kind(coord),
+            self.state.rare_bonus_at(coord).is_some(),
+            self.state.events.last().map(|e| e.text.as_str()),
+        )
+    }
+
+    /// Overlay an inline graphics image after ratatui has painted the cells.
+    pub fn paint_inline_graphics(
+        &self,
+        out: &mut impl std::io::Write,
+        frame: ratatui::layout::Rect,
+    ) -> std::io::Result<()> {
+        if !self.portraits.enabled || self.portraits.protocol != Protocol::Graphics {
+            return Ok(());
+        }
+        if (self.away.is_some() && !self.away_hidden)
+            || self.story_event().is_some()
+            || self.opened_report
+        {
+            return Ok(());
+        }
+        let inner = ratatui::layout::Rect {
+            x: frame.x.saturating_add(1),
+            y: frame.y.saturating_add(1),
+            width: frame.width.saturating_sub(2),
+            height: frame.height.saturating_sub(2),
+        };
+        let Some(area) = portraits::split_area(inner).1 else {
+            return Ok(());
+        };
+        let slot = self.current_portrait_slot();
+        let mood = portraits::mood_for(slot, &self.state.events);
+        portraits::paint_inline_graphics(out, area, slot, mood)
     }
 
     fn story_event(&self) -> Option<&StoryEvent> {
@@ -1460,7 +1517,36 @@ mod tests {
             assert!(text.contains("Raid:"), "{w}x{h}: {text}");
             assert!(text.contains("Wonder:"), "{w}x{h}: {text}");
             assert!(text.contains("Prestige:"), "{w}x{h}: {text}");
+            assert!(
+                !text.contains('\u{1b}'),
+                "{w}x{h} leaked an escape sequence: {text:?}"
+            );
         }
+    }
+
+    #[test]
+    fn disabled_portraits_use_ascii_and_keep_layout() {
+        let mut app = App::new(GameState::new(1_000));
+        app.portraits.enabled = false;
+        let text = render_text(&app, 80, 24);
+        assert!(text.contains("Metal"), "{text}");
+        assert!(text.contains(".==."), "{text}");
+        assert!(!text.contains('▀'), "{text}");
+        app.handle_key(KeyCode::Tab, 1_000);
+        let planet = render_text(&app, 80, 24);
+        assert!(
+            planet.contains("(::.") || planet.contains("rocky"),
+            "{planet}"
+        );
+        app.state.events.push(hoshi_core::GameEvent {
+            at: 1,
+            text: "raid: pirates 1 vs 0. 1 rounds. lost none. pirates lost 1. plunder M0 C0 D0"
+                .into(),
+        });
+        app.handle_key(KeyCode::Tab, 1_000);
+        app.screen = Screen::Overview;
+        let raid = render_text(&app, 80, 24);
+        assert!(raid.contains("|o-|") || raid.contains("|O-|"), "{raid}");
     }
 
     #[test]

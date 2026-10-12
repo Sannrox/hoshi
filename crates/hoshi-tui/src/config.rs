@@ -1,5 +1,6 @@
 //! User config beside the save directory. Not stored in a save.
 
+use crate::portraits::ProtocolChoice;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -8,6 +9,8 @@ pub struct UserConfig {
     pub high_contrast: bool,
     pub bridge: bool,
     pub ai_advisor: bool,
+    pub portraits: bool,
+    pub portrait_protocol: ProtocolChoice,
     pub last_slot: Option<String>,
     pub away_threshold_secs: u64,
 }
@@ -19,6 +22,8 @@ impl Default for UserConfig {
             high_contrast: false,
             bridge: false,
             ai_advisor: false,
+            portraits: true,
+            portrait_protocol: ProtocolChoice::Auto,
             last_slot: None,
             away_threshold_secs: 60,
         }
@@ -50,6 +55,12 @@ impl UserConfig {
                 "high_contrast" => cfg.high_contrast = value == "true",
                 "bridge" => cfg.bridge = value == "true",
                 "ai_advisor" => cfg.ai_advisor = value == "true",
+                "portraits" => cfg.portraits = value == "true",
+                "portrait_protocol" => {
+                    if let Some(choice) = ProtocolChoice::from_key(value) {
+                        cfg.portrait_protocol = choice;
+                    }
+                }
                 "last_slot" => {
                     cfg.last_slot = if value.is_empty() {
                         None
@@ -72,11 +83,13 @@ impl UserConfig {
         std::fs::create_dir_all(dir)?;
         let last = self.last_slot.as_deref().unwrap_or("");
         let text = format!(
-            "reduced_motion = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\nlast_slot = \"{last}\"\naway_threshold_secs = {}\n",
+            "reduced_motion = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}\n",
             self.reduced_motion,
             self.high_contrast,
             self.bridge,
             self.ai_advisor,
+            self.portraits,
+            self.portrait_protocol.as_key(),
             self.away_threshold_secs,
         );
         std::fs::write(Self::path(dir), text)
@@ -104,14 +117,20 @@ mod tests {
         let loaded = UserConfig::load(&dir);
         assert!(!loaded.bridge);
         assert!(!loaded.ai_advisor);
+        assert!(loaded.portraits);
+        assert_eq!(loaded.portrait_protocol, ProtocolChoice::Auto);
         let mut cfg = loaded;
         cfg.reduced_motion = true;
+        cfg.portraits = false;
+        cfg.portrait_protocol = ProtocolChoice::Off;
         cfg.last_slot = Some("alpha".into());
         cfg.save(&dir).unwrap();
         let again = UserConfig::load(&dir);
         assert!(again.reduced_motion);
         assert_eq!(again.last_slot.as_deref(), Some("alpha"));
         assert!(!again.bridge);
+        assert!(!again.portraits);
+        assert_eq!(again.portrait_protocol, ProtocolChoice::Off);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

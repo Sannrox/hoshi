@@ -22,6 +22,8 @@ jobs:
           toolchain: 1.97.1
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
+      - name: Portrait asset budget
+        run: bash scripts/check-portrait-assets.sh
       - name: Build
         run: cargo build --locked --workspace --all-targets
       - name: Test
