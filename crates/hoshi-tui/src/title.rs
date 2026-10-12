@@ -1,6 +1,7 @@
 //! Title screen: continue, new game, load, settings. No game rules live here.
 
 use crate::config::UserConfig;
+use crate::keymap::{Binding, HelpContext};
 use hoshi_core::{
     SaveError, SaveGlance, inspect_save, lock_save, parse_galaxy_seed, save_is_locked,
 };
@@ -9,7 +10,7 @@ use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::{Block, Clear, Paragraph};
 use std::path::{Path, PathBuf};
 
 const MENU: [&str; 6] = [
@@ -142,6 +143,7 @@ pub struct Title {
     rename_from: Option<String>,
     rename_to: String,
     play_path: Option<PathBuf>,
+    help_open: bool,
 }
 
 impl Title {
@@ -165,6 +167,7 @@ impl Title {
             rename_from: None,
             rename_to: String::new(),
             play_path: None,
+            help_open: false,
         };
         title.refresh_slots();
         title
@@ -189,13 +192,31 @@ impl Title {
     }
 
     pub fn handle_key(&mut self, code: KeyCode) -> TitleAction {
+        if self.help_open {
+            if self.config.keys.matches(Binding::Quit, code) && self.page == Page::Menu {
+                return TitleAction::Quit;
+            }
+            if self.config.keys.matches(Binding::Help, code)
+                || self.config.keys.matches(Binding::Cancel, code)
+                || self.config.keys.matches(Binding::Confirm, code)
+            {
+                self.help_open = false;
+            }
+            return TitleAction::None;
+        }
+        if self.config.keys.lookup(self.help_context(), code) == Some(Binding::Help) {
+            self.help_open = true;
+            return TitleAction::None;
+        }
         match self.page {
             Page::Menu => self.handle_menu(code),
             Page::New => self.handle_new(code),
             Page::Load => self.handle_load(code),
             Page::Settings => self.handle_settings(code),
             Page::Credits => {
-                if matches!(code, KeyCode::Esc | KeyCode::Char('x') | KeyCode::Enter) {
+                if let Some(Binding::Confirm | Binding::Cancel) =
+                    self.config.keys.lookup(HelpContext::TitleCredits, code)
+                {
                     self.page = Page::Menu;
                 }
                 TitleAction::None
@@ -203,18 +224,30 @@ impl Title {
         }
     }
 
+    fn help_context(&self) -> HelpContext {
+        match self.page {
+            Page::Menu => HelpContext::TitleMenu,
+            Page::New => HelpContext::TitleNew,
+            Page::Load if self.rename_from.is_some() => HelpContext::TitleRename,
+            Page::Load if self.confirm_delete.is_some() => HelpContext::TitleDelete,
+            Page::Load => HelpContext::TitleLoad,
+            Page::Settings => HelpContext::TitleSettings,
+            Page::Credits => HelpContext::TitleCredits,
+        }
+    }
+
     fn handle_menu(&mut self, code: KeyCode) -> TitleAction {
-        match code {
-            KeyCode::Char('q') => TitleAction::Quit,
-            KeyCode::Char('j') | KeyCode::Down => {
+        match self.config.keys.lookup(HelpContext::TitleMenu, code) {
+            Some(Binding::Quit) => TitleAction::Quit,
+            Some(Binding::SelectNext) => {
                 self.selected = (self.selected + 1) % MENU.len();
                 TitleAction::None
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            Some(Binding::SelectPrev) => {
                 self.selected = (self.selected + MENU.len() - 1) % MENU.len();
                 TitleAction::None
             }
-            KeyCode::Enter => match self.selected {
+            Some(Binding::Confirm) => match self.selected {
                 0 => self.continue_last(),
                 1 => {
                     self.page = Page::New;
@@ -312,12 +345,38 @@ impl Title {
     }
 
     fn handle_new(&mut self, code: KeyCode) -> TitleAction {
-        match code {
-            KeyCode::Esc | KeyCode::Char('x') => {
+        match self.config.keys.lookup(HelpContext::TitleNew, code) {
+            Some(Binding::Cancel) => {
                 self.page = Page::Menu;
-                TitleAction::None
+                return TitleAction::None;
             }
-            KeyCode::Tab | KeyCode::Down => {
+            Some(Binding::NextScreen) => {
+                self.new_field = match self.new_field {
+                    NewField::Name => NewField::Seed,
+                    NewField::Seed => NewField::Difficulty,
+                    NewField::Difficulty => NewField::Name,
+                };
+                return TitleAction::None;
+            }
+            Some(Binding::Confirm) => {
+                if self.new_field == NewField::Difficulty {
+                    return self.create_new();
+                }
+                self.new_field = match self.new_field {
+                    NewField::Name => NewField::Seed,
+                    NewField::Seed => NewField::Difficulty,
+                    NewField::Difficulty => NewField::Difficulty,
+                };
+                return TitleAction::None;
+            }
+            Some(Binding::Toggle) if self.new_field == NewField::Difficulty => {
+                self.new_difficulty = self.new_difficulty.cycle();
+                return TitleAction::None;
+            }
+            _ => {}
+        }
+        match code {
+            KeyCode::Down => {
                 self.new_field = match self.new_field {
                     NewField::Name => NewField::Seed,
                     NewField::Seed => NewField::Difficulty,
@@ -331,21 +390,6 @@ impl Title {
                     NewField::Seed => NewField::Name,
                     NewField::Difficulty => NewField::Seed,
                 };
-                TitleAction::None
-            }
-            KeyCode::Enter => {
-                if self.new_field == NewField::Difficulty {
-                    return self.create_new();
-                }
-                self.new_field = match self.new_field {
-                    NewField::Name => NewField::Seed,
-                    NewField::Seed => NewField::Difficulty,
-                    NewField::Difficulty => NewField::Difficulty,
-                };
-                TitleAction::None
-            }
-            KeyCode::Char(' ') if self.new_field == NewField::Difficulty => {
-                self.new_difficulty = self.new_difficulty.cycle();
                 TitleAction::None
             }
             KeyCode::Backspace => {
@@ -428,40 +472,43 @@ impl Title {
             return self.handle_delete_confirm(code, name);
         }
         if self.slots.is_empty() {
-            if matches!(code, KeyCode::Esc | KeyCode::Char('x')) {
+            if self.config.keys.lookup(HelpContext::TitleLoad, code) == Some(Binding::Cancel) {
                 self.page = Page::Menu;
             }
             return TitleAction::None;
         }
-        match code {
-            KeyCode::Esc | KeyCode::Char('x') => {
+        match self.config.keys.lookup(HelpContext::TitleLoad, code) {
+            Some(Binding::Cancel) => {
                 self.page = Page::Menu;
                 self.selected = 2;
                 TitleAction::None
             }
-            KeyCode::Char('j') | KeyCode::Down => {
+            Some(Binding::SelectNext) => {
                 self.selected = (self.selected + 1) % self.slots.len();
                 TitleAction::None
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            Some(Binding::SelectPrev) => {
                 self.selected = (self.selected + self.slots.len() - 1) % self.slots.len();
                 TitleAction::None
             }
-            KeyCode::Enter => {
+            Some(Binding::Confirm) => {
                 let slot = self.slots[self.selected].clone();
                 self.try_play(&slot)
             }
-            KeyCode::Char('d') => {
+            Some(Binding::DeleteSlot) => {
                 let name = self.slots[self.selected].name.clone();
                 if save_is_locked(&self.slots[self.selected].path) {
                     self.status = format!("{name} is locked");
                     return TitleAction::None;
                 }
                 self.confirm_delete = Some(name);
-                self.status = "delete: press d again or type the slot name and Enter".into();
+                self.status = format!(
+                    "delete: press {} again or Enter",
+                    self.config.keys.primary(Binding::DeleteSlot)
+                );
                 TitleAction::None
             }
-            KeyCode::Char('r') => {
+            Some(Binding::RenameSlot) => {
                 let slot = &self.slots[self.selected];
                 if save_is_locked(&slot.path) {
                     self.status = format!("{} is locked", slot.name);
@@ -477,12 +524,12 @@ impl Title {
     }
 
     fn handle_delete_confirm(&mut self, code: KeyCode, name: String) -> TitleAction {
-        match code {
-            KeyCode::Esc | KeyCode::Char('x') => {
+        match self.config.keys.lookup(HelpContext::TitleDelete, code) {
+            Some(Binding::Cancel) => {
                 self.confirm_delete = None;
                 self.status.clear();
             }
-            KeyCode::Char('d') | KeyCode::Enter => {
+            Some(Binding::DeleteSlot | Binding::Confirm) => {
                 if let Err(msg) = self.delete_slot(&name) {
                     self.status = msg;
                 } else {
@@ -500,15 +547,13 @@ impl Title {
     }
 
     fn handle_rename(&mut self, code: KeyCode, from: String) -> TitleAction {
-        match code {
-            KeyCode::Esc | KeyCode::Char('x') => {
+        match self.config.keys.lookup(HelpContext::TitleRename, code) {
+            Some(Binding::Cancel) => {
                 self.rename_from = None;
                 self.status.clear();
+                return TitleAction::None;
             }
-            KeyCode::Backspace => {
-                self.rename_to.pop();
-            }
-            KeyCode::Enter => {
+            Some(Binding::Confirm) => {
                 if let Err(msg) = self.rename_slot(&from, &self.rename_to.clone()) {
                     self.status = msg;
                 } else {
@@ -516,6 +561,13 @@ impl Title {
                     self.refresh_slots();
                 }
                 self.rename_from = None;
+                return TitleAction::None;
+            }
+            _ => {}
+        }
+        match code {
+            KeyCode::Backspace => {
+                self.rename_to.pop();
             }
             KeyCode::Char(c)
                 if (c.is_ascii_alphanumeric() || c == '-' || c == '_')
@@ -594,18 +646,18 @@ impl Title {
 
     fn handle_settings(&mut self, code: KeyCode) -> TitleAction {
         let items = 5;
-        match code {
-            KeyCode::Esc | KeyCode::Char('x') => {
+        match self.config.keys.lookup(HelpContext::TitleSettings, code) {
+            Some(Binding::Cancel) => {
                 self.page = Page::Menu;
                 self.selected = 3;
             }
-            KeyCode::Char('j') | KeyCode::Down => {
+            Some(Binding::SelectNext) => {
                 self.selected = (self.selected + 1) % items;
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            Some(Binding::SelectPrev) => {
                 self.selected = (self.selected + items - 1) % items;
             }
-            KeyCode::Enter | KeyCode::Char(' ') => {
+            Some(Binding::Confirm | Binding::Toggle) => {
                 match self.selected {
                     0 => self.config.reduced_motion = !self.config.reduced_motion,
                     1 => self.config.high_contrast = !self.config.high_contrast,
@@ -650,6 +702,11 @@ impl Title {
                 for (i, item) in MENU.iter().enumerate() {
                     lines.push(menu_line(item, i == self.selected));
                 }
+                lines.push(Line::from(""));
+                lines.push(Line::from(format!(
+                    "{} help",
+                    self.config.keys.primary(Binding::Help)
+                )));
             }
             Page::New => {
                 lines.push(Line::from("New game  Humans"));
@@ -668,12 +725,22 @@ impl Title {
                     self.new_difficulty.as_label(),
                     self.new_field == NewField::Difficulty,
                 ));
-                lines.push(Line::from("Enter on difficulty creates the slot. x back."));
+                lines.push(Line::from(format!(
+                    "{} on difficulty creates the slot. {} back. {} help.",
+                    self.config.keys.primary(Binding::Confirm),
+                    self.config.keys.primary(Binding::Cancel),
+                    self.config.keys.primary(Binding::Help)
+                )));
             }
             Page::Load => {
-                lines.push(Line::from(
-                    "Load game  Enter play  d delete  r rename  x back",
-                ));
+                lines.push(Line::from(format!(
+                    "Load game  {} play  {} delete  {} rename  {} back  {} help",
+                    self.config.keys.primary(Binding::Confirm),
+                    self.config.keys.primary(Binding::DeleteSlot),
+                    self.config.keys.primary(Binding::RenameSlot),
+                    self.config.keys.primary(Binding::Cancel),
+                    self.config.keys.primary(Binding::Help)
+                )));
                 if self.slots.is_empty() {
                     lines.push(Line::from("no saves yet"));
                 }
@@ -690,7 +757,11 @@ impl Title {
                 }
             }
             Page::Settings => {
-                lines.push(Line::from("Settings  space toggles  takes effect now"));
+                lines.push(Line::from(format!(
+                    "Settings  {} toggles  takes effect now  {} help",
+                    self.config.keys.primary(Binding::Toggle),
+                    self.config.keys.primary(Binding::Help)
+                )));
                 lines.push(toggle_line(
                     "reduced motion",
                     self.config.reduced_motion,
@@ -724,7 +795,11 @@ impl Title {
                 lines.push(Line::from(
                     "core owns the rules. the terminal only renders.",
                 ));
-                lines.push(Line::from("Enter back"));
+                lines.push(Line::from(format!(
+                    "{} back  {} help",
+                    self.config.keys.primary(Binding::Confirm),
+                    self.config.keys.primary(Binding::Help)
+                )));
             }
         }
         if !self.status.is_empty() {
@@ -736,6 +811,20 @@ impl Title {
         }
         let chunks = Layout::vertical([Constraint::Min(1)]).split(inner);
         frame.render_widget(Paragraph::new(lines), chunks[0]);
+        if self.help_open {
+            let help = self
+                .config
+                .keys
+                .help_lines(self.help_context())
+                .into_iter()
+                .map(Line::from)
+                .collect::<Vec<_>>();
+            frame.render_widget(Clear, area);
+            let block = Block::bordered().title(" help ");
+            let help_inner = block.inner(area);
+            frame.render_widget(block, area);
+            frame.render_widget(Paragraph::new(help), help_inner);
+        }
     }
 
     pub fn new_game_spec(&self) -> NewGameSpec {
@@ -1190,6 +1279,22 @@ mod tests {
         assert!(!loaded.bridge);
         assert!(!loaded.ai_advisor);
         assert!(!loaded.portraits);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn help_overlay_lists_title_menu_actions() {
+        let dir = unique_dir();
+        let mut title = Title::new(dir.clone(), 100);
+        title.handle_key(KeyCode::Char('?'));
+        let text = render(&title, 80, 24);
+        assert!(text.contains("help"), "{text}");
+        assert!(text.contains("keys for this screen"), "{text}");
+        assert!(text.contains("quit"), "{text}");
+        title.handle_key(KeyCode::Char('?'));
+        let closed = render(&title, 80, 24);
+        assert!(closed.contains("Continue"), "{closed}");
+        assert!(!closed.contains("keys for this screen"), "{closed}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

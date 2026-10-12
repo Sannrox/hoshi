@@ -1,6 +1,7 @@
 //! Overview, planet, shipyard, wonder, prestige, achievements, market, diplomacy, laws, reports and map screens.
 //! Core owns the rules; this module only renders and turns keys into core commands.
 
+use crate::keymap::{Binding, HelpContext, Keymap};
 use crate::portraits::{self, PortraitView, Protocol, Slot};
 use crate::title::AwaySummary;
 use hoshi_core::{
@@ -59,6 +60,8 @@ pub enum Action {
 pub struct App {
     pub state: GameState,
     pub portraits: PortraitView,
+    keymap: Keymap,
+    help_open: bool,
     screen: Screen,
     selected: usize,
     planet_index: usize,
@@ -75,10 +78,17 @@ pub struct App {
 }
 
 impl App {
+    #[cfg(test)]
     pub fn new(state: GameState) -> Self {
+        Self::with_keymap(state, Keymap::defaults())
+    }
+
+    pub fn with_keymap(state: GameState, keymap: Keymap) -> Self {
         Self {
             state,
             portraits: PortraitView::default(),
+            keymap,
+            help_open: false,
             screen: Screen::Overview,
             selected: 0,
             planet_index: 0,
@@ -103,129 +113,164 @@ impl App {
     pub fn handle_key(&mut self, code: KeyCode, now_unix: u64) -> Action {
         self.state.catch_up(now_unix);
         self.clamp_planet();
+        if self.help_open {
+            if self.keymap.matches(Binding::Quit, code) {
+                return Action::Quit;
+            }
+            if self.keymap.matches(Binding::Help, code)
+                || self.keymap.matches(Binding::Cancel, code)
+                || self.keymap.matches(Binding::Confirm, code)
+            {
+                self.help_open = false;
+            }
+            return Action::None;
+        }
+        let ctx = self.help_context();
+        if self.keymap.lookup(ctx, code) == Some(Binding::Help) {
+            self.help_open = true;
+            return Action::None;
+        }
         if self.away.is_some() && !self.away_hidden {
-            match code {
-                KeyCode::Enter | KeyCode::Char('x') | KeyCode::Esc => {
-                    self.away_hidden = true;
-                }
-                KeyCode::Char('q') => return Action::Quit,
+            match self.keymap.lookup(ctx, code) {
+                Some(Binding::Confirm | Binding::Cancel) => self.away_hidden = true,
+                Some(Binding::Quit) => return Action::Quit,
                 _ => {}
             }
             return Action::None;
         }
         if self.story_event().is_some() {
-            match code {
-                KeyCode::Char('q') => return Action::Quit,
-                KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
-                    let idx = (c as u8 - b'1') as usize;
-                    self.choose_story_at(idx, now_unix);
+            match self.keymap.lookup(ctx, code) {
+                Some(Binding::Quit) => return Action::Quit,
+                _ => {
+                    if let KeyCode::Char(c) = code
+                        && c.is_ascii_digit()
+                        && c != '0'
+                    {
+                        let idx = (c as u8 - b'1') as usize;
+                        self.choose_story_at(idx, now_unix);
+                    }
                 }
-                _ => {}
             }
             return Action::None;
         }
         if self.opened_report {
-            match code {
-                KeyCode::Enter | KeyCode::Char('x') | KeyCode::Esc => {
-                    self.opened_report = false;
-                }
-                KeyCode::Char('q') => return Action::Quit,
+            match self.keymap.lookup(ctx, code) {
+                Some(Binding::Confirm | Binding::Cancel) => self.opened_report = false,
+                Some(Binding::Quit) => return Action::Quit,
                 _ => {}
             }
             return Action::None;
         }
-        match code {
-            KeyCode::Char('q') => return Action::Quit,
-            KeyCode::Char('w') if self.screen == Screen::Overview && self.away.is_some() => {
+        match self.keymap.lookup(ctx, code) {
+            Some(Binding::Quit) => return Action::Quit,
+            Some(Binding::ShowAway) if self.screen == Screen::Overview && self.away.is_some() => {
                 self.away_hidden = false;
             }
-            KeyCode::Tab => {
-                self.screen = match self.screen {
-                    Screen::Overview => Screen::Planet,
-                    Screen::Planet => Screen::Shipyard,
-                    Screen::Shipyard => Screen::Wonder,
-                    Screen::Wonder => Screen::Prestige,
-                    Screen::Prestige => Screen::Achievements,
-                    Screen::Achievements => Screen::Market,
-                    Screen::Market => Screen::Diplomacy,
-                    Screen::Diplomacy => Screen::Laws,
-                    Screen::Laws => Screen::Reports,
-                    Screen::Reports => Screen::Map,
-                    Screen::Map => Screen::Overview,
-                };
-                self.selected = 0;
-                self.status.clear();
-                self.confirming_prestige = false;
-                self.opened_report = false;
-                self.dispatch = None;
-            }
-            KeyCode::Char(']') => self.cycle_planet(1),
-            KeyCode::Char('[') => self.cycle_planet(-1),
-            KeyCode::Char('j') | KeyCode::Down if self.dispatch.is_some() => {
-                self.nudge_dispatch(1);
-            }
-            KeyCode::Char('k') | KeyCode::Up if self.dispatch.is_some() => {
-                self.nudge_dispatch(-1);
-            }
-            KeyCode::Char('h') | KeyCode::Left
-                if self.screen == Screen::Map && self.dispatch.is_none() =>
-            {
+            Some(Binding::NextScreen) => self.cycle_screen(),
+            Some(Binding::NextPlanet) => self.cycle_planet(1),
+            Some(Binding::PrevPlanet) => self.cycle_planet(-1),
+            Some(Binding::SelectNext) if self.dispatch.is_some() => self.nudge_dispatch(1),
+            Some(Binding::SelectPrev) if self.dispatch.is_some() => self.nudge_dispatch(-1),
+            Some(Binding::CursorLeft) if self.screen == Screen::Map && self.dispatch.is_none() => {
                 self.nudge_map_position(-1);
             }
-            KeyCode::Char('l') | KeyCode::Right
-                if self.screen == Screen::Map && self.dispatch.is_none() =>
-            {
+            Some(Binding::CursorRight) if self.screen == Screen::Map && self.dispatch.is_none() => {
                 self.nudge_map_position(1);
             }
-            KeyCode::Char('h') | KeyCode::Left if self.screen == Screen::Overview => {
+            Some(Binding::CursorLeft) if self.screen == Screen::Overview => {
                 self.nudge_tree_branch(-1);
             }
-            KeyCode::Char('l') | KeyCode::Right if self.screen == Screen::Overview => {
+            Some(Binding::CursorRight) if self.screen == Screen::Overview => {
                 self.nudge_tree_branch(1);
             }
-            KeyCode::Char('j') | KeyCode::Down
-                if self.screen == Screen::Map && self.dispatch.is_none() =>
-            {
+            Some(Binding::SelectNext) if self.screen == Screen::Map && self.dispatch.is_none() => {
                 self.nudge_map_system(1);
             }
-            KeyCode::Char('k') | KeyCode::Up
-                if self.screen == Screen::Map && self.dispatch.is_none() =>
-            {
+            Some(Binding::SelectPrev) if self.screen == Screen::Map && self.dispatch.is_none() => {
                 self.nudge_map_system(-1);
             }
-            KeyCode::Char('j') | KeyCode::Down => {
+            Some(Binding::SelectNext) => {
                 let len = self.list_len();
                 if len > 0 {
                     self.selected = (self.selected + 1) % len;
                 }
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            Some(Binding::SelectPrev) => {
                 let len = self.list_len();
                 if len > 0 {
                     self.selected = (self.selected + len - 1) % len;
                 }
             }
-            KeyCode::Char('+') if self.dispatch.is_some() => self.nudge_dispatch_ships(1),
-            KeyCode::Char('-') if self.dispatch.is_some() => self.nudge_dispatch_ships(-1),
-            KeyCode::Char('+') if self.screen == Screen::Market => {
+            Some(Binding::Increase) if self.dispatch.is_some() => self.nudge_dispatch_ships(1),
+            Some(Binding::Decrease) if self.dispatch.is_some() => self.nudge_dispatch_ships(-1),
+            Some(Binding::Increase) if self.screen == Screen::Market => {
                 self.trade_amount = (self.trade_amount + 10.0).min(1_000_000.0);
             }
-            KeyCode::Char('-') if self.screen == Screen::Market => {
+            Some(Binding::Decrease) if self.screen == Screen::Market => {
                 self.trade_amount = (self.trade_amount - 10.0).max(10.0);
             }
-            KeyCode::Char('s') if self.screen == Screen::Reports && !self.opened_report => {
+            Some(Binding::SendProbe) if self.screen == Screen::Reports && !self.opened_report => {
                 self.send_probe(now_unix);
             }
-            KeyCode::Enter => self.activate(now_unix),
-            KeyCode::Char('x') => self.cancel(now_unix),
-            KeyCode::Char('y') => {
-                let code = encode_galaxy_seed(self.state.galaxy_seed);
-                copy_to_clipboard(&code);
-                self.status = format!("copied {code}");
+            Some(Binding::Confirm) => self.activate(now_unix),
+            Some(Binding::Cancel) => self.cancel(now_unix),
+            Some(Binding::CopySeed) => {
+                let seed = encode_galaxy_seed(self.state.galaxy_seed);
+                copy_to_clipboard(&seed);
+                self.status = format!("copied {seed}");
             }
             _ => {}
         }
         Action::None
+    }
+
+    fn cycle_screen(&mut self) {
+        self.screen = match self.screen {
+            Screen::Overview => Screen::Planet,
+            Screen::Planet => Screen::Shipyard,
+            Screen::Shipyard => Screen::Wonder,
+            Screen::Wonder => Screen::Prestige,
+            Screen::Prestige => Screen::Achievements,
+            Screen::Achievements => Screen::Market,
+            Screen::Market => Screen::Diplomacy,
+            Screen::Diplomacy => Screen::Laws,
+            Screen::Laws => Screen::Reports,
+            Screen::Reports => Screen::Map,
+            Screen::Map => Screen::Overview,
+        };
+        self.selected = 0;
+        self.status.clear();
+        self.confirming_prestige = false;
+        self.opened_report = false;
+        self.dispatch = None;
+    }
+
+    fn help_context(&self) -> HelpContext {
+        if self.away.is_some() && !self.away_hidden {
+            return HelpContext::Away;
+        }
+        if self.story_event().is_some() {
+            return HelpContext::Story;
+        }
+        if self.opened_report {
+            return HelpContext::ReportView;
+        }
+        if self.dispatch.is_some() {
+            return HelpContext::Dispatch;
+        }
+        match self.screen {
+            Screen::Overview => HelpContext::Overview,
+            Screen::Planet => HelpContext::Planet,
+            Screen::Shipyard => HelpContext::Shipyard,
+            Screen::Wonder => HelpContext::Wonder,
+            Screen::Prestige => HelpContext::Prestige,
+            Screen::Achievements => HelpContext::Achievements,
+            Screen::Market => HelpContext::Market,
+            Screen::Diplomacy => HelpContext::Diplomacy,
+            Screen::Laws => HelpContext::Laws,
+            Screen::Reports => HelpContext::Reports,
+            Screen::Map => HelpContext::Map,
+        }
     }
 
     fn cycle_planet(&mut self, delta: i32) {
@@ -331,6 +376,9 @@ impl App {
         } else if let Some(form) = &self.dispatch {
             self.draw_dispatch(frame, form);
         }
+        if self.help_open {
+            self.draw_help(frame);
+        }
     }
 
     fn current_portrait_slot(&self) -> Slot {
@@ -353,7 +401,8 @@ impl App {
         if !self.portraits.enabled || self.portraits.protocol != Protocol::Graphics {
             return Ok(());
         }
-        if (self.away.is_some() && !self.away_hidden)
+        if self.help_open
+            || (self.away.is_some() && !self.away_hidden)
             || self.story_event().is_some()
             || self.opened_report
             || self.dispatch.is_some()
@@ -860,25 +909,75 @@ impl App {
     }
 
     fn footer_lines(&self) -> Vec<Line<'static>> {
+        let k = &self.keymap;
+        let tab = k.primary(Binding::NextScreen);
+        let planets = format!(
+            "{}/{} planet",
+            k.primary(Binding::PrevPlanet),
+            k.primary(Binding::NextPlanet)
+        );
+        let select = format!(
+            "{}/{} select",
+            k.primary(Binding::SelectNext),
+            k.primary(Binding::SelectPrev)
+        );
+        let confirm = k.primary(Binding::Confirm);
+        let cancel = k.primary(Binding::Cancel);
+        let quit = format!("{} quit", k.primary(Binding::Quit));
+        let help = format!("{} help", k.primary(Binding::Help));
         vec![Line::from(match self.screen {
-            Screen::Overview => {
-                "tab screens  [/] planet  h/l branch  j/k select  enter research  x cancel  y copy seed  q quit"
+            Screen::Overview => format!(
+                "{tab} screens  {planets}  {}/{} branch  {select}  {confirm} research  {cancel}  {} copy seed  {quit}  {help}",
+                k.primary(Binding::CursorLeft),
+                k.primary(Binding::CursorRight),
+                k.primary(Binding::CopySeed)
+            ),
+            Screen::Planet => format!(
+                "{tab} screens  {planets}  {select}  {confirm} build  {cancel} queue  {quit}  {help}"
+            ),
+            Screen::Shipyard => format!(
+                "{tab} screens  {planets}  {select}  {confirm} queue  {cancel} queue  {quit}  {help}"
+            ),
+            Screen::Wonder => format!(
+                "{tab} screens  {planets}  {select}  {confirm} start/contribute  {quit}  {help}"
+            ),
+            Screen::Prestige => {
+                format!("{tab} screens  {select}  {confirm} buy/reset  {cancel}  {quit}  {help}")
             }
-            Screen::Planet => {
-                "tab screens  [/] planet  j/k select  enter build  x cancel queue  q quit"
+            Screen::Achievements => format!("{tab} screens  {select}  {quit}  {help}"),
+            Screen::Market => format!(
+                "{tab} screens  {select}  {}/{} amount  {confirm} trade  {quit}  {help}",
+                k.primary(Binding::Increase),
+                k.primary(Binding::Decrease)
+            ),
+            Screen::Diplomacy => {
+                format!("{tab} screens  {select}  {confirm} tribute  {quit}  {help}")
             }
-            Screen::Shipyard => {
-                "tab screens  [/] planet  j/k select  enter queue  x cancel queue  q quit"
+            Screen::Laws => {
+                format!("{tab} screens  {select}  {confirm} propose/approve/repeal  {quit}  {help}")
             }
-            Screen::Wonder => "tab screens  [/] planet  j/k select  enter start/contribute  q quit",
-            Screen::Prestige => "tab screens  j/k select  enter buy/reset  x back  q quit",
-            Screen::Achievements => "tab screens  j/k list  q quit",
-            Screen::Market => "tab screens  j/k pair  +/- amount  enter trade  q quit",
-            Screen::Diplomacy => "tab screens  j/k faction  enter tribute  q quit",
-            Screen::Laws => "tab screens  j/k law  enter propose/approve/repeal  q quit",
-            Screen::Reports => "tab screens  j/k outpost  enter report  s send probe  q quit",
-            Screen::Map => "tab screens  hjkl cursor  enter dispatch  q quit",
+            Screen::Reports => format!(
+                "{tab} screens  {select}  {confirm} report  {} send probe  {quit}  {help}",
+                k.primary(Binding::SendProbe)
+            ),
+            Screen::Map => format!(
+                "{tab} screens  {}{}{}{} cursor  {confirm} dispatch  {quit}  {help}",
+                k.primary(Binding::CursorLeft),
+                k.primary(Binding::SelectNext),
+                k.primary(Binding::SelectPrev),
+                k.primary(Binding::CursorRight)
+            ),
         })]
+    }
+
+    fn draw_help(&self, frame: &mut Frame<'_>) {
+        let lines = self
+            .keymap
+            .help_lines(self.help_context())
+            .into_iter()
+            .map(Line::from)
+            .collect();
+        render_overlay(frame, " help ", lines);
     }
 
     fn list_lines(&self, height: usize) -> Vec<Line<'static>> {
@@ -2923,6 +3022,35 @@ mod tests {
         assert!(text.contains("fleet #"), "{text}");
         assert!(text.contains("outbound"), "{text}");
         assert!(text.contains("launched to 1:1:2"), "{text}");
+    }
+
+    #[test]
+    fn help_overlay_snapshot_lists_current_screen_keys() {
+        let mut app = App::new(GameState::new(1_000));
+        assert_eq!(app.handle_key(KeyCode::Char('?'), 1_000), Action::None);
+        let overview = render_text(&app, 80, 24);
+        assert!(overview.contains("help"), "{overview}");
+        assert!(overview.contains("keys for this screen"), "{overview}");
+        assert!(overview.contains("quit"), "{overview}");
+        assert!(overview.contains("copy galaxy seed"), "{overview}");
+        assert!(overview.contains("?"), "{overview}");
+        app.handle_key(KeyCode::Char('?'), 1_000);
+        for _ in 0..6 {
+            app.handle_key(KeyCode::Tab, 1_000);
+        }
+        app.handle_key(KeyCode::Char('?'), 1_000);
+        let market = render_text(&app, 80, 24);
+        assert!(market.contains("increase amount"), "{market}");
+        assert!(!market.contains("send spy probe"), "{market}");
+    }
+
+    #[test]
+    fn remapped_quit_is_used_and_conflicts_stay_on_defaults() {
+        let km = Keymap::from_overrides([("quit", "p")]).unwrap();
+        let mut app = App::with_keymap(GameState::new(50), km);
+        assert_eq!(app.handle_key(KeyCode::Char('q'), 50), Action::None);
+        assert_eq!(app.handle_key(KeyCode::Char('p'), 50), Action::Quit);
+        assert!(Keymap::from_overrides([("quit", "j")]).is_err());
     }
 
     fn close_standing(app: &App, id: &str, expected: f64) {
