@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 24;
+pub const SCHEMA_VERSION: u32 = 25;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -171,7 +171,9 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM combat_log_frames;
          DELETE FROM combat_logs;
          DELETE FROM daily_slots;
-         DELETE FROM daily_meta;",
+         DELETE FROM daily_meta;
+         DELETE FROM moons;
+         DELETE FROM debris;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -464,6 +466,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
     )?;
     insert_combat_logs(&tx, state)?;
     insert_daily(&tx, state)?;
+    insert_moons(&tx, state)?;
     for (i, colony) in state.colonies.iter().enumerate() {
         let planet_id = (i as i64) + 2;
         tx.execute(
@@ -1078,6 +1081,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     load_achievements(conn, &mut state)?;
     load_combat_logs(conn, &mut state)?;
     load_daily(conn, &mut state)?;
+    load_moons(conn, &mut state)?;
     state.sync_raid_schedule_after_standing(state.last_tick_unix);
 
     let mut stmt = conn.prepare(
@@ -1909,6 +1913,8 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "combat_log_ships" => "SELECT COUNT(*) FROM combat_log_ships",
         "daily_meta" => "SELECT COUNT(*) FROM daily_meta",
         "daily_slots" => "SELECT COUNT(*) FROM daily_slots",
+        "moons" => "SELECT COUNT(*) FROM moons",
+        "debris" => "SELECT COUNT(*) FROM debris",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -1958,7 +1964,9 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "combat_log_frames")?
         + count_rows(conn, "combat_log_ships")?
         + count_rows(conn, "daily_meta")?
-        + count_rows(conn, "daily_slots")?)
+        + count_rows(conn, "daily_slots")?
+        + count_rows(conn, "moons")?
+        + count_rows(conn, "debris")?)
 }
 
 fn migrate(conn: &Connection) -> Result<(), SaveError> {
@@ -2040,6 +2048,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 24 {
         migrate_v24(conn)?;
+    }
+    if found < 25 {
+        migrate_v25(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -2696,6 +2707,30 @@ fn migrate_v24(conn: &Connection) -> Result<(), SaveError> {
     Ok(())
 }
 
+fn migrate_v25(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS moons (
+            galaxy INTEGER NOT NULL,
+            system INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            phalanx INTEGER NOT NULL,
+            jump_gate INTEGER NOT NULL,
+            jump_ready_at INTEGER NOT NULL,
+            PRIMARY KEY (galaxy, system, position)
+        );
+        CREATE TABLE IF NOT EXISTS debris (
+            galaxy INTEGER NOT NULL,
+            system INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            amount REAL NOT NULL,
+            PRIMARY KEY (galaxy, system, position)
+        );
+        ",
+    )?;
+    Ok(())
+}
+
 fn insert_daily(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<(), SaveError> {
     tx.execute(
         "INSERT INTO daily_meta (id, day_index, streak) VALUES (1, ?1, ?2)",
@@ -2758,6 +2793,94 @@ fn load_daily(conn: &Connection, state: &mut GameState) -> Result<(), SaveError>
     }
     if state.daily.slots.is_empty() {
         state.sync_daily(state.last_tick_unix);
+    }
+    Ok(())
+}
+
+fn insert_moons(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<(), SaveError> {
+    for moon in &state.moons {
+        tx.execute(
+            "INSERT INTO moons (galaxy, system, position, phalanx, jump_gate, jump_ready_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                moon.parent.galaxy as i64,
+                moon.parent.system as i64,
+                moon.parent.position as i64,
+                moon.phalanx as i64,
+                moon.jump_gate as i64,
+                moon.jump_ready_at as i64,
+            ],
+        )?;
+    }
+    for (coord, amount) in &state.debris {
+        tx.execute(
+            "INSERT INTO debris (galaxy, system, position, amount) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                coord.galaxy as i64,
+                coord.system as i64,
+                coord.position as i64,
+                amount,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn load_moons(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
+    state.moons.clear();
+    state.debris.clear();
+    if table_exists(conn, "moons") {
+        let mut stmt = conn.prepare(
+            "SELECT galaxy, system, position, phalanx, jump_gate, jump_ready_at
+             FROM moons ORDER BY galaxy, system, position",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+            ))
+        })?;
+        for row in rows {
+            let (g, s, p, phalanx, jump_gate, jump_ready_at) = row?;
+            state.moons.push(crate::Moon {
+                parent: Coord {
+                    galaxy: u16_coord(g)?,
+                    system: u16_coord(s)?,
+                    position: u16_coord(p)?,
+                },
+                phalanx: u32_field(phalanx, "moon phalanx")?,
+                jump_gate: u32_field(jump_gate, "moon jump gate")?,
+                jump_ready_at: unix_ts(jump_ready_at)?,
+            });
+        }
+    }
+    if table_exists(conn, "debris") {
+        let mut stmt = conn.prepare(
+            "SELECT galaxy, system, position, amount FROM debris ORDER BY galaxy, system, position",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, f64>(3)?,
+            ))
+        })?;
+        for row in rows {
+            let (g, s, p, amount) = row?;
+            state.debris.insert(
+                Coord {
+                    galaxy: u16_coord(g)?,
+                    system: u16_coord(s)?,
+                    position: u16_coord(p)?,
+                },
+                amount,
+            );
+        }
     }
     Ok(())
 }
@@ -4546,6 +4669,27 @@ mod tests {
             log.frames.last().map(|f| f.defender),
             Some(log.defender_after)
         );
+    }
+
+    #[test]
+    fn migrate_v25_round_trips_moons() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v25(&conn).unwrap();
+        migrate_v25(&conn).unwrap();
+        let mut state = GameState::new(10);
+        state.moons.push(crate::Moon {
+            parent: Coord::HOME,
+            phalanx: 1,
+            jump_gate: 1,
+            jump_ready_at: 50,
+        });
+        state.debris.insert(Coord::HOME, 12.5);
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.moons, state.moons);
+        assert_eq!(loaded.debris.get(&Coord::HOME), Some(&12.5));
+        assert_eq!(count_rows(&conn, "moons").unwrap(), 1);
+        assert_eq!(count_rows(&conn, "debris").unwrap(), 1);
     }
 
     #[test]

@@ -570,6 +570,27 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             );
             """
         )
+    elif version == 25:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS moons (
+                galaxy INTEGER NOT NULL,
+                system INTEGER NOT NULL,
+                position INTEGER NOT NULL,
+                phalanx INTEGER NOT NULL,
+                jump_gate INTEGER NOT NULL,
+                jump_ready_at INTEGER NOT NULL,
+                PRIMARY KEY (galaxy, system, position)
+            );
+            CREATE TABLE IF NOT EXISTS debris (
+                galaxy INTEGER NOT NULL,
+                system INTEGER NOT NULL,
+                position INTEGER NOT NULL,
+                amount REAL NOT NULL,
+                PRIMARY KEY (galaxy, system, position)
+            );
+            """
+        )
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"

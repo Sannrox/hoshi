@@ -171,6 +171,7 @@ silent extra departure; they extend this list.
 | Round-based combat with rapid-fire tables | Seeded, short, offline-safe fights. Map new stats onto energy and mass rather than replacing the resolver. |
 | Instantaneous heat and pollution (no stored slag or thermal inertia) | Catch-up stays a single pass; overflow is a work-speed and raid-signature modifier. |
 | FTL, if any | Only through late-game gates or a listed wonder. Default travel is sublight on the flight clock. |
+| Moons from battle debris | A moon is an orbital facility of its parent planet, not a new galaxy slot. Formation is a seeded roll on hull lost so fights stay fast and deterministic. |
 | Story, species and faction flavour | Out of scope for realism; they must not mint mass or energy. |
 
 ## Known gaps in current config

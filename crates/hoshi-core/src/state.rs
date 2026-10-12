@@ -221,6 +221,8 @@ pub struct GameState {
     /// Recent fights, newest last. Rebuilt from seed plus opening fleets.
     pub combat_logs: Vec<crate::CombatLog>,
     pub daily: DailyBoard,
+    pub moons: Vec<crate::Moon>,
+    pub debris: BTreeMap<Coord, f64>,
     pub config: BalanceConfig,
 }
 
@@ -289,6 +291,8 @@ impl GameState {
             outposts_conquered: 0,
             combat_logs: Vec::new(),
             daily: DailyBoard::default(),
+            moons: Vec::new(),
+            debris: BTreeMap::new(),
             config,
         };
         state.apply_prestige_start();
@@ -1272,7 +1276,7 @@ impl GameState {
         Ok(())
     }
 
-    fn resources_at_mut(&mut self, coord: Coord) -> Result<&mut Resources, FleetError> {
+    pub(crate) fn resources_at_mut(&mut self, coord: Coord) -> Result<&mut Resources, FleetError> {
         if coord == self.home {
             Ok(&mut self.resources)
         } else {
@@ -2579,6 +2583,8 @@ impl GameState {
                     &mut fight_seed,
                 );
                 self.push_combat_log(done_at, report.clone());
+                let dest = self.missions[index].dest;
+                self.note_fight_debris(done_at, dest, &report);
                 self.missions[index].ships = report.attacker_after;
                 let survivors: u32 = ShipKind::ALL
                     .iter()
@@ -2747,6 +2753,7 @@ impl GameState {
         self.outposts[outpost_idx].defences = report.defender_after;
         self.missions[index].ships = report.attacker_after;
         self.push_combat_log(done_at, report.clone());
+        self.note_fight_debris(done_at, dest, &report);
         self.push_event(done_at, format_outpost_attack(&report, dest));
         if self.missions[index].ships.is_empty() {
             self.missions.remove(index);
@@ -2812,6 +2819,7 @@ impl GameState {
         report.attacker_after = self.missions[index].ships;
         report = report.with_seed_and_endpoints(seed);
         self.push_combat_log(done_at, report.clone());
+        self.note_fight_debris(done_at, dest, &report);
         if ground.winner != CombatWinner::Attacker {
             self.push_event(done_at, format_outpost_invade(&report, dest));
             return false;
@@ -2926,6 +2934,7 @@ impl GameState {
             .raid_interval_secs()
             .map(|wait| done_at.saturating_add(wait));
         self.push_combat_log(done_at, report.clone());
+        self.note_fight_debris(done_at, self.home, &report);
         if report.winner != CombatWinner::Attacker {
             self.note_daily(DailyAction::RaidWon, done_at);
         }
@@ -4569,6 +4578,7 @@ mod tests {
             laws: crate::LawConfig::default(),
             achievements: crate::AchievementConfig::empty(),
             daily: crate::DailyConfig::empty(),
+            moons: crate::MoonConfig::inactive(),
         }
     }
 

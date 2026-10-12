@@ -346,6 +346,7 @@ pub struct BalanceConfig {
     pub laws: crate::LawConfig,
     pub achievements: crate::AchievementConfig,
     pub daily: crate::DailyConfig,
+    pub moons: crate::MoonConfig,
 }
 
 impl BalanceConfig {
@@ -428,6 +429,8 @@ struct File {
     waste: Option<FileWaste>,
     #[serde(default)]
     daily: Option<FileDaily>,
+    #[serde(default)]
+    moons: Option<crate::moons::FileMoons>,
 }
 
 #[derive(Deserialize)]
@@ -1322,6 +1325,10 @@ impl File {
                 }
                 daily
             },
+            moons: self
+                .moons
+                .map(crate::moons::FileMoons::into_config)
+                .unwrap_or_default(),
             market: crate::MarketConfig {
                 enabled: self.market.enabled,
                 tick_secs: self.market.tick_secs,

@@ -16,6 +16,7 @@ mod fleets;
 mod galaxy;
 mod laws;
 mod market;
+mod moons;
 mod outposts;
 mod planets;
 mod prestige;
@@ -78,6 +79,7 @@ pub use laws::{
     LawTemplate, PLAYER as LAW_PLAYER, emission_throttle,
 };
 pub use market::{MarketConfig, MarketError, MarketState, TradeQuote};
+pub use moons::{Moon, MoonConfig, MoonError, MoonFacility, PhalanxContact};
 pub use outposts::{
     Outpost, OutpostConfig, RarePlanetBonus, generate_outposts, scaled_defence, scaled_garrison,
 };
