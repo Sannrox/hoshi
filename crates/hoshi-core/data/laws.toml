@@ -1,0 +1,69 @@
+# Empire laws. Effects use the same production, market and waste maths as the rest
+# of the game. A law changes incentives and limits, not physics.
+
+measure_secs = 3600
+history_len = 24
+
+[[templates]]
+id = "emission_cap"
+title = "Emission cap"
+jurisdiction = "planet"
+param_name = "ratio"
+min = 0.2
+max = 1.0
+default = 0.8
+phase_in_secs = 3600
+effects = [{ kind = "pollution_cap", per_unit = 1.0 }]
+expected = [{ metric = "pollution", per_unit = 1.0 }]
+
+[[templates]]
+id = "trade_tariff"
+title = "Trade tariff"
+jurisdiction = "empire"
+param_name = "fee"
+min = 0.0
+max = 0.2
+default = 0.05
+phase_in_secs = 0
+effects = [{ kind = "market_fee", per_unit = 1.0 }]
+expected = [{ metric = "output", per_unit = 0.0 }]
+
+[[templates]]
+id = "research_priority"
+title = "Research priority"
+jurisdiction = "empire"
+param_name = "focus"
+min = 0.0
+max = 1.0
+default = 0.5
+phase_in_secs = 0
+effects = [{ kind = "research_speed", per_unit = 0.1 }]
+expected = [{ metric = "research", per_unit = 0.1 }]
+
+[[templates]]
+id = "labour_rules"
+title = "Labour rules"
+jurisdiction = "empire"
+param_name = "intensity"
+min = 0.0
+max = 1.0
+default = 0.5
+phase_in_secs = 1800
+effects = [
+    { kind = "metal_output", per_unit = 0.05 },
+    { kind = "crystal_output", per_unit = 0.05 },
+    { kind = "deuterium_output", per_unit = 0.05 },
+]
+expected = [{ metric = "output", per_unit = 0.05 }]
+
+[[templates]]
+id = "tax_rate"
+title = "Metal levy"
+jurisdiction = "empire"
+param_name = "metal_per_hour"
+min = 0.0
+max = 200.0
+default = 20.0
+phase_in_secs = 0
+effects = [{ kind = "tax_metal_per_hour", per_unit = 1.0 }]
+expected = [{ metric = "revenue", per_unit = 1.0 }]

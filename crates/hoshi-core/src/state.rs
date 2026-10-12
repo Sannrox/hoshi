@@ -206,6 +206,7 @@ pub struct GameState {
     pub last_diplomacy_at: u64,
     pub spy_reports: Vec<crate::SpyReport>,
     pub next_report_id: u64,
+    pub laws: crate::LawState,
     pub config: BalanceConfig,
 }
 
@@ -267,6 +268,7 @@ impl GameState {
             last_diplomacy_at: 0,
             spy_reports: Vec::new(),
             next_report_id: 0,
+            laws: crate::LawState::default(),
             config,
         };
         state.apply_prestige_start();
@@ -342,6 +344,7 @@ impl GameState {
             let story_at = self.next_story_at();
             let market_at = self.next_market_at();
             let diplomacy_at = self.next_diplomacy_at();
+            let law_at = self.next_law_at();
             let Some(done_at) = min_time(
                 min_time(
                     min_time(
@@ -359,21 +362,27 @@ impl GameState {
                         wonder_at,
                         min_time(
                             rebuild_at,
-                            min_time(story_at, min_time(market_at, diplomacy_at)),
+                            min_time(
+                                story_at,
+                                min_time(market_at, min_time(diplomacy_at, law_at)),
+                            ),
                         ),
                     ),
                 ),
             ) else {
                 self.produce_until(now_unix);
+                self.apply_laws_at(now_unix);
                 self.resolve_story(now_unix);
                 return;
             };
             if done_at > now_unix {
                 self.produce_until(now_unix);
+                self.apply_laws_at(now_unix);
                 self.resolve_story(now_unix);
                 return;
             }
             self.produce_until(done_at);
+            self.apply_laws_at(done_at);
             if home_build_at == Some(done_at) {
                 let job = self.build_queue.remove(0);
                 self.buildings.increment(job.building);
@@ -1689,7 +1698,9 @@ impl GameState {
         } else {
             (produced / consumed).clamp(0.0, 1.0)
         };
-        let factor = energy * self.unrest_for(colony.buildings, colony.kind);
+        let factor = energy
+            * self.unrest_for(colony.buildings, colony.kind)
+            * self.emission_factor(colony.coord);
         let boost = self.prod_boost_mult();
         if self.config.chains.enabled() {
             return self.chain_net_per_hour(
@@ -2031,6 +2042,10 @@ impl GameState {
     }
 
     fn tech_modifier(&self, kind: ModifierKind) -> f64 {
+        self.tech_modifier_range(kind, self.last_tick_unix, self.last_tick_unix)
+    }
+
+    fn tech_modifier_range(&self, kind: ModifierKind, from: u64, to: u64) -> f64 {
         let techs = self
             .config
             .techs
@@ -2048,6 +2063,9 @@ impl GameState {
             + self.wonder_modifier(kind)
             + self.prestige_output(kind)
             + self.diplomacy_modifier(kind)
+            + self
+                .laws
+                .modifier_range(kind, &self.config.laws, from, to, self.home)
     }
 
     fn diplomacy_modifier(&self, kind: ModifierKind) -> f64 {
@@ -3070,6 +3088,12 @@ impl GameState {
         {
             fee += tier.market_fee;
         }
+        fee += self.laws.effect(
+            crate::LawEffectKind::MarketFee,
+            &self.config.laws,
+            self.last_tick_unix,
+            self.home,
+        );
         fee.clamp(0.0, 0.95)
     }
 
@@ -3296,27 +3320,35 @@ impl GameState {
         if now_unix <= self.last_tick_unix {
             return;
         }
-        let hours = (now_unix - self.last_tick_unix) as f64 / 3600.0;
-        let factor = self.energy_factor() * self.unrest_factor();
+        let from = self.last_tick_unix;
+        let hours = (now_unix - from) as f64 / 3600.0;
+        let factor = self.energy_factor()
+            * self.unrest_factor()
+            * self.emission_factor_range(self.home, from, now_unix);
         let boost = self.prod_boost_mult();
         if self.config.chains.enabled() {
-            self.produce_chains(hours, factor, boost);
+            self.produce_chains(hours, factor, boost, from, now_unix);
         } else {
             for kind in ResourceKind::ALL {
-                let rate = self.base_production_per_hour(kind) * factor * boost;
+                let rate = self.base_production_range(kind, from, now_unix) * factor * boost;
                 let cap = self.storage_cap(kind);
                 let current = self.resources.get(kind);
                 self.resources
                     .set(kind, add_capped(current, rate, hours, cap));
             }
             let config = self.config.clone();
-            let metal_t = self.tech_modifier(ModifierKind::MetalOutput);
-            let crystal_t = self.tech_modifier(ModifierKind::CrystalOutput);
-            let deut_t = self.tech_modifier(ModifierKind::DeuteriumOutput);
-            let energy_t = self.tech_modifier(ModifierKind::EnergyOutput);
-            let heat_t = self.tech_modifier(ModifierKind::HeatSink);
-            let pollution_t = self.tech_modifier(ModifierKind::PollutionSink);
-            for colony in &mut self.colonies {
+            let metal_t = self.tech_modifier_range(ModifierKind::MetalOutput, from, now_unix);
+            let crystal_t = self.tech_modifier_range(ModifierKind::CrystalOutput, from, now_unix);
+            let deut_t = self.tech_modifier_range(ModifierKind::DeuteriumOutput, from, now_unix);
+            let energy_t = self.tech_modifier_range(ModifierKind::EnergyOutput, from, now_unix);
+            let heat_t = self.tech_modifier_range(ModifierKind::HeatSink, from, now_unix);
+            let pollution_t = self.tech_modifier_range(ModifierKind::PollutionSink, from, now_unix);
+            let colony_emission: Vec<f64> = self
+                .colonies
+                .iter()
+                .map(|c| self.emission_factor_range(c.coord, from, now_unix))
+                .collect();
+            for (colony, emission) in self.colonies.iter_mut().zip(colony_emission) {
                 let bonus = config.planet_types.get(colony.kind);
                 let produced = config
                     .solar_plant
@@ -3338,7 +3370,8 @@ impl GameState {
                         heat_t,
                         pollution_t,
                     )
-                    .unrest_factor(config.waste.unrest_per_overflow);
+                    .unrest_factor(config.waste.unrest_per_overflow)
+                    * emission;
                 let metal_rate = config
                     .metal_mine
                     .production_per_hour(colony.buildings.metal_mine)
@@ -3374,10 +3407,11 @@ impl GameState {
                     add_capped(colony.resources.deuterium, deut_rate, hours, deut_cap);
             }
         }
+        self.collect_law_tax(hours, from, now_unix);
         self.last_tick_unix = now_unix;
     }
 
-    fn produce_chains(&mut self, hours: f64, home_factor: f64, boost: f64) {
+    fn produce_chains(&mut self, hours: f64, home_factor: f64, boost: f64, from: u64, to: u64) {
         let chains = self.config.chains.clone();
         let home_deposits = chains.deposits_for(self.home_kind, self.galaxy_seed, self.home);
         let home_buildings = self.buildings;
@@ -3388,26 +3422,23 @@ impl GameState {
         let home_metal = self.recipe_building_scale(
             home_buildings,
             home_kind,
-            0.0,
-            0.0,
-            0.0,
+            (0.0, 0.0, 0.0),
             BuildingKind::MetalMine,
+            (from, to),
         );
         let home_crystal = self.recipe_building_scale(
             home_buildings,
             home_kind,
-            0.0,
-            0.0,
-            0.0,
+            (0.0, 0.0, 0.0),
             BuildingKind::CrystalMine,
+            (from, to),
         );
         let home_deut = self.recipe_building_scale(
             home_buildings,
             home_kind,
-            0.0,
-            0.0,
-            0.0,
+            (0.0, 0.0, 0.0),
             BuildingKind::DeuteriumSynthesizer,
+            (from, to),
         );
         let home_yard = home_buildings.shipyard as f64;
         apply_recipes(
@@ -3453,7 +3484,9 @@ impl GameState {
                 } else {
                     (produced / consumed).clamp(0.0, 1.0)
                 };
-                let factor = energy * self.unrest_for(colony.buildings, colony.kind);
+                let factor = energy
+                    * self.unrest_for(colony.buildings, colony.kind)
+                    * self.emission_factor_range(colony.coord, from, to);
                 (
                     colony.coord,
                     colony.kind,
@@ -3489,26 +3522,23 @@ impl GameState {
             let metal_s = self.recipe_building_scale(
                 buildings,
                 kind,
-                rare_m,
-                rare_c,
-                rare_d,
+                (rare_m, rare_c, rare_d),
                 BuildingKind::MetalMine,
+                (from, to),
             );
             let crystal_s = self.recipe_building_scale(
                 buildings,
                 kind,
-                rare_m,
-                rare_c,
-                rare_d,
+                (rare_m, rare_c, rare_d),
                 BuildingKind::CrystalMine,
+                (from, to),
             );
             let deut_s = self.recipe_building_scale(
                 buildings,
                 kind,
-                rare_m,
-                rare_c,
-                rare_d,
+                (rare_m, rare_c, rare_d),
                 BuildingKind::DeuteriumSynthesizer,
+                (from, to),
             );
             let yard_s = buildings.shipyard as f64;
             let colony = &mut self.colonies[i];
@@ -3543,18 +3573,19 @@ impl GameState {
         &self,
         buildings: Buildings,
         planet: PlanetType,
-        extra_metal: f64,
-        extra_crystal: f64,
-        extra_deut: f64,
+        extra: (f64, f64, f64),
         building: BuildingKind,
+        span: (u64, u64),
     ) -> f64 {
+        let (from, to) = span;
+        let (extra_metal, extra_crystal, extra_deut) = extra;
         match building {
             BuildingKind::MetalMine => {
                 self.config
                     .metal_mine
                     .production_per_hour(buildings.metal_mine)
                     * (1.0
-                        + self.tech_modifier(ModifierKind::MetalOutput)
+                        + self.tech_modifier_range(ModifierKind::MetalOutput, from, to)
                         + self.planet_bonus(planet, ModifierKind::MetalOutput)
                         + extra_metal)
             }
@@ -3563,7 +3594,7 @@ impl GameState {
                     .crystal_mine
                     .production_per_hour(buildings.crystal_mine)
                     * (1.0
-                        + self.tech_modifier(ModifierKind::CrystalOutput)
+                        + self.tech_modifier_range(ModifierKind::CrystalOutput, from, to)
                         + self.planet_bonus(planet, ModifierKind::CrystalOutput)
                         + extra_crystal)
             }
@@ -3572,7 +3603,7 @@ impl GameState {
                     .deuterium_synthesizer
                     .production_per_hour(buildings.deuterium_synthesizer)
                     * (1.0
-                        + self.tech_modifier(ModifierKind::DeuteriumOutput)
+                        + self.tech_modifier_range(ModifierKind::DeuteriumOutput, from, to)
                         + self.planet_bonus(planet, ModifierKind::DeuteriumOutput)
                         + extra_deut)
             }
@@ -3616,6 +3647,204 @@ impl GameState {
         self.unrest_for(self.buildings, self.home_kind)
     }
 
+    /// Production throttle from an emission-cap law. `1.0` when no cap is in force.
+    pub fn emission_factor(&self, coord: Coord) -> f64 {
+        self.emission_factor_range(coord, self.last_tick_unix, self.last_tick_unix)
+    }
+
+    fn emission_factor_range(&self, coord: Coord, from: u64, to: u64) -> f64 {
+        let Some(report) = self.waste_at(coord) else {
+            return 1.0;
+        };
+        self.laws.emission_factor_range(
+            &self.config.laws,
+            from,
+            to,
+            coord,
+            report.pollution_load,
+            report.pollution_sink,
+        )
+    }
+
+    fn law_metrics_for(&self, jurisdiction: crate::Jurisdiction) -> crate::LawMetrics {
+        match jurisdiction {
+            crate::Jurisdiction::Empire => {
+                let waste = self.waste_home();
+                crate::LawMetrics {
+                    output: ResourceKind::ALL
+                        .iter()
+                        .map(|kind| self.empire_production_per_hour(*kind))
+                        .sum(),
+                    pollution: waste.pollution_load * self.emission_factor(self.home),
+                    pollution_load: waste.pollution_load,
+                    pollution_sink: waste.pollution_sink,
+                    research: self.research_speed(),
+                }
+            }
+            crate::Jurisdiction::Planet(coord) => {
+                let Some(waste) = self.waste_at(coord) else {
+                    return crate::LawMetrics {
+                        output: 0.0,
+                        pollution: 0.0,
+                        pollution_load: 0.0,
+                        pollution_sink: 0.0,
+                        research: 0.0,
+                    };
+                };
+                let output = ResourceKind::ALL
+                    .iter()
+                    .map(|kind| self.production_at(coord, *kind))
+                    .sum();
+                crate::LawMetrics {
+                    output,
+                    pollution: waste.pollution_load * self.emission_factor(coord),
+                    pollution_load: waste.pollution_load,
+                    pollution_sink: waste.pollution_sink,
+                    research: if coord == self.home {
+                        self.research_speed()
+                    } else {
+                        0.0
+                    },
+                }
+            }
+        }
+    }
+
+    fn production_at(&self, coord: Coord, kind: ResourceKind) -> f64 {
+        if coord == self.home {
+            self.production_per_hour(kind)
+        } else {
+            self.colonies
+                .iter()
+                .find(|colony| colony.coord == coord)
+                .map(|colony| self.colony_production_per_hour(colony, kind))
+                .unwrap_or(0.0)
+        }
+    }
+
+    fn next_law_at(&self) -> Option<u64> {
+        self.laws
+            .next_event_at(&self.config.laws, self.last_tick_unix)
+    }
+
+    fn apply_laws_at(&mut self, now: u64) {
+        let by_id: Vec<(u64, crate::LawMetrics)> = self
+            .laws
+            .laws
+            .iter()
+            .map(|law| (law.id, self.law_metrics_for(law.jurisdiction)))
+            .collect();
+        let old_speed = self.research_speed();
+        let logs = self.laws.apply_clock(&self.config.laws, now, |law| {
+            by_id
+                .iter()
+                .find(|(id, _)| *id == law.id)
+                .map(|(_, metrics)| *metrics)
+                .unwrap_or(crate::LawMetrics {
+                    output: 0.0,
+                    pollution: 0.0,
+                    pollution_load: 0.0,
+                    pollution_sink: 0.0,
+                    research: 0.0,
+                })
+        });
+        let new_speed = self.research_speed();
+        self.rescale_research(now, old_speed, new_speed);
+        for (at, text) in logs {
+            self.push_event(at, text);
+        }
+    }
+
+    fn collect_law_tax(&mut self, hours: f64, from: u64, to: u64) {
+        let rate = self.laws.effect_range(
+            crate::LawEffectKind::TaxMetalPerHour,
+            &self.config.laws,
+            from,
+            to,
+            self.home,
+        );
+        if rate <= 0.0 || hours <= 0.0 {
+            return;
+        }
+        let take = (rate * hours).max(0.0).min(self.resources.metal.max(0.0));
+        self.resources.metal -= take;
+        if take <= 0.0 {
+            return;
+        }
+        let tax_ids: Vec<u64> = self
+            .laws
+            .laws
+            .iter()
+            .filter(|law| {
+                matches!(
+                    law.status,
+                    crate::LawStatus::Enacted | crate::LawStatus::RepealProposed
+                ) && self
+                    .config
+                    .laws
+                    .get(&law.template_id)
+                    .is_some_and(|spec| spec.has_effect(crate::LawEffectKind::TaxMetalPerHour))
+            })
+            .map(|law| law.id)
+            .collect();
+        for id in tax_ids {
+            if let Some(law) = self.laws.get_mut(id) {
+                law.revenue_accrued += take;
+            }
+        }
+    }
+
+    /// Propose a law. `effective_in` is seconds from now.
+    pub fn propose_law(
+        &mut self,
+        template_id: &str,
+        param: f64,
+        jurisdiction: crate::Jurisdiction,
+        effective_in: u64,
+        now_unix: u64,
+    ) -> Result<u64, crate::LawError> {
+        self.catch_up(now_unix);
+        let now = self.last_tick_unix;
+        if let crate::Jurisdiction::Planet(coord) = jurisdiction
+            && self.buildings_at(coord).is_none()
+        {
+            return Err(crate::LawError::UnownedWorld);
+        }
+        let id = self.laws.propose(
+            &self.config.laws,
+            template_id,
+            param,
+            jurisdiction,
+            now.saturating_add(effective_in),
+            now,
+        )?;
+        self.push_event(now, format!("proposed law {template_id} #{id}"));
+        Ok(id)
+    }
+
+    pub fn approve_law(&mut self, id: u64, now_unix: u64) -> Result<(), crate::LawError> {
+        self.catch_up(now_unix);
+        let now = self.last_tick_unix;
+        self.laws.approve(id, now)?;
+        self.push_event(now, format!("approved law #{id}"));
+        self.apply_laws_at(now);
+        Ok(())
+    }
+
+    pub fn repeal_law(
+        &mut self,
+        id: u64,
+        effective_in: u64,
+        now_unix: u64,
+    ) -> Result<(), crate::LawError> {
+        self.catch_up(now_unix);
+        let now = self.last_tick_unix;
+        self.laws
+            .propose_repeal(id, now.saturating_add(effective_in), now)?;
+        self.push_event(now, format!("proposed repeal of law #{id}"));
+        Ok(())
+    }
+
     fn unrest_for(&self, buildings: Buildings, planet: PlanetType) -> f64 {
         self.waste_for(buildings, planet)
             .unrest_factor(self.config.waste.unrest_per_overflow)
@@ -3637,7 +3866,7 @@ impl GameState {
     }
 
     pub fn production_per_hour(&self, kind: ResourceKind) -> f64 {
-        let factor = self.energy_factor() * self.unrest_factor();
+        let factor = self.energy_factor() * self.unrest_factor() * self.emission_factor(self.home);
         let boost = self.prod_boost_mult();
         if self.config.chains.enabled() {
             self.chain_net_per_hour(
@@ -3668,29 +3897,28 @@ impl GameState {
             .config
             .chains
             .deposits_for(site.planet, self.galaxy_seed, site.coord);
+        let now = self.last_tick_unix;
+        let extra = (site.extra_metal, site.extra_crystal, site.extra_deut);
         let metal_s = self.recipe_building_scale(
             site.buildings,
             site.planet,
-            site.extra_metal,
-            site.extra_crystal,
-            site.extra_deut,
+            extra,
             BuildingKind::MetalMine,
+            (now, now),
         );
         let crystal_s = self.recipe_building_scale(
             site.buildings,
             site.planet,
-            site.extra_metal,
-            site.extra_crystal,
-            site.extra_deut,
+            extra,
             BuildingKind::CrystalMine,
+            (now, now),
         );
         let deut_s = self.recipe_building_scale(
             site.buildings,
             site.planet,
-            site.extra_metal,
-            site.extra_crystal,
-            site.extra_deut,
+            extra,
             BuildingKind::DeuteriumSynthesizer,
+            (now, now),
         );
         let yard_s = site.buildings.shipyard as f64;
         apply_recipes(
@@ -3734,7 +3962,16 @@ impl GameState {
     }
 
     fn compose_research_speed(&self, activity: f64) -> f64 {
-        activity.max(1.0) * (1.0 + self.prestige.research_bonus(&self.config.prestige)).max(1.0)
+        activity.max(1.0)
+            * (1.0 + self.prestige.research_bonus(&self.config.prestige)).max(1.0)
+            * (1.0
+                + self.laws.effect(
+                    crate::LawEffectKind::ResearchSpeed,
+                    &self.config.laws,
+                    self.last_tick_unix,
+                    self.home,
+                ))
+            .max(0.1)
     }
 
     fn rescale_research(&mut self, at: u64, old_speed: f64, new_speed: f64) {
@@ -3811,6 +4048,10 @@ impl GameState {
     }
 
     fn base_production_per_hour(&self, kind: ResourceKind) -> f64 {
+        self.base_production_range(kind, self.last_tick_unix, self.last_tick_unix)
+    }
+
+    fn base_production_range(&self, kind: ResourceKind, from: u64, to: u64) -> f64 {
         let raw = match kind {
             ResourceKind::Metal => self
                 .config
@@ -3830,7 +4071,9 @@ impl GameState {
             ResourceKind::Crystal => ModifierKind::CrystalOutput,
             ResourceKind::Deuterium => ModifierKind::DeuteriumOutput,
         };
-        raw * (1.0 + self.modifier_for(self.home_kind, output))
+        raw * (1.0
+            + self.tech_modifier_range(output, from, to)
+            + self.planet_bonus(self.home_kind, output))
     }
 }
 
@@ -4126,6 +4369,7 @@ mod tests {
             espionage: crate::EspionageConfig::default(),
             defences: crate::DefenceConfig::default(),
             waste: crate::WasteConfig::default(),
+            laws: crate::LawConfig::default(),
         }
     }
 
@@ -4329,6 +4573,73 @@ mod tests {
         close(one_shot.resources.deuterium, stepped.resources.deuterium);
         assert_eq!(one_shot.last_tick_unix, 7200);
         assert_eq!(stepped.last_tick_unix, 7200);
+    }
+
+    #[test]
+    fn colony_production_rate_applies_planet_emission_cap() {
+        let mut state = GameState::new(0);
+        let coord = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 4,
+        };
+        state.colonies.push(Colony {
+            coord,
+            kind: PlanetType::Rocky,
+            size: 120,
+            resources: Resources::ZERO,
+            buildings: Buildings {
+                metal_mine: 18,
+                solar_plant: 24,
+                ..Buildings::default()
+            },
+            fleet: Fleet::default(),
+            defences: crate::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            rare: None,
+            goods: BTreeMap::new(),
+        });
+        let before = state.colony_production_per_hour(&state.colonies[0], ResourceKind::Metal);
+        let id = state
+            .propose_law(
+                "emission_cap",
+                0.2,
+                crate::Jurisdiction::Planet(coord),
+                0,
+                0,
+            )
+            .unwrap();
+        state.approve_law(id, 0).unwrap();
+        state.catch_up(3_600);
+        let after = state.colony_production_per_hour(&state.colonies[0], ResourceKind::Metal);
+        assert!(
+            after < before,
+            "colony rate {after} should drop from {before}"
+        );
+        let samples = state.laws.latest_samples(id);
+        let pollution = samples
+            .iter()
+            .find(|s| s.metric == crate::LawMetric::Pollution)
+            .expect("colony pollution sample");
+        let colony_waste = state.waste_at(coord).expect("colony waste");
+        let allowed = colony_waste.pollution_sink * 0.2;
+        let expected = if colony_waste.pollution_load <= allowed {
+            colony_waste.pollution_load
+        } else {
+            allowed
+        };
+        assert!(
+            (pollution.expected - expected).abs() < 1e-6,
+            "sample {pollution:?} should use colony sink {}, load {}",
+            colony_waste.pollution_sink,
+            colony_waste.pollution_load
+        );
+        let home_waste = state.waste_home();
+        assert!(
+            (home_waste.pollution_sink - colony_waste.pollution_sink).abs() > 1e-6
+                || (home_waste.pollution_load - colony_waste.pollution_load).abs() > 1e-6,
+            "home and colony waste should differ so the sample is not accidentally home"
+        );
     }
 
     #[test]

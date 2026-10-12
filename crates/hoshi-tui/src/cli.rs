@@ -2,8 +2,9 @@
 
 use hoshi_core::{
     BalanceConfig, BuildingKind, Clock, Coord, DefenceKind, FakeClock, Fleet, GameState,
-    ResourceKind, SCHEMA_VERSION as SAVE_SCHEMA, SaveError, ShipKind, SpyReport, SystemClock,
-    load_or_new, load_or_new_with_seed, lock_save, open_save, resolve_save_path, save_state,
+    Jurisdiction, JurisdictionKind, ResourceKind, SCHEMA_VERSION as SAVE_SCHEMA, SaveError,
+    ShipKind, SpyReport, SystemClock, load_or_new, load_or_new_with_seed, lock_save, open_save,
+    resolve_save_path, save_state,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -47,6 +48,19 @@ enum Command {
         id: String,
     },
     PrestigeReset,
+    LawPropose {
+        template: String,
+        param: Option<String>,
+        jurisdiction: Option<String>,
+        effective: u64,
+    },
+    LawApprove {
+        id: u64,
+    },
+    LawRepeal {
+        id: u64,
+        effective: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -309,6 +323,53 @@ fn apply(state: &mut GameState, now: u64, command: &Command) -> Result<Value, Cl
                 .map_err(|e| CliError::Refused(e.to_string()))?;
             Ok(ok_state(state, "prestiged"))
         }
+        Command::LawPropose {
+            template,
+            param,
+            jurisdiction,
+            effective,
+        } => {
+            let (default_param, kind) = {
+                let spec = state
+                    .config
+                    .laws
+                    .get(template)
+                    .ok_or_else(|| CliError::Invalid(format!("unknown law {template}")))?;
+                (spec.default, spec.jurisdiction)
+            };
+            let param = match param {
+                Some(raw) => raw
+                    .parse::<f64>()
+                    .map_err(|_| CliError::Invalid(format!("invalid --param {raw}")))?,
+                None => default_param,
+            };
+            let jurisdiction = match jurisdiction.as_deref() {
+                None => match kind {
+                    JurisdictionKind::Empire => Jurisdiction::Empire,
+                    JurisdictionKind::Planet => Jurisdiction::Planet(state.home),
+                },
+                Some("empire") => Jurisdiction::Empire,
+                Some("home") => Jurisdiction::Planet(state.home),
+                Some(text) => Jurisdiction::parse(text)
+                    .ok_or_else(|| CliError::Invalid(format!("invalid jurisdiction {text}")))?,
+            };
+            let id = state
+                .propose_law(template, param, jurisdiction, *effective, now)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, &format!("proposed law #{id}")))
+        }
+        Command::LawApprove { id } => {
+            state
+                .approve_law(*id, now)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, "approved law"))
+        }
+        Command::LawRepeal { id, effective } => {
+            state
+                .repeal_law(*id, *effective, now)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, "proposed repeal"))
+        }
     }
 }
 
@@ -437,6 +498,27 @@ fn state_value(state: &GameState) -> Value {
             "eligible": state.can_prestige(),
             "owned": state.prestige.owned,
         },
+        "laws": state.laws.laws.iter().map(|law| {
+            json!({
+                "id": law.id,
+                "template": law.template_id,
+                "param": law.param,
+                "owner": law.owner,
+                "jurisdiction": law.jurisdiction.as_key(),
+                "status": law.status.as_key(),
+                "effective_at": law.effective_at,
+                "approvals": law.approvals.iter().map(|a| json!({
+                    "who": a.who,
+                    "at": a.at,
+                })).collect::<Vec<_>>(),
+                "samples": state.laws.latest_samples(law.id).iter().map(|s| json!({
+                    "metric": s.metric.as_key(),
+                    "expected": s.expected,
+                    "actual": s.actual,
+                    "at": s.at,
+                })).collect::<Vec<_>>(),
+            })
+        }).collect::<Vec<_>>(),
     })
 }
 
@@ -599,6 +681,7 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
                 "unknown prestige command {other}"
             ))),
         },
+        "law" => parse_law_command(args),
         "tick" => {
             let mut advance = None;
             let mut i = 1;
@@ -622,6 +705,73 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
         }
         other => Err(CliError::Invalid(format!("unknown command {other}"))),
     }
+}
+
+fn parse_law_command(args: &[String]) -> Result<Command, CliError> {
+    match args.get(1).map(String::as_str) {
+        Some("propose") => {
+            let template = nth(args, 2, "law propose <template>")?.to_string();
+            let mut param = None;
+            let mut jurisdiction = None;
+            let mut effective = 0;
+            let mut i = 3;
+            while i < args.len() {
+                let a = args[i].as_str();
+                if a == "--param" {
+                    param = Some(nth(args, i + 1, "law propose --param <n>")?.to_string());
+                    i += 2;
+                    continue;
+                }
+                if a == "--jurisdiction" {
+                    jurisdiction =
+                        Some(nth(args, i + 1, "law propose --jurisdiction <id>")?.into());
+                    i += 2;
+                    continue;
+                }
+                if a == "--effective" {
+                    effective = parse_advance(nth(args, i + 1, "law propose --effective <dur>")?)?;
+                    i += 2;
+                    continue;
+                }
+                return Err(CliError::Invalid(format!("unknown law propose flag {a}")));
+            }
+            Ok(Command::LawPropose {
+                template,
+                param,
+                jurisdiction,
+                effective,
+            })
+        }
+        Some("approve") => {
+            let id = parse_law_id(nth(args, 2, "law approve <id>")?)?;
+            expect_end(args, 3)?;
+            Ok(Command::LawApprove { id })
+        }
+        Some("repeal") => {
+            let id = parse_law_id(nth(args, 2, "law repeal <id>")?)?;
+            let mut effective = 0;
+            let mut i = 3;
+            while i < args.len() {
+                let a = args[i].as_str();
+                if a == "--effective" {
+                    effective = parse_advance(nth(args, i + 1, "law repeal --effective <dur>")?)?;
+                    i += 2;
+                    continue;
+                }
+                return Err(CliError::Invalid(format!("unknown law repeal flag {a}")));
+            }
+            Ok(Command::LawRepeal { id, effective })
+        }
+        Some(other) => Err(CliError::Invalid(format!("unknown law command {other}"))),
+        None => Err(CliError::Invalid(
+            "usage: hoshi law propose|approve|repeal".into(),
+        )),
+    }
+}
+
+fn parse_law_id(text: &str) -> Result<u64, CliError> {
+    text.parse()
+        .map_err(|_| CliError::Invalid(format!("invalid law id {text}")))
 }
 
 fn nth<'a>(args: &'a [String], i: usize, usage: &str) -> Result<&'a str, CliError> {
@@ -855,6 +1005,38 @@ mod tests {
 
         let _ = std::fs::remove_file(&save_a);
         let _ = std::fs::remove_file(&save_b);
+    }
+
+    #[test]
+    fn law_propose_approve_enacts_and_state_lists_samples() {
+        let save = unique_save("law");
+        let (value, exit) = run_on(
+            &save,
+            &["--seed=1", "law", "propose", "tax_rate", "--param", "50"],
+        );
+        assert_eq!(exit, EXIT_OK, "{value}");
+        let (value, exit) = run_on(&save, &["law", "approve", "0"]);
+        assert_eq!(exit, EXIT_OK, "{value}");
+        let (tick, exit) = run_on(&save, &["tick", "--advance", "1h"]);
+        assert_eq!(exit, EXIT_OK, "{tick}");
+        let (state, exit) = run_on(&save, &["state"]);
+        assert_eq!(exit, EXIT_OK, "{state}");
+        assert_eq!(state["laws"][0]["status"], "enacted");
+        assert_eq!(state["laws"][0]["template"], "tax_rate");
+        assert_eq!(state["laws"][0]["approvals"][0]["who"], "player");
+        let sample = &state["laws"][0]["samples"][0];
+        assert_eq!(sample["metric"], "revenue");
+        let expected = sample["expected"].as_f64().unwrap();
+        let actual = sample["actual"].as_f64().unwrap();
+        assert!(
+            (expected - 50.0).abs() < 1.0,
+            "expected {expected} after 1h at 50 metal/hour"
+        );
+        assert!(
+            (actual - 50.0).abs() < 1.0,
+            "actual {actual} after 1h at 50 metal/hour"
+        );
+        let _ = std::fs::remove_file(&save);
     }
 
     #[test]
