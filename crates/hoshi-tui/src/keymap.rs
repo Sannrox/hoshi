@@ -52,6 +52,7 @@ pub enum HelpContext {
     TitleDelete,
     TitleRename,
     TitleSettings,
+    TitleKeys,
     TitleCredits,
 }
 
@@ -67,7 +68,7 @@ impl Default for Keymap {
 }
 
 impl Binding {
-    const REMAPPABLE: &[Binding] = &[
+    pub const REMAPPABLE: &[Binding] = &[
         Binding::Quit,
         Binding::Help,
         Binding::NextScreen,
@@ -92,7 +93,7 @@ impl Binding {
         Binding::Activity,
     ];
 
-    fn config_key(self) -> &'static str {
+    pub fn config_key(self) -> &'static str {
         match self {
             Binding::Quit => "quit",
             Binding::Help => "help",
@@ -155,7 +156,36 @@ impl Binding {
 }
 
 impl HelpContext {
-    fn bindings(self) -> &'static [Binding] {
+    pub fn name(self) -> &'static str {
+        match self {
+            HelpContext::Overview => "overview",
+            HelpContext::Planet => "planet",
+            HelpContext::Shipyard => "shipyard",
+            HelpContext::Wonder => "wonder",
+            HelpContext::Prestige => "prestige",
+            HelpContext::Achievements => "achievements",
+            HelpContext::Market => "market",
+            HelpContext::Diplomacy => "diplomacy",
+            HelpContext::Laws => "laws",
+            HelpContext::Reports => "reports",
+            HelpContext::Map => "map",
+            HelpContext::Dispatch => "dispatch",
+            HelpContext::Away => "away",
+            HelpContext::Replay => "replay",
+            HelpContext::Story => "story",
+            HelpContext::ReportView => "report",
+            HelpContext::TitleMenu => "title",
+            HelpContext::TitleNew => "new game",
+            HelpContext::TitleLoad => "load",
+            HelpContext::TitleDelete => "delete",
+            HelpContext::TitleRename => "rename",
+            HelpContext::TitleSettings => "settings",
+            HelpContext::TitleKeys => "keys",
+            HelpContext::TitleCredits => "credits",
+        }
+    }
+
+    pub fn bindings(self) -> &'static [Binding] {
         match self {
             HelpContext::Overview => &[
                 Binding::Help,
@@ -314,11 +344,19 @@ impl HelpContext {
                 Binding::SelectNext,
                 Binding::SelectPrev,
             ],
+            HelpContext::TitleKeys => &[
+                Binding::Help,
+                Binding::Cancel,
+                Binding::Confirm,
+                Binding::SelectNext,
+                Binding::SelectPrev,
+                Binding::DeleteSlot,
+            ],
             HelpContext::TitleCredits => &[Binding::Help, Binding::Confirm, Binding::Cancel],
         }
     }
 
-    fn label(binding: Binding) -> &'static str {
+    pub fn label(binding: Binding) -> &'static str {
         match binding {
             Binding::Quit => "quit",
             Binding::Help => "help",
@@ -376,6 +414,23 @@ impl Keymap {
         Ok(km)
     }
 
+    pub fn rebind(&self, binding: Binding, code: KeyCode) -> Result<Self, String> {
+        let code = normalize_code(code);
+        let _ = token_for_rebind(code)?;
+        self.with_binding(binding, vec![code])
+    }
+
+    pub fn reset_binding(&self, binding: Binding) -> Result<Self, String> {
+        self.with_binding(binding, binding.default_keys())
+    }
+
+    fn with_binding(&self, binding: Binding, codes: Vec<KeyCode>) -> Result<Self, String> {
+        let mut km = self.clone();
+        km.set(binding, codes);
+        km.validate()?;
+        Ok(km)
+    }
+
     fn set(&mut self, binding: Binding, codes: Vec<KeyCode>) {
         if let Some(slot) = self.keys.iter_mut().find(|(b, _)| *b == binding) {
             slot.1 = codes;
@@ -391,7 +446,7 @@ impl Keymap {
     }
 
     pub fn matches(&self, binding: Binding, code: KeyCode) -> bool {
-        self.keys_of(binding).contains(&code)
+        self.keys_of(binding).contains(&normalize_code(code))
     }
 
     pub fn lookup(&self, ctx: HelpContext, code: KeyCode) -> Option<Binding> {
@@ -490,6 +545,7 @@ impl Keymap {
             HelpContext::TitleDelete,
             HelpContext::TitleRename,
             HelpContext::TitleSettings,
+            HelpContext::TitleKeys,
             HelpContext::TitleCredits,
         ] {
             let mut seen: Vec<(KeyCode, Binding)> = Vec::new();
@@ -559,6 +615,13 @@ impl Keymap {
     }
 }
 
+fn normalize_code(code: KeyCode) -> KeyCode {
+    match code {
+        KeyCode::Char(c) => KeyCode::Char(c.to_ascii_lowercase()),
+        other => other,
+    }
+}
+
 fn parse_key_list(value: &str) -> Result<Vec<KeyCode>, String> {
     let mut codes = Vec::new();
     for part in value.split(',') {
@@ -590,6 +653,20 @@ fn parse_key(token: &str) -> Result<KeyCode, String> {
             Ok(KeyCode::Char(c))
         }
         _ => Err(format!("unknown key '{token}'")),
+    }
+}
+
+fn token_for_rebind(code: KeyCode) -> Result<String, String> {
+    let token = format_key(&code);
+    if token.is_empty()
+        || token.contains(['"', ',', '\\', '=', '\n'])
+        || token.chars().any(|c| c.is_control())
+    {
+        return Err("that key cannot be saved in config".into());
+    }
+    match parse_key(&token) {
+        Ok(parsed) if parsed == code => Ok(token),
+        _ => Err("that key cannot be saved in config".into()),
     }
 }
 
@@ -633,6 +710,37 @@ mod tests {
         let err = Keymap::from_overrides([("quit", "j")]).unwrap_err();
         assert!(err.contains("conflict"), "{err}");
         assert!(err.contains("select_next") || err.contains("quit"), "{err}");
+    }
+
+    #[test]
+    fn rebind_saves_and_reset_restores_defaults() {
+        let km = Keymap::defaults()
+            .rebind(Binding::Quit, KeyCode::Char('p'))
+            .unwrap();
+        assert!(km.matches(Binding::Quit, KeyCode::Char('p')));
+        let shifted = Keymap::defaults()
+            .rebind(Binding::Help, KeyCode::Char('P'))
+            .unwrap();
+        assert!(shifted.matches(Binding::Help, KeyCode::Char('p')));
+        assert!(shifted.matches(Binding::Help, KeyCode::Char('P')));
+        let semicolon = Keymap::defaults()
+            .rebind(Binding::Help, KeyCode::Char(';'))
+            .unwrap();
+        assert!(semicolon.matches(Binding::Help, KeyCode::Char(';')));
+        assert!(semicolon.to_config_lines().contains("keys.help = \";\""));
+        assert!(
+            Keymap::defaults()
+                .rebind(Binding::Quit, KeyCode::Char('j'))
+                .is_err()
+        );
+        assert!(
+            Keymap::defaults()
+                .rebind(Binding::Quit, KeyCode::F(1))
+                .unwrap_err()
+                .contains("cannot be saved")
+        );
+        let reset = km.reset_binding(Binding::Quit).unwrap();
+        assert!(reset.matches(Binding::Quit, KeyCode::Char('q')));
     }
 
     #[test]
