@@ -544,10 +544,19 @@ fn play_path(
     })?;
     let before = snapshot_away(&state);
     state.catch_up(now);
+    if user.reset_tutorial {
+        state.reset_hints();
+        save_state(&mut conn, &state)?;
+        let mut cfg = user.clone();
+        cfg.reset_tutorial = false;
+        let dir = path.parent().unwrap_or_else(|| Path::new("."));
+        let _ = cfg.save(dir);
+    }
     let mut app = App::with_keymap(state, user.keys.clone());
     app.portraits = portraits;
     app.reduced_motion = user.reduced_motion;
     app.no_animation = user.no_animation;
+    app.show_tutorial = user.tutorial;
     app.set_notify(user.notify_prefs());
     #[cfg(feature = "bridge")]
     app.set_bridge_ui(user.bridge);

@@ -223,6 +223,7 @@ pub struct GameState {
     pub daily: DailyBoard,
     pub moons: Vec<crate::Moon>,
     pub debris: BTreeMap<Coord, f64>,
+    pub tutorial: crate::TutorialBoard,
     pub config: BalanceConfig,
 }
 
@@ -293,6 +294,7 @@ impl GameState {
             daily: DailyBoard::default(),
             moons: Vec::new(),
             debris: BTreeMap::new(),
+            tutorial: crate::TutorialBoard::default(),
             config,
         };
         state.apply_prestige_start();
@@ -326,6 +328,7 @@ impl GameState {
     pub fn new_live_galaxy(now_unix: u64, config: BalanceConfig, seed: u64) -> Self {
         let mut state = Self::with_seed(now_unix, config, seed);
         state.deterministic = false;
+        state.tutorial = crate::TutorialBoard::start();
         state
     }
 
@@ -2180,6 +2183,9 @@ impl GameState {
         next.apply_prestige_start();
         next.daily = DailyBoard::default();
         next.sync_daily(now);
+        if !deterministic {
+            next.tutorial = crate::TutorialBoard::start();
+        }
         next.push_event(
             now,
             format!(

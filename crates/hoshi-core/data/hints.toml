@@ -1,0 +1,62 @@
+[[hints]]
+id = "opening"
+trigger = "opening"
+screen = "overview"
+title = "Welcome"
+body = "This is the overview. Mines tick while you work elsewhere. Tab cycles screens. Skip the tutorial with s, or dismiss a hint with x."
+
+[[hints]]
+id = "first_mine"
+trigger = "metal_mine_2"
+screen = "planet"
+title = "A mine finished"
+body = "Metal income just rose. Queue the next upgrade on the planet screen before the stockpile sits idle."
+
+[[hints]]
+id = "energy_short"
+trigger = "energy_short"
+screen = "planet"
+title = "Energy is short"
+body = "Mines throttle when draw exceeds the solar plant. Build or upgrade the plant before adding more mines."
+
+[[hints]]
+id = "lab_ready"
+trigger = "lab_ready"
+screen = "overview"
+title = "The lab is up"
+body = "Research runs on the overview. Energy tech pays for later mines; start it while the lab is idle."
+
+[[hints]]
+id = "storage_high"
+trigger = "storage_high"
+screen = "planet"
+title = "Storage is nearly full"
+body = "Production stops at the cap. Upgrade metal storage, or spend the stockpile on the next building."
+
+[[hints]]
+id = "research_done"
+trigger = "research_done"
+screen = "overview"
+title = "Research complete"
+body = "A tech finished. Queue the next node so the lab never sits idle through an offline gap."
+
+[[hints]]
+id = "raid_soon"
+trigger = "raid_soon"
+screen = "overview"
+title = "Pirates inbound"
+body = "A raid is on the clock. Fighters and defences land in the combat report; the overview shows the countdown."
+
+[[hints]]
+id = "fleet_out"
+trigger = "fleet_out"
+screen = "map"
+title = "A fleet is flying"
+body = "The map marks ships in flight with an ETA. Open a slot with Enter to dispatch from home."
+
+[[hints]]
+id = "shipyard_ready"
+trigger = "shipyard_ready"
+screen = "shipyard"
+title = "Shipyard online"
+body = "The shipyard builds ships and defences. Queue a fighter before the first raid lands."

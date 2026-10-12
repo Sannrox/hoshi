@@ -971,7 +971,7 @@ impl Title {
     }
 
     fn handle_settings(&mut self, code: KeyCode) -> TitleAction {
-        let items = 7;
+        let items = 9;
         match self.config.keys.lookup(HelpContext::TitleSettings, code) {
             Some(Binding::Cancel) => {
                 self.page = Page::Menu;
@@ -991,7 +991,12 @@ impl Title {
                     3 => self.config.ai_advisor = !self.config.ai_advisor,
                     4 => self.config.portraits = !self.config.portraits,
                     5 => self.config.notify = !self.config.notify,
-                    6 => {
+                    6 => self.config.tutorial = !self.config.tutorial,
+                    7 => {
+                        self.config.reset_tutorial = true;
+                        self.status = "tutorial resets the next time a save is opened".into();
+                    }
+                    8 => {
                         self.page = Page::Keys;
                         self.keys_selected = 0;
                         self.listening = false;
@@ -1235,7 +1240,13 @@ impl Title {
                     self.config.notify,
                     self.selected == 5,
                 ));
-                lines.push(menu_line("keybindings", self.selected == 6));
+                lines.push(toggle_line(
+                    "tutorial hints",
+                    self.config.tutorial,
+                    self.selected == 6,
+                ));
+                lines.push(menu_line("reset tutorial hints", self.selected == 7));
+                lines.push(menu_line("keybindings", self.selected == 8));
             }
             Page::Keys => {
                 let actions = Binding::REMAPPABLE;
