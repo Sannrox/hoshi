@@ -4,6 +4,7 @@ mod app;
 mod cli;
 mod config;
 mod keymap;
+mod notify;
 mod portraits;
 mod title;
 
@@ -15,7 +16,7 @@ use hoshi_core::{
 };
 use portraits::{PortraitView, Protocol, detect_protocol};
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use title::{
@@ -24,6 +25,18 @@ use title::{
 };
 
 const SAVE_INTERVAL: Duration = Duration::from_secs(5);
+
+fn write_notify(bytes: Vec<u8>) {
+    if bytes.is_empty() {
+        return;
+    }
+    let mut out = std::io::stdout();
+    if !out.is_terminal() {
+        return;
+    }
+    let _ = out.write_all(&bytes);
+    let _ = out.flush();
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -527,10 +540,13 @@ fn play_path(
     app.portraits = portraits;
     app.reduced_motion = user.reduced_motion;
     app.no_animation = user.no_animation;
+    app.set_notify(user.notify_prefs());
     #[cfg(feature = "bridge")]
     app.set_bridge_ui(user.bridge);
     if now.saturating_sub(before.tick) >= user.away_threshold_secs {
-        app.set_away(summarize_away(&before, &app.state));
+        let away = summarize_away(&before, &app.state);
+        write_notify(app.notify_away(&away));
+        app.set_away(away);
     }
     let open_bridge = should_open_bridge(user.bridge);
     #[cfg(feature = "bridge")]
@@ -562,6 +578,7 @@ fn play_path(
             }
         }
         app.state.catch_up(clock.now_unix());
+        write_notify(app.poll_notify());
         if last_save.elapsed() >= SAVE_INTERVAL {
             if let Err(e) = save_state(&mut conn, &app.state) {
                 break Err(std::io::Error::other(e.to_string()));
@@ -590,6 +607,7 @@ fn play_path(
                     if app.handle_key(k.code, clock.now_unix()) == Action::Quit {
                         break Ok(());
                     }
+                    write_notify(app.poll_notify());
                 }
                 Ok(_) => {}
                 Err(e) => break Err(e),

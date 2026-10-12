@@ -645,7 +645,7 @@ impl Title {
     }
 
     fn handle_settings(&mut self, code: KeyCode) -> TitleAction {
-        let items = 5;
+        let items = 6;
         match self.config.keys.lookup(HelpContext::TitleSettings, code) {
             Some(Binding::Cancel) => {
                 self.page = Page::Menu;
@@ -664,6 +664,7 @@ impl Title {
                     2 => self.config.bridge = !self.config.bridge,
                     3 => self.config.ai_advisor = !self.config.ai_advisor,
                     4 => self.config.portraits = !self.config.portraits,
+                    5 => self.config.notify = !self.config.notify,
                     _ => {}
                 }
                 let _ = self.config.save(&self.dir);
@@ -786,6 +787,11 @@ impl Title {
                     "portraits",
                     self.config.portraits,
                     self.selected == 4,
+                ));
+                lines.push(toggle_line(
+                    "notifications (off by default)",
+                    self.config.notify,
+                    self.selected == 5,
                 ));
             }
             Page::Credits => {
@@ -1279,6 +1285,11 @@ mod tests {
         assert!(!loaded.bridge);
         assert!(!loaded.ai_advisor);
         assert!(!loaded.portraits);
+        title.selected = 5;
+        title.handle_key(KeyCode::Char(' '));
+        assert!(title.config.notify);
+        let loaded = UserConfig::load(&dir);
+        assert!(loaded.notify);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -1,6 +1,7 @@
 //! User config beside the save directory. Not stored in a save.
 
 use crate::keymap::Keymap;
+use crate::notify;
 use crate::portraits::ProtocolChoice;
 use std::path::{Path, PathBuf};
 
@@ -15,6 +16,12 @@ pub struct UserConfig {
     pub portrait_protocol: ProtocolChoice,
     pub last_slot: Option<String>,
     pub away_threshold_secs: u64,
+    pub notify: bool,
+    pub notify_build: bool,
+    pub notify_raid: bool,
+    pub notify_fleet: bool,
+    pub notify_quiet_start: Option<u8>,
+    pub notify_quiet_end: Option<u8>,
     pub keys: Keymap,
 }
 
@@ -30,6 +37,12 @@ impl Default for UserConfig {
             portrait_protocol: ProtocolChoice::Auto,
             last_slot: None,
             away_threshold_secs: 60,
+            notify: false,
+            notify_build: true,
+            notify_raid: true,
+            notify_fleet: true,
+            notify_quiet_start: None,
+            notify_quiet_end: None,
             keys: Keymap::defaults(),
         }
     }
@@ -80,6 +93,12 @@ impl UserConfig {
                         cfg.away_threshold_secs = n;
                     }
                 }
+                "notify" => cfg.notify = value == "true",
+                "notify_build" => cfg.notify_build = value == "true",
+                "notify_raid" => cfg.notify_raid = value == "true",
+                "notify_fleet" => cfg.notify_fleet = value == "true",
+                "notify_quiet_start" => cfg.notify_quiet_start = parse_hour(value),
+                "notify_quiet_end" => cfg.notify_quiet_end = parse_hour(value),
                 key if key.starts_with("keys.") => {
                     key_overrides.push((key[5..].to_string(), value.to_string()));
                 }
@@ -101,8 +120,14 @@ impl UserConfig {
     pub fn save(&self, dir: &Path) -> std::io::Result<()> {
         std::fs::create_dir_all(dir)?;
         let last = self.last_slot.as_deref().unwrap_or("");
+        let quiet = match (self.notify_quiet_start, self.notify_quiet_end) {
+            (Some(start), Some(end)) => {
+                format!("notify_quiet_start = {start}\nnotify_quiet_end = {end}\n")
+            }
+            _ => String::new(),
+        };
         let text = format!(
-            "reduced_motion = {}\nno_animation = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}{}\n",
+            "reduced_motion = {}\nno_animation = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}\nnotify = {}\nnotify_build = {}\nnotify_raid = {}\nnotify_fleet = {}\n{quiet}{}\n",
             self.reduced_motion,
             self.no_animation,
             self.high_contrast,
@@ -111,10 +136,31 @@ impl UserConfig {
             self.portraits,
             self.portrait_protocol.as_key(),
             self.away_threshold_secs,
+            self.notify,
+            self.notify_build,
+            self.notify_raid,
+            self.notify_fleet,
             self.keys.to_config_lines().trim_end(),
         );
         std::fs::write(Self::path(dir), text)
     }
+
+    pub fn notify_prefs(&self) -> notify::Prefs {
+        notify::Prefs {
+            enabled: self.notify,
+            build: self.notify_build,
+            raid: self.notify_raid,
+            fleet: self.notify_fleet,
+            quiet_start: self.notify_quiet_start,
+            quiet_end: self.notify_quiet_end,
+            bell: !self.reduced_motion,
+        }
+    }
+}
+
+fn parse_hour(value: &str) -> Option<u8> {
+    let n: u8 = value.parse().ok()?;
+    (n <= 23).then_some(n)
 }
 
 #[cfg(test)]
@@ -138,6 +184,7 @@ mod tests {
         let loaded = UserConfig::load(&dir);
         assert!(!loaded.bridge);
         assert!(!loaded.ai_advisor);
+        assert!(!loaded.notify);
         assert!(loaded.portraits);
         assert_eq!(loaded.portrait_protocol, ProtocolChoice::Auto);
         let mut cfg = loaded;
@@ -150,6 +197,7 @@ mod tests {
         assert!(again.reduced_motion);
         assert_eq!(again.last_slot.as_deref(), Some("alpha"));
         assert!(!again.bridge);
+        assert!(!again.notify);
         assert!(!again.portraits);
         assert_eq!(again.portrait_protocol, ProtocolChoice::Off);
         assert_eq!(again.keys, Keymap::defaults());
@@ -172,6 +220,26 @@ mod tests {
         std::fs::write(UserConfig::path(&dir), "keys.quit = \"j\"\n").unwrap();
         let rejected = UserConfig::load(&dir);
         assert_eq!(rejected.keys, Keymap::defaults());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn loads_notify_toggles_and_quiet_hours() {
+        let dir = unique_dir();
+        std::fs::write(
+            UserConfig::path(&dir),
+            "notify = true\nnotify_raid = false\nnotify_quiet_start = 22\nnotify_quiet_end = 8\n",
+        )
+        .unwrap();
+        let cfg = UserConfig::load(&dir);
+        assert!(cfg.notify);
+        assert!(cfg.notify_build);
+        assert!(!cfg.notify_raid);
+        assert_eq!(cfg.notify_quiet_start, Some(22));
+        assert_eq!(cfg.notify_quiet_end, Some(8));
+        let prefs = cfg.notify_prefs();
+        assert!(prefs.enabled);
+        assert!(!prefs.raid);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
