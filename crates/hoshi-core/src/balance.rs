@@ -323,6 +323,7 @@ pub struct BalanceConfig {
     pub market: crate::MarketConfig,
     pub diplomacy: crate::DiplomacyConfig,
     pub espionage: EspionageConfig,
+    pub defences: crate::DefenceConfig,
 }
 
 impl BalanceConfig {
@@ -1183,6 +1184,7 @@ impl File {
             story: crate::StoryCatalog::default(),
             diplomacy: crate::DiplomacyConfig::default(),
             espionage: self.espionage.into_config(),
+            defences: crate::DefenceConfig::default(),
             market: crate::MarketConfig {
                 enabled: self.market.enabled,
                 tick_secs: self.market.tick_secs,

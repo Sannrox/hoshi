@@ -103,6 +103,7 @@ pub struct Colony {
     pub resources: Resources,
     pub buildings: Buildings,
     pub fleet: Fleet,
+    pub defences: crate::DefenceGrid,
     pub build_queue: Vec<BuildJob>,
     /// Rare-planet bonus id from config, when this world was a special outpost.
     pub rare: Option<String>,

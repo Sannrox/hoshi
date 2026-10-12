@@ -26,6 +26,10 @@
     "build_queue": { "type": "array" },
     "research": { "type": "object" },
     "fleet": { "type": "object" },
+    "defences": {
+      "type": "object",
+      "description": "Home planet defence counts and dome/station levels."
+    },
     "missions": { "type": "array" },
     "spy_reports": {
       "type": "array",
