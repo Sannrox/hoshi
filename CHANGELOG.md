@@ -8,6 +8,7 @@
 
 ### Added
 
+- ASCII galaxy map in the TUI: systems 1–81 with home, colonies, pirate outposts and fleets in flight (ETA). hjkl moves the cursor; Enter opens a dispatch overlay that launches through the existing fleet command.
 - Empire laws as governed actions: propose, approve, enact and repeal through core and the CLI (`hoshi law propose|approve|repeal`). Catalog in `laws.toml` (emission cap, trade tariff, research priority, labour rules, metal levy). Effects apply on the effective date with optional phase-in; expected vs measured samples show on the TUI laws screen and in `state` JSON. Repeal restores prior parameters. Save schema v20.
 - Industrial waste heat and pollution. Load is mine energy plus per-recipe extras in `balance.toml`; each planet type has a heat and pollution sink. Overflow slows work and adds pirate ships. Radiators, scrubbers, energy research (heat sink) and ecology research (pollution sink) restore capacity. The planet screen warns before overflow; `hoshi simulate` reports a heavy-industry snapshot that needs mitigation and stays viable with it.
 - Commander, admiral, pirate and planet portraits in the TUI. ASCII is the layout-stable path; with images on, the same 8×8 grid becomes half-block cells, and terminals that advertise an inline graphics protocol receive the raw RGB after the frame. `--no-portraits` and a Settings toggle skip RGB. Moods follow event-log substrings in `moods.conf`. Assets and licenses live in `crates/hoshi-tui/ASSETS.md` (ADR 0003).
