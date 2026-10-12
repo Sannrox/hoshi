@@ -593,7 +593,7 @@ impl Title {
     }
 
     fn handle_settings(&mut self, code: KeyCode) -> TitleAction {
-        let items = 4;
+        let items = 5;
         match code {
             KeyCode::Esc | KeyCode::Char('x') => {
                 self.page = Page::Menu;
@@ -611,6 +611,7 @@ impl Title {
                     1 => self.config.high_contrast = !self.config.high_contrast,
                     2 => self.config.bridge = !self.config.bridge,
                     3 => self.config.ai_advisor = !self.config.ai_advisor,
+                    4 => self.config.portraits = !self.config.portraits,
                     _ => {}
                 }
                 let _ = self.config.save(&self.dir);
@@ -709,6 +710,11 @@ impl Title {
                     "local AI advisor (off by default)",
                     self.config.ai_advisor,
                     self.selected == 3,
+                ));
+                lines.push(toggle_line(
+                    "portraits",
+                    self.config.portraits,
+                    self.selected == 4,
                 ));
             }
             Page::Credits => {
@@ -1176,10 +1182,14 @@ mod tests {
         title.selected = 0;
         title.handle_key(KeyCode::Char(' '));
         assert!(title.config.reduced_motion);
+        title.selected = 4;
+        title.handle_key(KeyCode::Char(' '));
+        assert!(!title.config.portraits);
         let loaded = UserConfig::load(&dir);
         assert!(loaded.reduced_motion);
         assert!(!loaded.bridge);
         assert!(!loaded.ai_advisor);
+        assert!(!loaded.portraits);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

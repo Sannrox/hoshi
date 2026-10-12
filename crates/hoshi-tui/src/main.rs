@@ -3,6 +3,7 @@
 mod app;
 mod cli;
 mod config;
+mod portraits;
 mod title;
 
 use app::{Action, App};
@@ -11,6 +12,7 @@ use hoshi_core::{
     inspect_save, load_or_new, lock_save, open_save, parse_galaxy_seed, resolve_save_path,
     save_state, simulate_greedy,
 };
+use portraits::{PortraitView, Protocol, detect_protocol};
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -333,6 +335,7 @@ fn run() -> Result<(), LaunchError> {
     let flag = parse_save_flag(args.iter());
     let env = std::env::var_os("HOSHI_SAVE");
     let continue_flag = args.iter().any(|a| a == "--continue");
+    let no_portraits = args.iter().any(|a| a == "--no-portraits");
     let balance =
         load_balance(balance_override(parse_path_flag(args.iter(), "--balance")).as_deref())
             .map_err(|e| LaunchError {
@@ -349,6 +352,7 @@ fn run() -> Result<(), LaunchError> {
             cfg.away_threshold_secs,
             None,
             cfg.bridge,
+            portrait_view(&cfg, no_portraits),
         );
     }
     let dir = default_save_dir();
@@ -362,9 +366,10 @@ fn run() -> Result<(), LaunchError> {
             cfg.away_threshold_secs,
             None,
             cfg.bridge,
+            portrait_view(&cfg, no_portraits),
         );
     }
-    title_then_play(dir, balance, &clock)
+    title_then_play(dir, balance, &clock, no_portraits)
 }
 
 fn config_dir_for_save(path: &Path) -> PathBuf {
@@ -399,6 +404,7 @@ fn title_then_play(
     dir: PathBuf,
     balance: BalanceConfig,
     clock: &SystemClock,
+    no_portraits: bool,
 ) -> Result<(), LaunchError> {
     let mut title = Title::new(dir, clock.now_unix());
     let mut terminal = ratatui::init();
@@ -455,14 +461,33 @@ fn title_then_play(
     ratatui::restore();
     match result? {
         None => Ok(()),
-        Some((path, new_spec, threshold, bridge)) => {
-            play_path(&path, balance, clock, threshold, new_spec, bridge)
-        }
+        Some((path, new_spec, threshold, bridge)) => play_path(
+            &path,
+            balance,
+            clock,
+            threshold,
+            new_spec,
+            bridge,
+            portrait_view(&title.config, no_portraits),
+        ),
     }
 }
 
 fn should_open_bridge(user_enabled: bool) -> bool {
     cfg!(feature = "bridge") && user_enabled
+}
+
+fn portrait_view(cfg: &config::UserConfig, no_portraits: bool) -> PortraitView {
+    if no_portraits || !cfg.portraits {
+        return PortraitView {
+            enabled: false,
+            protocol: Protocol::None,
+        };
+    }
+    PortraitView {
+        enabled: true,
+        protocol: detect_protocol(cfg.portrait_protocol, |key| std::env::var(key).ok()),
+    }
 }
 
 fn play_path(
@@ -472,6 +497,7 @@ fn play_path(
     away_threshold: u64,
     new_spec: Option<NewGameSpec>,
     bridge_enabled: bool,
+    portraits: PortraitView,
 ) -> Result<(), LaunchError> {
     let now = clock.now_unix();
     if new_spec.is_none() && path.exists() {
@@ -506,6 +532,7 @@ fn play_path(
     let before = snapshot_away(&state);
     state.catch_up(now);
     let mut app = App::new(state);
+    app.portraits = portraits;
     if now.saturating_sub(before.tick) >= away_threshold {
         app.set_away(summarize_away(&before, &app.state));
     }
@@ -546,6 +573,14 @@ fn play_path(
             last_save = Instant::now();
         }
         if let Err(e) = terminal.draw(|f| app.draw(f)) {
+            break Err(e);
+        }
+        let size = match terminal.size() {
+            Ok(size) => size,
+            Err(e) => break Err(e),
+        };
+        let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
+        if let Err(e) = app.paint_inline_graphics(&mut std::io::stdout(), area) {
             break Err(e);
         }
         match event::poll(Duration::from_secs(1)) {
