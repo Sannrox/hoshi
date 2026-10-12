@@ -32,7 +32,7 @@ you check in, queue the next build and leave.
   to. It never calls AI models or any paid service. Events map to small,
   capped game effects (payouts, boosts, raids) defined in balance config, and
   never unlock anything the normal game cannot.
-- **Single player first.** A shared universe is optional research later.
+- **Single player.** A shared universe is out of scope ([ADR 0004](0004-no-shared-universe.md)).
 
 ## Consequences
 
@@ -40,6 +40,7 @@ you check in, queue the next build and leave.
 - The bridge is off by default and compiled out unless enabled; the game
   works and is balanced without GitHub or any agent tool.
 - Effects are capped so the bridge rewards activity without dominating play.
+- A shared universe is out of scope; see [ADR 0004](0004-no-shared-universe.md).
 
 ## Rejected alternatives
 

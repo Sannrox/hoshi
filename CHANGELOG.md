@@ -8,6 +8,7 @@
 
 ### Added
 
+- ADR 0004: hoshi stays a local single-player idle game. A shared universe is not in scope; the local save and client clock are not a multiplayer trust model.
 - Branching technology tree: Industry, Military and Society each have a keystone; mutually exclusive choice nodes pick one path; Ancient techs stay hidden until a prestige run. The overview shows one branch at a time (`h`/`l`) with locked, available, in-progress, researched and excluded states. Existing research migrates. Save schema v21 stores exclusive picks. `hoshi simulate` reports keystone times against a 14-day galaxy target.
 - ASCII galaxy map in the TUI: systems 1–81 with home, colonies, pirate outposts and fleets in flight (ETA). hjkl moves the cursor; Enter opens a dispatch overlay that launches through the existing fleet command.
 - Empire laws as governed actions: propose, approve, enact and repeal through core and the CLI (`hoshi law propose|approve|repeal`). Catalog in `laws.toml` (emission cap, trade tariff, research priority, labour rules, metal levy). Effects apply on the effective date with optional phase-in; expected vs measured samples show on the TUI laws screen and in `state` JSON. Repeal restores prior parameters. Save schema v20.

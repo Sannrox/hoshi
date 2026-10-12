@@ -12,7 +12,8 @@ while your coding agents work.
 
 hoshi is a complete game on its own: economy, research, fleets, colonies,
 story events, trade, wonders, prestige, daily missions and achievements. No
-account, network connection or AI service is needed.
+account, network connection or AI service is needed. A shared universe is
+not in scope ([ADR 0004](docs/decisions/0004-no-shared-universe.md)).
 
 ## Optional: your agents play along
 
