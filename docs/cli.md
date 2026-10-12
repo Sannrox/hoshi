@@ -18,6 +18,7 @@ bumps that version.
 
 ```sh
 hoshi --save PATH [--seed N] [--balance PATH] state [--json]
+hoshi --save PATH advise
 hoshi --save PATH build <planet> <building>
 hoshi --save PATH research <tech>
 hoshi --save PATH cancel <queue-item>
@@ -46,6 +47,10 @@ writes a report; `state` lists reports with age and attaches the latest report t
 each outpost so attack and invade can read it. `colonize` takes exactly `colony_ship:1`. `moon build` spends stockpile on a phalanx or jump gate at that planet's moon. `moon jump` moves parked ships instantly between two moons that both have gates. `moon scan` lists fleets the phalanx can see. Extra arguments
 on `state`, `build`, `research`, and `cancel` are invalid. Duration is seconds,
 or `30s` / `3m` / `1h` / `1d`.
+
+`advise` prints ranked next-move suggestions from the same player-visible
+state the TUI overlay uses. It never enqueues a build, research, or fleet.
+Extra arguments on `advise` are invalid.
 
 `--seed` on a new save starts deterministic mode: the wall clock is ignored and
 `tick --advance` is allowed. Live saves refuse `tick --advance`. The TUI refuses

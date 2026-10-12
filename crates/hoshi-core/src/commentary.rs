@@ -192,13 +192,19 @@ const MODEL_BUDGET: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// Rephrase template lines in one local request. Compiled out unless
 /// `commentary-model` is enabled; always falls back to the templates and never
-/// spends more than [`MODEL_BUDGET`].
+/// spends more than [`MODEL_BUDGET`]. Loopback only.
 pub fn rephrase_lines(lines: &mut [Option<String>], endpoint: &str) {
+    rephrase_lines_allow(lines, endpoint, false);
+}
+
+/// Same as [`rephrase_lines`], but a private IPv4 host is allowed when
+/// `allow_lan` is set. Public addresses stay refused.
+pub fn rephrase_lines_allow(lines: &mut [Option<String>], endpoint: &str, allow_lan: bool) {
     #[cfg(feature = "commentary-model")]
-    rephrase_lines_model(lines, endpoint);
+    rephrase_lines_model(lines, endpoint, allow_lan);
     #[cfg(not(feature = "commentary-model"))]
     {
-        let _ = (lines, endpoint);
+        let _ = (lines, endpoint, allow_lan);
     }
 }
 
@@ -210,13 +216,43 @@ pub fn rephrase_local(line: &str, endpoint: &str) -> String {
     lines[0].take().unwrap_or_else(|| line.to_string())
 }
 
+/// Parse an `http://` endpoint into a connect address. Loopback always;
+/// private IPv4 only when `allow_lan` is set. Public IPs and hostnames fail.
+pub(crate) fn model_connect_addr(
+    endpoint: &str,
+    allow_lan: bool,
+) -> Option<(std::net::SocketAddr, String, String)> {
+    let url = endpoint.strip_prefix("http://")?;
+    let (hostport, rest) = url.split_once('/').unwrap_or((url, ""));
+    let (host, port) = hostport.split_once(':').unwrap_or((hostport, "80"));
+    let port: u16 = port.parse().ok()?;
+    let ip = if host.eq_ignore_ascii_case("localhost") {
+        std::net::Ipv4Addr::LOCALHOST
+    } else {
+        host.parse().ok()?
+    };
+    if !(ip.is_loopback() || (allow_lan && ip.is_private())) {
+        return None;
+    }
+    let path = if rest.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{rest}")
+    };
+    Some((
+        std::net::SocketAddr::from((ip, port)),
+        host.to_string(),
+        path,
+    ))
+}
+
 #[cfg(feature = "commentary-model")]
-fn rephrase_lines_model(lines: &mut [Option<String>], endpoint: &str) {
+fn rephrase_lines_model(lines: &mut [Option<String>], endpoint: &str, allow_lan: bool) {
     let originals: Vec<String> = lines.iter().filter_map(|slot| slot.clone()).collect();
     if originals.is_empty() {
         return;
     }
-    let Some(out) = rephrase_loopback_batch(&originals, endpoint) else {
+    let Some(out) = rephrase_local_batch(&originals, endpoint, allow_lan) else {
         return;
     };
     if out.len() != originals.len() {
@@ -239,20 +275,10 @@ fn remaining(deadline: std::time::Instant) -> Option<std::time::Duration> {
 }
 
 #[cfg(feature = "commentary-model")]
-fn rephrase_loopback_batch(lines: &[String], endpoint: &str) -> Option<Vec<String>> {
-    let url = endpoint.strip_prefix("http://")?;
-    let (host, rest) = url.split_once('/').unwrap_or((url, ""));
-    let (host, port) = host.split_once(':').unwrap_or((host, "80"));
-    if host != "127.0.0.1" && host != "localhost" {
-        return None;
-    }
-    let port: u16 = port.parse().ok()?;
+fn rephrase_local_batch(lines: &[String], endpoint: &str, allow_lan: bool) -> Option<Vec<String>> {
+    let (addr, host, path) = model_connect_addr(endpoint, allow_lan)?;
     let deadline = std::time::Instant::now() + MODEL_BUDGET;
-    let mut stream = std::net::TcpStream::connect_timeout(
-        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
-        remaining(deadline)?,
-    )
-    .ok()?;
+    let mut stream = std::net::TcpStream::connect_timeout(&addr, remaining(deadline)?).ok()?;
     stream.set_read_timeout(remaining(deadline)).ok()?;
     stream.set_write_timeout(remaining(deadline)).ok()?;
     let escaped: Vec<String> = lines
@@ -260,11 +286,6 @@ fn rephrase_loopback_batch(lines: &[String], endpoint: &str) -> Option<Vec<Strin
         .map(|line| format!("\"{}\"", line.replace('\\', "\\\\").replace('"', "\\\"")))
         .collect();
     let body = format!("{{\"lines\":[{}]}}", escaped.join(","));
-    let path = if rest.is_empty() {
-        "/".to_string()
-    } else {
-        format!("/{rest}")
-    };
     let req = format!(
         "POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
@@ -390,6 +411,11 @@ mod tests {
         rephrase_lines(&mut lines, "http://8.8.8.8/v1");
         assert_eq!(lines[0].as_deref(), Some(line));
         assert_eq!(lines[2].as_deref(), Some("You hold the field."));
+        assert!(model_connect_addr("http://127.0.0.1:8080/v1", false).is_some());
+        assert!(model_connect_addr("http://localhost/v1", false).is_some());
+        assert!(model_connect_addr("http://192.168.1.10:8080/v1", true).is_some());
+        assert!(model_connect_addr("http://192.168.1.10:8080/v1", false).is_none());
+        assert!(model_connect_addr("http://8.8.8.8/v1", true).is_none());
     }
 
     #[cfg(feature = "commentary-model")]
