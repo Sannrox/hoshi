@@ -14,6 +14,9 @@ design is recorded in [ADR 0002](docs/decisions/0002-terminal-idle-game-with-eve
   core; holds no rules.
 - `crates/hoshi-bridge`: turns outside events (GitHub, agent activity) into
   game events for core.
+- `crates/hoshi-author`: offline `hoshi-author` CLI that drafts story events
+  into `content/drafts/`. The game never depends on it or generates events at
+  runtime.
 
 Do not commit local state (`.state/`, `*.db` saves), logs, or tokens.
 

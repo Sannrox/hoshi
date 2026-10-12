@@ -1,6 +1,16 @@
 [workspace]
-members = ["crates/hoshi-core", "crates/hoshi-tui", "crates/hoshi-bridge"]
-default-members = ["crates/hoshi-core", "crates/hoshi-tui", "crates/hoshi-bridge"]
+members = [
+    "crates/hoshi-core",
+    "crates/hoshi-tui",
+    "crates/hoshi-bridge",
+    "crates/hoshi-author",
+]
+default-members = [
+    "crates/hoshi-core",
+    "crates/hoshi-tui",
+    "crates/hoshi-bridge",
+    "crates/hoshi-author",
+]
 resolver = "2"
 
 [workspace.package]

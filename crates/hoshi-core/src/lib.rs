@@ -55,8 +55,8 @@ pub use combat::{
     plunder_from, rapid_fire_table, resolve_combat, resolve_ground,
 };
 pub use commentary::{
-    CommentaryCatalog, CommentaryError, probe_model_endpoint, rephrase_lines, rephrase_lines_allow,
-    rephrase_lines_named, rephrase_local,
+    CommentaryCatalog, CommentaryError, model_connect_addr, probe_model_endpoint, rephrase_lines,
+    rephrase_lines_allow, rephrase_lines_named, rephrase_local,
 };
 pub use daily::{
     DailyAction, DailyBoard, DailyConfig, DailyError, DailyKind, DailySlot, DailySpec,

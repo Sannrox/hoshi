@@ -269,6 +269,11 @@ mod tests {
         for event in cat.iter() {
             assert!(event.choice(&event.timeout_choice).is_some());
             assert!(!event.choices.is_empty());
+            assert!(
+                !event.id.starts_with("draft_"),
+                "shipped story.toml must not include author drafts ({})",
+                event.id
+            );
         }
     }
 

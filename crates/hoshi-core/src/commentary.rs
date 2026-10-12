@@ -244,7 +244,7 @@ pub fn probe_model_endpoint(endpoint: &str, allow_lan: bool) -> Result<(), Strin
 
 /// Parse an `http://` endpoint into a connect address. Loopback always;
 /// private IPv4 only when `allow_lan` is set. Public IPs and hostnames fail.
-pub(crate) fn model_connect_addr(
+pub fn model_connect_addr(
     endpoint: &str,
     allow_lan: bool,
 ) -> Option<(std::net::SocketAddr, String, String)> {
