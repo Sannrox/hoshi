@@ -7,6 +7,7 @@ use crate::ships::ShipKind;
 use crate::state::GameState;
 use crate::wonders::WonderSpec;
 use serde::Deserialize;
+use std::collections::BTreeSet;
 use std::fmt;
 
 const DEFAULT_ACHIEVEMENTS: &str = include_str!("../data/achievements.toml");
@@ -223,6 +224,42 @@ impl AchievementCondition {
     pub fn met(&self, state: &GameState) -> bool {
         self.current(state) + 1e-9 >= self.target()
     }
+
+    /// Progress that can be read from career totals without loading a live state.
+    pub fn measured(&self, meters: &CareerMeters) -> Option<(f64, f64)> {
+        let current = match self {
+            AchievementCondition::ColonyCount { .. } => f64::from(meters.colonies),
+            AchievementCondition::FleetShips { .. } => f64::from(meters.fleet_ships),
+            AchievementCondition::PrestigeRuns { .. } => f64::from(meters.prestige_runs),
+            AchievementCondition::RaidSurvived { .. } => f64::from(meters.raids_survived),
+            AchievementCondition::OutpostConquered { .. } => f64::from(meters.outposts_conquered),
+            AchievementCondition::Wonder { id } => {
+                let done = match id {
+                    Some(want) => meters.wonder_ids.contains(want),
+                    None => !meters.wonder_ids.is_empty() || meters.wonders > 0,
+                };
+                if done { 1.0 } else { 0.0 }
+            }
+            AchievementCondition::BuildingLevel { .. }
+            | AchievementCondition::TechLevel { .. }
+            | AchievementCondition::ShipCount { .. }
+            | AchievementCondition::Standing { .. }
+            | AchievementCondition::ExclusivePick { .. } => return None,
+        };
+        Some((current, self.target()))
+    }
+}
+
+/// Live counters aggregated from read-only saves, used when a full `GameState` is not loaded.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CareerMeters {
+    pub colonies: u32,
+    pub fleet_ships: u32,
+    pub prestige_runs: u32,
+    pub raids_survived: u32,
+    pub outposts_conquered: u32,
+    pub wonders: u32,
+    pub wonder_ids: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -474,6 +511,25 @@ condition = { kind = "building_level", id = "not_a_mine", level = 1 }
         assert_eq!(spec.listed_description(false), "???");
         assert_eq!(spec.listed_title(true), "Armada");
         assert_eq!(spec.listed_description(true), "Field a fleet of 100 ships.");
+    }
+
+    #[test]
+    fn measured_wonder_progress_keeps_specific_ids() {
+        let mut meters = CareerMeters {
+            wonders: 1,
+            ..CareerMeters::default()
+        };
+        meters.wonder_ids.insert("observatory".into());
+        let any = AchievementCondition::Wonder { id: None };
+        let observatory = AchievementCondition::Wonder {
+            id: Some("observatory".into()),
+        };
+        let ring = AchievementCondition::Wonder {
+            id: Some("dyson_ring".into()),
+        };
+        assert_eq!(any.measured(&meters), Some((1.0, 1.0)));
+        assert_eq!(observatory.measured(&meters), Some((1.0, 1.0)));
+        assert_eq!(ring.measured(&meters), Some((0.0, 1.0)));
     }
 
     #[test]
