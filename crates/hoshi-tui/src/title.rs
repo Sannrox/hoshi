@@ -1,10 +1,12 @@
 //! Title screen: continue, new game, load, settings. No game rules live here.
 
+use crate::clip::copy_to_clipboard;
 use crate::config::UserConfig;
 use crate::keymap::{Binding, HelpContext, Keymap};
 use hoshi_core::{
-    AchievementConfig, CareerGlance, SaveError, SaveGlance, inspect_career, inspect_save,
-    lock_save, parse_galaxy_seed, save_is_locked,
+    AchievementConfig, BalanceConfig, CareerGlance, OutpostConfig, SaveError, SaveGlance,
+    encode_galaxy_seed, inspect_career, inspect_save, lock_save, parse_galaxy_seed, preview_galaxy,
+    save_is_locked,
 };
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
@@ -100,10 +102,18 @@ impl SlotStatus {
                 } else {
                     "Humans"
                 };
-                format!(
-                    "{kind}  planets {}  fleet {}  {ago}s ago",
-                    g.planets, g.fleet_strength
-                )
+                match g.galaxy_seed {
+                    Some(seed) => format!(
+                        "{kind}  planets {}  fleet {}  {}  {ago}s ago",
+                        g.planets,
+                        g.fleet_strength,
+                        encode_galaxy_seed(seed)
+                    ),
+                    None => format!(
+                        "{kind}  planets {}  fleet {}  {ago}s ago",
+                        g.planets, g.fleet_strength
+                    ),
+                }
             }
             SlotStatus::Locked => "in use by another hoshi process".into(),
             SlotStatus::Newer { found, kind } => newer_message(kind, *found),
@@ -154,6 +164,7 @@ pub struct Title {
     career: CareerGlance,
     stats_selected: usize,
     achievements: AchievementConfig,
+    outposts: OutpostConfig,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,6 +201,7 @@ impl Title {
             career: CareerGlance::default(),
             stats_selected: 0,
             achievements: AchievementConfig::default(),
+            outposts: BalanceConfig::default().outposts,
         };
         title.refresh_slots();
         title
@@ -207,6 +219,31 @@ impl Title {
 
     pub fn set_now(&mut self, now_unix: u64) {
         self.now_unix = now_unix;
+    }
+
+    pub fn set_outposts(&mut self, outposts: OutpostConfig) {
+        self.outposts = outposts;
+    }
+
+    fn seed_preview_line(&self) -> String {
+        match parse_seed(&self.new_seed) {
+            Ok(None) => format!(
+                "random seed  generator {}",
+                hoshi_core::GALAXY_GENERATOR_VERSION
+            ),
+            Ok(Some(seed)) => {
+                let preview = preview_galaxy(seed, &self.outposts);
+                format!(
+                    "{}  {} size {}  outposts {}  generator {}",
+                    preview.code,
+                    preview.home_kind.as_key(),
+                    preview.home_size,
+                    preview.outposts,
+                    preview.generator
+                )
+            }
+            Err(msg) => msg,
+        }
     }
 
     fn refresh_slots(&mut self) {
@@ -267,6 +304,10 @@ impl Title {
     fn handle_menu(&mut self, code: KeyCode) -> TitleAction {
         match self.config.keys.lookup(HelpContext::TitleMenu, code) {
             Some(Binding::Quit) => TitleAction::Quit,
+            Some(Binding::CopySeed) => {
+                self.copy_continue_seed();
+                TitleAction::None
+            }
             Some(Binding::SelectNext) => {
                 self.selected = (self.selected + 1) % MENU.len();
                 TitleAction::None
@@ -358,6 +399,32 @@ impl Title {
                 self.status = format!("{}: harness save (CLI only)", slot.name);
                 TitleAction::None
             }
+        }
+    }
+
+    fn copy_continue_seed(&mut self) {
+        let want = self.config.last_slot.clone();
+        let slot = want
+            .as_ref()
+            .and_then(|name| self.slots.iter().find(|s| s.name == *name))
+            .or_else(|| self.slots.iter().find(|s| s.status.playable()));
+        match slot.cloned() {
+            Some(slot) => self.copy_slot_seed(&slot),
+            None => self.status = "no seed to copy".into(),
+        }
+    }
+
+    fn copy_slot_seed(&mut self, slot: &Slot) {
+        match &slot.status {
+            SlotStatus::Ready(g) | SlotStatus::Harness(g) => match g.galaxy_seed {
+                Some(seed) => {
+                    let code = encode_galaxy_seed(seed);
+                    copy_to_clipboard(&code);
+                    self.status = format!("copied {code}");
+                }
+                None => self.status = "no seed to copy".into(),
+            },
+            _ => self.status = "no seed to copy".into(),
         }
     }
 
@@ -521,6 +588,12 @@ impl Title {
             }
             Some(Binding::SelectPrev) => {
                 self.selected = (self.selected + self.slots.len() - 1) % self.slots.len();
+                TitleAction::None
+            }
+            Some(Binding::CopySeed) => {
+                if let Some(slot) = self.slots.get(self.selected).cloned() {
+                    self.copy_slot_seed(&slot);
+                }
                 TitleAction::None
             }
             Some(Binding::Confirm) => {
@@ -886,8 +959,9 @@ impl Title {
                 }
                 lines.push(Line::from(""));
                 lines.push(Line::from(format!(
-                    "{} help",
-                    self.config.keys.primary(Binding::Help)
+                    "{} help  {} copy seed",
+                    self.config.keys.primary(Binding::Help),
+                    self.config.keys.primary(Binding::CopySeed)
                 )));
             }
             Page::New => {
@@ -907,6 +981,7 @@ impl Title {
                     self.new_difficulty.as_label(),
                     self.new_field == NewField::Difficulty,
                 ));
+                lines.push(Line::from(self.seed_preview_line()));
                 lines.push(Line::from(format!(
                     "{} on difficulty creates the slot. {} back. {} help.",
                     self.config.keys.primary(Binding::Confirm),
@@ -916,10 +991,11 @@ impl Title {
             }
             Page::Load => {
                 lines.push(Line::from(format!(
-                    "Load game  {} play  {} delete  {} rename  {} back  {} help",
+                    "Load game  {} play  {} delete  {} rename  {} copy  {} back  {} help",
                     self.config.keys.primary(Binding::Confirm),
                     self.config.keys.primary(Binding::DeleteSlot),
                     self.config.keys.primary(Binding::RenameSlot),
+                    self.config.keys.primary(Binding::CopySeed),
                     self.config.keys.primary(Binding::Cancel),
                     self.config.keys.primary(Binding::Help)
                 )));
@@ -1506,6 +1582,28 @@ mod tests {
     }
 
     #[test]
+    fn load_omits_seed_for_pre_galaxy_saves() {
+        let dir = unique_dir();
+        write_save(&dir, "legacy", &GameState::new(10));
+        {
+            let conn = open_save(&dir.join("legacy.sqlite")).unwrap();
+            conn.execute_batch(
+                "ALTER TABLE meta DROP COLUMN galaxy_seed; PRAGMA user_version = 4;",
+            )
+            .unwrap();
+        }
+        let mut title = Title::new(dir.clone(), 40);
+        title.page = Page::Load;
+        let fabricated = hoshi_core::encode_galaxy_seed(0);
+        let text = render(&title, 100, 30);
+        assert!(!text.contains(&fabricated), "{text}");
+        title.selected = title.slots.iter().position(|s| s.name == "legacy").unwrap();
+        title.handle_key(KeyCode::Char('y'));
+        assert!(title.status.contains("no seed"), "{}", title.status);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn delete_needs_a_second_key_and_skips_a_locked_slot() {
         let dir = unique_dir();
         write_save(&dir, "alpha", &GameState::new(1));
@@ -1711,6 +1809,24 @@ mod tests {
         let code = hoshi_core::encode_galaxy_seed(42);
         assert_eq!(parse_seed(&code).unwrap(), Some(42));
         assert!(parse_seed("nope").is_err());
+        let mut title = Title::new(unique_dir(), 1);
+        title.page = Page::New;
+        title.new_field = NewField::Seed;
+        title.new_seed = code.clone();
+        let text = render(&title, 80, 24);
+        assert!(text.contains(&code), "{text}");
+        assert!(text.contains("rocky"), "{text}");
+        assert!(text.contains("generator 1"), "{text}");
+        title.new_seed = "abc".into();
+        let bad = render(&title, 80, 24);
+        assert!(bad.contains("invalid seed"), "{bad}");
+        let mut tampered: Vec<char> = code.chars().collect();
+        let last = tampered.len() - 1;
+        tampered[last] = if tampered[last] == '0' { '1' } else { '0' };
+        title.new_seed = tampered.into_iter().collect();
+        let checksum = render(&title, 80, 24);
+        assert!(checksum.contains("checksum"), "{checksum}");
+        let _ = std::fs::remove_dir_all(&title.dir);
     }
 
     #[test]

@@ -2,6 +2,7 @@
 
 mod app;
 mod cli;
+mod clip;
 mod config;
 mod keymap;
 mod notify;
@@ -419,6 +420,7 @@ fn title_then_play(
     no_portraits: bool,
 ) -> Result<(), LaunchError> {
     let mut title = Title::new(dir, clock.now_unix());
+    title.set_outposts(balance.outposts.clone());
     let mut terminal = ratatui::init();
     let result = loop {
         title.set_now(clock.now_unix());

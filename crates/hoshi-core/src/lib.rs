@@ -65,7 +65,8 @@ pub use fleets::{
     fuel_cost,
 };
 pub use galaxy::{
-    GALAXY_GENERATOR_VERSION, encode_galaxy_seed, parse_galaxy_seed, supports_galaxy_generator,
+    GALAXY_GENERATOR_VERSION, GalaxyPreview, encode_galaxy_seed, parse_galaxy_seed, preview_galaxy,
+    supports_galaxy_generator,
 };
 pub use laws::{
     CLOCK as LAW_CLOCK, Jurisdiction, JurisdictionKind, Law, LawAction, LawActionKind, LawApproval,

@@ -1,6 +1,7 @@
 //! Overview, planet, shipyard, wonder, prestige, achievements, market, diplomacy, laws, reports and map screens.
 //! Core owns the rules; this module only renders and turns keys into core commands.
 
+use crate::clip::copy_to_clipboard;
 use crate::keymap::{Binding, HelpContext, Keymap};
 use crate::notify::{self, Prefs as NotifyPrefs, Watch as NotifyWatch};
 use crate::portraits::{self, PortraitView, Protocol, Slot};
@@ -16,8 +17,6 @@ use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
-use std::io::{IsTerminal, Write};
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     Overview,
@@ -2212,41 +2211,6 @@ fn missing_label(missing: Resources) -> String {
     } else {
         format!("need {}", parts.join(" "))
     }
-}
-
-fn copy_to_clipboard(text: &str) {
-    let mut out = std::io::stdout();
-    if !out.is_terminal() {
-        return;
-    }
-    let _ = write!(out, "\x1b]52;c;{}\x07", base64_encode(text.as_bytes()));
-    let _ = out.flush();
-}
-
-fn base64_encode(bytes: &[u8]) -> String {
-    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        let b0 = bytes[i];
-        let b1 = bytes.get(i + 1).copied().unwrap_or(0);
-        let b2 = bytes.get(i + 2).copied().unwrap_or(0);
-        let n = ((b0 as u32) << 16) | ((b1 as u32) << 8) | b2 as u32;
-        out.push(TABLE[((n >> 18) & 63) as usize] as char);
-        out.push(TABLE[((n >> 12) & 63) as usize] as char);
-        if i + 1 < bytes.len() {
-            out.push(TABLE[((n >> 6) & 63) as usize] as char);
-        } else {
-            out.push('=');
-        }
-        if i + 2 < bytes.len() {
-            out.push(TABLE[(n & 63) as usize] as char);
-        } else {
-            out.push('=');
-        }
-        i += 3;
-    }
-    out
 }
 
 fn styled_row(text: String, reason: Option<String>) -> Line<'static> {

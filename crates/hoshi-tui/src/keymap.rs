@@ -314,6 +314,7 @@ impl HelpContext {
                 Binding::SelectNext,
                 Binding::SelectPrev,
                 Binding::Confirm,
+                Binding::CopySeed,
             ],
             HelpContext::TitleNew => &[
                 Binding::Help,
@@ -326,6 +327,7 @@ impl HelpContext {
                 Binding::Help,
                 Binding::Cancel,
                 Binding::Confirm,
+                Binding::CopySeed,
                 Binding::SelectNext,
                 Binding::SelectPrev,
                 Binding::DeleteSlot,
