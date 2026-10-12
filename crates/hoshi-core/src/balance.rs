@@ -344,6 +344,7 @@ pub struct BalanceConfig {
     pub defences: crate::DefenceConfig,
     pub waste: WasteConfig,
     pub laws: crate::LawConfig,
+    pub achievements: crate::AchievementConfig,
 }
 
 impl BalanceConfig {
@@ -1052,7 +1053,7 @@ impl File {
                 self.expedition.ship_kind
             ))
         })?;
-        let config = BalanceConfig {
+        let mut config = BalanceConfig {
             metal_mine: self.metal_mine.into_spec(),
             crystal_mine: self.crystal_mine.into_spec(),
             deuterium_synthesizer: self.deuterium_synthesizer.into_spec(),
@@ -1268,6 +1269,7 @@ impl File {
             defences: crate::DefenceConfig::default(),
             waste: self.waste.map(FileWaste::into_config).unwrap_or_default(),
             laws: crate::LawConfig::default(),
+            achievements: crate::AchievementConfig::default(),
             market: crate::MarketConfig {
                 enabled: self.market.enabled,
                 tick_secs: self.market.tick_secs,
@@ -1287,6 +1289,8 @@ impl File {
                 cargo_free: self.market.cargo_free,
             },
         };
+        let wonders = config.wonders.clone();
+        config.achievements.drop_unknown_wonders(&wonders);
         config.validate()?;
         Ok(config)
     }
@@ -1853,6 +1857,16 @@ stages = []
         );
         let err = BalanceConfig::parse(&text).unwrap_err();
         assert!(err.to_string().contains("at least one stage"), "{err}");
+    }
+
+    #[test]
+    fn override_may_replace_bundled_wonder_ids() {
+        let text = DEFAULT_BALANCE.replace("id = \"dyson_ring\"", "id = \"hearth_ring\"");
+        let cfg = BalanceConfig::parse(&text).unwrap();
+        assert!(cfg.wonders.iter().any(|w| w.id == "hearth_ring"));
+        assert!(!cfg.wonders.iter().any(|w| w.id == "dyson_ring"));
+        assert!(cfg.achievements.get("dyson").is_none());
+        assert!(cfg.achievements.get("wonder_done").is_some());
     }
 
     #[test]

@@ -198,7 +198,12 @@ pub struct PrestigePreview {
     pub run: RunStats,
 }
 
-pub const PRESTIGE_KEPT: &[&str] = &["prestige currency", "purchased bonuses", "run history"];
+pub const PRESTIGE_KEPT: &[&str] = &[
+    "prestige currency",
+    "purchased bonuses",
+    "run history",
+    "achievements",
+];
 pub const PRESTIGE_LOST: &[&str] = &[
     "resources",
     "buildings",

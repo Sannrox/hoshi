@@ -1,0 +1,148 @@
+# Local achievements. Conditions name buildings, techs, ships, wonders and factions
+# from the rest of the catalog. Hidden rows stay ??? until earned.
+
+[[achievements]]
+id = "first_cut"
+title = "First cut"
+description = "Raise a metal mine to level 2."
+condition = { kind = "building_level", id = "metal_mine", level = 2 }
+
+[[achievements]]
+id = "crystal_cut"
+title = "Crystal cut"
+description = "Raise a crystal mine to level 2."
+condition = { kind = "building_level", id = "crystal_mine", level = 2 }
+
+[[achievements]]
+id = "solar_array"
+title = "Solar array"
+description = "Raise a solar plant to level 5."
+condition = { kind = "building_level", id = "solar_plant", level = 5 }
+
+[[achievements]]
+id = "lab_open"
+title = "Lab open"
+description = "Build a research lab."
+condition = { kind = "building_level", id = "research_lab", level = 1 }
+
+[[achievements]]
+id = "shipyard_i"
+title = "Shipyard I"
+description = "Build a shipyard."
+condition = { kind = "building_level", id = "shipyard", level = 1 }
+
+[[achievements]]
+id = "radiator_on"
+title = "Heat dump"
+description = "Build a radiator."
+condition = { kind = "building_level", id = "radiator", level = 1 }
+
+[[achievements]]
+id = "scrubber_on"
+title = "Clean air"
+description = "Build a scrubber."
+condition = { kind = "building_level", id = "scrubber", level = 1 }
+
+[[achievements]]
+id = "energy_i"
+title = "Energy I"
+description = "Research energy technology."
+condition = { kind = "tech_level", id = "energy", level = 1 }
+
+[[achievements]]
+id = "computer_i"
+title = "Computer I"
+description = "Research computer technology."
+condition = { kind = "tech_level", id = "computer", level = 1 }
+
+[[achievements]]
+id = "ecology"
+title = "Green belt"
+description = "Research ecology."
+condition = { kind = "tech_level", id = "ecology", level = 1 }
+
+[[achievements]]
+id = "first_fighter"
+title = "First fighter"
+description = "Launch a light fighter."
+condition = { kind = "ship_count", id = "light_fighter", count = 1 }
+
+[[achievements]]
+id = "wing"
+title = "Wing"
+description = "Field a fleet of 20 ships."
+condition = { kind = "fleet_ships", count = 20 }
+
+[[achievements]]
+id = "armada"
+title = "Armada"
+description = "Field a fleet of 100 ships."
+hidden = true
+condition = { kind = "fleet_ships", count = 100 }
+
+[[achievements]]
+id = "first_colony"
+title = "First colony"
+description = "Found a colony."
+condition = { kind = "colony_count", count = 1 }
+
+[[achievements]]
+id = "second_world"
+title = "Second world"
+description = "Hold two colonies."
+condition = { kind = "colony_count", count = 2 }
+
+[[achievements]]
+id = "outpost_down"
+title = "Outpost down"
+description = "Conquer a pirate outpost."
+condition = { kind = "outpost_conquered", count = 1 }
+
+[[achievements]]
+id = "raid_survived"
+title = "Raid survived"
+description = "Survive a pirate raid."
+condition = { kind = "raid_survived", count = 1 }
+
+[[achievements]]
+id = "raid_veteran"
+title = "Raid veteran"
+description = "Survive five pirate raids."
+condition = { kind = "raid_survived", count = 5 }
+
+[[achievements]]
+id = "wonder_done"
+title = "Wonder"
+description = "Complete any wonder."
+condition = { kind = "wonder" }
+
+[[achievements]]
+id = "dyson"
+title = "Dyson"
+description = "Complete the Dyson ring."
+condition = { kind = "wonder", id = "dyson_ring" }
+
+[[achievements]]
+id = "prestige_once"
+title = "New galaxy"
+description = "Prestige once."
+condition = { kind = "prestige_runs", count = 1 }
+
+[[achievements]]
+id = "keystone_industry"
+title = "Industry keystone"
+description = "Research the industry keystone."
+condition = { kind = "tech_level", id = "dyson_blueprint", level = 1 }
+
+[[achievements]]
+id = "diplomat"
+title = "Diplomat"
+description = "Reach favored standing with the traders."
+condition = { kind = "standing", id = "traders", min = 20.0 }
+
+[[achievements]]
+id = "hidden_smuggler"
+title = "Smuggler"
+description = "Pick the smuggler network."
+hidden = true
+condition = { kind = "exclusive_pick", id = "smuggler_network" }

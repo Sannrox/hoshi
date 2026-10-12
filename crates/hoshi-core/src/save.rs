@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 21;
+pub const SCHEMA_VERSION: u32 = 22;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -164,7 +164,9 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM law_samples;
          DELETE FROM law_approvals;
          DELETE FROM law_actions;
-         DELETE FROM laws;",
+         DELETE FROM laws;
+         DELETE FROM achievements;
+         DELETE FROM achievement_stats;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -445,6 +447,16 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
         }
     }
     insert_laws(&tx, state)?;
+    for (id, unlocked_at) in &state.achievements {
+        tx.execute(
+            "INSERT INTO achievements (id, unlocked_at) VALUES (?1, ?2)",
+            params![id, *unlocked_at as i64],
+        )?;
+    }
+    tx.execute(
+        "INSERT INTO achievement_stats (id, raids_survived, outposts_conquered) VALUES (1, ?1, ?2)",
+        params![state.raids_survived, state.outposts_conquered],
+    )?;
     for (i, colony) in state.colonies.iter().enumerate() {
         let planet_id = (i as i64) + 2;
         tx.execute(
@@ -1056,6 +1068,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     load_diplomacy(conn, &mut state)?;
     load_spy_reports(conn, &mut state)?;
     load_laws(conn, &mut state)?;
+    load_achievements(conn, &mut state)?;
     state.sync_raid_schedule_after_standing(state.last_tick_unix);
 
     let mut stmt = conn.prepare(
@@ -1623,6 +1636,8 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "law_approvals" => "SELECT COUNT(*) FROM law_approvals",
         "law_actions" => "SELECT COUNT(*) FROM law_actions",
         "law_samples" => "SELECT COUNT(*) FROM law_samples",
+        "achievements" => "SELECT COUNT(*) FROM achievements",
+        "achievement_stats" => "SELECT COUNT(*) FROM achievement_stats",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -1665,7 +1680,9 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "laws")?
         + count_rows(conn, "law_approvals")?
         + count_rows(conn, "law_actions")?
-        + count_rows(conn, "law_samples")?)
+        + count_rows(conn, "law_samples")?
+        + count_rows(conn, "achievements")?
+        + count_rows(conn, "achievement_stats")?)
 }
 
 fn migrate(conn: &Connection) -> Result<(), SaveError> {
@@ -1738,6 +1755,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 21 {
         migrate_v21(conn)?;
+    }
+    if found < 22 {
+        migrate_v22(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -2316,6 +2336,47 @@ fn migrate_v21(conn: &Connection) -> Result<(), SaveError> {
         );
         ",
     )?;
+    Ok(())
+}
+
+fn migrate_v22(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS achievements (
+            id TEXT PRIMARY KEY,
+            unlocked_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS achievement_stats (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            raids_survived INTEGER NOT NULL DEFAULT 0,
+            outposts_conquered INTEGER NOT NULL DEFAULT 0
+        );
+        ",
+    )?;
+    Ok(())
+}
+
+fn load_achievements(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
+    let mut stmt = conn.prepare("SELECT id, unlocked_at FROM achievements")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    state.achievements.clear();
+    for row in rows {
+        let (id, unlocked_at) = row?;
+        state.achievements.insert(id, unix_ts(unlocked_at)?);
+    }
+    if let Some((raids, conquests)) = conn
+        .query_row(
+            "SELECT raids_survived, outposts_conquered FROM achievement_stats WHERE id = 1",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()?
+    {
+        state.raids_survived = u32_field(raids, "raids survived")?;
+        state.outposts_conquered = u32_field(conquests, "outposts conquered")?;
+    }
     Ok(())
 }
 
@@ -3774,6 +3835,49 @@ mod tests {
         assert_eq!(loaded, state);
         assert_eq!(count_rows(&conn, "laws").unwrap(), 1);
         assert_eq!(count_rows(&conn, "law_approvals").unwrap(), 1);
+    }
+
+    #[test]
+    fn migrate_v22_round_trips_achievements() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v22(&conn).unwrap();
+        migrate_v22(&conn).unwrap();
+        let mut state = GameState::new(10);
+        state.achievements.insert("first_cut".into(), 7);
+        state.raids_survived = 3;
+        state.outposts_conquered = 2;
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.achievements.get("first_cut"), Some(&7));
+        assert_eq!(loaded.raids_survived, 3);
+        assert_eq!(loaded.outposts_conquered, 2);
+        assert_eq!(count_rows(&conn, "achievements").unwrap(), 1);
+        assert_eq!(count_rows(&conn, "achievement_stats").unwrap(), 1);
+    }
+
+    #[test]
+    fn schema_21_save_migrates_without_losing_tech_levels() {
+        let path = unique_path("v21-achievements");
+        let _ = std::fs::remove_file(&path);
+        {
+            let mut conn = open_save(&path).unwrap();
+            let mut state = GameState::new(10);
+            state.tech_levels.insert("energy".into(), 3);
+            save_state(&mut conn, &state).unwrap();
+            conn.execute_batch("DROP TABLE achievements; PRAGMA user_version = 21;")
+                .unwrap();
+        }
+        let conn = open_save(&path).unwrap();
+        let version: u32 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.tech_level("energy"), 3);
+        assert!(loaded.achievements.is_empty());
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
     }
 
     #[test]

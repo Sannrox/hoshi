@@ -1,5 +1,6 @@
 //! hoshi-core: game rules, state, timers and offline progression.
 
+mod achievements;
 mod activity;
 mod balance;
 mod buildings;
@@ -26,6 +27,9 @@ mod story;
 mod waste;
 mod wonders;
 
+pub use achievements::{
+    AchievementCondition, AchievementConfig, AchievementError, AchievementSpec,
+};
 pub use activity::{
     ActivityApply, ActivityChannel, ActivityChannelConfig, ActivityEffectsConfig, ActivityPulse,
     ActivityTracker,

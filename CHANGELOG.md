@@ -8,6 +8,7 @@
 
 ### Added
 
+- Achievements from `achievements.toml` (twenty-four to start). Conditions evaluate during catch-up and award once. Hidden rows stay ??? until earned. Unlocks and dates survive prestige. The TUI achievements screen lists progress; an unlock lands in the event log. Save schema v22.
 - ADR 0005: a shared universe is allowed only as a server-authoritative shard hosted on Chisei (Chisei clock, RNG and persistence; intents as governed Actions; on-demand catch-up; snapshot raids; bounded shards; players as tenants with markings). Partially supersedes ADR 0004; local play is unchanged.
 - ADR 0004: hoshi stays a local single-player idle game. A shared universe is not in scope; the local save and client clock are not a multiplayer trust model.
 - Branching technology tree: Industry, Military and Society each have a keystone; mutually exclusive choice nodes pick one path; Ancient techs stay hidden until a prestige run. The overview shows one branch at a time (`h`/`l`) with locked, available, in-progress, researched and excluded states. Existing research migrates. Save schema v21 stores exclusive picks. `hoshi simulate` reports keystone times against a 14-day galaxy target.
