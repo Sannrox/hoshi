@@ -8,6 +8,7 @@
 
 ### Added
 
+- Title Settings has a keybindings page: list every remappable action by the screens that use it, press a new key to rebind, see conflicts without saving, and reset one action or all keys with confirmation. Changes land in `config.toml` and apply without a restart.
 - Optional terminal notifications (off by default). Settings toggle plus `notify_*` keys in `config.toml`. A finished build, an incoming raid, or a returning fleet rings the bell and sends OSC 9/777; quiet hours skip them. Offline catch-up emits one summary instead of one line per event. Terminals that ignore OSC stay playable.
 - Bridge activity status bar and a scrollable log (`a`) when the TUI is built with `--features bridge` and the bridge is enabled in config. Latest event, mine/lab boost countdowns, and the last 100 sourced effects; raids are marked. Off in a default build.
 - Combat replays: each fight stores a seed plus round frames (save schema v23). The TUI overlay plays ASCII volleys at 10 fps from the overview (`r`) and the away summary; space pauses, `n` steps, `x` skips. Reduced motion and `no_animation` jump to the last frame. Fleet fights replay from the stored seed; layered planet battles and invasions replay from stored frames.

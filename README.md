@@ -43,7 +43,7 @@ the game is balanced without it.
 cargo run -p hoshi-tui
 ```
 
-The save file lives in the user data directory (`hoshi/save.sqlite`). Override the path with `--save PATH` or `HOSHI_SAVE`. Balance numbers load from the bundled `balance.toml`; override with `--balance PATH` or `HOSHI_BALANCE`. `--no-portraits` keeps ASCII drawings and skips RGB. Keys: tab (screens), j/k (select), enter (build or research), x (cancel), q (quit and save), `?` (help for this screen). Remap them with `keys.<action>` lines in `config.toml`; a conflict keeps the defaults. With `--features bridge` and the bridge enabled, a status bar shows the latest feed event and `a` opens the activity log. Notifications are off until Settings (or `notify = true`); they use the terminal bell and OSC 9/777, with per-type toggles and quiet hours in the same file.
+The save file lives in the user data directory (`hoshi/save.sqlite`). Override the path with `--save PATH` or `HOSHI_SAVE`. Balance numbers load from the bundled `balance.toml`; override with `--balance PATH` or `HOSHI_BALANCE`. `--no-portraits` keeps ASCII drawings and skips RGB. Keys: tab (screens), j/k (select), enter (build or research), x (cancel), q (quit and save), `?` (help for this screen). Remap them with `keys.<action>` lines in `config.toml` or from title Settings → keybindings; a conflict keeps the current keys. With `--features bridge` and the bridge enabled, a status bar shows the latest feed event and `a` opens the activity log. Notifications are off until Settings (or `notify = true`); they use the terminal bell and OSC 9/777, with per-type toggles and quiet hours in the same file.
 
 ```sh
 hoshi simulate --days 3

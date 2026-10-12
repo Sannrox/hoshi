@@ -1,7 +1,7 @@
 //! Title screen: continue, new game, load, settings. No game rules live here.
 
 use crate::config::UserConfig;
-use crate::keymap::{Binding, HelpContext};
+use crate::keymap::{Binding, HelpContext, Keymap};
 use hoshi_core::{
     SaveError, SaveGlance, inspect_save, lock_save, parse_galaxy_seed, save_is_locked,
 };
@@ -35,6 +35,7 @@ enum Page {
     New,
     Load,
     Settings,
+    Keys,
     Credits,
 }
 
@@ -144,6 +145,15 @@ pub struct Title {
     rename_to: String,
     play_path: Option<PathBuf>,
     help_open: bool,
+    keys_selected: usize,
+    listening: bool,
+    reset_confirm: Option<ResetConfirm>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResetConfirm {
+    Action,
+    All,
 }
 
 impl Title {
@@ -168,6 +178,9 @@ impl Title {
             rename_to: String::new(),
             play_path: None,
             help_open: false,
+            keys_selected: 0,
+            listening: false,
+            reset_confirm: None,
         };
         title.refresh_slots();
         title
@@ -204,7 +217,9 @@ impl Title {
             }
             return TitleAction::None;
         }
-        if self.config.keys.lookup(self.help_context(), code) == Some(Binding::Help) {
+        if !self.listening
+            && self.config.keys.lookup(self.help_context(), code) == Some(Binding::Help)
+        {
             self.help_open = true;
             return TitleAction::None;
         }
@@ -213,6 +228,7 @@ impl Title {
             Page::New => self.handle_new(code),
             Page::Load => self.handle_load(code),
             Page::Settings => self.handle_settings(code),
+            Page::Keys => self.handle_keys(code),
             Page::Credits => {
                 if let Some(Binding::Confirm | Binding::Cancel) =
                     self.config.keys.lookup(HelpContext::TitleCredits, code)
@@ -232,6 +248,7 @@ impl Title {
             Page::Load if self.confirm_delete.is_some() => HelpContext::TitleDelete,
             Page::Load => HelpContext::TitleLoad,
             Page::Settings => HelpContext::TitleSettings,
+            Page::Keys => HelpContext::TitleKeys,
             Page::Credits => HelpContext::TitleCredits,
         }
     }
@@ -645,7 +662,7 @@ impl Title {
     }
 
     fn handle_settings(&mut self, code: KeyCode) -> TitleAction {
-        let items = 6;
+        let items = 7;
         match self.config.keys.lookup(HelpContext::TitleSettings, code) {
             Some(Binding::Cancel) => {
                 self.page = Page::Menu;
@@ -665,9 +682,118 @@ impl Title {
                     3 => self.config.ai_advisor = !self.config.ai_advisor,
                     4 => self.config.portraits = !self.config.portraits,
                     5 => self.config.notify = !self.config.notify,
+                    6 => {
+                        self.page = Page::Keys;
+                        self.keys_selected = 0;
+                        self.listening = false;
+                        self.reset_confirm = None;
+                        self.status.clear();
+                        return TitleAction::None;
+                    }
                     _ => {}
                 }
                 let _ = self.config.save(&self.dir);
+            }
+            _ => {}
+        }
+        TitleAction::None
+    }
+
+    fn commit_keys(&mut self, keys: Keymap, ok: String) {
+        let previous = self.config.keys.clone();
+        self.config.keys = keys;
+        if let Err(err) = self.config.save(&self.dir) {
+            self.config.keys = previous;
+            self.status = format!("could not save: {err}");
+            return;
+        }
+        self.status = ok;
+    }
+
+    fn handle_keys(&mut self, code: KeyCode) -> TitleAction {
+        let actions = Binding::REMAPPABLE;
+        let items = actions.len() + 1;
+        if self.listening {
+            if self.config.keys.matches(Binding::Cancel, code) {
+                self.listening = false;
+                self.status = "rebinding cancelled".into();
+                return TitleAction::None;
+            }
+            match self.config.keys.rebind(actions[self.keys_selected], code) {
+                Ok(keys) => {
+                    let msg = format!(
+                        "saved {} -> {}",
+                        HelpContext::label(actions[self.keys_selected]),
+                        keys.display(actions[self.keys_selected])
+                    );
+                    self.commit_keys(keys, msg);
+                }
+                Err(err) => {
+                    self.status = err;
+                }
+            }
+            self.listening = false;
+            return TitleAction::None;
+        }
+        if let Some(confirm) = self.reset_confirm {
+            match self.config.keys.lookup(HelpContext::TitleKeys, code) {
+                Some(Binding::Confirm) => {
+                    match confirm {
+                        ResetConfirm::Action => {
+                            match self.config.keys.reset_binding(actions[self.keys_selected]) {
+                                Ok(keys) => {
+                                    let msg = format!(
+                                        "reset {}",
+                                        HelpContext::label(actions[self.keys_selected])
+                                    );
+                                    self.commit_keys(keys, msg);
+                                }
+                                Err(err) => self.status = err,
+                            }
+                        }
+                        ResetConfirm::All => {
+                            self.commit_keys(Keymap::defaults(), "reset all keys".into());
+                        }
+                    }
+                    self.reset_confirm = None;
+                }
+                Some(Binding::Cancel) => {
+                    self.reset_confirm = None;
+                    self.status.clear();
+                }
+                _ => {}
+            }
+            return TitleAction::None;
+        }
+        match self.config.keys.lookup(HelpContext::TitleKeys, code) {
+            Some(Binding::Cancel) => {
+                self.page = Page::Settings;
+                self.selected = 6;
+                self.status.clear();
+            }
+            Some(Binding::SelectNext) => {
+                self.keys_selected = (self.keys_selected + 1) % items;
+            }
+            Some(Binding::SelectPrev) => {
+                self.keys_selected = (self.keys_selected + items - 1) % items;
+            }
+            Some(Binding::Confirm) if self.keys_selected == actions.len() => {
+                self.reset_confirm = Some(ResetConfirm::All);
+                self.status = "press enter again to reset all keys".into();
+            }
+            Some(Binding::Confirm) => {
+                self.listening = true;
+                self.status = format!(
+                    "press a key for {}",
+                    HelpContext::label(actions[self.keys_selected])
+                );
+            }
+            Some(Binding::DeleteSlot) if self.keys_selected < actions.len() => {
+                self.reset_confirm = Some(ResetConfirm::Action);
+                self.status = format!(
+                    "press enter again to reset {}",
+                    HelpContext::label(actions[self.keys_selected])
+                );
             }
             _ => {}
         }
@@ -793,6 +919,34 @@ impl Title {
                     self.config.notify,
                     self.selected == 5,
                 ));
+                lines.push(menu_line("keybindings", self.selected == 6));
+            }
+            Page::Keys => {
+                let actions = Binding::REMAPPABLE;
+                let start = self.keys_selected.saturating_sub(8);
+                lines.push(Line::from(format!(
+                    "Keybindings  {} rebind  {} reset  {} back  {} help",
+                    self.config.keys.primary(Binding::Confirm),
+                    self.config.keys.primary(Binding::DeleteSlot),
+                    self.config.keys.primary(Binding::Cancel),
+                    self.config.keys.primary(Binding::Help)
+                )));
+                let visible = actions.iter().copied().enumerate().skip(start).take(12);
+                for (i, binding) in visible {
+                    let mark = if i == self.keys_selected { ">" } else { " " };
+                    let keys = self.config.keys.display(binding);
+                    let screens = screens_for(binding);
+                    lines.push(Line::from(format!(
+                        "{mark} {keys:<12}  {}  {screens}",
+                        HelpContext::label(binding)
+                    )));
+                }
+                let reset_mark = if self.keys_selected == actions.len() {
+                    ">"
+                } else {
+                    " "
+                };
+                lines.push(Line::from(format!("{reset_mark} reset all keys")));
             }
             Page::Credits => {
                 lines.push(Line::from(
@@ -935,6 +1089,49 @@ fn rename_sidecar(src: &Path, dst: &Path) -> Result<(), String> {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e.to_string()),
+    }
+}
+
+fn screens_for(binding: Binding) -> String {
+    const CTX: &[HelpContext] = &[
+        HelpContext::Overview,
+        HelpContext::Planet,
+        HelpContext::Shipyard,
+        HelpContext::Wonder,
+        HelpContext::Prestige,
+        HelpContext::Achievements,
+        HelpContext::Market,
+        HelpContext::Diplomacy,
+        HelpContext::Laws,
+        HelpContext::Reports,
+        HelpContext::Map,
+        HelpContext::Dispatch,
+        HelpContext::Away,
+        HelpContext::Replay,
+        HelpContext::Story,
+        HelpContext::ReportView,
+        HelpContext::TitleMenu,
+        HelpContext::TitleNew,
+        HelpContext::TitleLoad,
+        HelpContext::TitleDelete,
+        HelpContext::TitleRename,
+        HelpContext::TitleSettings,
+        HelpContext::TitleKeys,
+        HelpContext::TitleCredits,
+    ];
+    let mut names: Vec<&str> = CTX
+        .iter()
+        .copied()
+        .filter(|ctx| ctx.bindings().contains(&binding))
+        .map(HelpContext::name)
+        .collect();
+    if binding == Binding::Activity {
+        names.insert(0, "play");
+    }
+    if names.is_empty() {
+        String::new()
+    } else {
+        names.join(",")
     }
 }
 
@@ -1306,6 +1503,71 @@ mod tests {
         let closed = render(&title, 80, 24);
         assert!(closed.contains("Continue"), "{closed}");
         assert!(!closed.contains("keys for this screen"), "{closed}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn keybindings_page_rebinds_rejects_conflicts_and_resets() {
+        let dir = unique_dir();
+        let mut title = Title::new(dir.clone(), 1);
+        title.page = Page::Keys;
+        let text = render(&title, 80, 24);
+        assert!(text.contains("quit"), "{text}");
+        assert!(text.contains("overview"), "{text}");
+        title.handle_key(KeyCode::Enter);
+        title.handle_key(KeyCode::Char('p'));
+        assert!(title.config.keys.matches(Binding::Quit, KeyCode::Char('p')));
+        let loaded = UserConfig::load(&dir);
+        assert!(loaded.keys.matches(Binding::Quit, KeyCode::Char('p')));
+        let listed = render(&title, 80, 24);
+        assert!(listed.contains("p"), "{listed}");
+        title.handle_key(KeyCode::Char('x'));
+        title.handle_key(KeyCode::Char('x'));
+        title.handle_key(KeyCode::Char('?'));
+        let help = render(&title, 80, 24);
+        assert!(help.contains("p"), "{help}");
+        title.handle_key(KeyCode::Char('?'));
+        title.page = Page::Keys;
+        title.keys_selected = 0;
+        title.handle_key(KeyCode::Enter);
+        title.handle_key(KeyCode::Char('j'));
+        assert!(title.status.contains("conflict"), "{}", title.status);
+        assert!(title.config.keys.matches(Binding::Quit, KeyCode::Char('p')));
+        let copy = Binding::REMAPPABLE
+            .iter()
+            .position(|b| *b == Binding::CopySeed)
+            .unwrap();
+        title.keys_selected = copy;
+        title.handle_key(KeyCode::Enter);
+        title.handle_key(KeyCode::Char('q'));
+        assert!(
+            title
+                .config
+                .keys
+                .matches(Binding::CopySeed, KeyCode::Char('q'))
+        );
+        title.keys_selected = 0;
+        title.handle_key(KeyCode::Char('d'));
+        title.handle_key(KeyCode::Enter);
+        assert!(title.status.contains("conflict"), "{}", title.status);
+        assert!(title.config.keys.matches(Binding::Quit, KeyCode::Char('p')));
+        title.keys_selected = copy;
+        title.handle_key(KeyCode::Char('d'));
+        title.handle_key(KeyCode::Enter);
+        assert!(
+            title
+                .config
+                .keys
+                .matches(Binding::CopySeed, KeyCode::Char('y'))
+        );
+        title.keys_selected = 0;
+        title.handle_key(KeyCode::Char('d'));
+        title.handle_key(KeyCode::Enter);
+        assert!(title.config.keys.matches(Binding::Quit, KeyCode::Char('q')));
+        title.keys_selected = Binding::REMAPPABLE.len();
+        title.handle_key(KeyCode::Enter);
+        title.handle_key(KeyCode::Enter);
+        assert_eq!(title.config.keys, Keymap::defaults());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
