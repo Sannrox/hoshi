@@ -1,5 +1,6 @@
 //! User config beside the save directory. Not stored in a save.
 
+use crate::keymap::Keymap;
 use crate::portraits::ProtocolChoice;
 use std::path::{Path, PathBuf};
 
@@ -13,6 +14,7 @@ pub struct UserConfig {
     pub portrait_protocol: ProtocolChoice,
     pub last_slot: Option<String>,
     pub away_threshold_secs: u64,
+    pub keys: Keymap,
 }
 
 impl Default for UserConfig {
@@ -26,6 +28,7 @@ impl Default for UserConfig {
             portrait_protocol: ProtocolChoice::Auto,
             last_slot: None,
             away_threshold_secs: 60,
+            keys: Keymap::defaults(),
         }
     }
 }
@@ -40,6 +43,7 @@ impl UserConfig {
             return Self::default();
         };
         let mut cfg = Self::default();
+        let mut key_overrides: Vec<(String, String)> = Vec::new();
         for raw in text.lines() {
             let line = raw.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -73,7 +77,19 @@ impl UserConfig {
                         cfg.away_threshold_secs = n;
                     }
                 }
+                key if key.starts_with("keys.") => {
+                    key_overrides.push((key[5..].to_string(), value.to_string()));
+                }
                 _ => {}
+            }
+        }
+        if !key_overrides.is_empty() {
+            let pairs: Vec<(&str, &str)> = key_overrides
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+            if let Ok(keys) = Keymap::from_overrides(pairs) {
+                cfg.keys = keys;
             }
         }
         cfg
@@ -83,7 +99,7 @@ impl UserConfig {
         std::fs::create_dir_all(dir)?;
         let last = self.last_slot.as_deref().unwrap_or("");
         let text = format!(
-            "reduced_motion = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}\n",
+            "reduced_motion = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}{}\n",
             self.reduced_motion,
             self.high_contrast,
             self.bridge,
@@ -91,6 +107,7 @@ impl UserConfig {
             self.portraits,
             self.portrait_protocol.as_key(),
             self.away_threshold_secs,
+            self.keys.to_config_lines().trim_end(),
         );
         std::fs::write(Self::path(dir), text)
     }
@@ -131,6 +148,26 @@ mod tests {
         assert!(!again.bridge);
         assert!(!again.portraits);
         assert_eq!(again.portrait_protocol, ProtocolChoice::Off);
+        assert_eq!(again.keys, Keymap::defaults());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn loads_key_remaps_and_ignores_conflicts() {
+        let dir = unique_dir();
+        std::fs::write(
+            UserConfig::path(&dir),
+            "keys.quit = \"p\"\nkeys.help = \"?\"\n",
+        )
+        .unwrap();
+        let cfg = UserConfig::load(&dir);
+        assert!(cfg.keys.matches(
+            crate::keymap::Binding::Quit,
+            ratatui::crossterm::event::KeyCode::Char('p')
+        ));
+        std::fs::write(UserConfig::path(&dir), "keys.quit = \"j\"\n").unwrap();
+        let rejected = UserConfig::load(&dir);
+        assert_eq!(rejected.keys, Keymap::defaults());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

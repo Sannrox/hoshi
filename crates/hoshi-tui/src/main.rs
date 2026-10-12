@@ -3,6 +3,7 @@
 mod app;
 mod cli;
 mod config;
+mod keymap;
 mod portraits;
 mod title;
 
@@ -349,10 +350,9 @@ fn run() -> Result<(), LaunchError> {
             &path,
             balance,
             &clock,
-            cfg.away_threshold_secs,
             None,
-            cfg.bridge,
             portrait_view(&cfg, no_portraits),
+            &cfg,
         );
     }
     let dir = default_save_dir();
@@ -363,10 +363,9 @@ fn run() -> Result<(), LaunchError> {
             &path,
             balance,
             &clock,
-            cfg.away_threshold_secs,
             None,
-            cfg.bridge,
             portrait_view(&cfg, no_portraits),
+            &cfg,
         );
     }
     title_then_play(dir, balance, &clock, no_portraits)
@@ -431,12 +430,7 @@ fn title_then_play(
                             } else {
                                 Some(title.new_game_spec())
                             };
-                            break Ok(Some((
-                                path,
-                                new_spec,
-                                title.config.away_threshold_secs,
-                                title.config.bridge,
-                            )));
+                            break Ok(Some((path, new_spec)));
                         }
                         TitleAction::None => {}
                     }
@@ -461,14 +455,13 @@ fn title_then_play(
     ratatui::restore();
     match result? {
         None => Ok(()),
-        Some((path, new_spec, threshold, bridge)) => play_path(
+        Some((path, new_spec)) => play_path(
             &path,
             balance,
             clock,
-            threshold,
             new_spec,
-            bridge,
             portrait_view(&title.config, no_portraits),
+            &title.config,
         ),
     }
 }
@@ -494,10 +487,9 @@ fn play_path(
     path: &Path,
     mut config: BalanceConfig,
     clock: &SystemClock,
-    away_threshold: u64,
     new_spec: Option<NewGameSpec>,
-    bridge_enabled: bool,
     portraits: PortraitView,
+    user: &config::UserConfig,
 ) -> Result<(), LaunchError> {
     let now = clock.now_unix();
     if new_spec.is_none() && path.exists() {
@@ -531,12 +523,12 @@ fn play_path(
     })?;
     let before = snapshot_away(&state);
     state.catch_up(now);
-    let mut app = App::new(state);
+    let mut app = App::with_keymap(state, user.keys.clone());
     app.portraits = portraits;
-    if now.saturating_sub(before.tick) >= away_threshold {
+    if now.saturating_sub(before.tick) >= user.away_threshold_secs {
         app.set_away(summarize_away(&before, &app.state));
     }
-    let open_bridge = should_open_bridge(bridge_enabled);
+    let open_bridge = should_open_bridge(user.bridge);
     #[cfg(feature = "bridge")]
     let mut bridge = if open_bridge {
         let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
