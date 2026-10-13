@@ -21,7 +21,10 @@ Each bot is a subprocess. It may read one JSON hint line on stdin (`day`,
 ```
 
 The runner executes those commands against an isolated deterministic save for
-that bot. Bots cannot tick the clock or point `--save` at another file. A crash,
+that bot. Default saves are SQLite. `--backend chisei` or `chisei = true` in
+`config.toml` (both off by default) uses a `*.chisei` directory when the binary
+is built with `--features chisei`; without the feature that target is refused.
+Bots cannot tick the clock or point `--save` at another file. A crash,
 timeout, or invalid command zeros that bot's score and leaves the others
 running.
 

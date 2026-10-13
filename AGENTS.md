@@ -33,7 +33,8 @@ fictional). `CLAUDE.md` only points here; this file is canonical.
   deterministic in tests.
 - External crates: ratatui and crossterm for the TUI, rusqlite (bundled) for
   the default save. Optional `mikura` (git tag `v0.2.0`) is a second backend
-  behind `--features mikura`. The bridge uses the `gh` CLI or webhooks; it
+  behind `--features mikura`. Optional `chisei` (API pin 1.3.0, off in
+  `config.toml`) is a third backend behind `--features chisei`. The bridge uses the `gh` CLI or webhooks; it
   never stores tokens.
 
 Record cross-repository predecessors in the Issue's `## GitHub dependencies`

@@ -2,7 +2,7 @@
 
 use hoshi_core::{
     Actor, AssignmentTarget, BackendKind, BalanceConfig, BuildingKind, Clock, Coord, Customer,
-    DefenceKind, FakeClock, Fleet, GameState, HistoryKind, HistoryQuery, Jurisdiction,
+    DefenceKind, FakeClock, Fleet, GameState, HistoryKind, HistoryQuery, Intent, Jurisdiction,
     JurisdictionKind, MoonFacility, Payload, Permission, PlanRequest, ResourceKind, RoleKind,
     RoundAction, SCHEMA_VERSION as SAVE_SCHEMA, SaveError, ShipKind, SpyReport, SystemClock,
     TransferKind, advise, inspect_save, lock_save, open_storage, resolve_save_path, save_is_locked,
@@ -123,6 +123,7 @@ enum Command {
         bots: Vec<PathBuf>,
         board: PathBuf,
         opt_in: bool,
+        backend: Option<bool>,
     },
     ArenaBoard {
         board: PathBuf,
@@ -332,7 +333,7 @@ fn glance_for_feedback(save: &Path) -> Result<Value, SaveError> {
                 "fleet_strength": glance.fleet_strength,
             }))
         }
-        BackendKind::Mikura => {
+        BackendKind::Mikura | BackendKind::Chisei => {
             let store = open_storage(save)?;
             let loaded = store.load(BalanceConfig::default())?;
             Ok(json!({
@@ -399,6 +400,12 @@ fn now_for(state: &GameState) -> u64 {
     }
 }
 
+fn governed(state: &mut GameState, intent: Intent, now: u64) -> Result<(), CliError> {
+    let proposal =
+        hoshi_core::propose(state, &intent, now).map_err(|e| CliError::Refused(e.to_string()))?;
+    hoshi_core::apply(state, &proposal, now).map_err(|e| CliError::Refused(e.to_string()))
+}
+
 fn apply(state: &mut GameState, now: u64, command: &Command) -> Result<Value, CliError> {
     match command {
         Command::State => {
@@ -412,15 +419,19 @@ fn apply(state: &mut GameState, now: u64, command: &Command) -> Result<Value, Cl
             building,
             actor,
         } => {
-            state
-                .enqueue_build_as(*planet, *building, now, *actor)
-                .map_err(|e| CliError::Refused(e.to_string()))?;
+            governed(
+                state,
+                Intent::Build {
+                    planet: *planet,
+                    building: *building,
+                    actor: *actor,
+                },
+                now,
+            )?;
             Ok(ok_state(state, "queued build"))
         }
         Command::Research { tech } => {
-            state
-                .start_research(tech, now)
-                .map_err(|e| CliError::Refused(e.to_string()))?;
+            governed(state, Intent::Research { tech: tech.clone() }, now)?;
             Ok(ok_state(state, "started research"))
         }
         Command::Cancel { item } => {
@@ -456,9 +467,15 @@ fn apply(state: &mut GameState, now: u64, command: &Command) -> Result<Value, Cl
                         .map_err(|e| CliError::Refused(e.to_string()))?;
                 }
                 MissionKind::Invade => {
-                    let _ = state
-                        .launch_invasion(*ships, *to, 100, now)
-                        .map_err(|e| CliError::Refused(e.to_string()))?;
+                    governed(
+                        state,
+                        Intent::Invade {
+                            ships: *ships,
+                            dest: *to,
+                            speed_percent: 100,
+                        },
+                        now,
+                    )?;
                 }
                 MissionKind::Colonize => {
                     if ships.get(ShipKind::ColonyShip) != 1 || ships.total() != 1 {
@@ -466,9 +483,14 @@ fn apply(state: &mut GameState, now: u64, command: &Command) -> Result<Value, Cl
                             "colonize needs exactly colony_ship:1".into(),
                         ));
                     }
-                    let _ = state
-                        .launch_colony(*to, 100, now)
-                        .map_err(|e| CliError::Refused(e.to_string()))?;
+                    governed(
+                        state,
+                        Intent::Colonize {
+                            dest: *to,
+                            speed_percent: 100,
+                        },
+                        now,
+                    )?;
                 }
                 MissionKind::Expedition => {
                     let dest = state.expedition_dest();
@@ -1328,7 +1350,8 @@ fn run_arena_command(opts: CliOpts) -> Result<Value, CliError> {
         Some(parent) if !parent.as_os_str().is_empty() => parent,
         _ => Path::new("."),
     };
-    let cfg_arena = crate::config::UserConfig::load(cfg_dir).arena;
+    let cfg = crate::config::UserConfig::load(cfg_dir);
+    let cfg_arena = cfg.arena;
     let arena_flag = opts.arena;
     let global_seed = opts.seed;
     let enabled = |opt_in: bool| arena_flag || opt_in || cfg_arena;
@@ -1341,6 +1364,7 @@ fn run_arena_command(opts: CliOpts) -> Result<Value, CliError> {
             bots,
             board,
             opt_in,
+            backend,
         } => {
             if !enabled(opt_in) {
                 return Err(CliError::Refused(
@@ -1362,6 +1386,7 @@ fn run_arena_command(opts: CliOpts) -> Result<Value, CliError> {
                 timeout: Duration::from_millis(timeout_ms.max(1)),
                 bots,
                 board,
+                chisei: backend.unwrap_or(cfg.chisei),
             })
             .map_err(CliError::Internal)
         }
@@ -1382,6 +1407,16 @@ fn run_arena_command(opts: CliOpts) -> Result<Value, CliError> {
     }
 }
 
+fn parse_arena_backend(value: &str) -> Result<bool, CliError> {
+    match value {
+        "chisei" => Ok(true),
+        "sqlite" => Ok(false),
+        other => Err(CliError::Invalid(format!(
+            "arena --backend must be sqlite or chisei, not {other}"
+        ))),
+    }
+}
+
 fn parse_arena_command(args: &[String]) -> Result<Command, CliError> {
     match args.get(1).map(String::as_str) {
         Some("run") => {
@@ -1392,6 +1427,7 @@ fn parse_arena_command(args: &[String]) -> Result<Command, CliError> {
             let mut board = PathBuf::from("arena-board.json");
             let mut bots = Vec::new();
             let mut opt_in = false;
+            let mut backend = None;
             let mut i = 2;
             while i < args.len() {
                 let a = args[i].as_str();
@@ -1457,6 +1493,20 @@ fn parse_arena_command(args: &[String]) -> Result<Command, CliError> {
                     i += 2;
                     continue;
                 }
+                if let Some(v) = a.strip_prefix("--backend=") {
+                    backend = Some(parse_arena_backend(v)?);
+                    i += 1;
+                    continue;
+                }
+                if a == "--backend" {
+                    backend = Some(parse_arena_backend(nth(
+                        args,
+                        i + 1,
+                        "arena run --backend sqlite|chisei",
+                    )?)?);
+                    i += 2;
+                    continue;
+                }
                 if a.starts_with('-') {
                     return Err(CliError::Invalid(format!("unknown arena run flag {a}")));
                 }
@@ -1475,6 +1525,7 @@ fn parse_arena_command(args: &[String]) -> Result<Command, CliError> {
                 bots,
                 board,
                 opt_in,
+                backend,
             })
         }
         Some("board") => {
@@ -2815,12 +2866,14 @@ mod tests {
                 actions,
                 bots,
                 opt_in,
+                backend,
                 ..
             } => {
                 assert_eq!(days, 2);
                 assert_eq!(actions, 4);
                 assert_eq!(bots, vec![PathBuf::from("bot.sh")]);
                 assert!(!opt_in);
+                assert_eq!(backend, None);
             }
             other => panic!("{other:?}"),
         }
@@ -2833,6 +2886,40 @@ mod tests {
             Command::ArenaRun { bots, .. } => {
                 assert_eq!(bots.len(), 2);
             }
+            other => panic!("{other:?}"),
+        }
+        let opts = parse_cli(&args(&[
+            "--arena",
+            "arena",
+            "run",
+            "--seed",
+            "1",
+            "--days",
+            "1",
+            "--backend",
+            "chisei",
+            "bot.sh",
+        ]))
+        .unwrap();
+        match opts.command {
+            Command::ArenaRun { backend, .. } => assert_eq!(backend, Some(true)),
+            other => panic!("{other:?}"),
+        }
+        let opts = parse_cli(&args(&[
+            "--arena",
+            "arena",
+            "run",
+            "--seed",
+            "1",
+            "--days",
+            "1",
+            "--backend",
+            "sqlite",
+            "bot.sh",
+        ]))
+        .unwrap();
+        match opts.command {
+            Command::ArenaRun { backend, .. } => assert_eq!(backend, Some(false)),
             other => panic!("{other:?}"),
         }
     }

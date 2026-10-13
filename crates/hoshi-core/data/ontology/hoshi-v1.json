@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "classes": [
+    {
+      "name": "Player",
+      "description": "A tenant who owns planets and fleets."
+    },
+    {
+      "name": "Planet",
+      "description": "An owned world. Hidden from other tenants unless allied or cleared."
+    },
+    {
+      "name": "Fleet",
+      "description": "Parked or in-flight ships."
+    },
+    {
+      "name": "Faction",
+      "description": "An NPC diplomatic counterpart."
+    },
+    {
+      "name": "Outpost",
+      "description": "A pirate or contested world."
+    }
+  ],
+  "relations": [
+    {
+      "name": "owns",
+      "domain": "Player",
+      "range": "Planet",
+      "description": "The player who holds the planet."
+    },
+    {
+      "name": "stationed-at",
+      "domain": "Fleet",
+      "range": "Planet",
+      "description": "Where a parked fleet sits."
+    },
+    {
+      "name": "allied-with",
+      "domain": "Player",
+      "range": "Player",
+      "description": "Alliance that grants shared visibility."
+    }
+  ],
+  "provenance": [
+    {
+      "subject": "Player",
+      "source": "hoshi-ontology/v1",
+      "locator": "chisei-api:1.3.0",
+      "confidence": 1.0
+    }
+  ]
+}

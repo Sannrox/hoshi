@@ -32,6 +32,8 @@ jobs:
         run: cargo test --locked --workspace
       - name: Mikura backend
         run: cargo test --locked -p hoshi-core --features mikura
+      - name: Chisei backend
+        run: cargo test --locked -p hoshi-core --features chisei
 
   fmt:
     name: Rustfmt
@@ -56,6 +58,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo clippy --locked -p hoshi-core --features mikura --all-targets -- -D warnings
+      - run: cargo clippy --locked -p hoshi-core --features chisei --all-targets -- -D warnings
+      - run: cargo clippy --locked -p hoshi-tui --features chisei --all-targets -- -D warnings
 
   workflow-skills:
     name: Workflow Skills

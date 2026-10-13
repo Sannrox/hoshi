@@ -17,10 +17,12 @@ mod expedition;
 mod fleets;
 mod galaxy;
 mod history;
+mod intent;
 mod laws;
 mod leaders;
 mod market;
 mod moons;
+mod ontology;
 mod orbits;
 mod outposts;
 mod planets;
@@ -95,6 +97,7 @@ pub use history::{
     EmpireSnapshot, HISTORY_EVENT_CAP, HistoryDraft, HistoryEvent, HistoryKind, HistoryLog,
     HistoryQuery,
 };
+pub use intent::{Intent, IntentError, Proposal, apply, propose};
 pub use laws::{
     CLOCK as LAW_CLOCK, Jurisdiction, JurisdictionKind, Law, LawAction, LawActionKind, LawApproval,
     LawConfig, LawEffectKind, LawError, LawMetric, LawMetrics, LawSample, LawState, LawStatus,
@@ -106,6 +109,11 @@ pub use leaders::{
 };
 pub use market::{MarketConfig, MarketError, MarketState, TradeQuote};
 pub use moons::{Moon, MoonConfig, MoonError, MoonFacility, PhalanxContact};
+pub use ontology::{
+    ACTIONS as ONTOLOGY_ACTIONS, BalanceLineage, CHISEI_API_VERSION, OBJECT_TYPES,
+    ONTOLOGY_PACKAGE, ONTOLOGY_SCHEMA_VERSION, OntologyError, RELATIONS, bundled_ontology,
+    transform_balance, validate_ontology,
+};
 pub use orbits::{
     Hohmann, OrbitConfig, fuel_mass_for_dv, heliocentric_radius_m, hohmann_transfer, mean_motion,
     rocket_delta_v,
@@ -143,6 +151,8 @@ pub use simulate::{
     simulate_greedy, tactics_no_combo_dominates,
 };
 pub use state::{GameEvent, GameState, LogisticsGlance, ResourceKind, Resources};
+#[cfg(feature = "chisei")]
+pub use storage::ChiseiStorage;
 #[cfg(feature = "mikura")]
 pub use storage::MikuraStorage;
 pub use storage::{BackendKind, SqliteStorage, Storage, open_storage};

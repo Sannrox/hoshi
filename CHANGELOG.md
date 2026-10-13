@@ -8,6 +8,7 @@
 
 ### Added
 
+- Optional Chisei save backend behind `--features chisei` and `chisei = false` in config. A `*.chisei` directory stores the SQLite codec plus a Player/Planet/Fleet/Faction/Outpost graph, governed propose-then-apply moves, and tenant markings for fog of war. Arena `--backend chisei` targets it. API pin 1.3.0, ontology `hoshi-ontology/v1`. See [docs/chisei.md](docs/chisei.md) and [ADR 0007](docs/decisions/0007-optional-chisei-backend.md).
 - Save backends behind a `Storage` trait in hoshi-core. SQLite stays the default file and format. Optional `--features mikura` (git tag `v0.2.0`) writes a `*.mikura` object log with Player, Planet, Fleet and Outpost records in one atomic batch. See [docs/storage.md](docs/storage.md) and [ADR 0006](docs/decisions/0006-storage-trait.md).
 - Mission planning with circular orbits, synodic launch windows, rocket-equation fuel, and Hohmann / high-energy / gravity-assist transfers. Named vehicles, payloads, customers and routes go through `PlanMission` in core. `hoshi vehicle` / `hoshi mission` plus the TUI `ops` schedule (double-book and missed windows). Save schema v30. See `docs/realism.md` and `[orbits]` in `balance.toml`.
 - Local bot arena: `hoshi --arena arena run --seed --days` plays isolated CLI bots on the same galaxy seed, scores them, and appends a JSON/markdown leaderboard. Off until `arena = true` or `--arena`. Sample bots in `examples/bots/`. See `docs/arena.md`.

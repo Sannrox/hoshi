@@ -15,17 +15,25 @@ mod mikura;
 #[cfg(feature = "mikura")]
 pub use mikura::MikuraStorage;
 
+#[cfg(feature = "chisei")]
+mod chisei;
+
+#[cfg(feature = "chisei")]
+pub use chisei::ChiseiStorage;
+
 /// How a save path picks a backend. SQLite is the default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendKind {
     Sqlite,
     Mikura,
+    Chisei,
 }
 
 impl BackendKind {
     pub fn from_path(path: &Path) -> Self {
         match path.extension().and_then(OsStr::to_str) {
             Some(ext) if ext.eq_ignore_ascii_case("mikura") => Self::Mikura,
+            Some(ext) if ext.eq_ignore_ascii_case("chisei") => Self::Chisei,
             _ => Self::Sqlite,
         }
     }
@@ -122,6 +130,7 @@ impl Storage for SqliteStorage {
 }
 
 /// Open the backend implied by `path`. `.mikura` needs `--features mikura`.
+/// `.chisei` needs `--features chisei`.
 pub fn open_storage(path: &Path) -> Result<Box<dyn Storage>, SaveError> {
     match BackendKind::from_path(path) {
         BackendKind::Sqlite => Ok(Box::new(SqliteStorage::open(path)?)),
@@ -137,14 +146,26 @@ pub fn open_storage(path: &Path) -> Result<Box<dyn Storage>, SaveError> {
                 ))
             }
         }
+        BackendKind::Chisei => {
+            #[cfg(feature = "chisei")]
+            {
+                Ok(Box::new(ChiseiStorage::open(path)?))
+            }
+            #[cfg(not(feature = "chisei"))]
+            {
+                Err(SaveError::Backend(
+                    "rebuild with --features chisei to open a .chisei save".into(),
+                ))
+            }
+        }
     }
 }
 
-pub(crate) fn inspect_mikura_save(path: &Path) -> Result<crate::SaveGlance, SaveError> {
+pub(crate) fn inspect_backend_save(path: &Path) -> Result<crate::SaveGlance, SaveError> {
     if crate::save_is_locked(path) {
         return Err(SaveError::Locked);
     }
-    let state = load_mikura_state(path)?;
+    let state = load_backend_state(path)?;
     Ok(crate::SaveGlance {
         schema: crate::SCHEMA_VERSION,
         last_tick_unix: state.last_tick_unix,
@@ -156,11 +177,11 @@ pub(crate) fn inspect_mikura_save(path: &Path) -> Result<crate::SaveGlance, Save
     })
 }
 
-pub(crate) fn inspect_mikura_career(path: &Path) -> Result<crate::CareerGlance, SaveError> {
+pub(crate) fn inspect_backend_career(path: &Path) -> Result<crate::CareerGlance, SaveError> {
     if crate::save_is_locked(path) {
         return Err(SaveError::Locked);
     }
-    let state = load_mikura_state(path)?;
+    let state = load_backend_state(path)?;
     let prestige = state.prestige.clone();
     let mut playtime_secs = state
         .last_tick_unix
@@ -208,7 +229,7 @@ pub(crate) fn inspect_mikura_career(path: &Path) -> Result<crate::CareerGlance, 
     })
 }
 
-fn load_mikura_state(path: &Path) -> Result<GameState, SaveError> {
+fn load_backend_state(path: &Path) -> Result<GameState, SaveError> {
     let store = open_storage(path)?;
     if store.is_empty()? {
         return Err(SaveError::Corrupt("missing save"));
@@ -257,8 +278,8 @@ fn blob_path(tag: &str) -> std::path::PathBuf {
     ))
 }
 
-#[cfg(any(test, feature = "mikura"))]
-fn cleanup_sqlite(path: &Path) {
+#[cfg(any(test, feature = "mikura", feature = "chisei"))]
+pub(crate) fn cleanup_sqlite(path: &Path) {
     let _ = std::fs::remove_file(path);
     let wal = path.with_extension("sqlite-wal");
     let shm = path.with_extension("sqlite-shm");
@@ -398,6 +419,10 @@ mod tests {
             BackendKind::from_path(Path::new("empire.mikura")),
             BackendKind::Mikura
         );
+        assert_eq!(
+            BackendKind::from_path(Path::new("empire.chisei")),
+            BackendKind::Chisei
+        );
     }
 
     #[test]
@@ -407,6 +432,18 @@ mod tests {
         }
         match open_storage(Path::new("x.mikura")) {
             Err(SaveError::Backend(msg)) => assert!(msg.contains("mikura"), "{msg}"),
+            Err(other) => panic!("{other}"),
+            Ok(_) => panic!("expected backend error"),
+        }
+    }
+
+    #[test]
+    fn chisei_path_without_feature_is_refused() {
+        if cfg!(feature = "chisei") {
+            return;
+        }
+        match open_storage(Path::new("x.chisei")) {
+            Err(SaveError::Backend(msg)) => assert!(msg.contains("chisei"), "{msg}"),
             Err(other) => panic!("{other}"),
             Ok(_) => panic!("expected backend error"),
         }
