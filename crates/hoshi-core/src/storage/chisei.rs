@@ -164,6 +164,16 @@ impl ChiseiStorage {
         }
     }
 
+    /// Place a foreign tenant planet on the graph (demo / fog fixtures).
+    pub fn upsert_planet(&mut self, tenant: &str, coord: Coord) {
+        self.upsert_object(GraphObject {
+            kind: "Planet".into(),
+            key: scoped(tenant, &coord.to_string()),
+            tenant: tenant.into(),
+            props: String::new(),
+        });
+    }
+
     pub fn upsert_link(&mut self, link: GraphLink) {
         if !self.graph.link.iter().any(|row| row == &link) {
             self.graph.link.push(link);
@@ -290,6 +300,28 @@ impl ChiseiStorage {
             .iter()
             .filter(|obj| obj.kind == "Planet" && self.can_see(viewer, obj))
             .map(|obj| obj.key.clone())
+            .collect()
+    }
+
+    /// Own, allied, or spy-cleared planet coordinates.
+    pub fn visible_coords(&self, viewer: &str) -> Vec<Coord> {
+        self.graph
+            .object
+            .iter()
+            .filter(|obj| obj.kind == "Planet" && self.can_see(viewer, obj))
+            .filter_map(|obj| planet_coord(&obj.tenant, &obj.key))
+            .collect()
+    }
+
+    /// Planets owned by tenants allied with `viewer`.
+    pub fn allied_planets(&self, viewer: &str) -> Vec<Coord> {
+        self.graph
+            .object
+            .iter()
+            .filter(|obj| {
+                obj.kind == "Planet" && obj.tenant != viewer && self.allied(viewer, &obj.tenant)
+            })
+            .filter_map(|obj| planet_coord(&obj.tenant, &obj.key))
             .collect()
     }
 
@@ -527,6 +559,11 @@ fn scoped(tenant: &str, key: &str) -> String {
     format!("{tenant}:{key}")
 }
 
+fn planet_coord(tenant: &str, key: &str) -> Option<Coord> {
+    let rest = key.strip_prefix(&format!("{tenant}:")).unwrap_or(key);
+    Coord::from_key(rest)
+}
+
 fn fleet_prop(fleet: &Fleet) -> String {
     ShipKind::ALL
         .iter()
@@ -757,6 +794,14 @@ mod tests {
         store.set_alliance("alpha", "bravo", true);
         assert!(store.visible_planets("alpha").contains(&"1:2:4".into()));
         assert!(store.visible_planets("bravo").contains(&"1:1:1".into()));
+        assert_eq!(
+            store.allied_planets("alpha"),
+            vec![Coord {
+                galaxy: 1,
+                system: 2,
+                position: 4
+            }]
+        );
         assert!(store.links().iter().any(|l| l.rel == "allied-with"));
         store.set_alliance("alpha", "bravo", false);
         assert!(!store.visible_planets("alpha").contains(&"1:2:4".into()));

@@ -16,6 +16,7 @@ mod espionage;
 mod expedition;
 mod fleets;
 mod galaxy;
+mod governance;
 mod history;
 mod intent;
 mod laws;
@@ -92,6 +93,10 @@ pub use fleets::{
 pub use galaxy::{
     GALAXY_GENERATOR_VERSION, GalaxyPreview, encode_galaxy_seed, parse_galaxy_seed, preview_galaxy,
     supports_galaxy_generator,
+};
+pub use governance::{
+    AuditEntry, GovernanceConfig, GovernanceLedger, InvasionApproval, ModelTier, ModelUse,
+    PolicyBlock, check_move, dest_of, recorded_response, route_model, spend_of, take_budget,
 };
 pub use history::{
     EmpireSnapshot, HISTORY_EVENT_CAP, HistoryDraft, HistoryEvent, HistoryKind, HistoryLog,

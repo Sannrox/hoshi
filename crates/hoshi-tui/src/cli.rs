@@ -129,6 +129,11 @@ enum Command {
         board: PathBuf,
         opt_in: bool,
     },
+    DemoGovernance {
+        seed: Option<u64>,
+        report: Option<PathBuf>,
+        opt_in: bool,
+    },
     VehicleList,
     VehicleRegister {
         planet: Coord,
@@ -176,6 +181,7 @@ struct CliOpts {
     seed: Option<u64>,
     balance: Option<PathBuf>,
     arena: bool,
+    demo: bool,
     command: Command,
 }
 
@@ -234,6 +240,7 @@ pub fn is_cli_invocation(args: &[String]) -> bool {
             || a == "--advisor"
             || a == "--no-portraits"
             || a == "--arena"
+            || a == "--demo"
         {
             i += 1;
             continue;
@@ -276,6 +283,9 @@ fn run_cli_inner(args: &[String]) -> Result<Value, CliError> {
         Command::ArenaRun { .. } | Command::ArenaBoard { .. }
     ) {
         return run_arena_command(opts);
+    }
+    if matches!(opts.command, Command::DemoGovernance { .. }) {
+        return run_demo_command(opts);
     }
     let save = resolve_save_path(
         opts.save.as_deref(),
@@ -643,6 +653,9 @@ fn apply(state: &mut GameState, now: u64, command: &Command) -> Result<Value, Cl
         )),
         Command::ArenaRun { .. } | Command::ArenaBoard { .. } => {
             Err(CliError::Internal("arena is handled before apply".into()))
+        }
+        Command::DemoGovernance { .. } => {
+            Err(CliError::Internal("demo is handled before apply".into()))
         }
         Command::Advise => {
             if !state.deterministic {
@@ -1143,6 +1156,7 @@ fn parse_cli(args: &[String]) -> Result<CliOpts, CliError> {
     let mut seed = None;
     let mut balance = None;
     let mut arena = false;
+    let mut demo = false;
     let mut rest = Vec::new();
     let mut i = 1;
     while i < args.len() {
@@ -1177,9 +1191,12 @@ fn parse_cli(args: &[String]) -> Result<CliOpts, CliError> {
             i += 2;
             continue;
         }
-        if a == "--json" || a == "--arena" {
+        if a == "--json" || a == "--arena" || a == "--demo" {
             if a == "--arena" {
                 arena = true;
+            }
+            if a == "--demo" {
+                demo = true;
             }
             i += 1;
             continue;
@@ -1193,6 +1210,7 @@ fn parse_cli(args: &[String]) -> Result<CliOpts, CliError> {
         seed,
         balance,
         arena,
+        demo,
         command,
     })
 }
@@ -1223,6 +1241,7 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
         }
         "log" => parse_log_command(args),
         "arena" => parse_arena_command(args),
+        "demo" => parse_demo_command(args),
         "build" => {
             let planet = parse_coord(nth(args, 1, "build <planet> <building>")?)?;
             let building = BuildingKind::from_key(nth(args, 2, "build <planet> <building>")?)
@@ -1405,6 +1424,89 @@ fn run_arena_command(opts: CliOpts) -> Result<Value, CliError> {
         }
         _ => Err(CliError::Internal("arena is handled before apply".into())),
     }
+}
+
+fn run_demo_command(opts: CliOpts) -> Result<Value, CliError> {
+    let save = resolve_save_path(
+        opts.save.as_deref(),
+        std::env::var_os("HOSHI_SAVE").as_deref(),
+    );
+    let cfg_dir = match save.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    let cfg = crate::config::UserConfig::load(cfg_dir);
+    let Command::DemoGovernance {
+        seed,
+        report,
+        opt_in,
+    } = opts.command
+    else {
+        return Err(CliError::Internal("demo is handled before apply".into()));
+    };
+    if !(opts.demo || opt_in || cfg.demo) {
+        return Err(CliError::Refused(
+            "demo is off; set demo = true in config.toml or pass --demo".into(),
+        ));
+    }
+    let seed = seed
+        .or(opts.seed)
+        .ok_or_else(|| CliError::Invalid("demo governance needs --seed".into()))?;
+    crate::demo::run(&crate::demo::DemoSpec {
+        seed,
+        report,
+        model_url: String::new(),
+        allow_lan: cfg.advisor_allow_lan,
+    })
+    .map_err(CliError::Internal)
+}
+
+fn parse_demo_command(args: &[String]) -> Result<Command, CliError> {
+    if nth(args, 1, "demo governance")? != "governance" {
+        return Err(CliError::Invalid("expected demo governance".into()));
+    }
+    let mut seed = None;
+    let mut report = None;
+    let mut opt_in = false;
+    let mut i = 2;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "--demo" {
+            opt_in = true;
+            i += 1;
+            continue;
+        }
+        if let Some(v) = a.strip_prefix("--seed=") {
+            seed = Some(parse_seed(v)?);
+            i += 1;
+            continue;
+        }
+        if a == "--seed" {
+            seed = Some(parse_seed(nth(args, i + 1, "demo governance --seed")?)?);
+            i += 2;
+            continue;
+        }
+        if let Some(v) = a.strip_prefix("--report=") {
+            report = Some(PathBuf::from(v));
+            i += 1;
+            continue;
+        }
+        if a == "--report" {
+            report = Some(PathBuf::from(nth(
+                args,
+                i + 1,
+                "demo governance --report <path>",
+            )?));
+            i += 2;
+            continue;
+        }
+        return Err(CliError::Invalid(format!("unknown demo flag {a}")));
+    }
+    Ok(Command::DemoGovernance {
+        seed,
+        report,
+        opt_in,
+    })
 }
 
 fn parse_arena_backend(value: &str) -> Result<bool, CliError> {
@@ -2489,7 +2591,9 @@ mod tests {
         assert!(!is_cli_invocation(&args(&["--advisor"])));
         assert!(!is_cli_invocation(&args(&["--no-portraits"])));
         assert!(!is_cli_invocation(&args(&["--arena"])));
+        assert!(!is_cli_invocation(&args(&["--demo"])));
         assert!(is_cli_invocation(&args(&["arena"])));
+        assert!(is_cli_invocation(&args(&["demo"])));
         let out = run_cli(&args(&["stete"]));
         assert_eq!(out.exit, EXIT_INVALID);
         let value: Value = serde_json::from_str(&out.json).unwrap();
@@ -2959,5 +3063,49 @@ mod tests {
         let value: Value = serde_json::from_str(&out.json).unwrap();
         assert_eq!(value["bots"][0]["status"], "ok");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn demo_governance_is_off_until_opt_in() {
+        let out = run_cli(&args(&["demo", "governance", "--seed", "7"]));
+        assert_eq!(out.exit, EXIT_REFUSED, "{}", out.json);
+        let value: Value = serde_json::from_str(&out.json).unwrap();
+        assert!(
+            value["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("demo is off"),
+            "{}",
+            out.json
+        );
+        let opts = parse_cli(&args(&[
+            "--demo",
+            "demo",
+            "governance",
+            "--seed",
+            "9",
+            "--report",
+            "out.md",
+        ]))
+        .unwrap();
+        assert!(opts.demo);
+        assert_eq!(opts.seed, Some(9));
+        match opts.command {
+            Command::DemoGovernance { report, opt_in, .. } => {
+                assert_eq!(report, Some(PathBuf::from("out.md")));
+                assert!(!opt_in);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[cfg(feature = "chisei")]
+    #[test]
+    fn demo_governance_runs_when_opted_in() {
+        let out = run_cli(&args(&["--demo", "demo", "governance", "--seed", "7"]));
+        assert_eq!(out.exit, EXIT_OK, "{}", out.json);
+        let value: Value = serde_json::from_str(&out.json).unwrap();
+        assert_eq!(value["message"], "governance demo");
+        assert_eq!(value["scenarios"].as_array().unwrap().len(), 3);
     }
 }

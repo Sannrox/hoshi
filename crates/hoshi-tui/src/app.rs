@@ -107,6 +107,8 @@ pub struct App {
     pub advisor_model_url: String,
     pub advisor_model_name: String,
     pub advisor_allow_lan: bool,
+    pub governance: bool,
+    pending_invasion: Option<DispatchForm>,
     notify: NotifyPrefs,
     watch: NotifyWatch,
     bridge_ui: bool,
@@ -164,6 +166,8 @@ impl App {
             advisor_model_url: String::new(),
             advisor_model_name: String::new(),
             advisor_allow_lan: false,
+            governance: false,
+            pending_invasion: None,
             notify: NotifyPrefs::default(),
             watch,
             bridge_ui: false,
@@ -365,6 +369,15 @@ impl App {
             }
             return Action::None;
         }
+        if self.pending_invasion.is_some() {
+            match self.keymap.lookup(ctx, code) {
+                Some(Binding::Confirm) => self.resolve_invasion(true, now_unix),
+                Some(Binding::Cancel) => self.resolve_invasion(false, now_unix),
+                Some(Binding::Quit) => return Action::Quit,
+                _ => {}
+            }
+            return Action::None;
+        }
         if self.dispatch.is_none()
             && self.show_tutorial
             && let Some(hint) = self.state.pending_hint()
@@ -498,6 +511,7 @@ impl App {
         self.confirming_prestige = false;
         self.opened_report = false;
         self.dispatch = None;
+        self.pending_invasion = None;
         self.history_pane = HistoryPane::List;
     }
 
@@ -517,7 +531,7 @@ impl App {
         if self.opened_report {
             return HelpContext::ReportView;
         }
-        if self.dispatch.is_some() {
+        if self.pending_invasion.is_some() || self.dispatch.is_some() {
             return HelpContext::Dispatch;
         }
         match self.screen {
@@ -659,6 +673,8 @@ impl App {
             self.draw_story(frame, event);
         } else if self.opened_report {
             self.draw_report(frame);
+        } else if self.pending_invasion.is_some() {
+            self.draw_invasion_approval(frame);
         } else if let Some(form) = &self.dispatch {
             self.draw_dispatch(frame, form);
         } else if self.screen == Screen::History && self.history_pane != HistoryPane::List {
@@ -703,6 +719,7 @@ impl App {
             || self.story_event().is_some()
             || self.opened_report
             || self.dispatch.is_some()
+            || self.pending_invasion.is_some()
             || self.replay.is_some()
             || (self.screen == Screen::History && self.history_pane != HistoryPane::List)
         {
@@ -1123,6 +1140,14 @@ impl App {
         let Some(form) = self.dispatch else {
             return;
         };
+        if self.governance && self.is_invasion_dispatch(&form) {
+            self.pending_invasion = Some(form);
+            self.status = format!(
+                "invasion-approval: invasion of {} needs human approval",
+                form.dest
+            );
+            return;
+        }
         match self
             .state
             .launch_fleet(form.ships, form.dest, 100, 0, now_unix)
@@ -1133,6 +1158,54 @@ impl App {
             }
             Err(e) => self.status = e.to_string(),
         }
+    }
+
+    fn is_invasion_dispatch(&self, form: &DispatchForm) -> bool {
+        form.ships.get(ShipKind::TroopTransport) > 0
+            && self
+                .state
+                .outpost(form.dest)
+                .is_some_and(|outpost| outpost.defences.total() == 0)
+    }
+
+    fn resolve_invasion(&mut self, grant: bool, now_unix: u64) {
+        let Some(form) = self.pending_invasion.take() else {
+            return;
+        };
+        if !grant {
+            self.status = format!(
+                "invasion-approval: invasion of {} needs human approval (denied)",
+                form.dest
+            );
+            self.dispatch = None;
+            return;
+        }
+        match self
+            .state
+            .launch_invasion(form.ships, form.dest, 100, now_unix)
+        {
+            Ok(_) => {
+                self.status = format!("invasion of {} approved", form.dest);
+                self.dispatch = None;
+            }
+            Err(e) => {
+                self.status = e.to_string();
+                self.pending_invasion = Some(form);
+            }
+        }
+    }
+
+    fn draw_invasion_approval(&self, frame: &mut Frame<'_>) {
+        let dest = self
+            .pending_invasion
+            .map(|form| form.dest)
+            .unwrap_or(Coord::HOME);
+        let lines = vec![
+            Line::from(format!("Approve invasion of {dest}?")),
+            Line::from("policy invasion-approval"),
+            Line::from("enter grant  x deny"),
+        ];
+        render_overlay(frame, " invasion approval ", lines);
     }
 
     fn draw_dispatch(&self, frame: &mut Frame<'_>, form: &DispatchForm) {
@@ -1251,7 +1324,10 @@ impl App {
                 self.confirming_prestige = false;
                 self.status.clear();
             }
-            Screen::Map => self.dispatch = None,
+            Screen::Map => {
+                self.dispatch = None;
+                self.pending_invasion = None;
+            }
             Screen::History => {
                 self.history_pane = HistoryPane::List;
             }
@@ -3095,7 +3171,7 @@ mod tests {
     use super::*;
     use hoshi_core::{
         BalanceConfig, Buildings, Clock, Colony, Coord, DiplomacyConfig, FakeClock, Fleet,
-        GameState, MarketConfig, PlanetType, RaidConfig, Resources, StoryCatalog, Vehicle,
+        GameState, MarketConfig, Outpost, PlanetType, RaidConfig, Resources, StoryCatalog, Vehicle,
         load_state, open_save, save_state,
     };
     use ratatui::Terminal;
@@ -4344,6 +4420,48 @@ mod tests {
         assert!(text.contains("fleet #"), "{text}");
         assert!(text.contains("outbound"), "{text}");
         assert!(text.contains("launched to 1:1:2"), "{text}");
+    }
+
+    #[test]
+    fn governance_prompts_for_invasion_and_deny_leaves_the_fleet() {
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 2,
+        };
+        let mut state = GameState::new(1_000);
+        state.resources.deuterium = 10_000.0;
+        state.tech_levels.insert("colonization".into(), 1);
+        state.fleet.add(ShipKind::TroopTransport, 2);
+        state.outposts.push(Outpost {
+            coord: dest,
+            kind: PlanetType::Rocky,
+            size: 8,
+            defences: Fleet::default(),
+            garrison: 2,
+            rare: None,
+            last_rebuild_at: 0,
+        });
+        let mut app = App::new(state);
+        app.governance = true;
+        open_map(&mut app, 1_000);
+        app.handle_key(KeyCode::Char('l'), 1_000);
+        app.handle_key(KeyCode::Enter, 1_000);
+        for _ in 0..10 {
+            app.handle_key(KeyCode::Char('j'), 1_000);
+        }
+        app.handle_key(KeyCode::Char('+'), 1_000);
+        app.handle_key(KeyCode::Char('+'), 1_000);
+        app.handle_key(KeyCode::Enter, 1_000);
+        let overlay = render_text(&app, 100, 32);
+        assert!(overlay.contains("invasion approval"), "{overlay}");
+        assert!(overlay.contains("invasion-approval"), "{overlay}");
+        assert_eq!(app.state.missions.len(), 0);
+        app.handle_key(KeyCode::Char('x'), 1_000);
+        assert!(app.pending_invasion.is_none());
+        assert_eq!(app.state.missions.len(), 0);
+        assert_eq!(app.state.fleet.get(ShipKind::TroopTransport), 2);
+        assert!(app.status.contains("denied"), "{}", app.status);
     }
 
     #[test]

@@ -16,6 +16,22 @@ impl Coord {
         system: 1,
         position: 1,
     };
+
+    /// Parse `g:s:p`. Returns `None` when the string is not three integers.
+    pub fn from_key(text: &str) -> Option<Self> {
+        let mut parts = text.split(':');
+        let galaxy = parts.next()?.parse().ok()?;
+        let system = parts.next()?.parse().ok()?;
+        let position = parts.next()?.parse().ok()?;
+        if parts.next().is_some() {
+            return None;
+        }
+        Some(Self {
+            galaxy,
+            system,
+            position,
+        })
+    }
 }
 
 impl fmt::Display for Coord {

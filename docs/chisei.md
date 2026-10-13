@@ -41,6 +41,11 @@ bot saves as `*.chisei`. Override per run with `--backend chisei` or
 Moves go through `propose` then `apply`. A refused proposal never writes the
 live state or the save.
 
+The optional governance demo (`hoshi --demo demo governance --seed N`) puts an
+ungoverned CLI player next to a Chisei-governed one. Policies (spend caps,
+no attacks on allies, invasion approval, token budgets) wrap propose/apply.
+See [docs/demo.md](demo.md).
+
 ## Arena
 
 ```sh

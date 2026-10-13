@@ -9,7 +9,7 @@ runs in the terminal, meant to be played while waiting for coding agents. The
 design is recorded in [ADR 0002](docs/decisions/0002-terminal-idle-game-with-event-bridge.md).
 
 - `crates/hoshi-core`: game rules, state, timers, offline progression and the
-  save backends (SQLite default; optional Mikura). No terminal or network code.
+  save backends (SQLite default; optional Mikura / Chisei). No terminal or network code.
 - `crates/hoshi-tui`: the ratatui binary. Renders state and sends commands to
   core; holds no rules.
 - `crates/hoshi-bridge`: turns outside events (GitHub, agent activity) into

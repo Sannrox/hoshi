@@ -52,6 +52,7 @@ hoshi --save PATH tactics action hold|retreat|commit
 hoshi --save PATH feedback [note...]
 hoshi [--save PATH] --arena arena run --seed N --days N [--actions N] [--timeout-ms N] [--board PATH] bot...
 hoshi [--save PATH] --arena arena board [--board PATH]
+hoshi [--save PATH] --demo demo governance --seed N [--report PATH]
 ```
 
 Planet is `home` or `galaxy:system:position`. Building and ship ids match the
@@ -87,6 +88,8 @@ JSON with exit 2; they do not open the TUI. `expedition` dest must be the
 configured expedition slot.
 
 `arena run` is off until `arena = true` in `config.toml` or `--arena`. Each bot is a subprocess that prints JSON CLI commands (`{"cmd":["build","home","metal_mine"]}`) against its own deterministic save. Crash, timeout and invalid actions zero that bot and leave the others running. `arena board` prints the appended JSON leaderboard as markdown. `--backend chisei` (or `chisei = true` in config, both off by default) writes `*.chisei` bot saves when built with `--features chisei`. Scoring is versioned in [docs/arena.md](arena.md). Sample bots live in `examples/bots/`.
+
+`demo governance` is off until `demo = true` in `config.toml` or `--demo`, and it needs `--features chisei`. It runs ungoverned vs governed players on the same seed with recorded model replies (no HTTP). JSON and markdown report outcomes, policy blocks, an audit excerpt, cost per win, tokens per move and routing savings. See [docs/demo.md](demo.md). `governance = true` in config makes the TUI ask before an invasion; headless demo runs auto-deny.
 
 `prestige` prints score, currency and owned bonuses. `prestige buy` spends unspent currency. `prestige reset` is refused until a wonder is complete or score reaches the configured minimum; it keeps bonuses and run history. `state` includes a `leaders` array (traits, assignment, retirement, delegations), a `waste` object (heat and pollution load versus sink, unrest, and the warning flag), a `laws` array (status, approvals, latest expected vs measured samples), a `daily` object (streak, time until reset, and slot progress), and a `tutorial` object (enabled, skipped, pending hint). `tutorial skip` hides remaining hints; `tutorial reset` clears seen ids and shows the opening again. `tactics set` stores the home fleet's formation, stance and auto-retreat threshold; `tactics action` is refused unless a live fight is waiting. `state` includes a `tactics` object. `feedback` appends a timestamped JSON line (version and a save glance, never the galaxy seed) to a `.feedback.log` beside the save; a missing or locked save still records the note. See `docs/playtest.md`. `law propose` writes a proposal; `law approve` records the player approval and enacts when the effective date is due; `law repeal` starts the same flow in reverse and restores prior parameters.
 
