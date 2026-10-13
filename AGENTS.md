@@ -9,7 +9,7 @@ runs in the terminal, meant to be played while waiting for coding agents. The
 design is recorded in [ADR 0002](docs/decisions/0002-terminal-idle-game-with-event-bridge.md).
 
 - `crates/hoshi-core`: game rules, state, timers, offline progression and the
-  SQLite save. No terminal or network code.
+  save backends (SQLite default; optional Mikura). No terminal or network code.
 - `crates/hoshi-tui`: the ratatui binary. Renders state and sends commands to
   core; holds no rules.
 - `crates/hoshi-bridge`: turns outside events (GitHub, agent activity) into
@@ -32,7 +32,9 @@ fictional). `CLAUDE.md` only points here; this file is canonical.
 - **Time is injected.** Core takes a clock so ticks and offline catch-up are
   deterministic in tests.
 - External crates: ratatui and crossterm for the TUI, rusqlite (bundled) for
-  saves. The bridge uses the `gh` CLI or webhooks; it never stores tokens.
+  the default save. Optional `mikura` (git tag `v0.2.0`) is a second backend
+  behind `--features mikura`. The bridge uses the `gh` CLI or webhooks; it
+  never stores tokens.
 
 Record cross-repository predecessors in the Issue's `## GitHub dependencies`
 section as full `<owner>/<repo>#<n>` references.
