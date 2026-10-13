@@ -33,6 +33,14 @@ def current_schema() -> int:
     return int(match.group(1))
 
 
+def table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
 def has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
     return any(row[1] == column for row in rows)
@@ -604,6 +612,33 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             );
             """
         )
+    elif version == 27:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS fleet_tactics (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                formation TEXT NOT NULL,
+                stance TEXT NOT NULL,
+                retreat_below REAL NOT NULL,
+                home_admiral_id INTEGER,
+                next_admiral_id INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS admirals (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                trait_id TEXT NOT NULL,
+                xp INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS reserve_ships (
+                kind TEXT PRIMARY KEY,
+                count INTEGER NOT NULL
+            );
+            """
+        )
+        if table_exists(conn, "spy_reports"):
+            for column in ("formation", "stance"):
+                if not has_column(conn, "spy_reports", column):
+                    conn.execute(f"ALTER TABLE spy_reports ADD COLUMN {column} TEXT")
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"

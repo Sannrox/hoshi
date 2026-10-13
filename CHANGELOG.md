@@ -8,6 +8,7 @@
 
 ### Added
 
+- Append-only event history with cause links, TUI search (`log` screen) and `hoshi log` (type, actor, object, time, lineage, `--at` glance, `--export` JSON lines). Time travel matches a recorded empire snapshot. The last 256 events and matching snapshots are retained (schema v28); the short 32-line event feed is unchanged.
 - Offline catch-up splits at storage-full and missing-input instants so routes, chains and queues match step-by-step ticking. Full destination storage skips a launch; leftover cargo bounces home instead of overflowing. A 7-day late-game catch-up stays under one second. Continue's away overlay lists deliveries, stalls with causes, and completed items.
 - Light tactical combat: formations, stances, terrain, ship roles and admirals in `tactics.toml` on top of the fleet resolver. Neutral plans keep the old results. Between rounds the TUI overlay is one keypress (hold / retreat / commit reserves); catch-up and saves auto-finish. Admirals gain XP in the save (schema v27). Spy reports at fleet tier include formation and stance. `hoshi tactics set` and `hoshi simulate` check that no combo dominates.
 - Offline story authoring: `hoshi-author events draft --theme <theme> --count <n>` writes validated files to `content/drafts/` using the same loader as `story.toml`. Skeleton mode needs no model; an optional loopback `--endpoint` may polish the draft and is refused for public hosts. CI fails if a game crate references the drafts directory. The game never generates events at runtime. See `docs/authoring.md`.

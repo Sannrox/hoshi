@@ -246,6 +246,8 @@ pub struct GameState {
     /// Deliveries, stalls and completed items from catch-up in this session.
     /// Not persisted; the away overlay reads it after a gap.
     pub logistics: LogisticsGlance,
+    /// Append-only structured history with snapshots for time travel.
+    pub history: crate::HistoryLog,
     pub config: BalanceConfig,
 }
 
@@ -333,6 +335,7 @@ impl GameState {
             pending_tactical: None,
             interactive_tactics: false,
             logistics: LogisticsGlance::default(),
+            history: crate::HistoryLog::default(),
             config,
         };
         state.apply_prestige_start();
@@ -472,6 +475,7 @@ impl GameState {
                     done_at,
                     format!("{} lv {}", job.building, job.from_level.saturating_add(1)),
                 );
+                self.history_complete_build(self.home, job.building, done_at);
                 if mine_kind(job.building) {
                     self.note_daily(DailyAction::MineUpgrade, done_at);
                 }
@@ -493,6 +497,8 @@ impl GameState {
                     done_at,
                     format!("{} lv {}", job.building, job.from_level.saturating_add(1)),
                 );
+                let coord = self.colonies[i].coord;
+                self.history_complete_build(coord, job.building, done_at);
                 if mine_kind(job.building) {
                     self.note_daily(DailyAction::MineUpgrade, done_at);
                 }
@@ -505,6 +511,16 @@ impl GameState {
                 *level = level.saturating_add(1);
                 let level = *level;
                 self.note_completed(done_at, format!("research {tech} lv {level}"));
+                self.record_history(crate::HistoryDraft {
+                    at: done_at,
+                    kind: crate::HistoryKind::Research,
+                    actor: "simulation".into(),
+                    action: "complete".into(),
+                    objects: vec![tech.clone()],
+                    outcome: format!("lv {level}"),
+                    parent_key: Some(format!("research:{tech}")),
+                    ..crate::HistoryDraft::default()
+                });
                 self.note_daily(DailyAction::ResearchComplete, done_at);
             }
             if ship_at == Some(done_at) {
@@ -595,6 +611,15 @@ impl GameState {
                 self.set_research_boost(at, spec.boost_factor, spec.boost_secs)
             }
         }
+        self.record_history(crate::HistoryDraft {
+            at,
+            kind: crate::HistoryKind::Activity,
+            actor: "bridge".into(),
+            action: "apply".into(),
+            objects: vec![channel.as_key().into()],
+            outcome: "applied".into(),
+            ..crate::HistoryDraft::default()
+        });
         ActivityApply::Applied
     }
 
@@ -616,7 +641,7 @@ impl GameState {
         if coord == self.home {
             let buildings = self.buildings;
             let robotics = buildings.robotics_factory;
-            return Self::push_build_job_parts(
+            Self::push_build_job_parts(
                 kind,
                 now,
                 BuildTarget {
@@ -627,28 +652,31 @@ impl GameState {
                     cap,
                 },
                 &self.config,
-            );
+            )?;
+        } else {
+            let idx = self
+                .colonies
+                .iter()
+                .position(|c| c.coord == coord)
+                .ok_or(BuildError::UnknownPlanet)?;
+            let buildings = self.colonies[idx].buildings;
+            let robotics = buildings.robotics_factory;
+            let colony = &mut self.colonies[idx];
+            Self::push_build_job_parts(
+                kind,
+                now,
+                BuildTarget {
+                    buildings,
+                    resources: &mut colony.resources,
+                    queue: &mut colony.build_queue,
+                    robotics,
+                    cap,
+                },
+                &self.config,
+            )?;
         }
-        let idx = self
-            .colonies
-            .iter()
-            .position(|c| c.coord == coord)
-            .ok_or(BuildError::UnknownPlanet)?;
-        let buildings = self.colonies[idx].buildings;
-        let robotics = buildings.robotics_factory;
-        let colony = &mut self.colonies[idx];
-        Self::push_build_job_parts(
-            kind,
-            now,
-            BuildTarget {
-                buildings,
-                resources: &mut colony.resources,
-                queue: &mut colony.build_queue,
-                robotics,
-                cap,
-            },
-            &self.config,
-        )
+        self.history_queue_build(coord, kind, now);
+        Ok(())
     }
 
     fn push_build_job_parts(
@@ -732,6 +760,15 @@ impl GameState {
             if index >= len {
                 return Err(BuildError::EmptySlot { index, len });
             }
+            let kind = self.build_queue[index].building;
+            let deque_idx = self
+                .build_queue
+                .iter()
+                .take(index)
+                .filter(|job| job.building == kind)
+                .count();
+            self.history
+                .forget_cause_at(&format!("build:{coord}:{}", kind.as_key()), deque_idx);
             let job = self.build_queue.remove(index);
             self.resources = self.resources.saturating_add(job.paid);
             self.reprice_queue();
@@ -753,6 +790,15 @@ impl GameState {
         if index >= len {
             return Err(BuildError::EmptySlot { index, len });
         }
+        let kind = self.colonies[idx].build_queue[index].building;
+        let deque_idx = self.colonies[idx]
+            .build_queue
+            .iter()
+            .take(index)
+            .filter(|job| job.building == kind)
+            .count();
+        self.history
+            .forget_cause_at(&format!("build:{coord}:{}", kind.as_key()), deque_idx);
         let job = self.colonies[idx].build_queue.remove(index);
         self.colonies[idx].resources = self.colonies[idx].resources.saturating_add(job.paid);
         self.reprice_colony_queue(idx);
@@ -848,12 +894,27 @@ impl GameState {
             started_at: now,
             completes_at: now.saturating_add(duration),
         });
+        self.record_history(crate::HistoryDraft {
+            at: now,
+            kind: crate::HistoryKind::Research,
+            actor: "player".into(),
+            action: "start".into(),
+            objects: vec![tech.to_string()],
+            inputs: format!(
+                "M{:.0} C{:.0} D{:.0}",
+                cost.metal, cost.crystal, cost.deuterium
+            ),
+            outcome: "started".into(),
+            cause_key: Some(format!("research:{tech}")),
+            ..crate::HistoryDraft::default()
+        });
         Ok(())
     }
 
     pub fn cancel_research(&mut self, now_unix: u64) -> Result<Resources, ResearchError> {
         self.catch_up(now_unix);
         let job = self.research.take().ok_or(ResearchError::Idle)?;
+        self.history.forget_cause(&format!("research:{}", job.tech));
         self.resources = self.resources.saturating_add(job.paid);
         Ok(job.paid)
     }
@@ -912,6 +973,18 @@ impl GameState {
         if self.ship_queue.len() == 1 {
             self.start_ship_head(now);
         }
+        self.record_history(crate::HistoryDraft {
+            at: now,
+            kind: crate::HistoryKind::Ship,
+            actor: "player".into(),
+            action: "queue".into(),
+            objects: vec![kind.as_key().into()],
+            inputs: format!("{count}"),
+            outcome: "queued".into(),
+            cause_key: Some(format!("ship:{}", kind.as_key())),
+            mass: f64::from(count),
+            ..crate::HistoryDraft::default()
+        });
         Ok(())
     }
 
@@ -983,6 +1056,16 @@ impl GameState {
         let len = self.ship_queue.len();
         if index >= len {
             return Err(ShipError::EmptySlot { index, len });
+        }
+        if let Some(kind) = self.ship_queue[index].ship {
+            let deque_idx = self
+                .ship_queue
+                .iter()
+                .take(index)
+                .filter(|job| job.ship == Some(kind))
+                .count();
+            self.history
+                .forget_cause_at(&format!("ship:{}", kind.as_key()), deque_idx);
         }
         let job = self.ship_queue.remove(index);
         let n = f64::from(job.remaining);
@@ -1134,6 +1217,18 @@ impl GameState {
             attack: false,
             invade: false,
             spy: false,
+        });
+        self.record_history(crate::HistoryDraft {
+            at: now,
+            kind: crate::HistoryKind::Fleet,
+            actor: "player".into(),
+            action: "launch".into(),
+            objects: vec![dest.to_string()],
+            inputs: format!("fuel {fuel:.0}"),
+            outcome: "outbound".into(),
+            cause_key: Some(format!("mission:{id}")),
+            mass: fuel,
+            ..crate::HistoryDraft::default()
         });
         Ok(())
     }
@@ -1451,6 +1546,21 @@ impl GameState {
             attack: false,
             invade: false,
             spy: false,
+        });
+        self.record_history(crate::HistoryDraft {
+            at: now,
+            kind: crate::HistoryKind::Fleet,
+            actor: "player".into(),
+            action: "transport".into(),
+            objects: vec![origin.to_string(), dest.to_string()],
+            inputs: format!(
+                "M{:.0} C{:.0} D{:.0}",
+                cargo.metal, cargo.crystal, cargo.deuterium
+            ),
+            outcome: "outbound".into(),
+            cause_key: Some(format!("mission:{id}")),
+            mass: Self::cargo_mass(cargo),
+            ..crate::HistoryDraft::default()
         });
         Ok(id)
     }
@@ -2260,6 +2370,15 @@ impl GameState {
                 preview.run.index, preview.score, preview.earned
             ),
         );
+        next.record_history(crate::HistoryDraft {
+            at: now,
+            kind: crate::HistoryKind::Prestige,
+            actor: "player".into(),
+            action: "reset".into(),
+            objects: vec![format!("run {}", preview.run.index)],
+            outcome: format!("earned {}", preview.earned),
+            ..crate::HistoryDraft::default()
+        });
         next.evaluate_achievements(now);
         *self = next;
         Ok(preview)
@@ -3278,6 +3397,15 @@ impl GameState {
     }
 
     fn push_combat_log(&mut self, at: u64, report: CombatReport) {
+        self.record_history(crate::HistoryDraft {
+            at,
+            kind: crate::HistoryKind::Combat,
+            actor: "simulation".into(),
+            action: "fight".into(),
+            objects: vec![report.winner.as_key().into()],
+            outcome: format!("{} rounds", report.rounds),
+            ..crate::HistoryDraft::default()
+        });
         self.combat_logs.push(crate::CombatLog { at, report });
         let extra = self
             .combat_logs
@@ -3358,6 +3486,54 @@ impl GameState {
             let drop = self.events.len() - EVENT_LOG_CAP;
             self.events.drain(..drop);
         }
+    }
+
+    pub fn record_history(&mut self, draft: crate::HistoryDraft) -> u64 {
+        let waste = self.waste_home();
+        let snapshot = crate::EmpireSnapshot {
+            at: draft.at,
+            event_id: 0,
+            metal: self.resources.metal,
+            crystal: self.resources.crystal,
+            deuterium: self.resources.deuterium,
+            energy: self.energy_produced(),
+            heat: waste.heat_load,
+            home_kind: self.home_kind.as_key().to_string(),
+            building_levels: crate::BuildingKind::ALL
+                .iter()
+                .map(|kind| self.buildings.get(*kind))
+                .sum(),
+        };
+        self.history.record(draft, snapshot)
+    }
+
+    fn history_queue_build(&mut self, coord: Coord, kind: BuildingKind, at: u64) {
+        self.record_history(crate::HistoryDraft {
+            at,
+            kind: crate::HistoryKind::Build,
+            actor: "player".into(),
+            action: "queue".into(),
+            objects: vec![coord.to_string(), kind.as_key().into()],
+            outcome: "queued".into(),
+            cause_key: Some(format!("build:{coord}:{}", kind.as_key())),
+            ..crate::HistoryDraft::default()
+        });
+    }
+
+    fn history_complete_build(&mut self, coord: Coord, kind: BuildingKind, at: u64) {
+        self.record_history(crate::HistoryDraft {
+            at,
+            kind: crate::HistoryKind::Build,
+            actor: "simulation".into(),
+            action: "complete".into(),
+            objects: vec![coord.to_string(), kind.as_key().into()],
+            outcome: format!(
+                "lv {}",
+                self.buildings_at(coord).map(|b| b.get(kind)).unwrap_or(0)
+            ),
+            parent_key: Some(format!("build:{coord}:{}", kind.as_key())),
+            ..crate::HistoryDraft::default()
+        });
     }
 
     fn next_logistics_at(&self) -> Option<u64> {
@@ -3855,6 +4031,17 @@ impl GameState {
                 recv.label()
             ),
         );
+        self.record_history(crate::HistoryDraft {
+            at: self.last_tick_unix,
+            kind: crate::HistoryKind::Trade,
+            actor: "player".into(),
+            action: "trade".into(),
+            objects: vec![pay.as_key().into(), recv.as_key().into()],
+            inputs: format!("{:.0}", quote.pay_amount),
+            outcome: format!("{:.1} {}", quote.recv_amount, recv.label()),
+            mass: quote.pay_amount,
+            ..crate::HistoryDraft::default()
+        });
         Ok(quote)
     }
 
@@ -4120,6 +4307,18 @@ impl GameState {
             self.ship_queue.remove(0);
             self.start_ship_head(done_at);
             self.note_completed(done_at, label);
+            if let Some(kind) = ship {
+                self.record_history(crate::HistoryDraft {
+                    at: done_at,
+                    kind: crate::HistoryKind::Ship,
+                    actor: "simulation".into(),
+                    action: "complete".into(),
+                    objects: vec![kind.as_key().into()],
+                    outcome: "built".into(),
+                    parent_key: Some(format!("ship:{}", kind.as_key())),
+                    ..crate::HistoryDraft::default()
+                });
+            }
             return;
         }
         job.started_at = Some(done_at);
@@ -9070,5 +9269,54 @@ label = "Leave it"
             state.combat_logs.last().unwrap().report.winner,
             CombatWinner::Draw
         );
+    }
+
+    #[test]
+    fn history_time_travel_matches_recorded_snapshot() {
+        let mut state = GameState::with_config(0, test_config());
+        state.resources = Resources {
+            metal: 1_000.0,
+            crystal: 1_000.0,
+            deuterium: 1_000.0,
+        };
+        state.enqueue_build(BuildingKind::MetalMine, 0).unwrap();
+        let queued = state
+            .history
+            .events
+            .iter()
+            .find(|e| e.action == "queue")
+            .cloned()
+            .expect("queued build");
+        let snap = state
+            .history
+            .as_of(queued.at)
+            .cloned()
+            .expect("snapshot at queue");
+        assert_eq!(snap.metal, state.resources.metal);
+        assert_eq!(snap.event_id, queued.id);
+        let done_at = state.build_queue[0].completes_at.expect("timer");
+        state.catch_up(done_at);
+        let complete = state
+            .history
+            .events
+            .iter()
+            .find(|e| e.action == "complete")
+            .cloned()
+            .expect("completed build");
+        assert_eq!(complete.parent_ids, vec![queued.id]);
+        let lineage = state.history.lineage(complete.id);
+        assert_eq!(lineage.len(), 2);
+        assert_eq!(lineage[0].id, queued.id);
+        let past = state.history.as_of(queued.at).expect("past glance");
+        assert_eq!(past.building_levels, snap.building_levels);
+        assert_eq!(past.metal, snap.metal);
+        let now = state.history.as_of(complete.at).expect("now glance");
+        assert!(now.building_levels > past.building_levels);
+        let hits = state.history.search(&crate::HistoryQuery {
+            kind: Some(crate::HistoryKind::Build),
+            object: Some("metal_mine".into()),
+            ..crate::HistoryQuery::default()
+        });
+        assert!(hits.len() >= 2);
     }
 }

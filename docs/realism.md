@@ -171,6 +171,7 @@ silent extra departure; they extend this list.
 | Round-based combat with rapid-fire tables | Seeded, short, offline-safe fights. Map new stats onto energy and mass rather than replacing the resolver. |
 | Formation, stance and role modifiers | Light tactics scale the existing resolver; Neutral is identity. Battles never wait for input. |
 | Catch-up splits at storage-full and input-empty instants, ceiled to whole seconds | Offline gaps stay event-driven and sub-second; `add_capped` still stops exactly at the cap. |
+| History time-travel is a recorded glance (stockpile, energy, heat, mass), not a full replay | The log stays bounded (256 events); reconstructing the whole save would duplicate catch-up. |
 | Instantaneous heat and pollution (no stored slag or thermal inertia) | Catch-up stays a single pass; overflow is a work-speed and raid-signature modifier. |
 | FTL, if any | Only through late-game gates or a listed wonder. Default travel is sublight on the flight clock. |
 | Moons from battle debris | A moon is an orbital facility of its parent planet, not a new galaxy slot. Formation is a seeded roll on hull lost so fights stay fast and deterministic. |

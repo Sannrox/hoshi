@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 27;
+pub const SCHEMA_VERSION: u32 = 28;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -178,7 +178,9 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM tutorial_meta;
          DELETE FROM admirals;
          DELETE FROM fleet_tactics;
-         DELETE FROM reserve_ships;",
+         DELETE FROM reserve_ships;
+         DELETE FROM history_snapshots;
+         DELETE FROM history_events;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -477,6 +479,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
     insert_moons(&tx, state)?;
     insert_tutorial(&tx, state)?;
     insert_tactics(&tx, state)?;
+    insert_history(&tx, state)?;
     for (i, colony) in state.colonies.iter().enumerate() {
         let planet_id = (i as i64) + 2;
         tx.execute(
@@ -1094,6 +1097,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     load_moons(conn, &mut state)?;
     load_tutorial(conn, &mut state)?;
     load_tactics(conn, &mut state)?;
+    load_history(conn, &mut state)?;
     state.sync_raid_schedule_after_standing(state.last_tick_unix);
 
     let mut stmt = conn.prepare(
@@ -1933,6 +1937,8 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "fleet_tactics" => "SELECT COUNT(*) FROM fleet_tactics",
         "admirals" => "SELECT COUNT(*) FROM admirals",
         "reserve_ships" => "SELECT COUNT(*) FROM reserve_ships",
+        "history_events" => "SELECT COUNT(*) FROM history_events",
+        "history_snapshots" => "SELECT COUNT(*) FROM history_snapshots",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -1989,7 +1995,9 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "tutorial_seen")?
         + count_rows(conn, "fleet_tactics")?
         + count_rows(conn, "admirals")?
-        + count_rows(conn, "reserve_ships")?)
+        + count_rows(conn, "reserve_ships")?
+        + count_rows(conn, "history_events")?
+        + count_rows(conn, "history_snapshots")?)
 }
 
 fn migrate(conn: &Connection) -> Result<(), SaveError> {
@@ -2080,6 +2088,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 27 {
         migrate_v27(conn)?;
+    }
+    if found < 28 {
+        migrate_v28(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -2815,6 +2826,42 @@ fn migrate_v27(conn: &Connection) -> Result<(), SaveError> {
     Ok(())
 }
 
+fn migrate_v28(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS history_events (
+            id INTEGER PRIMARY KEY,
+            at INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            action TEXT NOT NULL,
+            objects TEXT NOT NULL,
+            inputs TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            cause_key TEXT,
+            parent_ids TEXT NOT NULL,
+            energy REAL NOT NULL,
+            heat REAL NOT NULL,
+            mass REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS history_snapshots (
+            at INTEGER NOT NULL,
+            event_id INTEGER NOT NULL,
+            metal REAL NOT NULL,
+            crystal REAL NOT NULL,
+            deuterium REAL NOT NULL,
+            energy REAL NOT NULL,
+            heat REAL NOT NULL,
+            home_kind TEXT NOT NULL,
+            building_levels INTEGER NOT NULL,
+            PRIMARY KEY (event_id)
+        );
+        ",
+    )?;
+    Ok(())
+}
+
 fn spy_reports_has_column(conn: &Connection, column: &str) -> Result<bool, SaveError> {
     let mut stmt = conn.prepare("PRAGMA table_info(spy_reports)")?;
     let names = stmt.query_map([], |row| row.get::<_, String>(1))?;
@@ -3130,6 +3177,155 @@ fn load_tactics(conn: &Connection, state: &mut GameState) -> Result<(), SaveErro
             );
         }
     }
+    Ok(())
+}
+
+fn insert_history(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<(), SaveError> {
+    for event in &state.history.events {
+        tx.execute(
+            "INSERT INTO history_events (
+                id, at, kind, actor, action, objects, inputs, outcome, reason,
+                cause_key, parent_ids, energy, heat, mass
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            params![
+                event.id as i64,
+                event.at as i64,
+                event.kind.as_key(),
+                event.actor,
+                event.action,
+                crate::history::join_csv(&event.objects),
+                event.inputs,
+                event.outcome,
+                event.reason,
+                event.cause_key.as_deref(),
+                crate::history::join_ids(&event.parent_ids),
+                event.energy,
+                event.heat,
+                event.mass,
+            ],
+        )?;
+    }
+    for snap in &state.history.snapshots {
+        tx.execute(
+            "INSERT INTO history_snapshots (
+                at, event_id, metal, crystal, deuterium, energy, heat, home_kind, building_levels
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                snap.at as i64,
+                snap.event_id as i64,
+                snap.metal,
+                snap.crystal,
+                snap.deuterium,
+                snap.energy,
+                snap.heat,
+                snap.home_kind,
+                snap.building_levels,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn load_history(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
+    if !table_exists(conn, "history_events") {
+        return Ok(());
+    }
+    let mut stmt = conn.prepare(
+        "SELECT id, at, kind, actor, action, objects, inputs, outcome, reason,
+                cause_key, parent_ids, energy, heat, mass
+         FROM history_events ORDER BY id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, String>(6)?,
+            row.get::<_, String>(7)?,
+            row.get::<_, String>(8)?,
+            row.get::<_, Option<String>>(9)?,
+            row.get::<_, String>(10)?,
+            row.get::<_, f64>(11)?,
+            row.get::<_, f64>(12)?,
+            row.get::<_, f64>(13)?,
+        ))
+    })?;
+    state.history = crate::HistoryLog::default();
+    for row in rows {
+        let (
+            id,
+            at,
+            kind,
+            actor,
+            action,
+            objects,
+            inputs,
+            outcome,
+            reason,
+            cause_key,
+            parent_ids,
+            energy,
+            heat,
+            mass,
+        ) = row?;
+        let kind = crate::HistoryKind::from_key(&kind).ok_or(SaveError::Corrupt("history kind"))?;
+        let parent_ids = crate::history::split_ids(&parent_ids)
+            .map_err(|_| SaveError::Corrupt("history parents"))?;
+        state.history.events.push(crate::HistoryEvent {
+            id: unix_ts(id)?,
+            at: unix_ts(at)?,
+            kind,
+            actor,
+            action,
+            objects: crate::history::split_csv(&objects),
+            inputs,
+            outcome,
+            reason,
+            cause_key,
+            parent_ids,
+            energy,
+            heat,
+            mass,
+        });
+    }
+    if table_exists(conn, "history_snapshots") {
+        let mut stmt = conn.prepare(
+            "SELECT at, event_id, metal, crystal, deuterium, energy, heat, home_kind, building_levels
+             FROM history_snapshots ORDER BY event_id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, f64>(2)?,
+                row.get::<_, f64>(3)?,
+                row.get::<_, f64>(4)?,
+                row.get::<_, f64>(5)?,
+                row.get::<_, f64>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, i64>(8)?,
+            ))
+        })?;
+        for row in rows {
+            let (at, event_id, metal, crystal, deuterium, energy, heat, home_kind, levels) = row?;
+            state.history.snapshots.push(crate::EmpireSnapshot {
+                at: unix_ts(at)?,
+                event_id: unix_ts(event_id)?,
+                metal,
+                crystal,
+                deuterium,
+                energy,
+                heat,
+                home_kind,
+                building_levels: u32::try_from(levels)
+                    .map_err(|_| SaveError::Corrupt("history levels"))?,
+            });
+        }
+    }
+    state.history.rebuild_causes();
     Ok(())
 }
 

@@ -19,6 +19,7 @@ bumps that version.
 ```sh
 hoshi --save PATH [--seed N] [--balance PATH] state [--json]
 hoshi --save PATH advise
+hoshi --save PATH log [--type KIND] [--actor ID] [--object ID] [--from UNIX] [--to UNIX] [--lineage ID] [--at UNIX] [--export PATH]
 hoshi --save PATH build <planet> <building>
 hoshi --save PATH research <tech>
 hoshi --save PATH cancel <queue-item>
@@ -53,6 +54,13 @@ or `30s` / `3m` / `1h` / `1d`.
 `advise` prints ranked next-move suggestions from the same player-visible
 state the TUI overlay uses. It never enqueues a build, research, or fleet.
 Extra arguments on `advise` are invalid.
+
+`log` searches the structured history (build, research, ship, fleet, combat,
+trade, activity, prestige). `--lineage ID` walks cause links; `--at UNIX`
+returns the recorded empire glance at that time if it is still retained;
+`--export PATH` writes JSON lines of the retained window. History keeps the
+last 256 events and one snapshot per event. The TUI `log` screen filters by
+type (`+`/`-`) and opens lineage (Enter) or the glance (`r`).
 
 `--seed` on a new save starts deterministic mode: the wall clock is ignored and
 `tick --advance` is allowed. Live saves refuse `tick --advance`. The TUI refuses
