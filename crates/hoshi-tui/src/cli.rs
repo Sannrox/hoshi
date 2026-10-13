@@ -1,11 +1,12 @@
 //! Scriptable JSON commands. Same core actions as the TUI; no extra powers.
 
 use hoshi_core::{
-    Actor, AssignmentTarget, BalanceConfig, BuildingKind, Clock, Coord, DefenceKind, FakeClock,
-    Fleet, GameState, HistoryKind, HistoryQuery, Jurisdiction, JurisdictionKind, MoonFacility,
-    Permission, ResourceKind, RoleKind, RoundAction, SCHEMA_VERSION as SAVE_SCHEMA, SaveError,
-    ShipKind, SpyReport, SystemClock, advise, inspect_save, load_or_new, load_or_new_with_seed,
-    lock_save, open_save, resolve_save_path, save_is_locked, save_state,
+    Actor, AssignmentTarget, BalanceConfig, BuildingKind, Clock, Coord, Customer, DefenceKind,
+    FakeClock, Fleet, GameState, HistoryKind, HistoryQuery, Jurisdiction, JurisdictionKind,
+    MoonFacility, Payload, Permission, PlanRequest, ResourceKind, RoleKind, RoundAction,
+    SCHEMA_VERSION as SAVE_SCHEMA, SaveError, ShipKind, SpyReport, SystemClock, TransferKind,
+    advise, inspect_save, load_or_new, load_or_new_with_seed, lock_save, open_save,
+    resolve_save_path, save_is_locked, save_state,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -128,6 +129,30 @@ enum Command {
         board: PathBuf,
         opt_in: bool,
     },
+    VehicleList,
+    VehicleRegister {
+        planet: Coord,
+        ships: Fleet,
+    },
+    VehicleDissolve {
+        id: u64,
+    },
+    MissionWindows {
+        from: Coord,
+        to: Coord,
+        transfer: TransferKind,
+    },
+    MissionPlan {
+        to: Coord,
+        vehicle: u64,
+        transfer: TransferKind,
+        customer: Customer,
+        metal: String,
+        crystal: String,
+        deuterium: String,
+        window: Option<usize>,
+    },
+    MissionSchedule,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -639,6 +664,116 @@ fn apply(state: &mut GameState, now: u64, command: &Command) -> Result<Value, Cl
                 .map_err(|e| CliError::Refused(e.to_string()))?;
             Ok(ok_state(state, "delegated"))
         }
+        Command::VehicleList => Ok(ok_state(state, "vehicles")),
+        Command::VehicleRegister { planet, ships } => {
+            state
+                .register_vehicle(*planet, *ships, now)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, "registered vehicle"))
+        }
+        Command::VehicleDissolve { id } => {
+            state
+                .dissolve_vehicle(*id, now)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, "dissolved vehicle"))
+        }
+        Command::MissionWindows { from, to, transfer } => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            let estimate = state
+                .mission_windows(*from, *to, *transfer, state.last_tick_unix)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(json!({
+                "schema_version": SCHEMA_VERSION,
+                "ok": true,
+                "message": "windows",
+                "now": state.last_tick_unix,
+                "delta_v": estimate.delta_v,
+                "coast_secs": estimate.coast_secs,
+                "windows": estimate.windows.iter().enumerate().map(|(i, w)| json!({
+                    "index": i,
+                    "opens_at": w.opens_at,
+                    "closes_at": w.closes_at,
+                    "status": if w.closes_at <= state.last_tick_unix {
+                        "missed"
+                    } else if w.contains(state.last_tick_unix) {
+                        "open"
+                    } else {
+                        "upcoming"
+                    },
+                })).collect::<Vec<_>>(),
+            }))
+        }
+        Command::MissionPlan {
+            to,
+            vehicle,
+            transfer,
+            customer,
+            metal,
+            crystal,
+            deuterium,
+            window,
+        } => {
+            let payload = Payload {
+                cargo: hoshi_core::Resources {
+                    metal: parse_amount(metal)?,
+                    crystal: parse_amount(crystal)?,
+                    deuterium: parse_amount(deuterium)?,
+                },
+            };
+            state
+                .plan_mission(
+                    PlanRequest {
+                        vehicle_id: *vehicle,
+                        dest: *to,
+                        transfer: *transfer,
+                        customer: customer.clone(),
+                        payload,
+                        window_index: *window,
+                    },
+                    now,
+                )
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, "planned mission"))
+        }
+        Command::MissionSchedule => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            let schedule = state.mission_schedule(state.last_tick_unix);
+            Ok(json!({
+                "schema_version": SCHEMA_VERSION,
+                "ok": true,
+                "message": "schedule",
+                "now": state.last_tick_unix,
+                "vehicles": schedule.vehicles.iter().map(|v| json!({
+                    "id": v.id,
+                    "name": v.name,
+                    "coord": v.coord.to_string(),
+                    "free_at": v.free_at,
+                    "booked": v.free_at > state.last_tick_unix,
+                })).collect::<Vec<_>>(),
+                "missions": schedule.missions.iter().map(|m| json!({
+                    "id": m.id,
+                    "vehicle_id": m.vehicle_id,
+                    "origin": m.route.origin.to_string(),
+                    "dest": m.route.dest.to_string(),
+                    "transfer": m.transfer.as_key(),
+                    "customer": m.customer.as_key(),
+                    "arrives_at": m.arrives_at,
+                    "delta_v": m.delta_v,
+                })).collect::<Vec<_>>(),
+                "alerts": schedule.alerts.iter().map(|a| json!({
+                    "kind": match a.kind {
+                        hoshi_core::ScheduleAlertKind::DoubleBook => "double_book",
+                        hoshi_core::ScheduleAlertKind::MissedWindow => "missed_window",
+                    },
+                    "vehicle_id": a.vehicle_id,
+                    "detail": a.detail,
+                })).collect::<Vec<_>>(),
+            }))
+        }
         Command::StaffRevoke { id, permission } => {
             state
                 .revoke_delegation(*id, *permission, now)
@@ -907,6 +1042,22 @@ fn state_value(state: &GameState) -> Value {
         }).collect::<Vec<_>>(),
         "laws": laws,
         "leaders": leaders,
+        "vehicles": state.vehicles.iter().map(|v| json!({
+            "id": v.id,
+            "name": v.name,
+            "coord": v.coord.to_string(),
+            "free_at": v.free_at,
+        })).collect::<Vec<_>>(),
+        "planned": state.planned.iter().map(|m| json!({
+            "id": m.id,
+            "vehicle_id": m.vehicle_id,
+            "origin": m.route.origin.to_string(),
+            "dest": m.route.dest.to_string(),
+            "transfer": m.transfer.as_key(),
+            "customer": m.customer.as_key(),
+            "arrives_at": m.arrives_at,
+            "delta_v": m.delta_v,
+        })).collect::<Vec<_>>(),
     })
 }
 
@@ -1055,6 +1206,8 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
             })
         }
         "staff" => parse_staff_command(args),
+        "vehicle" => parse_vehicle_command(args),
+        "mission" => parse_mission_command(args),
         "research" => {
             let tech = nth(args, 1, "research <tech>")?.to_string();
             expect_end(args, 2)?;
@@ -1704,6 +1857,148 @@ fn parse_leader_id(text: &str) -> Result<u64, CliError> {
         .map_err(|_| CliError::Invalid(format!("invalid leader id {text}")))
 }
 
+fn parse_amount(text: &str) -> Result<f64, CliError> {
+    let n: f64 = text
+        .parse()
+        .map_err(|_| CliError::Invalid(format!("invalid amount {text}")))?;
+    if !n.is_finite() || n < 0.0 {
+        return Err(CliError::Invalid(format!("invalid amount {text}")));
+    }
+    Ok(n)
+}
+
+fn parse_vehicle_command(args: &[String]) -> Result<Command, CliError> {
+    match args.get(1).map(String::as_str) {
+        Some("list") | None => {
+            if args.len() > 2 {
+                return Err(CliError::Invalid("vehicle list takes no arguments".into()));
+            }
+            Ok(Command::VehicleList)
+        }
+        Some("register") => {
+            let planet = parse_coord(nth(args, 2, "vehicle register <planet> <ships...>")?)?;
+            let ships = parse_ships(&args[3..])?;
+            Ok(Command::VehicleRegister { planet, ships })
+        }
+        Some("dissolve") => {
+            let id = parse_leader_id(nth(args, 2, "vehicle dissolve <id>")?)?;
+            expect_end(args, 3)?;
+            Ok(Command::VehicleDissolve { id })
+        }
+        Some(other) => Err(CliError::Invalid(format!(
+            "unknown vehicle command {other}"
+        ))),
+    }
+}
+
+fn parse_mission_command(args: &[String]) -> Result<Command, CliError> {
+    match args.get(1).map(String::as_str) {
+        Some("windows") => {
+            let from = parse_coord(nth(args, 2, "mission windows <from> <to>")?)?;
+            let to = parse_coord(nth(args, 3, "mission windows <from> <to>")?)?;
+            let mut transfer = TransferKind::Hohmann;
+            let mut i = 4;
+            while i < args.len() {
+                let a = args[i].as_str();
+                if a == "--transfer" {
+                    let raw = nth(args, i + 1, "mission windows --transfer <kind>")?;
+                    transfer = TransferKind::from_key(raw)
+                        .ok_or_else(|| CliError::Invalid(format!("unknown transfer {raw}")))?;
+                    i += 2;
+                    continue;
+                }
+                return Err(CliError::Invalid(format!(
+                    "unknown mission windows flag {a}"
+                )));
+            }
+            Ok(Command::MissionWindows { from, to, transfer })
+        }
+        Some("plan") => {
+            let to = parse_coord(nth(args, 2, "mission plan <to>")?)?;
+            let mut vehicle = None;
+            let mut transfer = TransferKind::Hohmann;
+            let mut customer = Customer::Colony;
+            let mut metal = "0".to_string();
+            let mut crystal = "0".to_string();
+            let mut deuterium = "0".to_string();
+            let mut window = None;
+            let mut i = 3;
+            while i < args.len() {
+                let a = args[i].as_str();
+                if a == "--vehicle" {
+                    vehicle = Some(parse_leader_id(nth(
+                        args,
+                        i + 1,
+                        "mission plan --vehicle <id>",
+                    )?)?);
+                    i += 2;
+                    continue;
+                }
+                if a == "--transfer" {
+                    let raw = nth(args, i + 1, "mission plan --transfer <kind>")?;
+                    transfer = TransferKind::from_key(raw)
+                        .ok_or_else(|| CliError::Invalid(format!("unknown transfer {raw}")))?;
+                    i += 2;
+                    continue;
+                }
+                if a == "--customer" {
+                    let raw = nth(args, i + 1, "mission plan --customer <id>")?;
+                    customer = Customer::parse(raw)
+                        .ok_or_else(|| CliError::Invalid(format!("unknown customer {raw}")))?;
+                    i += 2;
+                    continue;
+                }
+                if a == "--metal" {
+                    metal = nth(args, i + 1, "mission plan --metal <n>")?.to_string();
+                    i += 2;
+                    continue;
+                }
+                if a == "--crystal" {
+                    crystal = nth(args, i + 1, "mission plan --crystal <n>")?.to_string();
+                    i += 2;
+                    continue;
+                }
+                if a == "--deuterium" {
+                    deuterium = nth(args, i + 1, "mission plan --deuterium <n>")?.to_string();
+                    i += 2;
+                    continue;
+                }
+                if a == "--window" {
+                    let raw = nth(args, i + 1, "mission plan --window <n>")?;
+                    window = Some(
+                        raw.parse()
+                            .map_err(|_| CliError::Invalid(format!("invalid --window {raw}")))?,
+                    );
+                    i += 2;
+                    continue;
+                }
+                return Err(CliError::Invalid(format!("unknown mission plan flag {a}")));
+            }
+            Ok(Command::MissionPlan {
+                to,
+                vehicle: vehicle
+                    .ok_or_else(|| CliError::Invalid("mission plan needs --vehicle".into()))?,
+                transfer,
+                customer,
+                metal,
+                crystal,
+                deuterium,
+                window,
+            })
+        }
+        Some("schedule") => {
+            expect_end(args, 2)?;
+            Ok(Command::MissionSchedule)
+        }
+        Some(other) => Err(CliError::Invalid(format!(
+            "unknown mission command {other}"
+        ))),
+        None => Err(CliError::Invalid(
+            "mission needs windows, plan, or schedule".into(),
+        )),
+    }
+}
+
 fn parse_moon_command(args: &[String]) -> Result<Command, CliError> {
     match args.get(1).map(String::as_str) {
         Some("build") => {
@@ -2205,6 +2500,64 @@ mod tests {
         assert_eq!(state["tactics"]["formation"], "wedge");
         assert_eq!(state["tactics"]["stance"], "defensive");
         assert!((state["tactics"]["retreat_below"].as_f64().unwrap() - 0.25).abs() < 1e-12);
+        let _ = std::fs::remove_file(&save);
+    }
+
+    #[test]
+    fn mission_plan_uses_orbital_checks() {
+        let save = unique_save("mission");
+        let mut conn = open_save(&save).unwrap();
+        let mut seeded = GameState::with_seed(0, BalanceConfig::default(), 1);
+        seeded.fleet.add(ShipKind::SmallCargo, 2);
+        seeded.resources.metal = 50_000.0;
+        seeded.resources.crystal = 50_000.0;
+        seeded.resources.deuterium = 50_000.0;
+        save_state(&mut conn, &seeded).unwrap();
+        drop(conn);
+        let (reg, exit) = run_on(&save, &["vehicle", "register", "home", "small_cargo:1"]);
+        assert_eq!(exit, EXIT_OK, "{reg}");
+        let id = reg["vehicles"][0]["id"].as_u64().unwrap();
+        let (win, exit) = run_on(
+            &save,
+            &[
+                "mission",
+                "windows",
+                "home",
+                "1:1:8",
+                "--transfer",
+                "hohmann",
+            ],
+        );
+        assert_eq!(exit, EXIT_OK, "{win}");
+        assert!(win["delta_v"].as_f64().unwrap() > 0.0);
+        let (sched, exit) = run_on(&save, &["mission", "schedule"]);
+        assert_eq!(exit, EXIT_OK, "{sched}");
+        assert!(sched["alerts"].as_array().unwrap().is_empty());
+        let (plan, exit) = run_on(
+            &save,
+            &[
+                "mission",
+                "plan",
+                "1:1:8",
+                "--vehicle",
+                &id.to_string(),
+                "--transfer",
+                "hohmann",
+                "--customer",
+                "colony",
+                "--metal",
+                "1",
+            ],
+        );
+        assert_eq!(exit, EXIT_REFUSED, "{plan}");
+        assert!(
+            plan["error"]["message"].as_str().unwrap().contains("owned")
+                || plan["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("window"),
+            "{plan}"
+        );
         let _ = std::fs::remove_file(&save);
     }
 

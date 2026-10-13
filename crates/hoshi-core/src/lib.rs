@@ -21,8 +21,10 @@ mod laws;
 mod leaders;
 mod market;
 mod moons;
+mod orbits;
 mod outposts;
 mod planets;
+mod planning;
 mod prestige;
 mod production;
 mod research;
@@ -103,10 +105,19 @@ pub use leaders::{
 };
 pub use market::{MarketConfig, MarketError, MarketState, TradeQuote};
 pub use moons::{Moon, MoonConfig, MoonError, MoonFacility, PhalanxContact};
+pub use orbits::{
+    Hohmann, OrbitConfig, fuel_mass_for_dv, heliocentric_radius_m, hohmann_transfer, mean_motion,
+    rocket_delta_v,
+};
 pub use outposts::{
     Outpost, OutpostConfig, RarePlanetBonus, generate_outposts, scaled_defence, scaled_garrison,
 };
 pub use planets::{Colony, PlanetType, PlanetTypeBonus, PlanetTypeCatalog, planet_profile};
+pub use planning::{
+    Customer, LaunchWindow, MissionPlan, MissionSchedule, Payload, PlanError, PlanRequest,
+    PlannedMission, Route, ScheduleAlert, ScheduleAlertKind, TransferEstimate, TransferKind,
+    Vehicle,
+};
 pub use prestige::{
     PRESTIGE_KEPT, PRESTIGE_LOST, Prestige, PrestigeBonusSpec, PrestigeConfig, PrestigeError,
     PrestigePreview, RunStats,

@@ -198,6 +198,7 @@
       "rare": null
     }
   ],
+  "planned": [],
   "prestige": {
     "currency": 0,
     "eligible": false,
@@ -252,7 +253,7 @@
     "deuterium": 100.0,
     "metal": 477.42499999999995
   },
-  "save_schema": 29,
+  "save_schema": 30,
   "schema_version": 1,
   "spy_reports": [],
   "tactics": {
@@ -267,6 +268,7 @@
     "pending": null,
     "skipped": false
   },
+  "vehicles": [],
   "waste": {
     "heat_load": 23.4,
     "heat_sink": 84.0,

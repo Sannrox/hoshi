@@ -85,6 +85,30 @@
       "type": "array",
       "description": "Leaders with traits, assignment, retirement and delegations."
     },
+    "vehicles": {
+      "type": "array",
+      "description": "Named vehicles for orbital mission planning."
+    },
+    "planned": {
+      "type": "array",
+      "description": "In-flight PlanMission rows with transfer, customer, delta-v and arrival."
+    },
+    "windows": {
+      "type": "array",
+      "description": "Synodic launch windows from `mission windows` (`open`, `upcoming`, or `missed`)."
+    },
+    "alerts": {
+      "type": "array",
+      "description": "Schedule alerts: double-booked vehicles or missed launch windows."
+    },
+    "delta_v": {
+      "type": "number",
+      "description": "Transfer delta-v in metres per second, including gravity wells."
+    },
+    "coast_secs": {
+      "type": "integer",
+      "description": "Compressed coast time for the planned transfer."
+    },
     "scoring_version": {
       "type": "integer",
       "description": "Arena scoring formula version. See docs/arena.md."

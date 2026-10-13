@@ -21,6 +21,12 @@ hoshi --save PATH [--seed N] [--balance PATH] state [--json]
 hoshi --save PATH advise
 hoshi --save PATH log [--type KIND] [--actor ID] [--object ID] [--from UNIX] [--to UNIX] [--lineage ID] [--at UNIX] [--export PATH]
 hoshi --save PATH staff
+hoshi --save PATH vehicle
+hoshi --save PATH vehicle register <planet> <ships...>
+hoshi --save PATH vehicle dissolve <id>
+hoshi --save PATH mission windows <from> <to> [--transfer hohmann|high_energy|assist]
+hoshi --save PATH mission plan <to> --vehicle ID [--transfer hohmann|high_energy|assist] [--customer colony|faction:ID] [--metal N] [--crystal N] [--deuterium N] [--window N]
+hoshi --save PATH mission schedule
 hoshi --save PATH staff recruit [--name TEXT] [--trait ID]
 hoshi --save PATH staff assign <id> admiral|governor|minister [--target home|empire|g:s:p]
 hoshi --save PATH staff delegate <id> [--permission queue_build|accept_battle|propose_law] [--cap N]
@@ -68,6 +74,8 @@ returns the recorded empire glance at that time if it is still retained;
 `--export PATH` writes JSON lines of the retained window. History keeps the
 last 256 events and one snapshot per event. The TUI `log` screen filters by
 type (`+`/`-`) and opens lineage (Enter) or the glance (`r`).
+
+`vehicle register` assigns parked ships to a named vehicle. `mission windows` lists synodic launch windows with delta-v and coast time. `mission plan` is PlanMission (propose, check, apply): payload mass changes fuel through the rocket equation; `--window N` can book an upcoming window (the vehicle launches when it opens). A missed window or a double-booked vehicle is refused. `mission schedule` lists vehicles, in-flight plans, and double-book / missed-window alerts. Transfer is `hohmann`, `high_energy`, or `assist`. Customer is `colony` (owned dest, cargo credited there) or `faction:<id>` (cargo is delivered to the faction and standing moves by that faction's trade delta); `market` is refused.
 
 `staff` lists leaders, roles, assignments and delegations. `staff recruit` spends the configured cost. `staff assign` places one role per leader (reassignment waits `reassign_secs`). `staff delegate` lets that leader act with an optional spending cap; `staff revoke` removes it. `build --as leader:ID` runs the same queue checks under that leader's permissions.
 

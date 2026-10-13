@@ -705,6 +705,46 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             );
             """
         )
+    elif version == 30:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS vehicles (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                galaxy INTEGER NOT NULL,
+                system INTEGER NOT NULL,
+                position INTEGER NOT NULL,
+                free_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS vehicle_ships (
+                vehicle_id INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                count INTEGER NOT NULL,
+                PRIMARY KEY (vehicle_id, kind)
+            );
+            CREATE TABLE IF NOT EXISTS planned_missions (
+                id INTEGER PRIMARY KEY,
+                vehicle_id INTEGER NOT NULL,
+                origin_g INTEGER NOT NULL,
+                origin_s INTEGER NOT NULL,
+                origin_p INTEGER NOT NULL,
+                dest_g INTEGER NOT NULL,
+                dest_s INTEGER NOT NULL,
+                dest_p INTEGER NOT NULL,
+                transfer TEXT NOT NULL,
+                customer TEXT NOT NULL,
+                window_opens INTEGER NOT NULL,
+                window_closes INTEGER NOT NULL,
+                launched_at INTEGER NOT NULL,
+                arrives_at INTEGER NOT NULL,
+                delta_v REAL NOT NULL,
+                fuel_mass REAL NOT NULL,
+                cargo_metal REAL NOT NULL,
+                cargo_crystal REAL NOT NULL,
+                cargo_deuterium REAL NOT NULL
+            );
+            """
+        )
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"
