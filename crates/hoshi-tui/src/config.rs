@@ -12,6 +12,7 @@ pub struct UserConfig {
     pub high_contrast: bool,
     pub bridge: bool,
     pub ai_advisor: bool,
+    pub arena: bool,
     pub portraits: bool,
     pub portrait_protocol: ProtocolChoice,
     pub last_slot: Option<String>,
@@ -40,6 +41,7 @@ impl Default for UserConfig {
             high_contrast: false,
             bridge: false,
             ai_advisor: false,
+            arena: false,
             portraits: true,
             portrait_protocol: ProtocolChoice::Auto,
             last_slot: None,
@@ -89,6 +91,7 @@ impl UserConfig {
                 "high_contrast" => cfg.high_contrast = value == "true",
                 "bridge" => cfg.bridge = value == "true",
                 "ai_advisor" => cfg.ai_advisor = value == "true",
+                "arena" => cfg.arena = value == "true",
                 "portraits" => cfg.portraits = value == "true",
                 "portrait_protocol" => {
                     if let Some(choice) = ProtocolChoice::from_key(value) {
@@ -154,12 +157,13 @@ impl UserConfig {
             _ => String::new(),
         };
         let text = format!(
-            "reduced_motion = {}\nno_animation = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}\ntutorial = {}\nreset_tutorial = {}\nnotify = {}\nnotify_build = {}\nnotify_raid = {}\nnotify_fleet = {}\ncommentary = {}\ncommentary_model_url = \"{}\"\nadvisor_model_url = \"{}\"\nadvisor_model_name = \"{}\"\nadvisor_allow_lan = {}\n{quiet}{}\n",
+            "reduced_motion = {}\nno_animation = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\narena = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}\ntutorial = {}\nreset_tutorial = {}\nnotify = {}\nnotify_build = {}\nnotify_raid = {}\nnotify_fleet = {}\ncommentary = {}\ncommentary_model_url = \"{}\"\nadvisor_model_url = \"{}\"\nadvisor_model_name = \"{}\"\nadvisor_allow_lan = {}\n{quiet}{}\n",
             self.reduced_motion,
             self.no_animation,
             self.high_contrast,
             self.bridge,
             self.ai_advisor,
+            self.arena,
             self.portraits,
             self.portrait_protocol.as_key(),
             self.away_threshold_secs,
@@ -218,6 +222,7 @@ mod tests {
         let loaded = UserConfig::load(&dir);
         assert!(!loaded.bridge);
         assert!(!loaded.ai_advisor);
+        assert!(!loaded.arena);
         assert!(loaded.tutorial);
         assert!(!loaded.reset_tutorial);
         assert!(!loaded.notify);
@@ -238,11 +243,13 @@ mod tests {
         cfg.advisor_model_url = "http://127.0.0.1:11434/v1".into();
         cfg.advisor_model_name = "local".into();
         cfg.advisor_allow_lan = true;
+        cfg.arena = true;
         cfg.save(&dir).unwrap();
         let again = UserConfig::load(&dir);
         assert!(again.reduced_motion);
         assert_eq!(again.last_slot.as_deref(), Some("alpha"));
         assert!(!again.bridge);
+        assert!(again.arena);
         assert!(!again.notify);
         assert!(again.commentary);
         assert_eq!(again.commentary_model_url, "http://127.0.0.1:8080/v1");

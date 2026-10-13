@@ -1,6 +1,7 @@
 //! hoshi: an idle space-strategy game for the terminal.
 
 mod app;
+mod arena;
 mod cli;
 mod clip;
 mod config;

@@ -8,6 +8,7 @@
 
 ### Added
 
+- Local bot arena: `hoshi --arena arena run --seed --days` plays isolated CLI bots on the same galaxy seed, scores them, and appends a JSON/markdown leaderboard. Off until `arena = true` or `--arena`. Sample bots in `examples/bots/`. See `docs/arena.md`.
 - Leaders with roles (admiral, governor, minister), traits, assignments, aging, and delegated permissions with optional spend caps. Role checks run in core for player and `--as` actions. Governors change scheduling efficiency inside the energy budget; empty colonies take a small output penalty. Admirals still feed tactical combat. TUI `stf` screen and `hoshi staff`. Save schema v29.
 - Append-only event history with cause links, TUI search (`log` screen) and `hoshi log` (type, actor, object, time, lineage, `--at` glance, `--export` JSON lines). Time travel matches a recorded empire snapshot. The last 256 events and matching snapshots are retained (schema v28); the short 32-line event feed is unchanged.
 - Offline catch-up splits at storage-full and missing-input instants so routes, chains and queues match step-by-step ticking. Full destination storage skips a launch; leftover cargo bounces home instead of overflowing. A 7-day late-game catch-up stays under one second. Continue's away overlay lists deliveries, stalls with causes, and completed items.
