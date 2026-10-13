@@ -7,7 +7,7 @@ Rules never open a database. The TUI and CLI call `open_storage` and then
 ## SQLite (default)
 
 The existing `save.sqlite` file is unchanged: WAL, schema migrations, and
-`PRAGMA user_version`. Paths that are not `*.mikura` use this backend.
+`PRAGMA user_version`. Paths that are not `*.mikura` or `*.chisei` use this backend.
 
 ## Mikura (optional)
 
@@ -46,6 +46,16 @@ SQLite uses one transaction per save. Mikura uses one `append_batch` per save.
 A crash mid-write does not keep a partial empire: SQLite keeps the last
 checkpointed snapshot (WAL); Mikura drops the whole batch.
 
+## Chisei (optional)
+
+Build with `--features chisei` and pass a `*.chisei` directory (`--save
+empire.chisei`). Off in `config.toml` until `chisei = true`. Without the
+feature a `.chisei` path is refused. The directory holds `state.sqlite` (the
+codec), `graph.toml` (Player, Planet, Fleet, Faction, Outpost, links, markings),
+and a copy of `hoshi-ontology/v1`. Moves go through propose then apply.
+See [docs/chisei.md](chisei.md) and [ADR 0007](decisions/0007-optional-chisei-backend.md).
+The API pin is `1.3.0`.
+
 ## Tests
 
 Shared contract (round-trip, atomic colony/fleet/outpost, catch-up, colonize):
@@ -53,4 +63,5 @@ Shared contract (round-trip, atomic colony/fleet/outpost, catch-up, colonize):
 ```sh
 cargo test -p hoshi-core sqlite_backend_meets_storage_contract
 cargo test -p hoshi-core --features mikura
+cargo test -p hoshi-core --features chisei
 ```

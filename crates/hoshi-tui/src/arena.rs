@@ -24,6 +24,7 @@ pub struct ArenaSpec {
     pub timeout: Duration,
     pub bots: Vec<PathBuf>,
     pub board: PathBuf,
+    pub chisei: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -56,9 +57,16 @@ pub fn run(spec: &ArenaSpec) -> Result<Value, String> {
         RUN_SEQ.fetch_add(1, Ordering::Relaxed)
     ));
     fs::create_dir_all(&work).map_err(|e| e.to_string())?;
+    if spec.chisei && !cfg!(feature = "chisei") {
+        return Err("rebuild with --features chisei to run the arena on a .chisei save".into());
+    }
     let mut results = Vec::new();
     for (i, bot) in spec.bots.iter().enumerate() {
-        let save = work.join(format!("bot-{i}.sqlite"));
+        let save = if spec.chisei {
+            work.join(format!("bot-{i}.chisei"))
+        } else {
+            work.join(format!("bot-{i}.sqlite"))
+        };
         let name = bot
             .file_name()
             .and_then(|s| s.to_str())
@@ -552,6 +560,7 @@ mod tests {
             timeout: Duration::from_millis(timeout_ms),
             bots,
             board: dir.join("board.json"),
+            chisei: false,
         }
     }
 

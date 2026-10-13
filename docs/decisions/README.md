@@ -8,3 +8,4 @@
 | [0004](0004-no-shared-universe.md) | No shared universe | Partially superseded by 0005 |
 | [0005](0005-shared-shard-on-chisei.md) | Shared shard hosted on Chisei | Accepted |
 | [0006](0006-storage-trait.md) | Persistence through a Storage trait | Accepted |
+| [0007](0007-optional-chisei-backend.md) | Optional in-process Chisei backend | Accepted |

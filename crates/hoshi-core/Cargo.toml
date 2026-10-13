@@ -12,6 +12,7 @@ default = []
 commentary-model = []
 advisor-model = ["commentary-model"]
 mikura = ["dep:mikura"]
+chisei = []
 
 [dependencies]
 rusqlite = { version = "0.37", features = ["bundled"] }

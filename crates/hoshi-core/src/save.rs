@@ -1449,8 +1449,11 @@ pub struct SaveGlance {
 }
 
 pub fn inspect_save(path: &Path) -> Result<SaveGlance, SaveError> {
-    if crate::storage::BackendKind::from_path(path) == crate::storage::BackendKind::Mikura {
-        return crate::storage::inspect_mikura_save(path);
+    match crate::storage::BackendKind::from_path(path) {
+        crate::storage::BackendKind::Mikura | crate::storage::BackendKind::Chisei => {
+            return crate::storage::inspect_backend_save(path);
+        }
+        crate::storage::BackendKind::Sqlite => {}
     }
     if save_is_locked(path) {
         return Err(SaveError::Locked);
@@ -1637,8 +1640,11 @@ impl CareerGlance {
 }
 
 pub fn inspect_career(path: &Path) -> Result<CareerGlance, SaveError> {
-    if crate::storage::BackendKind::from_path(path) == crate::storage::BackendKind::Mikura {
-        return crate::storage::inspect_mikura_career(path);
+    match crate::storage::BackendKind::from_path(path) {
+        crate::storage::BackendKind::Mikura | crate::storage::BackendKind::Chisei => {
+            return crate::storage::inspect_backend_career(path);
+        }
+        crate::storage::BackendKind::Sqlite => {}
     }
     if save_is_locked(path) {
         return Err(SaveError::Locked);

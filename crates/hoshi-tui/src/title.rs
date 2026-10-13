@@ -1625,6 +1625,8 @@ pub fn list_slots(dir: &Path, _now_unix: u64) -> Vec<Slot> {
         }
         let stem = if name.ends_with(".mikura") {
             name.trim_end_matches(".mikura").to_string()
+        } else if name.ends_with(".chisei") {
+            name.trim_end_matches(".chisei").to_string()
         } else if name.ends_with(".sqlite") {
             name.trim_end_matches(".sqlite").to_string()
         } else {
