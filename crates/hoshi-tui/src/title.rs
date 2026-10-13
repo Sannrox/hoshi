@@ -120,7 +120,7 @@ impl SlotStatus {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct AwaySummary {
     pub elapsed_secs: u64,
     pub metal: f64,
@@ -131,6 +131,9 @@ pub struct AwaySummary {
     pub fleets_returned: u32,
     pub expeditions: u32,
     pub raids: u32,
+    pub deliveries: Vec<String>,
+    pub stalls: Vec<String>,
+    pub completed: Vec<String>,
     pub events: Vec<String>,
 }
 
@@ -1813,6 +1816,9 @@ pub struct AwaySnapshot {
     pub builds: u32,
     pub research: u32,
     pub events: usize,
+    pub deliveries: usize,
+    pub stalls: usize,
+    pub completed: usize,
 }
 
 pub fn snapshot_away(state: &hoshi_core::GameState) -> AwaySnapshot {
@@ -1824,6 +1830,9 @@ pub fn snapshot_away(state: &hoshi_core::GameState) -> AwaySnapshot {
         builds: building_levels(state),
         research: research_levels(state),
         events: state.events.len(),
+        deliveries: state.logistics.deliveries.len(),
+        stalls: state.logistics.stalls.len(),
+        completed: state.logistics.completed.len(),
     }
 }
 
@@ -1855,6 +1864,27 @@ pub fn summarize_away(before: &AwaySnapshot, after: &hoshi_core::GameState) -> A
         fleets_returned,
         expeditions,
         raids,
+        deliveries: after
+            .logistics
+            .deliveries
+            .iter()
+            .skip(before.deliveries)
+            .cloned()
+            .collect(),
+        stalls: after
+            .logistics
+            .stalls
+            .iter()
+            .skip(before.stalls)
+            .cloned()
+            .collect(),
+        completed: after
+            .logistics
+            .completed
+            .iter()
+            .skip(before.completed)
+            .cloned()
+            .collect(),
         events: new_events,
     }
 }
@@ -1940,6 +1970,27 @@ mod tests {
         let small = render(&title, 80, 24);
         let _ = small;
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn summarize_away_lists_deliveries_stalls_and_completed() {
+        let mut state = GameState::new(0);
+        let before = snapshot_away(&state);
+        state
+            .logistics
+            .deliveries
+            .push("delivered 10 metal to 1:1:2".into());
+        state
+            .logistics
+            .stalls
+            .push("stall: full storage (metal) at 1:1:1".into());
+        state.logistics.completed.push("metal mine lv 2".into());
+        state.last_tick_unix = 60;
+        let summary = summarize_away(&before, &state);
+        assert_eq!(summary.elapsed_secs, 60);
+        assert_eq!(summary.deliveries, vec!["delivered 10 metal to 1:1:2"]);
+        assert_eq!(summary.stalls, vec!["stall: full storage (metal) at 1:1:1"]);
+        assert_eq!(summary.completed, vec!["metal mine lv 2"]);
     }
 
     #[test]

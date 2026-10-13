@@ -308,15 +308,10 @@ mod tests {
         let summary = summarize_away(
             &AwaySummary {
                 elapsed_secs: 3_600,
-                metal: 0.0,
-                crystal: 0.0,
-                deuterium: 0.0,
                 builds: 2,
-                research: 0,
                 fleets_returned: 1,
-                expeditions: 0,
                 raids: 1,
-                events: Vec::new(),
+                ..AwaySummary::default()
             },
             prefs,
         )

@@ -787,7 +787,10 @@ impl App {
                 away.builds, away.research, away.fleets_returned, away.expeditions, away.raids
             )),
         ];
-        for event in away.events.iter().take(8) {
+        push_away_section(&mut lines, "deliveries", &away.deliveries);
+        push_away_section(&mut lines, "stalls", &away.stalls);
+        push_away_section(&mut lines, "completed", &away.completed);
+        for event in away.events.iter().take(4) {
             lines.push(Line::from(event.clone()));
         }
         lines.push(Line::from(format!(
@@ -2502,6 +2505,16 @@ fn fleet_bar(n: u32) -> String {
     "*".repeat(n.min(40) as usize)
 }
 
+fn push_away_section(lines: &mut Vec<Line<'static>>, title: &str, items: &[String]) {
+    if items.is_empty() {
+        return;
+    }
+    lines.push(Line::from(format!("{title}:")));
+    for item in items.iter().take(3) {
+        lines.push(Line::from(item.clone()));
+    }
+}
+
 fn render_overlay(frame: &mut Frame<'_>, title: impl Into<String>, lines: Vec<Line<'static>>) {
     let area = frame.area();
     frame.render_widget(Clear, area);
@@ -2753,14 +2766,9 @@ mod tests {
         app.set_away(crate::title::AwaySummary {
             elapsed_secs: 120,
             metal: 10.0,
-            crystal: 0.0,
-            deuterium: 0.0,
             builds: 1,
-            research: 0,
-            fleets_returned: 0,
-            expeditions: 0,
-            raids: 0,
             events: vec!["raid: lost".into()],
+            ..crate::title::AwaySummary::default()
         });
         let text = render_text(&app, 80, 24);
         assert!(text.contains("while you were away"), "{text}");
@@ -2775,6 +2783,25 @@ mod tests {
         app.handle_key(KeyCode::Char('w'), 1_000);
         let text = render_text(&app, 80, 24);
         assert!(text.contains("while you were away"), "{text}");
+    }
+
+    #[test]
+    fn away_overlay_lists_deliveries_stalls_and_completed() {
+        let mut app = App::new(GameState::new(1_000));
+        app.set_away(AwaySummary {
+            elapsed_secs: 60,
+            deliveries: vec!["delivered 100 metal to 1:1:2".into()],
+            stalls: vec!["stall: energy deficit at 1:1:1".into()],
+            completed: vec!["metal mine lv 2".into()],
+            ..AwaySummary::default()
+        });
+        let text = render_text(&app, 80, 24);
+        assert!(text.contains("deliveries:"), "{text}");
+        assert!(text.contains("delivered 100 metal to 1:1:2"), "{text}");
+        assert!(text.contains("stalls:"), "{text}");
+        assert!(text.contains("stall: energy deficit at 1:1:1"), "{text}");
+        assert!(text.contains("completed:"), "{text}");
+        assert!(text.contains("metal mine lv 2"), "{text}");
     }
 
     #[test]
@@ -2929,15 +2956,9 @@ mod tests {
         app.replay = None;
         app.set_away(AwaySummary {
             elapsed_secs: 10,
-            metal: 0.0,
-            crystal: 0.0,
-            deuterium: 0.0,
-            builds: 0,
-            research: 0,
-            fleets_returned: 0,
-            expeditions: 0,
             raids: 1,
             events: vec!["raid: replay".into()],
+            ..AwaySummary::default()
         });
         app.handle_key(KeyCode::Char('r'), 1_000);
         assert!(app.replay_active());
@@ -3893,15 +3914,8 @@ mod tests {
         let mut app = App::new(state);
         app.set_away(AwaySummary {
             elapsed_secs: 10,
-            metal: 0.0,
-            crystal: 0.0,
-            deuterium: 0.0,
-            builds: 0,
-            research: 0,
-            fleets_returned: 0,
-            expeditions: 0,
-            raids: 0,
             events: vec!["away".into()],
+            ..AwaySummary::default()
         });
         app.handle_key(KeyCode::Char('x'), 1_000);
         assert!(app.away_hidden);

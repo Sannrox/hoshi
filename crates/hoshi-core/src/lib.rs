@@ -120,7 +120,7 @@ pub use simulate::{
     DaySnapshot, HeavyIndustryReport, PrestigeSimRow, SimReport, heavy_industry_check,
     simulate_greedy, tactics_no_combo_dominates,
 };
-pub use state::{GameEvent, GameState, ResourceKind, Resources};
+pub use state::{GameEvent, GameState, LogisticsGlance, ResourceKind, Resources};
 pub use story::{PendingStory, StoryCatalog, StoryChoice, StoryError, StoryEvent};
 pub use tactics::{
     Admiral, AdmiralTrait, FleetTactics, Formation, PendingTactical, Stance, TacticalPlan,

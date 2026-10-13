@@ -197,6 +197,7 @@ pub enum FleetError {
         used: u32,
         cap: u32,
     },
+    DestFull,
 }
 
 impl fmt::Display for FleetError {
@@ -254,6 +255,7 @@ impl fmt::Display for FleetError {
             FleetError::ColonyCap { used, cap } => {
                 write!(f, "colony cap reached ({used}/{cap})")
             }
+            FleetError::DestFull => write!(f, "destination storage is full"),
         }
     }
 }
