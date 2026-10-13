@@ -433,7 +433,7 @@ fn extract_err(raw: &str) -> String {
 }
 
 fn spawn_bot(bot: &Path) -> Command {
-    match bot.extension().and_then(|s| s.to_str()) {
+    let mut cmd = match bot.extension().and_then(|s| s.to_str()) {
         Some("py") => {
             let mut cmd = Command::new("python3");
             cmd.arg(bot);
@@ -445,7 +445,47 @@ fn spawn_bot(bot: &Path) -> Command {
             cmd
         }
         _ => Command::new(bot),
+    };
+    drop_inherited_fds(&mut cmd);
+    cmd
+}
+
+fn drop_inherited_fds(cmd: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // Child must not inherit save-lock fds. On Linux flock stays held
+        // until every copied descriptor is closed.
+        unsafe {
+            cmd.pre_exec(|| {
+                close_extra_fds();
+                Ok(())
+            });
+        }
     }
+    #[cfg(not(unix))]
+    {
+        let _ = cmd;
+    }
+}
+
+#[cfg(unix)]
+fn close_extra_fds() {
+    unsafe {
+        let max = getdtablesize();
+        if max > 3 {
+            for fd in 3..max {
+                libc_close(fd);
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+unsafe extern "C" {
+    fn getdtablesize() -> i32;
+    #[link_name = "close"]
+    fn libc_close(fd: i32) -> i32;
 }
 
 fn dir_or_dot(path: &Path) -> PathBuf {
