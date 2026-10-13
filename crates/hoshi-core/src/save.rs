@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 29;
+pub const SCHEMA_VERSION: u32 = 30;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -183,7 +183,10 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM history_events;
          DELETE FROM delegations;
          DELETE FROM assignments;
-         DELETE FROM leaders;",
+         DELETE FROM leaders;
+         DELETE FROM vehicle_ships;
+         DELETE FROM vehicles;
+         DELETE FROM planned_missions;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -484,6 +487,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
     insert_tactics(&tx, state)?;
     insert_history(&tx, state)?;
     insert_leaders(&tx, state)?;
+    insert_planning(&tx, state)?;
     for (i, colony) in state.colonies.iter().enumerate() {
         let planet_id = (i as i64) + 2;
         tx.execute(
@@ -1103,6 +1107,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     load_tactics(conn, &mut state)?;
     load_history(conn, &mut state)?;
     load_leaders(conn, &mut state)?;
+    load_planning(conn, &mut state)?;
     state.sync_raid_schedule_after_standing(state.last_tick_unix);
 
     let mut stmt = conn.prepare(
@@ -1947,6 +1952,9 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "leaders" => "SELECT COUNT(*) FROM leaders",
         "assignments" => "SELECT COUNT(*) FROM assignments",
         "delegations" => "SELECT COUNT(*) FROM delegations",
+        "vehicles" => "SELECT COUNT(*) FROM vehicles",
+        "vehicle_ships" => "SELECT COUNT(*) FROM vehicle_ships",
+        "planned_missions" => "SELECT COUNT(*) FROM planned_missions",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -2008,7 +2016,10 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "history_snapshots")?
         + count_rows(conn, "leaders")?
         + count_rows(conn, "assignments")?
-        + count_rows(conn, "delegations")?)
+        + count_rows(conn, "delegations")?
+        + count_rows(conn, "vehicles")?
+        + count_rows(conn, "vehicle_ships")?
+        + count_rows(conn, "planned_missions")?)
 }
 
 fn migrate(conn: &Connection) -> Result<(), SaveError> {
@@ -2105,6 +2116,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 29 {
         migrate_v29(conn)?;
+    }
+    if found < 30 {
+        migrate_v30(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -2933,6 +2947,49 @@ fn migrate_v29(conn: &Connection) -> Result<(), SaveError> {
     Ok(())
 }
 
+fn migrate_v30(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS vehicles (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            galaxy INTEGER NOT NULL,
+            system INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            free_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS vehicle_ships (
+            vehicle_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            count INTEGER NOT NULL,
+            PRIMARY KEY (vehicle_id, kind)
+        );
+        CREATE TABLE IF NOT EXISTS planned_missions (
+            id INTEGER PRIMARY KEY,
+            vehicle_id INTEGER NOT NULL,
+            origin_g INTEGER NOT NULL,
+            origin_s INTEGER NOT NULL,
+            origin_p INTEGER NOT NULL,
+            dest_g INTEGER NOT NULL,
+            dest_s INTEGER NOT NULL,
+            dest_p INTEGER NOT NULL,
+            transfer TEXT NOT NULL,
+            customer TEXT NOT NULL,
+            window_opens INTEGER NOT NULL,
+            window_closes INTEGER NOT NULL,
+            launched_at INTEGER NOT NULL,
+            arrives_at INTEGER NOT NULL,
+            delta_v REAL NOT NULL,
+            fuel_mass REAL NOT NULL,
+            cargo_metal REAL NOT NULL,
+            cargo_crystal REAL NOT NULL,
+            cargo_deuterium REAL NOT NULL
+        );
+        ",
+    )?;
+    Ok(())
+}
+
 fn meta_last_tick(conn: &Connection) -> Result<i64, SaveError> {
     conn.query_row("SELECT last_tick_unix FROM meta WHERE id = 1", [], |row| {
         row.get(0)
@@ -3481,6 +3538,229 @@ fn load_leaders(conn: &Connection, state: &mut GameState) -> Result<(), SaveErro
     state.next_leader_id = max_id.saturating_add(1).max(state.next_admiral_id);
     state.next_admiral_id = state.next_leader_id;
     state.sync_admirals_from_leaders();
+    Ok(())
+}
+
+fn insert_planning(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<(), SaveError> {
+    for vehicle in &state.vehicles {
+        tx.execute(
+            "INSERT INTO vehicles (id, name, galaxy, system, position, free_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                vehicle.id as i64,
+                vehicle.name,
+                vehicle.coord.galaxy as i64,
+                vehicle.coord.system as i64,
+                vehicle.coord.position as i64,
+                vehicle.free_at as i64,
+            ],
+        )?;
+        for kind in ShipKind::ALL {
+            let count = vehicle.ships.get(kind);
+            if count == 0 {
+                continue;
+            }
+            tx.execute(
+                "INSERT INTO vehicle_ships (vehicle_id, kind, count) VALUES (?1, ?2, ?3)",
+                params![vehicle.id as i64, kind.as_key(), count],
+            )?;
+        }
+    }
+    for mission in &state.planned {
+        tx.execute(
+            "INSERT INTO planned_missions (
+                id, vehicle_id, origin_g, origin_s, origin_p, dest_g, dest_s, dest_p,
+                transfer, customer, window_opens, window_closes, launched_at, arrives_at,
+                delta_v, fuel_mass, cargo_metal, cargo_crystal, cargo_deuterium
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+            params![
+                mission.id as i64,
+                mission.vehicle_id as i64,
+                mission.route.origin.galaxy as i64,
+                mission.route.origin.system as i64,
+                mission.route.origin.position as i64,
+                mission.route.dest.galaxy as i64,
+                mission.route.dest.system as i64,
+                mission.route.dest.position as i64,
+                mission.transfer.as_key(),
+                mission.customer.as_key(),
+                mission.window.opens_at as i64,
+                mission.window.closes_at as i64,
+                mission.launched_at as i64,
+                mission.arrives_at as i64,
+                mission.delta_v,
+                mission.fuel_mass,
+                mission.payload.cargo.metal,
+                mission.payload.cargo.crystal,
+                mission.payload.cargo.deuterium,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn load_planning(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
+    if !table_exists(conn, "vehicles") {
+        return Ok(());
+    }
+    let mut stmt = conn
+        .prepare("SELECT id, name, galaxy, system, position, free_at FROM vehicles ORDER BY id")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, i64>(5)?,
+        ))
+    })?;
+    state.vehicles.clear();
+    for row in rows {
+        let (id, name, g, s, p, free_at) = row?;
+        state.vehicles.push(crate::Vehicle {
+            id: unix_ts(id)?,
+            name,
+            ships: Fleet::default(),
+            coord: Coord {
+                galaxy: u16::try_from(g).map_err(|_| SaveError::Corrupt("vehicle galaxy"))?,
+                system: u16::try_from(s).map_err(|_| SaveError::Corrupt("vehicle system"))?,
+                position: u16::try_from(p).map_err(|_| SaveError::Corrupt("vehicle position"))?,
+            },
+            free_at: unix_ts(free_at)?,
+        });
+    }
+    drop(stmt);
+    if table_exists(conn, "vehicle_ships") {
+        let mut stmt = conn.prepare(
+            "SELECT vehicle_id, kind, count FROM vehicle_ships ORDER BY vehicle_id, kind",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (id, kind, count) = row?;
+            let id = unix_ts(id)?;
+            let kind = ShipKind::from_key(&kind).ok_or(SaveError::Corrupt("vehicle ship kind"))?;
+            let count =
+                u32::try_from(count).map_err(|_| SaveError::Corrupt("vehicle ship count"))?;
+            if let Some(vehicle) = state.vehicles.iter_mut().find(|v| v.id == id) {
+                vehicle.ships.add(kind, count);
+            }
+        }
+    }
+    state.next_vehicle_id = state
+        .vehicles
+        .iter()
+        .map(|v| v.id)
+        .max()
+        .map(|id| id.saturating_add(1))
+        .unwrap_or(0);
+    if !table_exists(conn, "planned_missions") {
+        return Ok(());
+    }
+    let mut stmt = conn.prepare(
+        "SELECT id, vehicle_id, origin_g, origin_s, origin_p, dest_g, dest_s, dest_p,
+                transfer, customer, window_opens, window_closes, launched_at, arrives_at,
+                delta_v, fuel_mass, cargo_metal, cargo_crystal, cargo_deuterium
+         FROM planned_missions ORDER BY id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, i64>(5)?,
+            row.get::<_, i64>(6)?,
+            row.get::<_, i64>(7)?,
+            row.get::<_, String>(8)?,
+            row.get::<_, String>(9)?,
+            row.get::<_, i64>(10)?,
+            row.get::<_, i64>(11)?,
+            row.get::<_, i64>(12)?,
+            row.get::<_, i64>(13)?,
+            row.get::<_, f64>(14)?,
+            row.get::<_, f64>(15)?,
+            row.get::<_, f64>(16)?,
+            row.get::<_, f64>(17)?,
+            row.get::<_, f64>(18)?,
+        ))
+    })?;
+    state.planned.clear();
+    for row in rows {
+        let (
+            id,
+            vehicle_id,
+            og,
+            os,
+            op,
+            dg,
+            ds,
+            dp,
+            transfer,
+            customer,
+            opens,
+            closes,
+            launched,
+            arrives,
+            delta_v,
+            fuel_mass,
+            metal,
+            crystal,
+            deuterium,
+        ) = row?;
+        let transfer = crate::TransferKind::from_key(&transfer)
+            .ok_or(SaveError::Corrupt("planned transfer"))?;
+        let customer =
+            crate::Customer::parse(&customer).ok_or(SaveError::Corrupt("planned customer"))?;
+        state.planned.push(crate::PlannedMission {
+            id: unix_ts(id)?,
+            vehicle_id: unix_ts(vehicle_id)?,
+            route: crate::Route {
+                origin: Coord {
+                    galaxy: u16::try_from(og).map_err(|_| SaveError::Corrupt("origin galaxy"))?,
+                    system: u16::try_from(os).map_err(|_| SaveError::Corrupt("origin system"))?,
+                    position: u16::try_from(op)
+                        .map_err(|_| SaveError::Corrupt("origin position"))?,
+                },
+                dest: Coord {
+                    galaxy: u16::try_from(dg).map_err(|_| SaveError::Corrupt("dest galaxy"))?,
+                    system: u16::try_from(ds).map_err(|_| SaveError::Corrupt("dest system"))?,
+                    position: u16::try_from(dp).map_err(|_| SaveError::Corrupt("dest position"))?,
+                },
+            },
+            transfer,
+            customer,
+            window: crate::LaunchWindow {
+                opens_at: unix_ts(opens)?,
+                closes_at: unix_ts(closes)?,
+            },
+            launched_at: unix_ts(launched)?,
+            arrives_at: unix_ts(arrives)?,
+            delta_v,
+            fuel_mass,
+            payload: crate::Payload {
+                cargo: Resources {
+                    metal,
+                    crystal,
+                    deuterium,
+                },
+            },
+        });
+    }
+    state.next_planned_id = state
+        .planned
+        .iter()
+        .map(|m| m.id)
+        .max()
+        .map(|id| id.saturating_add(1))
+        .unwrap_or(0);
     Ok(())
 }
 
@@ -5518,6 +5798,67 @@ mod tests {
                 .iter()
                 .all(|row| row.retires_at() > loaded.last_tick_unix)
         );
+    }
+
+    #[test]
+    fn migrate_v30_round_trips_vehicles_and_planned_missions() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v30(&conn).unwrap();
+        migrate_v30(&conn).unwrap();
+        let mut state = GameState::new(10);
+        state.fleet.add(ShipKind::SmallCargo, 2);
+        let id = state
+            .register_vehicle(
+                Coord::HOME,
+                {
+                    let mut ships = Fleet::default();
+                    ships.add(ShipKind::SmallCargo, 1);
+                    ships
+                },
+                10,
+            )
+            .unwrap();
+        state.planned.push(crate::PlannedMission {
+            id: 7,
+            vehicle_id: id,
+            route: crate::Route {
+                origin: Coord::HOME,
+                dest: Coord {
+                    galaxy: 1,
+                    system: 1,
+                    position: 8,
+                },
+            },
+            transfer: crate::TransferKind::Hohmann,
+            customer: crate::Customer::Colony,
+            window: crate::LaunchWindow {
+                opens_at: 10,
+                closes_at: 130,
+            },
+            launched_at: 10,
+            arrives_at: 400,
+            delta_v: 1_234.0,
+            fuel_mass: 50.0,
+            payload: crate::Payload {
+                cargo: Resources {
+                    metal: 10.0,
+                    crystal: 0.0,
+                    deuterium: 0.0,
+                },
+            },
+        });
+        state.next_planned_id = 8;
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.vehicles.len(), 1);
+        assert_eq!(loaded.vehicles[0].id, id);
+        assert_eq!(loaded.vehicles[0].ships.get(ShipKind::SmallCargo), 1);
+        assert_eq!(loaded.planned.len(), 1);
+        assert_eq!(loaded.planned[0].id, 7);
+        assert_eq!(loaded.planned[0].transfer, crate::TransferKind::Hohmann);
+        assert_eq!(loaded.next_planned_id, 8);
+        assert_eq!(count_rows(&conn, "vehicles").unwrap(), 1);
+        assert_eq!(count_rows(&conn, "planned_missions").unwrap(), 1);
     }
 
     #[test]

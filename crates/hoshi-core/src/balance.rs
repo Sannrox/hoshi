@@ -349,6 +349,7 @@ pub struct BalanceConfig {
     pub moons: crate::MoonConfig,
     pub tactics: crate::TacticsConfig,
     pub leaders: crate::LeaderConfig,
+    pub orbits: crate::OrbitConfig,
 }
 
 impl BalanceConfig {
@@ -433,6 +434,8 @@ struct File {
     daily: Option<FileDaily>,
     #[serde(default)]
     moons: Option<crate::moons::FileMoons>,
+    #[serde(default)]
+    orbits: crate::orbits::FileOrbits,
 }
 
 #[derive(Deserialize)]
@@ -1333,6 +1336,7 @@ impl File {
                 .unwrap_or_default(),
             tactics: crate::TacticsConfig::default(),
             leaders: crate::LeaderConfig::default(),
+            orbits: self.orbits.into_config().map_err(BalanceError::Invalid)?,
             market: crate::MarketConfig {
                 enabled: self.market.enabled,
                 tick_secs: self.market.tick_secs,

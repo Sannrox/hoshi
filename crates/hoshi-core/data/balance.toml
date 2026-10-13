@@ -308,6 +308,33 @@ min_distance = 5.0
 fuel_distance = 35000.0
 base_fleet_slots = 1
 
+# Circular-orbit planning for PlanMission. Lengths are metres; coast_compress
+# is game seconds per real coast second. Existing fleet send still uses [flight].
+[orbits]
+mu_star = 1.3271244e20
+au_metres = 1.495978707e11
+inner_au = 1.0
+au_per_slot = 0.1
+system_au_base = 40.0
+system_au_step = 5.0
+galaxy_au = 1.0e5
+coast_compress = 2.7e-5
+window_half_secs = 120
+window_count = 4
+kg_per_hull = 2.0
+kg_per_cargo = 1.0
+m3_per_cargo = 1.0
+combustion_ve = 3100.0
+impulse_ve = 8000.0
+hyperspace_ve = 30000.0
+well_rocky = 800.0
+well_ice = 500.0
+well_gas_giant = 1500.0
+high_energy_dv = 1.65
+high_energy_time = 0.55
+assist_dv = 0.82
+turnaround_secs = 120
+
 [planet_types.rocky]
 metal = 0.10
 crystal = 0.10

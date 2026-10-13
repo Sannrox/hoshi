@@ -1,4 +1,4 @@
-//! Overview, planet, shipyard, wonder, prestige, achievements, daily, production, market, diplomacy, laws, reports and map screens.
+//! Overview, planet, shipyard, wonder, prestige, achievements, daily, production, market, diplomacy, laws, reports, ops and map screens.
 //! Core owns the rules; this module only renders and turns keys into core commands.
 
 use crate::clip::copy_to_clipboard;
@@ -35,6 +35,7 @@ pub enum Screen {
     Reports,
     History,
     Staff,
+    Ops,
     Map,
 }
 
@@ -488,7 +489,8 @@ impl App {
             Screen::Laws => Screen::Reports,
             Screen::Reports => Screen::History,
             Screen::History => Screen::Staff,
-            Screen::Staff => Screen::Map,
+            Screen::Staff => Screen::Ops,
+            Screen::Ops => Screen::Map,
             Screen::Map => Screen::Overview,
         };
         self.selected = 0;
@@ -533,6 +535,7 @@ impl App {
             Screen::Reports => HelpContext::Reports,
             Screen::History => HelpContext::History,
             Screen::Staff => HelpContext::Staff,
+            Screen::Ops => HelpContext::Ops,
             Screen::Map => HelpContext::Map,
         }
     }
@@ -563,49 +566,52 @@ impl App {
     pub fn draw(&self, frame: &mut Frame<'_>) {
         let title = match self.screen {
             Screen::Overview => {
-                " hoshi  [overview] planet shipyard wonder pres ach daily prod market diplo laws rpt log stf map "
+                " hoshi  [overview] planet yard wonder pres ach daily prod market diplo laws rpt log stf ops map "
             }
             Screen::Planet => {
-                " hoshi  overview [planet] shipyard wonder pres ach daily prod market diplo laws rpt log stf map "
+                " hoshi  overview [planet] yard wonder pres ach daily prod market diplo laws rpt log stf ops map "
             }
             Screen::Shipyard => {
-                " hoshi  overview planet [shipyard] wonder pres ach daily prod market diplo laws rpt log stf map "
+                " hoshi  overview planet [yard] wonder pres ach daily prod market diplo laws rpt log stf ops map "
             }
             Screen::Wonder => {
-                " hoshi  overview planet shipyard [wonder] pres ach daily prod market diplo laws rpt log stf map "
+                " hoshi  overview planet yard [wonder] pres ach daily prod market diplo laws rpt log stf ops map "
             }
             Screen::Prestige => {
-                " hoshi  overview planet shipyard wonder [prestige] ach daily prod market diplo laws rpt log stf map "
+                " hoshi  overview planet yard wonder [prestige] ach daily prod market diplo laws rpt log stf ops map "
             }
             Screen::Achievements => {
-                " hoshi  overview planet shipyard wonder pres [ach] daily prod market diplo laws rpt log stf map "
+                " hoshi  overview planet yard wonder pres [ach] daily prod market diplo laws rpt log stf ops map "
             }
             Screen::Daily => {
-                " hoshi  overview planet shipyard wonder pres ach [daily] prod market diplo laws rpt log stf map "
+                " hoshi  overview planet yard wonder pres ach [daily] prod market diplo laws rpt log stf ops map "
             }
             Screen::Production => {
-                " hoshi  overview planet shipyard wonder pres ach daily [prod] market diplo laws rpt log stf map "
+                " hoshi  overview planet yard wonder pres ach daily [prod] market diplo laws rpt log stf ops map "
             }
             Screen::Market => {
-                " hoshi  overview planet shipyard wonder pres ach daily prod [market] diplo laws rpt log stf map "
+                " hoshi  overview planet yard wonder pres ach daily prod [market] diplo laws rpt log stf ops map "
             }
             Screen::Diplomacy => {
-                " hoshi  overview planet shipyard wonder pres ach daily prod market [diplo] laws rpt log stf map "
+                " hoshi  overview planet yard wonder pres ach daily prod market [diplo] laws rpt log stf ops map "
             }
             Screen::Laws => {
-                " hoshi  overview planet shipyard wonder pres ach daily prod market diplo [laws] rpt log stf map "
+                " hoshi  overview planet yard wonder pres ach daily prod market diplo [laws] rpt log stf ops map "
             }
             Screen::Reports => {
-                " hoshi  overview planet shipyard wonder pres ach daily prod market diplo laws [reports] log stf map "
+                " hoshi  overview planet yard wonder pres ach daily prod market diplo laws [reports] log stf ops map "
             }
             Screen::History => {
-                " hoshi  overview planet shipyard wonder pres ach daily prod market diplo laws rpt [log] stf map "
+                " hoshi  overview planet yard wonder pres ach daily prod market diplo laws rpt [log] stf ops map "
             }
             Screen::Staff => {
-                " hoshi  overview planet shipyard wonder pres ach daily prod market diplo laws rpt log [stf] map "
+                " hoshi  overview planet yard wonder pres ach daily prod market diplo laws rpt log [stf] ops map "
+            }
+            Screen::Ops => {
+                " hoshi  overview planet yard wonder pres ach daily prod market diplo laws rpt log stf [ops] map "
             }
             Screen::Map => {
-                " hoshi  overview planet shipyard wonder pres ach daily prod market diplo laws rpt log stf [map] "
+                " hoshi  overview planet yard wonder pres ach daily prod market diplo laws rpt log stf ops [map] "
             }
         };
         let block = Block::bordered().title(title);
@@ -962,7 +968,7 @@ impl App {
             }
             Screen::Wonder => self.activate_wonder(now_unix),
             Screen::Prestige => self.activate_prestige(now_unix),
-            Screen::Achievements | Screen::Daily | Screen::Production => {}
+            Screen::Achievements | Screen::Daily | Screen::Production | Screen::Ops => {}
             Screen::Market => self.activate_market(now_unix),
             Screen::Diplomacy => self.activate_diplomacy(now_unix),
             Screen::Laws => self.activate_law(now_unix),
@@ -1256,7 +1262,8 @@ impl App {
             | Screen::Market
             | Screen::Diplomacy
             | Screen::Laws
-            | Screen::Reports => {}
+            | Screen::Reports
+            | Screen::Ops => {}
         }
     }
 
@@ -1282,6 +1289,15 @@ impl App {
             Screen::Reports => self.state.outposts.len(),
             Screen::History => self.history_rows().len(),
             Screen::Staff => self.state.leaders.len(),
+            Screen::Ops => {
+                self.state.vehicles.len()
+                    + self.state.planned.len()
+                    + self
+                        .state
+                        .mission_schedule(self.state.last_tick_unix)
+                        .alerts
+                        .len()
+            }
             Screen::Map => 0,
         }
     }
@@ -1479,6 +1495,9 @@ impl App {
                 "{tab} screens  {select}  {confirm} assign/delegate  {cancel} revoke  {} recruit  {quit}  {help}",
                 k.primary(Binding::Increase)
             ),
+            Screen::Ops => {
+                format!("{tab} screens  {select}  schedule  {quit}  {help}")
+            }
             Screen::Map => format!(
                 "{tab} screens  {}{}{}{} cursor  {confirm} dispatch  {quit}  {help}",
                 k.primary(Binding::CursorLeft),
@@ -1589,6 +1608,7 @@ impl App {
             Screen::Reports => self.report_lines(height),
             Screen::History => self.history_lines(height),
             Screen::Staff => self.staff_lines(height),
+            Screen::Ops => self.ops_lines(height),
             Screen::Map => self.map_lines(height),
         }
     }
@@ -2532,6 +2552,62 @@ impl App {
         append_windowed(&mut rows, &entries, self.selected, height)
     }
 
+    fn ops_lines(&self, height: usize) -> Vec<Line<'static>> {
+        let schedule = self.state.mission_schedule(self.state.last_tick_unix);
+        let mut rows = vec![Line::from(format!(
+            "[ops] {} vehicles  {} missions  {} alerts",
+            schedule.vehicles.len(),
+            schedule.missions.len(),
+            schedule.alerts.len()
+        ))];
+        if schedule.vehicles.is_empty() && schedule.missions.is_empty() {
+            rows.push(Line::from(
+                "Register a vehicle with hoshi vehicle register, then mission plan.",
+            ));
+            return rows;
+        }
+        let mut entries = Vec::new();
+        let mut index = 0usize;
+        for vehicle in &schedule.vehicles {
+            let mark = if index == self.selected { '>' } else { ' ' };
+            index += 1;
+            let booked = if vehicle.free_at > self.state.last_tick_unix {
+                format!("booked until {}", vehicle.free_at)
+            } else {
+                "idle".into()
+            };
+            entries.push(Line::from(format!(
+                "{mark} #{} {} @ {}  {booked}",
+                vehicle.id, vehicle.name, vehicle.coord
+            )));
+        }
+        for mission in &schedule.missions {
+            let mark = if index == self.selected { '>' } else { ' ' };
+            index += 1;
+            entries.push(Line::from(format!(
+                "{mark} mission {} {} -> {}  {}  eta {}",
+                mission.id,
+                mission.route.origin,
+                mission.route.dest,
+                mission.transfer.as_key(),
+                mission.arrives_at.saturating_sub(self.state.last_tick_unix)
+            )));
+        }
+        for alert in &schedule.alerts {
+            let mark = if index == self.selected { '>' } else { ' ' };
+            index += 1;
+            let kind = match alert.kind {
+                hoshi_core::ScheduleAlertKind::DoubleBook => "double-book",
+                hoshi_core::ScheduleAlertKind::MissedWindow => "missed window",
+            };
+            entries.push(Line::from(format!(
+                "{mark} ! {kind} vehicle #{}  {}",
+                alert.vehicle_id, alert.detail
+            )));
+        }
+        append_windowed(&mut rows, &entries, self.selected, height)
+    }
+
     fn staff_lines(&self, height: usize) -> Vec<Line<'static>> {
         let mut rows = vec![Line::from(format!(
             "[stf] {} leaders  empty gov {:.0}%",
@@ -3019,8 +3095,8 @@ mod tests {
     use super::*;
     use hoshi_core::{
         BalanceConfig, Buildings, Clock, Colony, Coord, DiplomacyConfig, FakeClock, Fleet,
-        GameState, MarketConfig, PlanetType, RaidConfig, Resources, StoryCatalog, load_state,
-        open_save, save_state,
+        GameState, MarketConfig, PlanetType, RaidConfig, Resources, StoryCatalog, Vehicle,
+        load_state, open_save, save_state,
     };
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -3364,6 +3440,7 @@ mod tests {
         app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
+        app.handle_key(KeyCode::Tab, clock.now_unix());
         assert_eq!(app.screen, Screen::Overview);
         let energy = app
             .overview_techs()
@@ -3438,7 +3515,7 @@ mod tests {
     }
 
     fn open_map(app: &mut App, now: u64) {
-        for _ in 0..14 {
+        for _ in 0..15 {
             app.handle_key(KeyCode::Tab, now);
         }
         assert_eq!(app.screen, Screen::Map);
@@ -3458,7 +3535,7 @@ mod tests {
         let mut app = App::new(state);
         open_shipyard(&mut app, 1_000);
         let text = render_text(&app, 100, 32);
-        assert!(text.contains("[shipyard]"), "{text}");
+        assert!(text.contains("[yard]"), "{text}");
         assert!(text.contains("light fighter"), "{text}");
         assert!(text.contains("battleship"), "{text}");
         assert!(text.contains("x4"), "{text}");
@@ -3550,6 +3627,7 @@ mod tests {
         assert!(app.state.ship_queue.is_empty());
         assert_eq!(app.state.build_queue.len(), 1);
 
+        app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
@@ -4139,6 +4217,43 @@ mod tests {
         assert!(text.contains("[stf]"), "{text}");
         assert!(text.contains("Home fleet"), "{text}");
         assert!(text.contains("governor"), "{text}");
+    }
+
+    #[test]
+    fn ops_screen_lists_schedule_alerts() {
+        let mut app = App::new(GameState::new(1_000));
+        for _ in 0..14 {
+            app.handle_key(KeyCode::Tab, 1_000);
+        }
+        assert_eq!(app.screen, Screen::Ops);
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("[ops]"), "{text}");
+        assert!(text.contains("vehicles"), "{text}");
+    }
+
+    #[test]
+    fn ops_schedule_scrolls_to_the_selected_row() {
+        let mut state = GameState::new(1_000);
+        for id in 0..24 {
+            state.vehicles.push(Vehicle {
+                id,
+                name: format!("vehicle {id}"),
+                ships: Fleet::default(),
+                coord: Coord::HOME,
+                free_at: 1_000,
+            });
+        }
+        let mut app = App::new(state);
+        for _ in 0..14 {
+            app.handle_key(KeyCode::Tab, 1_000);
+        }
+        assert_eq!(app.screen, Screen::Ops);
+        for _ in 0..23 {
+            app.handle_key(KeyCode::Char('j'), 1_000);
+        }
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("#23"), "{text}");
+        assert!(!text.contains("#0 vehicle 0"), "{text}");
     }
 
     #[test]

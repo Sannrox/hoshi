@@ -252,6 +252,12 @@ pub struct GameState {
     pub logistics: LogisticsGlance,
     /// Append-only structured history with snapshots for time travel.
     pub history: crate::HistoryLog,
+    /// Parked named vehicles for orbital mission planning.
+    pub vehicles: Vec<crate::Vehicle>,
+    pub next_vehicle_id: u64,
+    /// In-flight planned missions (orbital transfers).
+    pub planned: Vec<crate::PlannedMission>,
+    pub next_planned_id: u64,
     pub config: BalanceConfig,
 }
 
@@ -339,6 +345,10 @@ impl GameState {
             interactive_tactics: false,
             logistics: LogisticsGlance::default(),
             history: crate::HistoryLog::default(),
+            vehicles: Vec::new(),
+            next_vehicle_id: 0,
+            planned: Vec::new(),
+            next_planned_id: 0,
             config,
         };
         state.install_starter_staff(now_unix);
@@ -427,6 +437,7 @@ impl GameState {
             let law_at = self.next_law_at();
             let logistics_at = self.next_logistics_at();
             let staff_at = self.next_staff_at();
+            let planned_at = self.next_planned_at();
             let Some(done_at) = min_time(
                 min_time(
                     min_time(
@@ -453,7 +464,7 @@ impl GameState {
                         ),
                     ),
                 ),
-                min_time(logistics_at, staff_at),
+                min_time(logistics_at, min_time(staff_at, planned_at)),
             ) else {
                 self.produce_until(now_unix);
                 self.apply_laws_at(now_unix);
@@ -536,6 +547,9 @@ impl GameState {
             }
             if mission_at == Some(done_at) {
                 self.advance_missions_at(done_at);
+            }
+            if planned_at == Some(done_at) {
+                self.advance_planned_at(done_at);
             }
             if route_at == Some(done_at) {
                 self.fire_routes_at(done_at);
@@ -1859,7 +1873,7 @@ impl GameState {
         }
     }
 
-    fn add_fleet_at(&mut self, coord: Coord, ships: Fleet) {
+    pub(crate) fn add_fleet_at(&mut self, coord: Coord, ships: Fleet) {
         if coord == self.home {
             for kind in ShipKind::ALL {
                 self.fleet.add(kind, ships.get(kind));
@@ -1877,7 +1891,7 @@ impl GameState {
         }
     }
 
-    fn credit_at(&mut self, coord: Coord, found: Resources) {
+    pub(crate) fn credit_at(&mut self, coord: Coord, found: Resources) {
         if coord == self.home {
             self.credit_capped(found);
             return;
@@ -4627,7 +4641,7 @@ impl GameState {
         Some(base)
     }
 
-    fn apply_faction_delta(
+    pub(crate) fn apply_faction_delta(
         &mut self,
         id: &str,
         delta: fn(&crate::FactionSpec) -> f64,
@@ -5978,6 +5992,7 @@ mod tests {
                 leaders.empty_admiral = 0.0;
                 leaders
             },
+            orbits: crate::OrbitConfig::default(),
         }
     }
 

@@ -8,6 +8,7 @@
 
 ### Added
 
+- Mission planning with circular orbits, synodic launch windows, rocket-equation fuel, and Hohmann / high-energy / gravity-assist transfers. Named vehicles, payloads, customers and routes go through `PlanMission` in core. `hoshi vehicle` / `hoshi mission` plus the TUI `ops` schedule (double-book and missed windows). Save schema v30. See `docs/realism.md` and `[orbits]` in `balance.toml`.
 - Local bot arena: `hoshi --arena arena run --seed --days` plays isolated CLI bots on the same galaxy seed, scores them, and appends a JSON/markdown leaderboard. Off until `arena = true` or `--arena`. Sample bots in `examples/bots/`. See `docs/arena.md`.
 - Leaders with roles (admiral, governor, minister), traits, assignments, aging, and delegated permissions with optional spend caps. Role checks run in core for player and `--as` actions. Governors change scheduling efficiency inside the energy budget; empty colonies take a small output penalty. Admirals still feed tactical combat. TUI `stf` screen and `hoshi staff`. Save schema v29.
 - Append-only event history with cause links, TUI search (`log` screen) and `hoshi log` (type, actor, object, time, lineage, `--at` glance, `--export` JSON lines). Time travel matches a recorded empire snapshot. The last 256 events and matching snapshots are retained (schema v28); the short 32-line event feed is unchanged.

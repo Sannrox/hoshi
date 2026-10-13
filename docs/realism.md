@@ -99,8 +99,11 @@ simplifications) but the **ordering** stays: inner hops are shorter than
 cross-galaxy hops, and a heavier ship burns more fuel for the same delta-v.
 
 Current `flight` units (`galaxy_unit`, `system_unit`, `position_unit`) are
-abstract lengths. New work should treat them as scaled metres and document
-the scale, not as unitless speed points.
+abstract lengths used by existing fleet send. PlanMission treats map slots as
+scaled astronomical units in `[orbits]` (`inner_au`, `au_per_slot`,
+`system_au_*`, `galaxy_au` times `au_metres`). Bundled slot 1 of system 1 is
+1 AU; slot 6 is 1.5 AU. Fuel for those missions is
+`delta-v = ve * ln(m0/mf)` with payload mass in the wet stack.
 
 ## Heat, waste and pollution
 
@@ -166,6 +169,16 @@ silent extra departure; they extend this list.
 | Instant communication across the galaxy | No light-lag UI; commands apply on the injected clock as soon as they are legal. |
 | No n-body gravity, no eclipses | Catch-up must stay deterministic and fast. |
 | Abstract flight units and ship `speed` points | Existing fleets already fly; a documented scale can replace the points later. |
+| Circular coplanar orbits, mean anomaly 0 at unix epoch | Catch-up stays a closed-form Hohmann estimate, not an integrator. |
+| Synodic windows and coast times share `coast_compress` | Real Hohmann months become minutes; inner hops stay shorter than outer hops. |
+| High-energy is a Hohmann scale factor, not a Lambert solver | One extra burn multiplier; still two burns and a coast. Windows use the shortened coast with the same 180° lead. |
+| Gravity assist is a delta-v discount when a body sits between the two radii | No patched-conic flyby; geometry is radius-only. |
+| Combined vehicle uses the lowest exhaust velocity among its ships | One stack, one rocket equation. |
+| Gravity-well burns are scaled below LEO so chemical ships can leave | Full well escape would demand unplayable mass ratios on the idle clock. |
+| Hull points map to kilograms through `kg_per_hull` | Keeps a combustion cargo inside a mid-game deuterium stockpile for a 1–1.5 AU hop. |
+| Propellant mass is paid from deuterium; it does not fill cargo volume | Tanks are part of the vehicle; cargo is payload. |
+| Inter-system and galaxy hops sit on summed AU radii around the same star | Keeps one μ and one Hohmann formula; ordering of hop size stays. |
+| Market-contract customers wait on later work | Colony and faction customers are live; the market lane is a later Issue. |
 | Construction stockpiles named metal / crystal / deuterium | Three columns keep the TUI and save small; chains already have real material names underneath. |
 | Solar output ignores orbital radius | Energy is already a cap; radius falloff is a follow-up, not a hidden extra. |
 | Round-based combat with rapid-fire tables | Seeded, short, offline-safe fights. Map new stats onto energy and mass rather than replacing the resolver. |
