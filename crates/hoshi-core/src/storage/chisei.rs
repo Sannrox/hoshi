@@ -713,6 +713,55 @@ mod tests {
     }
 
     #[test]
+    fn save_keeps_classified_object_ids_out_of_the_shared_graph() {
+        let path = unique_chisei("marking");
+        let mut store = ChiseiStorage::open(&path).unwrap();
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.enabled = false;
+        let mut state = GameState::with_config(1_000, cfg);
+        state.spy_reports.push(crate::SpyReport {
+            id: 9,
+            target: Coord::HOME,
+            created_at: 1_000,
+            probes_sent: 1,
+            probes_lost: 0,
+            detected: false,
+            score: 1.0,
+            tier: "fleet".into(),
+            resources: None,
+            fleet: None,
+            defences: None,
+            garrison: None,
+            kind: None,
+            size: None,
+            formation: None,
+            stance: None,
+        });
+        state
+            .classify(
+                crate::Actor::Player,
+                crate::ClassifiedKind::Report,
+                "9",
+                crate::Classification::Secret,
+                [crate::COMPARTMENT_INTEL.into()],
+            )
+            .unwrap();
+        store.save(&state).unwrap();
+        assert_eq!(
+            state
+                .marking_of(crate::ClassifiedKind::Report, "9")
+                .classification,
+            crate::Classification::Secret
+        );
+        assert!(store.objects().iter().all(|o| !matches!(
+            o.kind.as_str(),
+            "Marking" | "Compartment" | "Clearance" | "SharingAgreement"
+        )));
+        drop(store);
+        cleanup_dir(&path);
+    }
+
+    #[test]
     fn put_tenant_projects_a_second_player() {
         let path = unique_chisei("tenant");
         let mut store = ChiseiStorage::open(&path).unwrap();

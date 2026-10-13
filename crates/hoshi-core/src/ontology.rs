@@ -10,7 +10,17 @@ pub const CHISEI_API_VERSION: &str = "1.3.0";
 /// Portable ontology document version accepted by `sekai import`.
 pub const ONTOLOGY_SCHEMA_VERSION: u32 = 1;
 
-pub const OBJECT_TYPES: [&str; 5] = ["Player", "Planet", "Fleet", "Faction", "Outpost"];
+pub const OBJECT_TYPES: [&str; 9] = [
+    "Player",
+    "Planet",
+    "Fleet",
+    "Faction",
+    "Outpost",
+    "Marking",
+    "Compartment",
+    "Clearance",
+    "SharingAgreement",
+];
 pub const RELATIONS: [&str; 3] = ["owns", "stationed-at", "allied-with"];
 pub const ACTIONS: [&str; 5] = ["build", "research", "launch", "colonize", "invade"];
 

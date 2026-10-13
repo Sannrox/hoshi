@@ -63,3 +63,12 @@ attack = 0.95
 shield = 1.1
 production = 1.0
 policy = 1.0
+
+[[traits]]
+id = "disloyal"
+name = "Disloyal"
+portrait = "admiral"
+attack = 1.0
+shield = 1.0
+production = 1.0
+policy = 0.9

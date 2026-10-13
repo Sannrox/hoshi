@@ -17,7 +17,10 @@ bumps that version.
 ## Commands
 
 ```sh
-hoshi --save PATH [--seed N] [--balance PATH] state [--json]
+hoshi --save PATH [--seed N] [--balance PATH] state [--as player|leader:ID] [--json]
+hoshi --save PATH classify <kind> <id> --class open|internal|restricted|secret [--compartment ID] [--as player|leader:ID]
+hoshi --save PATH share <faction> --class open|internal|restricted|secret [--compartment ID]
+hoshi --save PATH incidents [--as player|leader:ID]
 hoshi --save PATH advise
 hoshi --save PATH log [--type KIND] [--actor ID] [--object ID] [--from UNIX] [--to UNIX] [--lineage ID] [--at UNIX] [--export PATH]
 hoshi --save PATH staff
@@ -31,6 +34,7 @@ hoshi --save PATH staff recruit [--name TEXT] [--trait ID]
 hoshi --save PATH staff assign <id> admiral|governor|minister [--target home|empire|g:s:p]
 hoshi --save PATH staff delegate <id> [--permission queue_build|accept_battle|propose_law] [--cap N]
 hoshi --save PATH staff revoke <id> [--permission queue_build|accept_battle|propose_law]
+hoshi --save PATH staff clearance <id> --class open|internal|restricted|secret [--compartment ID]
 hoshi --save PATH build <planet> <building> [--as player|leader:ID]
 hoshi --save PATH research <tech>
 hoshi --save PATH cancel <queue-item>
@@ -62,7 +66,7 @@ config keys (`metal_mine`, `light_fighter`). Queue item is `0`, `build:0`, or
 transports and is refused while defences remain. `spy` sends espionage probes and
 writes a report; `state` lists reports with age and attaches the latest report to
 each outpost so attack and invade can read it. `colonize` takes exactly `colony_ship:1`. `moon build` spends stockpile on a phalanx or jump gate at that planet's moon. `moon jump` moves parked ships instantly between two moons that both have gates. `moon scan` lists fleets the phalanx can see. Extra arguments
-on `state`, `build`, `research`, and `cancel` are invalid. Duration is seconds,
+on `build`, `research`, and `cancel` are invalid (`state` may take `--as`). Duration is seconds,
 or `30s` / `3m` / `1h` / `1d`.
 
 `advise` prints ranked next-move suggestions from the same player-visible
@@ -78,7 +82,9 @@ type (`+`/`-`) and opens lineage (Enter) or the glance (`r`).
 
 `vehicle register` assigns parked ships to a named vehicle. `mission windows` lists synodic launch windows with delta-v and coast time. `mission plan` is PlanMission (propose, check, apply): payload mass changes fuel through the rocket equation; `--window N` can book an upcoming window (the vehicle launches when it opens). A missed window or a double-booked vehicle is refused. `mission schedule` lists vehicles, in-flight plans, and double-book / missed-window alerts. Transfer is `hohmann`, `high_energy`, or `assist`. Customer is `colony` (owned dest, cargo credited there) or `faction:<id>` (cargo is delivered to the faction and standing moves by that faction's trade delta); `market` is refused.
 
-`staff` lists leaders, roles, assignments and delegations. `staff recruit` spends the configured cost. `staff assign` places one role per leader (reassignment waits `reassign_secs`). `staff delegate` lets that leader act with an optional spending cap; `staff revoke` removes it. `build --as leader:ID` runs the same queue checks under that leader's permissions.
+`staff` lists leaders, roles, assignments and delegations. `staff recruit` spends the configured cost. `staff assign` places one role per leader (reassignment waits `reassign_secs`). `staff delegate` lets that leader act with an optional spending cap; `staff revoke` removes it. `staff clearance` grants extra classification and compartments. `build --as leader:ID` runs the same queue checks under that leader's permissions.
+
+`classify` marks a `report`, `law`, `plan` or `fact`. Missing markings are Open. `state --as leader:ID` and `incidents --as` omit objects that role cannot see. Admirals start at Restricted/fleet, governors Internal/planet, ministers Internal/policy; the player is unrestricted. `share` writes an agreement with a faction at favored, honored or truce standing. Detected spy waves and the `disloyal` leader trait open leak incidents. Hidden data never leaves core for the TUI, CLI or a Chisei tenant save; the shared graph does not copy marked object ids.
 
 `--seed` on a new save starts deterministic mode: the wall clock is ignored and
 `tick --advance` is allowed. Live saves refuse `tick --advance`. The TUI refuses

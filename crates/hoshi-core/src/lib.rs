@@ -6,6 +6,7 @@ mod advisor;
 mod balance;
 mod buildings;
 mod chains;
+mod classification;
 mod clock;
 mod combat;
 mod commentary;
@@ -58,6 +59,11 @@ pub use balance::{
 };
 pub use buildings::{BuildError, BuildJob, BuildingKind, Buildings};
 pub use chains::{ChainConfig, GoodKind, GoodSpec, Recipe, component_kind};
+pub use classification::{
+    COMPARTMENT_FLEET, COMPARTMENT_INTEL, COMPARTMENT_PLANET, COMPARTMENT_POLICY, Classification,
+    ClassificationBoard, ClassificationError, ClassifiedKind, Clearance, LeakIncident, Marking,
+    SharingAgreement, join_compartments, parse_compartment, split_compartments,
+};
 pub use clock::{Clock, FakeClock, SystemClock};
 pub use combat::{
     CombatFrame, CombatLog, CombatModifiers, CombatReport, CombatWinner, GroundReport,
