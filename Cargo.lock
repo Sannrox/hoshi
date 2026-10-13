@@ -60,6 +60,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crc32fast"
+version = "1.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01a7799fd6b852db0e61728dde9a204c423b44d689dbd432522543614b490e78"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "crossterm"
 version = "0.28.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -218,6 +227,7 @@ name = "hoshi-core"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "mikura",
  "rusqlite",
  "serde",
  "toml",
@@ -338,6 +348,15 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
+name = "mikura"
+version = "0.2.0"
+source = "git+https://github.com/Sannrox/mikura?tag=v0.2.0#4ab09042a726e50426e6a0b0c4660c65b3c2383d"
+dependencies = [
+ "crc32fast",
+ "serde",
+]
 
 [[package]]
 name = "mio"

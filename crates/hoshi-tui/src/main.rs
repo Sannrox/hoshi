@@ -12,9 +12,9 @@ mod title;
 
 use app::{Action, App};
 use hoshi_core::{
-    BalanceConfig, Clock, GameState, SaveError, SystemClock, default_save_dir, encode_galaxy_seed,
-    inspect_save, load_or_new, lock_save, open_save, parse_galaxy_seed, resolve_save_path,
-    save_state, simulate_greedy,
+    BackendKind, BalanceConfig, Clock, GameState, SaveError, SystemClock, default_save_dir,
+    encode_galaxy_seed, inspect_save, lock_save, open_storage, parse_galaxy_seed,
+    resolve_save_path, simulate_greedy,
 };
 use portraits::{PortraitView, Protocol, detect_protocol};
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
@@ -221,8 +221,8 @@ fn run_new_game(args: &[String]) -> Result<(), LaunchError> {
     let now = SystemClock.now_unix();
     let state = GameState::new_live_galaxy(now, balance, seed);
     let _lock = lock_save(&path)?;
-    let mut conn = open_save(&path)?;
-    save_state(&mut conn, &state)?;
+    let mut store = open_storage(&path)?;
+    store.save(&state)?;
     println!("{}", encode_galaxy_seed(seed));
     Ok(())
 }
@@ -537,7 +537,7 @@ fn play_path(
     user: &config::UserConfig,
 ) -> Result<(), LaunchError> {
     let now = clock.now_unix();
-    if new_spec.is_none() && path.exists() {
+    if new_spec.is_none() && path.exists() && BackendKind::from_path(path) == BackendKind::Sqlite {
         match inspect_save(path) {
             Err(SaveError::Locked) => return Err(SaveError::Locked.into()),
             Err(e) => return Err(e.into()),
@@ -552,7 +552,7 @@ fn play_path(
         }
     }
     let _lock = lock_save(path)?;
-    let mut conn = open_save(path)?;
+    let mut store = open_storage(path)?;
     let mut state = if let Some(spec) = new_spec {
         apply_difficulty(&mut config, &spec.difficulty);
         let seed = spec.seed.unwrap_or(now.wrapping_mul(0x9E37_79B9_7F4A_7C15));
@@ -563,10 +563,10 @@ fn play_path(
         {
             state.inherit_prestige(spec.prestige);
         }
-        save_state(&mut conn, &state)?;
+        store.save(&state)?;
         state
     } else {
-        load_or_new(&mut conn, now, config)?
+        store.load_or_new(now, config)?
     };
     refuse_deterministic_tui(&state).map_err(|e| LaunchError {
         message: e.to_string(),
@@ -576,7 +576,7 @@ fn play_path(
     state.catch_up(now);
     if user.reset_tutorial {
         state.reset_hints();
-        save_state(&mut conn, &state)?;
+        store.save(&state)?;
         let mut cfg = user.clone();
         cfg.reset_tutorial = false;
         let dir = path.parent().unwrap_or_else(|| Path::new("."));
@@ -634,7 +634,7 @@ fn play_path(
         write_notify(app.poll_notify());
         if last_save.elapsed() >= SAVE_INTERVAL {
             app.state.finish_pending_tactical();
-            if let Err(e) = save_state(&mut conn, &app.state) {
+            if let Err(e) = store.save(&app.state) {
                 break Err(std::io::Error::other(e.to_string()));
             }
             last_save = Instant::now();
@@ -672,7 +672,7 @@ fn play_path(
     };
     ratatui::restore();
     app.state.finish_pending_tactical();
-    save_state(&mut conn, &app.state)?;
+    store.save(&app.state)?;
     result?;
     Ok(())
 }

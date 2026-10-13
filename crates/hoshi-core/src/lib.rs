@@ -32,6 +32,7 @@ mod save;
 mod ships;
 mod simulate;
 mod state;
+mod storage;
 mod story;
 mod tactics;
 mod tutorial;
@@ -142,6 +143,9 @@ pub use simulate::{
     simulate_greedy, tactics_no_combo_dominates,
 };
 pub use state::{GameEvent, GameState, LogisticsGlance, ResourceKind, Resources};
+#[cfg(feature = "mikura")]
+pub use storage::MikuraStorage;
+pub use storage::{BackendKind, SqliteStorage, Storage, open_storage};
 pub use story::{PendingStory, StoryCatalog, StoryChoice, StoryError, StoryEvent};
 pub use tactics::{
     Admiral, AdmiralTrait, FleetTactics, Formation, PendingTactical, Stance, TacticalPlan,

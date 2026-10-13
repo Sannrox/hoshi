@@ -12,6 +12,7 @@ default = []
 bridge = ["dep:hoshi-bridge"]
 commentary-model = ["hoshi-core/commentary-model"]
 advisor-model = ["hoshi-core/advisor-model"]
+mikura = ["hoshi-core/mikura"]
 
 [dependencies]
 hoshi-core = { path = "../hoshi-core" }

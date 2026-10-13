@@ -30,6 +30,7 @@ pub enum SaveError {
     Corrupt(&'static str),
     Io(std::io::Error),
     Locked,
+    Backend(String),
 }
 
 impl fmt::Display for SaveError {
@@ -51,6 +52,7 @@ impl fmt::Display for SaveError {
             SaveError::Corrupt(msg) => write!(f, "corrupt save: {msg}"),
             SaveError::Io(e) => write!(f, "save path: {e}"),
             SaveError::Locked => write!(f, "save is locked"),
+            SaveError::Backend(e) => write!(f, "save backend: {e}"),
         }
     }
 }
@@ -1447,6 +1449,9 @@ pub struct SaveGlance {
 }
 
 pub fn inspect_save(path: &Path) -> Result<SaveGlance, SaveError> {
+    if crate::storage::BackendKind::from_path(path) == crate::storage::BackendKind::Mikura {
+        return crate::storage::inspect_mikura_save(path);
+    }
     if save_is_locked(path) {
         return Err(SaveError::Locked);
     }
@@ -1632,6 +1637,9 @@ impl CareerGlance {
 }
 
 pub fn inspect_career(path: &Path) -> Result<CareerGlance, SaveError> {
+    if crate::storage::BackendKind::from_path(path) == crate::storage::BackendKind::Mikura {
+        return crate::storage::inspect_mikura_career(path);
+    }
     if save_is_locked(path) {
         return Err(SaveError::Locked);
     }

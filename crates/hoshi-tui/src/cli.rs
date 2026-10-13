@@ -1,12 +1,11 @@
 //! Scriptable JSON commands. Same core actions as the TUI; no extra powers.
 
 use hoshi_core::{
-    Actor, AssignmentTarget, BalanceConfig, BuildingKind, Clock, Coord, Customer, DefenceKind,
-    FakeClock, Fleet, GameState, HistoryKind, HistoryQuery, Jurisdiction, JurisdictionKind,
-    MoonFacility, Payload, Permission, PlanRequest, ResourceKind, RoleKind, RoundAction,
-    SCHEMA_VERSION as SAVE_SCHEMA, SaveError, ShipKind, SpyReport, SystemClock, TransferKind,
-    advise, inspect_save, load_or_new, load_or_new_with_seed, lock_save, open_save,
-    resolve_save_path, save_is_locked, save_state,
+    Actor, AssignmentTarget, BackendKind, BalanceConfig, BuildingKind, Clock, Coord, Customer,
+    DefenceKind, FakeClock, Fleet, GameState, HistoryKind, HistoryQuery, Jurisdiction,
+    JurisdictionKind, MoonFacility, Payload, Permission, PlanRequest, ResourceKind, RoleKind,
+    RoundAction, SCHEMA_VERSION as SAVE_SCHEMA, SaveError, ShipKind, SpyReport, SystemClock,
+    TransferKind, advise, inspect_save, lock_save, open_storage, resolve_save_path, save_is_locked,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -295,16 +294,18 @@ fn run_cli_inner(args: &[String]) -> Result<Value, CliError> {
             None => BalanceConfig::default(),
         },
     };
-    let mut conn = open_save(&save).map_err(|e| CliError::Internal(e.to_string()))?;
+    let mut store = open_storage(&save).map_err(|e| CliError::Internal(e.to_string()))?;
     let mut state = if let Some(seed) = opts.seed {
-        load_or_new_with_seed(&mut conn, 0, config, seed)
+        store.load_or_new_with_seed(0, config, seed)
     } else {
-        load_or_new(&mut conn, SystemClock.now_unix(), config)
+        store.load_or_new(SystemClock.now_unix(), config)
     }
     .map_err(|e| CliError::Internal(e.to_string()))?;
     let now = now_for(&state);
     let value = apply(&mut state, now, &opts.command)?;
-    save_state(&mut conn, &state).map_err(|e| CliError::Internal(e.to_string()))?;
+    store
+        .save(&state)
+        .map_err(|e| CliError::Internal(e.to_string()))?;
     Ok(value)
 }
 
@@ -319,6 +320,32 @@ fn feedback_log_path(save: &Path) -> PathBuf {
     save.with_extension("feedback.log")
 }
 
+fn glance_for_feedback(save: &Path) -> Result<Value, SaveError> {
+    match BackendKind::from_path(save) {
+        BackendKind::Sqlite => {
+            let glance = inspect_save(save)?;
+            Ok(json!({
+                "save_schema": glance.schema,
+                "last_tick_unix": glance.last_tick_unix,
+                "deterministic": glance.deterministic,
+                "planets": glance.planets,
+                "fleet_strength": glance.fleet_strength,
+            }))
+        }
+        BackendKind::Mikura => {
+            let store = open_storage(save)?;
+            let loaded = store.load(BalanceConfig::default())?;
+            Ok(json!({
+                "save_schema": hoshi_core::SCHEMA_VERSION,
+                "last_tick_unix": loaded.last_tick_unix,
+                "deterministic": loaded.deterministic,
+                "planets": 1 + loaded.colonies.len(),
+                "fleet_strength": loaded.fleet.total(),
+            }))
+        }
+    }
+}
+
 fn run_feedback(save_flag: Option<&Path>, note: &str) -> Result<Value, CliError> {
     let save = resolve_save_path(save_flag, std::env::var_os("HOSHI_SAVE").as_deref());
     let at = SystemClock.now_unix();
@@ -328,16 +355,8 @@ fn run_feedback(save_flag: Option<&Path>, note: &str) -> Result<Value, CliError>
         if save_is_locked(&save) {
             save_locked = true;
         } else {
-            match inspect_save(&save) {
-                Ok(glance) => {
-                    state = json!({
-                        "save_schema": glance.schema,
-                        "last_tick_unix": glance.last_tick_unix,
-                        "deterministic": glance.deterministic,
-                        "planets": glance.planets,
-                        "fleet_strength": glance.fleet_strength,
-                    });
-                }
+            match glance_for_feedback(&save) {
+                Ok(glance) => state = glance,
                 Err(SaveError::Locked) => save_locked = true,
                 Err(err) => return Err(CliError::Internal(err.to_string())),
             }
@@ -2192,7 +2211,7 @@ fn parse_advance(text: &str) -> Result<u64, CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hoshi_core::BuildError;
+    use hoshi_core::{BuildError, open_save, save_state};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_save(tag: &str) -> PathBuf {

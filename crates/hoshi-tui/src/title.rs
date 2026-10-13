@@ -6,8 +6,8 @@ use crate::keymap::{Binding, HelpContext, Keymap};
 use hoshi_core::{
     AchievementConfig, BalanceConfig, CareerGlance, Prestige, PrestigeConfig, PrestigeError,
     SaveError, SaveGlance, advisor_endpoint_allowed, encode_galaxy_seed, inspect_career,
-    inspect_save, load_state, lock_save, open_save, parse_galaxy_seed, preview_galaxy,
-    probe_model_endpoint, save_is_locked, save_state,
+    inspect_save, lock_save, open_storage, parse_galaxy_seed, preview_galaxy, probe_model_endpoint,
+    save_is_locked,
 };
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
@@ -959,12 +959,14 @@ impl Title {
         }
         let result = (|| -> Result<(), String> {
             let _lock = lock_save(&path).map_err(|e| e.to_string())?;
-            let mut conn = open_save(&path).map_err(|e| e.to_string())?;
-            let mut state = load_state(&conn, self.balance.clone()).map_err(|e| e.to_string())?;
+            let mut store = open_storage(&path).map_err(|e| e.to_string())?;
+            let mut state = store
+                .load(self.balance.clone())
+                .map_err(|e| e.to_string())?;
             state
                 .buy_prestige_bonus(&spec.id, self.now_unix)
                 .map_err(|e: PrestigeError| e.to_string())?;
-            save_state(&mut conn, &state).map_err(|e| e.to_string())?;
+            store.save(&state).map_err(|e| e.to_string())?;
             Ok(())
         })();
         match result {
@@ -1618,10 +1620,16 @@ pub fn list_slots(dir: &Path, _now_unix: u64) -> Vec<Slot> {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if !name.ends_with(".sqlite") {
+        if name.contains(".mikura.state.") {
             continue;
         }
-        let stem = name.trim_end_matches(".sqlite").to_string();
+        let stem = if name.ends_with(".mikura") {
+            name.trim_end_matches(".mikura").to_string()
+        } else if name.ends_with(".sqlite") {
+            name.trim_end_matches(".sqlite").to_string()
+        } else {
+            continue;
+        };
         let status = classify_slot(&path);
         slots.push(Slot {
             name: stem,
