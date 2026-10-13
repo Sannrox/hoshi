@@ -13,6 +13,8 @@ pub struct UserConfig {
     pub bridge: bool,
     pub ai_advisor: bool,
     pub arena: bool,
+    pub demo: bool,
+    pub governance: bool,
     pub chisei: bool,
     pub portraits: bool,
     pub portrait_protocol: ProtocolChoice,
@@ -43,6 +45,8 @@ impl Default for UserConfig {
             bridge: false,
             ai_advisor: false,
             arena: false,
+            demo: false,
+            governance: false,
             chisei: false,
             portraits: true,
             portrait_protocol: ProtocolChoice::Auto,
@@ -94,6 +98,8 @@ impl UserConfig {
                 "bridge" => cfg.bridge = value == "true",
                 "ai_advisor" => cfg.ai_advisor = value == "true",
                 "arena" => cfg.arena = value == "true",
+                "demo" => cfg.demo = value == "true",
+                "governance" => cfg.governance = value == "true",
                 "chisei" => cfg.chisei = value == "true",
                 "portraits" => cfg.portraits = value == "true",
                 "portrait_protocol" => {
@@ -160,13 +166,15 @@ impl UserConfig {
             _ => String::new(),
         };
         let text = format!(
-            "reduced_motion = {}\nno_animation = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\narena = {}\nchisei = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}\ntutorial = {}\nreset_tutorial = {}\nnotify = {}\nnotify_build = {}\nnotify_raid = {}\nnotify_fleet = {}\ncommentary = {}\ncommentary_model_url = \"{}\"\nadvisor_model_url = \"{}\"\nadvisor_model_name = \"{}\"\nadvisor_allow_lan = {}\n{quiet}{}\n",
+            "reduced_motion = {}\nno_animation = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\narena = {}\ndemo = {}\ngovernance = {}\nchisei = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}\ntutorial = {}\nreset_tutorial = {}\nnotify = {}\nnotify_build = {}\nnotify_raid = {}\nnotify_fleet = {}\ncommentary = {}\ncommentary_model_url = \"{}\"\nadvisor_model_url = \"{}\"\nadvisor_model_name = \"{}\"\nadvisor_allow_lan = {}\n{quiet}{}\n",
             self.reduced_motion,
             self.no_animation,
             self.high_contrast,
             self.bridge,
             self.ai_advisor,
             self.arena,
+            self.demo,
+            self.governance,
             self.chisei,
             self.portraits,
             self.portrait_protocol.as_key(),
@@ -227,6 +235,8 @@ mod tests {
         assert!(!loaded.bridge);
         assert!(!loaded.ai_advisor);
         assert!(!loaded.arena);
+        assert!(!loaded.demo);
+        assert!(!loaded.governance);
         assert!(!loaded.chisei);
         assert!(loaded.tutorial);
         assert!(!loaded.reset_tutorial);
@@ -249,6 +259,8 @@ mod tests {
         cfg.advisor_model_name = "local".into();
         cfg.advisor_allow_lan = true;
         cfg.arena = true;
+        cfg.demo = true;
+        cfg.governance = true;
         cfg.chisei = true;
         cfg.save(&dir).unwrap();
         let again = UserConfig::load(&dir);
@@ -256,6 +268,8 @@ mod tests {
         assert_eq!(again.last_slot.as_deref(), Some("alpha"));
         assert!(!again.bridge);
         assert!(again.arena);
+        assert!(again.demo);
+        assert!(again.governance);
         assert!(again.chisei);
         assert!(!again.notify);
         assert!(again.commentary);

@@ -5,6 +5,7 @@ mod arena;
 mod cli;
 mod clip;
 mod config;
+mod demo;
 mod keymap;
 mod notify;
 mod portraits;
@@ -593,6 +594,7 @@ fn play_path(
     app.advisor_model_url = user.advisor_model_url.clone();
     app.advisor_model_name = user.advisor_model_name.clone();
     app.advisor_allow_lan = user.advisor_allow_lan;
+    app.governance = user.governance;
     app.set_notify(user.notify_prefs());
     #[cfg(feature = "bridge")]
     app.set_bridge_ui(user.bridge);
