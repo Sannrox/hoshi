@@ -52,7 +52,7 @@ hoshi simulate --days 3
 
 prints a pacing report (first upgrade time, daily mine levels, bridge-effect ratio). Targets live in `docs/balance.md`.
 
-Scriptable JSON commands (`hoshi state`, `advise`, `log`, `staff`, `build`, `research`, `cancel`, `fleet send`, `tick --advance`, `feedback`) share the TUI's core actions. See `docs/cli.md`. Playtest checklist: [docs/playtest.md](docs/playtest.md). Writers draft story events with `hoshi-author events draft` ([docs/authoring.md](docs/authoring.md)); the game never calls a model.
+Scriptable JSON commands (`hoshi state`, `advise`, `log`, `staff`, `build`, `research`, `cancel`, `fleet send`, `tick --advance`, `feedback`) share the TUI's core actions. See `docs/cli.md`. Opt-in bot arena: `hoshi --arena arena run --seed N --days N bot...` ([docs/arena.md](docs/arena.md)); it never calls a model. Playtest checklist: [docs/playtest.md](docs/playtest.md). Writers draft story events with `hoshi-author events draft` ([docs/authoring.md](docs/authoring.md)); the game never calls a model.
 
 ## Develop
 

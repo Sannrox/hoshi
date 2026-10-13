@@ -85,6 +85,18 @@
       "type": "array",
       "description": "Leaders with traits, assignment, retirement and delegations."
     },
+    "scoring_version": {
+      "type": "integer",
+      "description": "Arena scoring formula version. See docs/arena.md."
+    },
+    "bots": {
+      "type": "array",
+      "description": "Arena bot results for one run."
+    },
+    "markdown": {
+      "type": "string",
+      "description": "Arena leaderboard table for sharing."
+    },
     "error": {
       "type": "object",
       "required": ["code", "message"],

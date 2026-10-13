@@ -44,6 +44,8 @@ hoshi --save PATH tutorial reset
 hoshi --save PATH tactics set [formation <id>] [stance <id>] [retreat <0-1>]
 hoshi --save PATH tactics action hold|retreat|commit
 hoshi --save PATH feedback [note...]
+hoshi [--save PATH] --arena arena run --seed N --days N [--actions N] [--timeout-ms N] [--board PATH] bot...
+hoshi [--save PATH] --arena arena board [--board PATH]
 ```
 
 Planet is `home` or `galaxy:system:position`. Building and ship ids match the
@@ -75,6 +77,8 @@ a deterministic save so wall-clock catch-up cannot run on it. JSON never
 includes RNG state or galaxy seed. Unknown commands and CLI-only flags print
 JSON with exit 2; they do not open the TUI. `expedition` dest must be the
 configured expedition slot.
+
+`arena run` is off until `arena = true` in `config.toml` or `--arena`. Each bot is a subprocess that prints JSON CLI commands (`{"cmd":["build","home","metal_mine"]}`) against its own deterministic save. Crash, timeout and invalid actions zero that bot and leave the others running. `arena board` prints the appended JSON leaderboard as markdown. Scoring is versioned in [docs/arena.md](arena.md). Sample bots live in `examples/bots/`.
 
 `prestige` prints score, currency and owned bonuses. `prestige buy` spends unspent currency. `prestige reset` is refused until a wonder is complete or score reaches the configured minimum; it keeps bonuses and run history. `state` includes a `leaders` array (traits, assignment, retirement, delegations), a `waste` object (heat and pollution load versus sink, unrest, and the warning flag), a `laws` array (status, approvals, latest expected vs measured samples), a `daily` object (streak, time until reset, and slot progress), and a `tutorial` object (enabled, skipped, pending hint). `tutorial skip` hides remaining hints; `tutorial reset` clears seen ids and shows the opening again. `tactics set` stores the home fleet's formation, stance and auto-retreat threshold; `tactics action` is refused unless a live fight is waiting. `state` includes a `tactics` object. `feedback` appends a timestamped JSON line (version and a save glance, never the galaxy seed) to a `.feedback.log` beside the save; a missing or locked save still records the note. See `docs/playtest.md`. `law propose` writes a proposal; `law approve` records the player approval and enacts when the effective date is due; `law repeal` starts the same flow in reverse and restores prior parameters.
 

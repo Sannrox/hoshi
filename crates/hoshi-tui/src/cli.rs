@@ -9,6 +9,7 @@ use hoshi_core::{
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub const SCHEMA_VERSION: u32 = 1;
 pub const EXIT_OK: i32 = 0;
@@ -114,6 +115,19 @@ enum Command {
         id: u64,
         permission: Option<Permission>,
     },
+    ArenaRun {
+        seed: Option<u64>,
+        days: u32,
+        actions: u32,
+        timeout_ms: u64,
+        bots: Vec<PathBuf>,
+        board: PathBuf,
+        opt_in: bool,
+    },
+    ArenaBoard {
+        board: PathBuf,
+        opt_in: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,6 +150,7 @@ struct CliOpts {
     save: Option<PathBuf>,
     seed: Option<u64>,
     balance: Option<PathBuf>,
+    arena: bool,
     command: Command,
 }
 
@@ -193,6 +208,7 @@ pub fn is_cli_invocation(args: &[String]) -> bool {
             || a == "--commentary"
             || a == "--advisor"
             || a == "--no-portraits"
+            || a == "--arena"
         {
             i += 1;
             continue;
@@ -229,6 +245,12 @@ fn run_cli_inner(args: &[String]) -> Result<Value, CliError> {
     let opts = parse_cli(args)?;
     if let Command::Feedback { note } = &opts.command {
         return run_feedback(opts.save.as_deref(), note);
+    }
+    if matches!(
+        opts.command,
+        Command::ArenaRun { .. } | Command::ArenaBoard { .. }
+    ) {
+        return run_arena_command(opts);
     }
     let save = resolve_save_path(
         opts.save.as_deref(),
@@ -553,6 +575,9 @@ fn apply(state: &mut GameState, now: u64, command: &Command) -> Result<Value, Cl
         Command::Feedback { .. } => Err(CliError::Internal(
             "feedback is handled before apply".into(),
         )),
+        Command::ArenaRun { .. } | Command::ArenaBoard { .. } => {
+            Err(CliError::Internal("arena is handled before apply".into()))
+        }
         Command::Advise => {
             if !state.deterministic {
                 state.catch_up(now);
@@ -925,6 +950,7 @@ fn parse_cli(args: &[String]) -> Result<CliOpts, CliError> {
     let mut save = None;
     let mut seed = None;
     let mut balance = None;
+    let mut arena = false;
     let mut rest = Vec::new();
     let mut i = 1;
     while i < args.len() {
@@ -959,7 +985,10 @@ fn parse_cli(args: &[String]) -> Result<CliOpts, CliError> {
             i += 2;
             continue;
         }
-        if a == "--json" {
+        if a == "--json" || a == "--arena" {
+            if a == "--arena" {
+                arena = true;
+            }
             i += 1;
             continue;
         }
@@ -971,6 +1000,7 @@ fn parse_cli(args: &[String]) -> Result<CliOpts, CliError> {
         save,
         seed,
         balance,
+        arena,
         command,
     })
 }
@@ -1000,6 +1030,7 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
             Ok(Command::Advise)
         }
         "log" => parse_log_command(args),
+        "arena" => parse_arena_command(args),
         "build" => {
             let planet = parse_coord(nth(args, 1, "build <planet> <building>")?)?;
             let building = BuildingKind::from_key(nth(args, 2, "build <planet> <building>")?)
@@ -1114,6 +1145,212 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
         }
         other => Err(CliError::Invalid(format!("unknown command {other}"))),
     }
+}
+
+fn run_arena_command(opts: CliOpts) -> Result<Value, CliError> {
+    let save = resolve_save_path(
+        opts.save.as_deref(),
+        std::env::var_os("HOSHI_SAVE").as_deref(),
+    );
+    let cfg_dir = match save.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    let cfg_arena = crate::config::UserConfig::load(cfg_dir).arena;
+    let arena_flag = opts.arena;
+    let global_seed = opts.seed;
+    let enabled = |opt_in: bool| arena_flag || opt_in || cfg_arena;
+    match opts.command {
+        Command::ArenaRun {
+            seed,
+            days,
+            actions,
+            timeout_ms,
+            bots,
+            board,
+            opt_in,
+        } => {
+            if !enabled(opt_in) {
+                return Err(CliError::Refused(
+                    "arena is off; set arena = true in config.toml or pass --arena".into(),
+                ));
+            }
+            let seed = seed
+                .or(global_seed)
+                .ok_or_else(|| CliError::Invalid("arena run needs --seed".into()))?;
+            let board = if board.is_absolute() {
+                board
+            } else {
+                cfg_dir.join(board)
+            };
+            crate::arena::run(&crate::arena::ArenaSpec {
+                seed,
+                days,
+                actions,
+                timeout: Duration::from_millis(timeout_ms.max(1)),
+                bots,
+                board,
+            })
+            .map_err(CliError::Internal)
+        }
+        Command::ArenaBoard { board, opt_in } => {
+            if !enabled(opt_in) {
+                return Err(CliError::Refused(
+                    "arena is off; set arena = true in config.toml or pass --arena".into(),
+                ));
+            }
+            let board = if board.is_absolute() {
+                board
+            } else {
+                cfg_dir.join(board)
+            };
+            crate::arena::board_markdown(&board).map_err(CliError::Internal)
+        }
+        _ => Err(CliError::Internal("arena is handled before apply".into())),
+    }
+}
+
+fn parse_arena_command(args: &[String]) -> Result<Command, CliError> {
+    match args.get(1).map(String::as_str) {
+        Some("run") => {
+            let mut seed = None;
+            let mut days = None;
+            let mut actions = 32u32;
+            let mut timeout_ms = 2_000u64;
+            let mut board = PathBuf::from("arena-board.json");
+            let mut bots = Vec::new();
+            let mut opt_in = false;
+            let mut i = 2;
+            while i < args.len() {
+                let a = args[i].as_str();
+                if a == "--arena" {
+                    opt_in = true;
+                    i += 1;
+                    continue;
+                }
+                if let Some(v) = a.strip_prefix("--seed=") {
+                    seed = Some(parse_seed(v)?);
+                    i += 1;
+                    continue;
+                }
+                if a == "--seed" {
+                    seed = Some(parse_seed(nth(args, i + 1, "arena run --seed <n>")?)?);
+                    i += 2;
+                    continue;
+                }
+                if let Some(v) = a.strip_prefix("--days=") {
+                    days = Some(parse_positive_u32(v, "--days")?);
+                    i += 1;
+                    continue;
+                }
+                if a == "--days" {
+                    days = Some(parse_positive_u32(
+                        nth(args, i + 1, "arena run --days <n>")?,
+                        "--days",
+                    )?);
+                    i += 2;
+                    continue;
+                }
+                if let Some(v) = a.strip_prefix("--actions=") {
+                    actions = parse_u32_flag(v, "--actions")?;
+                    i += 1;
+                    continue;
+                }
+                if a == "--actions" {
+                    actions =
+                        parse_u32_flag(nth(args, i + 1, "arena run --actions <n>")?, "--actions")?;
+                    i += 2;
+                    continue;
+                }
+                if let Some(v) = a.strip_prefix("--timeout-ms=") {
+                    timeout_ms = parse_u64_flag(v, "--timeout-ms")?;
+                    i += 1;
+                    continue;
+                }
+                if a == "--timeout-ms" {
+                    timeout_ms = parse_u64_flag(
+                        nth(args, i + 1, "arena run --timeout-ms <n>")?,
+                        "--timeout-ms",
+                    )?;
+                    i += 2;
+                    continue;
+                }
+                if let Some(v) = a.strip_prefix("--board=") {
+                    board = PathBuf::from(v);
+                    i += 1;
+                    continue;
+                }
+                if a == "--board" {
+                    board = PathBuf::from(nth(args, i + 1, "arena run --board <path>")?);
+                    i += 2;
+                    continue;
+                }
+                if a.starts_with('-') {
+                    return Err(CliError::Invalid(format!("unknown arena run flag {a}")));
+                }
+                bots.push(PathBuf::from(a));
+                i += 1;
+            }
+            let days = days.ok_or_else(|| CliError::Invalid("arena run needs --days".into()))?;
+            if bots.is_empty() {
+                return Err(CliError::Invalid("arena run needs at least one bot".into()));
+            }
+            Ok(Command::ArenaRun {
+                seed,
+                days,
+                actions,
+                timeout_ms,
+                bots,
+                board,
+                opt_in,
+            })
+        }
+        Some("board") => {
+            let mut board = PathBuf::from("arena-board.json");
+            let mut opt_in = false;
+            let mut i = 2;
+            while i < args.len() {
+                let a = args[i].as_str();
+                if a == "--arena" {
+                    opt_in = true;
+                    i += 1;
+                    continue;
+                }
+                if let Some(v) = a.strip_prefix("--board=") {
+                    board = PathBuf::from(v);
+                    i += 1;
+                    continue;
+                }
+                if a == "--board" {
+                    board = PathBuf::from(nth(args, i + 1, "arena board --board <path>")?);
+                    i += 2;
+                    continue;
+                }
+                return Err(CliError::Invalid(format!("unknown arena board flag {a}")));
+            }
+            Ok(Command::ArenaBoard { board, opt_in })
+        }
+        Some(other) => Err(CliError::Invalid(format!("unknown arena command {other}"))),
+        None => Err(CliError::Invalid("arena needs run or board".into())),
+    }
+}
+
+fn parse_positive_u32(text: &str, flag: &str) -> Result<u32, CliError> {
+    let n = parse_u32_flag(text, flag)?;
+    if n == 0 {
+        return Err(CliError::Invalid(format!("{flag} must be at least 1")));
+    }
+    Ok(n)
+}
+
+fn parse_u32_flag(text: &str, flag: &str) -> Result<u32, CliError> {
+    text.parse()
+        .map_err(|_| CliError::Invalid(format!("invalid {flag} {text}")))
+}
+
+fn parse_u64_flag(text: &str, flag: &str) -> Result<u64, CliError> {
+    text.parse()
+        .map_err(|_| CliError::Invalid(format!("invalid {flag} {text}")))
 }
 
 fn parse_log_command(args: &[String]) -> Result<Command, CliError> {
@@ -1886,6 +2123,8 @@ mod tests {
         assert!(!is_cli_invocation(&args(&["--commentary"])));
         assert!(!is_cli_invocation(&args(&["--advisor"])));
         assert!(!is_cli_invocation(&args(&["--no-portraits"])));
+        assert!(!is_cli_invocation(&args(&["--arena"])));
+        assert!(is_cli_invocation(&args(&["arena"])));
         let out = run_cli(&args(&["stete"]));
         assert_eq!(out.exit, EXIT_INVALID);
         let value: Value = serde_json::from_str(&out.json).unwrap();
@@ -2169,5 +2408,97 @@ mod tests {
         );
         assert_eq!(exit, EXIT_OK, "{queued}");
         let _ = std::fs::remove_file(&save);
+    }
+
+    #[test]
+    fn arena_is_off_until_flag_or_config() {
+        let out = run_cli(&args(&[
+            "arena",
+            "run",
+            "--seed",
+            "1",
+            "--days",
+            "1",
+            "missing.sh",
+        ]));
+        assert_eq!(out.exit, EXIT_REFUSED);
+        let opts = parse_cli(&args(&[
+            "--arena",
+            "arena",
+            "run",
+            "--seed",
+            "9",
+            "--days",
+            "2",
+            "--actions",
+            "4",
+            "bot.sh",
+        ]))
+        .unwrap();
+        assert!(opts.arena);
+        assert_eq!(opts.seed, Some(9));
+        match opts.command {
+            Command::ArenaRun {
+                days,
+                actions,
+                bots,
+                opt_in,
+                ..
+            } => {
+                assert_eq!(days, 2);
+                assert_eq!(actions, 4);
+                assert_eq!(bots, vec![PathBuf::from("bot.sh")]);
+                assert!(!opt_in);
+            }
+            other => panic!("{other:?}"),
+        }
+        let opts = parse_cli(&args(&[
+            "arena", "run", "--arena", "--seed", "3", "--days", "1", "a.sh", "b.py",
+        ]))
+        .unwrap();
+        assert!(opts.arena);
+        match opts.command {
+            Command::ArenaRun { bots, .. } => {
+                assert_eq!(bots.len(), 2);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn arena_config_true_runs_without_the_flag() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "hoshi-cli-arena-cfg-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.toml"), "arena = true\n").unwrap();
+        let save = dir.join("save.sqlite");
+        let board = dir.join("board.json");
+        let bot = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/bots/greedy.sh");
+        let argv = vec![
+            "hoshi".into(),
+            format!("--save={}", save.display()),
+            "arena".into(),
+            "run".into(),
+            "--seed".into(),
+            "5".into(),
+            "--days".into(),
+            "1".into(),
+            "--actions".into(),
+            "3".into(),
+            "--board".into(),
+            board.display().to_string(),
+            bot.display().to_string(),
+        ];
+        let out = run_cli(&argv);
+        assert_eq!(out.exit, EXIT_OK, "{}", out.json);
+        let value: Value = serde_json::from_str(&out.json).unwrap();
+        assert_eq!(value["bots"][0]["status"], "ok");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
