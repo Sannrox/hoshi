@@ -21,9 +21,9 @@ When adding a feature, name:
 
 | Piece | Meaning |
 | --- | --- |
-| Object types | The nouns (planet, fleet, faction, outpost, route, facility, good, law, proposal, approver, jurisdiction, measurement). |
-| Links | How those nouns point at each other (fleet at coord, route between owned planets, standing on a faction id, a proposal that amends a law in a jurisdiction, owned by a leader, approved by approvers). |
-| Actions | Propose, check, apply. The TUI and CLI call the same `hoshi-core` function. They do not write the save. `ProposeLaw`, `ApproveLaw`, `EnactLaw` and `RepealLaw` are the law path: owner, approvals, effective date, audit trail. |
+| Object types | The nouns (planet, fleet, faction, outpost, route, facility, good, law, proposal, approver, jurisdiction, measurement, leader, role, assignment, permission, delegation). |
+| Links | How those nouns point at each other (fleet at coord, route between owned planets, standing on a faction id, a proposal that amends a law in a jurisdiction, a leader holding a role through an assignment, a role granting permissions, a delegation with limits, owned by a leader, approved by approvers). |
+| Actions | Propose, check, apply. The TUI and CLI call the same `hoshi-core` function. They do not write the save. `AssignLeader`, `Delegate` and `RevokeDelegation` are the staff path. `ProposeLaw`, `ApproveLaw`, `EnactLaw` and `RepealLaw` are the law path: owner, approvals, effective date, audit trail. Every action a leader takes is checked against the role and recorded. |
 | Outcomes | A typed result plus a log line (`GameEvent`) with a timestamp. Catch-up and live play share that path. Measured effects attach to the law as evidence. |
 
 State changes go through core actions. Offline catch-up replays the same

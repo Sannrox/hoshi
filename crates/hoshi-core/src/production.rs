@@ -347,7 +347,7 @@ impl GameState {
                 }
             }
         }
-        let used = scale * limited;
+        let used = scale * limited * self.governor_factor(coord);
         let mut inputs_per_hour = BTreeMap::new();
         for (id, qty) in &recipe.inputs {
             if *qty > 0.0 {
@@ -489,6 +489,8 @@ mod tests {
     fn test_config() -> BalanceConfig {
         let mut cfg = BalanceConfig::default();
         cfg.raid.enabled = false;
+        cfg.leaders.empty_governor = 0.0;
+        cfg.leaders.empty_admiral = 0.0;
         cfg
     }
 

@@ -585,7 +585,8 @@ fn fill_queue(state: &mut GameState) {
                 | Err(BuildError::MissingPrerequisite { .. })
                 | Err(BuildError::EmptySlot { .. })
                 | Err(BuildError::UnknownPlanet)
-                | Err(BuildError::NeedLogistics) => {}
+                | Err(BuildError::NeedLogistics)
+                | Err(BuildError::PermissionDenied(_)) => {}
             }
         }
         if !enqueued {

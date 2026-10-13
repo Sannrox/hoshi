@@ -26,6 +26,7 @@ pub enum LawError {
     NotEnacted,
     AlreadyApproved,
     Disabled,
+    PermissionDenied(String),
 }
 
 impl fmt::Display for LawError {
@@ -45,6 +46,7 @@ impl fmt::Display for LawError {
             LawError::NotEnacted => write!(f, "law is not in force"),
             LawError::AlreadyApproved => write!(f, "already approved"),
             LawError::Disabled => write!(f, "laws are off"),
+            LawError::PermissionDenied(msg) => write!(f, "{msg}"),
         }
     }
 }

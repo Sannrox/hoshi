@@ -238,6 +238,10 @@ pub struct GameState {
     pub admirals: Vec<crate::Admiral>,
     pub home_admiral_id: Option<u64>,
     pub next_admiral_id: u64,
+    pub leaders: Vec<crate::Leader>,
+    pub assignments: Vec<crate::Assignment>,
+    pub delegations: Vec<crate::Delegation>,
+    pub next_leader_id: u64,
     pub reserves: crate::Fleet,
     pub pending_tactical: Option<crate::PendingTactical>,
     /// When true, home raids pause between rounds for a keypress. Catch-up and
@@ -323,14 +327,13 @@ impl GameState {
                 retreat_below: config.tactics.default_retreat_below,
                 ..crate::FleetTactics::default()
             },
-            admirals: vec![crate::Admiral {
-                id: 1,
-                name: "Home fleet".into(),
-                trait_id: "none".into(),
-                xp: 0,
-            }],
-            home_admiral_id: Some(1),
-            next_admiral_id: 2,
+            admirals: Vec::new(),
+            home_admiral_id: None,
+            next_admiral_id: 3,
+            leaders: Vec::new(),
+            assignments: Vec::new(),
+            delegations: Vec::new(),
+            next_leader_id: 3,
             reserves: crate::Fleet::default(),
             pending_tactical: None,
             interactive_tactics: false,
@@ -338,6 +341,7 @@ impl GameState {
             history: crate::HistoryLog::default(),
             config,
         };
+        state.install_starter_staff(now_unix);
         state.apply_prestige_start();
         state.sync_daily(now_unix);
         state
@@ -422,6 +426,7 @@ impl GameState {
             let diplomacy_at = self.next_diplomacy_at();
             let law_at = self.next_law_at();
             let logistics_at = self.next_logistics_at();
+            let staff_at = self.next_staff_at();
             let Some(done_at) = min_time(
                 min_time(
                     min_time(
@@ -448,10 +453,11 @@ impl GameState {
                         ),
                     ),
                 ),
-                logistics_at,
+                min_time(logistics_at, staff_at),
             ) else {
                 self.produce_until(now_unix);
                 self.apply_laws_at(now_unix);
+                self.tick_staff(now_unix);
                 self.resolve_story(now_unix);
                 self.evaluate_achievements(now_unix);
                 self.note_logistics_stalls(now_unix);
@@ -460,6 +466,7 @@ impl GameState {
             if done_at > now_unix {
                 self.produce_until(now_unix);
                 self.apply_laws_at(now_unix);
+                self.tick_staff(now_unix);
                 self.resolve_story(now_unix);
                 self.evaluate_achievements(now_unix);
                 self.note_logistics_stalls(now_unix);
@@ -467,6 +474,7 @@ impl GameState {
             }
             self.produce_until(done_at);
             self.apply_laws_at(done_at);
+            self.tick_staff(done_at);
             if home_build_at == Some(done_at) {
                 let job = self.build_queue.remove(0);
                 self.buildings.increment(job.building);
@@ -623,9 +631,465 @@ impl GameState {
         ActivityApply::Applied
     }
 
+    fn install_starter_staff(&mut self, now: u64) {
+        let (leaders, assignments, admirals, home_admiral_id, next_id) =
+            self.config.leaders.starter(now);
+        self.leaders = leaders;
+        self.assignments = assignments;
+        self.delegations.clear();
+        self.admirals = admirals;
+        self.home_admiral_id = home_admiral_id;
+        self.next_leader_id = next_id;
+        self.next_admiral_id = next_id;
+    }
+
+    pub(crate) fn sync_admirals_from_leaders(&mut self) {
+        let assigned = self
+            .assignments
+            .iter()
+            .find(|row| {
+                row.role == crate::RoleKind::Admiral
+                    && row.target == crate::AssignmentTarget::HomeFleet
+                    && !self
+                        .leaders
+                        .iter()
+                        .find(|l| l.id == row.leader_id)
+                        .map(|l| l.retired)
+                        .unwrap_or(true)
+            })
+            .map(|row| row.leader_id);
+        self.home_admiral_id = assigned;
+        self.admirals = self
+            .leaders
+            .iter()
+            .filter(|leader| !leader.retired)
+            .filter(|leader| {
+                Some(leader.id) == assigned
+                    || self.assignments.iter().any(|row| {
+                        row.leader_id == leader.id && row.role == crate::RoleKind::Admiral
+                    })
+            })
+            .map(crate::Leader::as_admiral)
+            .collect();
+    }
+
+    pub fn leader(&self, id: u64) -> Option<&crate::Leader> {
+        self.leaders.iter().find(|row| row.id == id)
+    }
+
+    pub fn assignment_of(&self, leader_id: u64) -> Option<&crate::Assignment> {
+        self.assignments
+            .iter()
+            .find(|row| row.leader_id == leader_id)
+    }
+
+    fn ready_assignment(
+        &self,
+        role: crate::RoleKind,
+        target: crate::AssignmentTarget,
+        now: u64,
+    ) -> Option<&crate::Assignment> {
+        self.assignments.iter().find(|row| {
+            row.role == role
+                && row.target == target
+                && row.ready(now)
+                && self
+                    .leaders
+                    .iter()
+                    .find(|l| l.id == row.leader_id)
+                    .is_some_and(|l| !l.retired)
+        })
+    }
+
+    pub fn governor_factor(&self, coord: Coord) -> f64 {
+        let now = self.last_tick_unix;
+        match self.ready_assignment(
+            crate::RoleKind::Governor,
+            crate::AssignmentTarget::Planet(coord),
+            now,
+        ) {
+            Some(row) => self
+                .leader(row.leader_id)
+                .map(|leader| self.config.leaders.production(&leader.trait_id))
+                .unwrap_or(1.0),
+            None => (1.0 - self.config.leaders.empty_governor).max(0.0),
+        }
+    }
+
+    fn next_staff_at(&self) -> Option<u64> {
+        let retire = self
+            .leaders
+            .iter()
+            .filter(|row| !row.retired)
+            .map(crate::Leader::retires_at)
+            .filter(|&at| at > self.last_tick_unix)
+            .min();
+        let ready = self
+            .assignments
+            .iter()
+            .map(|row| row.ready_at)
+            .filter(|&at| at > self.last_tick_unix)
+            .min();
+        min_time(retire, ready)
+    }
+
+    fn tick_staff(&mut self, now: u64) {
+        let period = self.config.leaders.period_secs.max(1);
+        for row in &mut self.delegations {
+            if now.saturating_sub(row.period_start) >= period {
+                row.period_start = now;
+                row.spent = 0.0;
+            }
+        }
+        let due: Vec<u64> = self
+            .leaders
+            .iter()
+            .filter(|row| !row.retired && row.retires_at() <= now)
+            .map(|row| row.id)
+            .collect();
+        for id in &due {
+            if let Some(leader) = self.leaders.iter_mut().find(|row| row.id == *id) {
+                leader.retired = true;
+            }
+            self.assignments.retain(|row| row.leader_id != *id);
+            self.delegations.retain(|row| row.leader_id != *id);
+            self.push_event(now, format!("leader #{id} retired"));
+            self.record_history(crate::HistoryDraft {
+                at: now,
+                kind: crate::HistoryKind::Other,
+                actor: "simulation".into(),
+                action: "retire".into(),
+                objects: vec![format!("leader:{id}")],
+                outcome: "retired".into(),
+                ..crate::HistoryDraft::default()
+            });
+        }
+        if !due.is_empty() {
+            self.sync_admirals_from_leaders();
+        }
+    }
+
+    fn authorize(
+        &mut self,
+        actor: crate::Actor,
+        permission: crate::Permission,
+        planet: Option<Coord>,
+        cost: f64,
+    ) -> Result<(), crate::LeaderError> {
+        match actor {
+            crate::Actor::Player => match permission {
+                crate::Permission::AssignLeader | crate::Permission::Delegate => Ok(()),
+                _ => Ok(()),
+            },
+            crate::Actor::Leader(id) => {
+                let now = self.last_tick_unix;
+                let leader = self
+                    .leader(id)
+                    .cloned()
+                    .ok_or(crate::LeaderError::UnknownLeader(id))?;
+                if leader.retired {
+                    return Err(crate::LeaderError::Retired(id));
+                }
+                let assignment = self
+                    .assignment_of(id)
+                    .cloned()
+                    .ok_or(crate::LeaderError::Unassigned(id))?;
+                if !assignment.ready(now) {
+                    return Err(crate::LeaderError::Reassigning {
+                        ready_at: assignment.ready_at,
+                    });
+                }
+                if !assignment.role.grants(permission) {
+                    return Err(crate::LeaderError::MissingPermission {
+                        actor: actor.as_key(),
+                        needed: permission,
+                    });
+                }
+                match (assignment.role, assignment.target, planet) {
+                    (
+                        crate::RoleKind::Governor,
+                        crate::AssignmentTarget::Planet(coord),
+                        Some(at),
+                    ) if coord != at => {
+                        return Err(crate::LeaderError::MissingPermission {
+                            actor: actor.as_key(),
+                            needed: permission,
+                        });
+                    }
+                    (crate::RoleKind::Admiral, crate::AssignmentTarget::HomeFleet, _) => {}
+                    (crate::RoleKind::Minister, crate::AssignmentTarget::Empire, _) => {}
+                    (crate::RoleKind::Governor, crate::AssignmentTarget::Planet(_), Some(_)) => {}
+                    _ if permission == crate::Permission::QueueBuild => {
+                        return Err(crate::LeaderError::MissingPermission {
+                            actor: actor.as_key(),
+                            needed: permission,
+                        });
+                    }
+                    _ => {}
+                }
+                let Some(deleg) = self
+                    .delegations
+                    .iter_mut()
+                    .find(|row| row.leader_id == id && row.permission == permission)
+                else {
+                    return Err(crate::LeaderError::MissingPermission {
+                        actor: actor.as_key(),
+                        needed: permission,
+                    });
+                };
+                let period = self.config.leaders.period_secs.max(1);
+                if now.saturating_sub(deleg.period_start) >= period {
+                    deleg.period_start = now;
+                    deleg.spent = 0.0;
+                }
+                if let Some(cap) = deleg.spend_cap {
+                    if !cap.is_finite() || cap < 0.0 {
+                        return Err(crate::LeaderError::SpendCap {
+                            cap: 0.0,
+                            spent: deleg.spent,
+                            cost,
+                        });
+                    }
+                    let next = deleg.spent + cost;
+                    if !next.is_finite() || next > cap + 1e-9 {
+                        return Err(crate::LeaderError::SpendCap {
+                            cap,
+                            spent: deleg.spent,
+                            cost,
+                        });
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn charge_delegation(&mut self, actor: crate::Actor, permission: crate::Permission, cost: f64) {
+        let crate::Actor::Leader(id) = actor else {
+            return;
+        };
+        if !(cost.is_finite() && cost > 0.0) {
+            return;
+        }
+        if let Some(deleg) = self
+            .delegations
+            .iter_mut()
+            .find(|row| row.leader_id == id && row.permission == permission)
+        {
+            deleg.spent += cost;
+        }
+    }
+
+    pub fn recruit_leader(
+        &mut self,
+        name: &str,
+        trait_id: &str,
+        now_unix: u64,
+    ) -> Result<u64, crate::LeaderError> {
+        self.catch_up(now_unix);
+        let now = self.last_tick_unix;
+        if self.config.leaders.trait_by_id(trait_id).is_none() {
+            return Err(crate::LeaderError::UnknownTrait(trait_id.into()));
+        }
+        let cost = self.config.leaders.recruit_cost;
+        if !self.resources.can_afford(cost) {
+            return Err(crate::LeaderError::CannotAfford {
+                missing: self.resources.missing(cost),
+            });
+        }
+        self.resources = self.resources.saturating_sub(cost);
+        let id = self.next_leader_id;
+        self.next_leader_id = id.saturating_add(1);
+        self.next_admiral_id = self.next_leader_id;
+        let label = if name.trim().is_empty() {
+            format!("Leader {id}")
+        } else {
+            name.trim().to_string()
+        };
+        self.leaders.push(crate::Leader {
+            id,
+            name: label.clone(),
+            species: "human".into(),
+            trait_id: trait_id.to_string(),
+            skill_command: 0,
+            skill_logistics: 0,
+            skill_policy: 0,
+            xp: 0,
+            born_at: now,
+            lifespan_secs: self.config.leaders.lifespan_secs,
+            retired: false,
+        });
+        self.sync_admirals_from_leaders();
+        self.push_event(now, format!("recruited {label}"));
+        self.record_history(crate::HistoryDraft {
+            at: now,
+            kind: crate::HistoryKind::Other,
+            actor: crate::LEADER_PLAYER.into(),
+            action: "recruit".into(),
+            objects: vec![format!("leader:{id}")],
+            outcome: "recruited".into(),
+            ..crate::HistoryDraft::default()
+        });
+        Ok(id)
+    }
+
+    pub fn assign_leader(
+        &mut self,
+        leader_id: u64,
+        role: crate::RoleKind,
+        target: crate::AssignmentTarget,
+        now_unix: u64,
+    ) -> Result<(), crate::LeaderError> {
+        self.catch_up(now_unix);
+        let now = self.last_tick_unix;
+        self.authorize(
+            crate::Actor::Player,
+            crate::Permission::AssignLeader,
+            None,
+            0.0,
+        )?;
+        let leader = self
+            .leader(leader_id)
+            .cloned()
+            .ok_or(crate::LeaderError::UnknownLeader(leader_id))?;
+        if leader.retired {
+            return Err(crate::LeaderError::Retired(leader_id));
+        }
+        if let crate::AssignmentTarget::Planet(coord) = target
+            && self.buildings_at(coord).is_none()
+        {
+            return Err(crate::LeaderError::UnknownPlanet);
+        }
+        let had_role = self.assignment_of(leader_id).is_some();
+        if let Some(current) = self.assignment_of(leader_id)
+            && !current.ready(now)
+        {
+            return Err(crate::LeaderError::Reassigning {
+                ready_at: current.ready_at,
+            });
+        }
+        self.assignments.retain(|row| row.leader_id != leader_id);
+        self.assignments
+            .retain(|row| !(row.role == role && row.target == target));
+        let ready_at = if had_role {
+            now.saturating_add(self.config.leaders.reassign_secs)
+        } else {
+            now
+        };
+        self.assignments.push(crate::Assignment {
+            leader_id,
+            role,
+            target,
+            assigned_at: now,
+            ready_at,
+        });
+        self.sync_admirals_from_leaders();
+        self.push_event(now, format!("assigned leader #{leader_id} as {role}"));
+        self.record_history(crate::HistoryDraft {
+            at: now,
+            kind: crate::HistoryKind::Other,
+            actor: crate::LEADER_PLAYER.into(),
+            action: "assign".into(),
+            objects: vec![format!("leader:{leader_id}"), role.as_key().into()],
+            outcome: "assigned".into(),
+            ..crate::HistoryDraft::default()
+        });
+        Ok(())
+    }
+
+    pub fn delegate_leader(
+        &mut self,
+        leader_id: u64,
+        permission: crate::Permission,
+        spend_cap: Option<f64>,
+        now_unix: u64,
+    ) -> Result<(), crate::LeaderError> {
+        self.catch_up(now_unix);
+        let now = self.last_tick_unix;
+        self.authorize(crate::Actor::Player, crate::Permission::Delegate, None, 0.0)?;
+        let leader = self
+            .leader(leader_id)
+            .ok_or(crate::LeaderError::UnknownLeader(leader_id))?;
+        if leader.retired {
+            return Err(crate::LeaderError::Retired(leader_id));
+        }
+        let assignment = self
+            .assignment_of(leader_id)
+            .ok_or(crate::LeaderError::Unassigned(leader_id))?;
+        if !assignment.role.grants(permission) {
+            return Err(crate::LeaderError::MissingPermission {
+                actor: crate::Actor::Leader(leader_id).as_key(),
+                needed: permission,
+            });
+        }
+        if spend_cap.is_some_and(|cap| !cap.is_finite() || cap < 0.0) {
+            return Err(crate::LeaderError::Parse(
+                "spend cap must be finite and >= 0".into(),
+            ));
+        }
+        self.delegations
+            .retain(|row| !(row.leader_id == leader_id && row.permission == permission));
+        self.delegations.push(crate::Delegation {
+            leader_id,
+            permission,
+            spend_cap,
+            spent: 0.0,
+            period_start: now,
+        });
+        self.push_event(
+            now,
+            format!("delegated {} to leader #{leader_id}", permission.as_key()),
+        );
+        self.record_history(crate::HistoryDraft {
+            at: now,
+            kind: crate::HistoryKind::Other,
+            actor: crate::LEADER_PLAYER.into(),
+            action: "delegate".into(),
+            objects: vec![format!("leader:{leader_id}"), permission.as_key().into()],
+            outcome: "delegated".into(),
+            ..crate::HistoryDraft::default()
+        });
+        Ok(())
+    }
+
+    pub fn revoke_delegation(
+        &mut self,
+        leader_id: u64,
+        permission: Option<crate::Permission>,
+        now_unix: u64,
+    ) -> Result<(), crate::LeaderError> {
+        self.catch_up(now_unix);
+        let now = self.last_tick_unix;
+        self.authorize(crate::Actor::Player, crate::Permission::Delegate, None, 0.0)?;
+        if self.leader(leader_id).is_none() {
+            return Err(crate::LeaderError::UnknownLeader(leader_id));
+        }
+        let before = self.delegations.len();
+        match permission {
+            Some(perm) => self
+                .delegations
+                .retain(|row| !(row.leader_id == leader_id && row.permission == perm)),
+            None => self.delegations.retain(|row| row.leader_id != leader_id),
+        }
+        if self.delegations.len() == before {
+            return Err(crate::LeaderError::Unassigned(leader_id));
+        }
+        self.push_event(now, format!("revoked delegation on leader #{leader_id}"));
+        self.record_history(crate::HistoryDraft {
+            at: now,
+            kind: crate::HistoryKind::Other,
+            actor: crate::LEADER_PLAYER.into(),
+            action: "revoke".into(),
+            objects: vec![format!("leader:{leader_id}")],
+            outcome: "revoked".into(),
+            ..crate::HistoryDraft::default()
+        });
+        Ok(())
+    }
+
     /// Queue an upgrade on the home planet.
     pub fn enqueue_build(&mut self, kind: BuildingKind, now_unix: u64) -> Result<(), BuildError> {
-        self.enqueue_build_on(self.home, kind, now_unix)
+        self.enqueue_build_as(self.home, kind, now_unix, crate::Actor::Player)
     }
 
     /// Queue an upgrade. Resources are paid from that planet; only the head runs.
@@ -635,7 +1099,32 @@ impl GameState {
         kind: BuildingKind,
         now_unix: u64,
     ) -> Result<(), BuildError> {
+        self.enqueue_build_as(coord, kind, now_unix, crate::Actor::Player)
+    }
+
+    pub fn enqueue_build_as(
+        &mut self,
+        coord: Coord,
+        kind: BuildingKind,
+        now_unix: u64,
+        actor: crate::Actor,
+    ) -> Result<(), BuildError> {
         self.catch_up(now_unix);
+        let buildings = *self.buildings_at(coord).ok_or(BuildError::UnknownPlanet)?;
+        let queue: Vec<BuildJob> = if coord == self.home {
+            self.build_queue.clone()
+        } else {
+            self.colonies
+                .iter()
+                .find(|c| c.coord == coord)
+                .map(|c| c.build_queue.clone())
+                .ok_or(BuildError::UnknownPlanet)?
+        };
+        let from_level = projected_on(&buildings, &queue, kind, queue.len());
+        let cost = self.config.buildings.get(kind).cost(from_level);
+        let spend = cost.metal + cost.crystal + cost.deuterium;
+        self.authorize(actor, crate::Permission::QueueBuild, Some(coord), spend)
+            .map_err(|err| BuildError::PermissionDenied(err.to_string()))?;
         let now = self.last_tick_unix;
         let cap = self.build_queue_cap();
         if coord == self.home {
@@ -675,6 +1164,7 @@ impl GameState {
                 &self.config,
             )?;
         }
+        self.charge_delegation(actor, crate::Permission::QueueBuild, spend);
         self.history_queue_build(coord, kind, now);
         Ok(())
     }
@@ -1962,6 +2452,7 @@ impl GameState {
             * self.unrest_for(colony.buildings, colony.kind)
             * self.emission_factor(colony.coord);
         let boost = self.prod_boost_mult();
+        let staff = self.governor_factor(colony.coord);
         if self.config.chains.enabled() {
             return self.chain_net_per_hour(
                 ChainSite {
@@ -1977,7 +2468,7 @@ impl GameState {
                     goods: &colony.goods,
                 },
                 kind,
-            );
+            ) * staff;
         }
         let (raw, output, planet_bonus) = match kind {
             ResourceKind::Metal => (
@@ -2002,7 +2493,7 @@ impl GameState {
                 bonus.deuterium + rare.deuterium,
             ),
         };
-        raw * (1.0 + self.tech_modifier(output) + planet_bonus) * factor * boost
+        raw * (1.0 + self.tech_modifier(output) + planet_bonus) * factor * boost * staff
     }
 
     fn rare_bonus_for(&self, colony: &Colony) -> RarePlanetBonus {
@@ -3100,9 +3591,19 @@ impl GameState {
 
     /// Hold, retreat, or commit reserves for the current round. Ignored when idle.
     pub fn queue_tactical_action(&mut self, action: RoundAction) {
+        let _ = self.queue_tactical_action_as(action, crate::Actor::Player);
+    }
+
+    pub fn queue_tactical_action_as(
+        &mut self,
+        action: RoundAction,
+        actor: crate::Actor,
+    ) -> Result<(), crate::LeaderError> {
+        self.authorize(actor, crate::Permission::AcceptBattle, None, 0.0)?;
         if let Some(pending) = &mut self.pending_tactical {
             pending.queued = Some(action);
         }
+        Ok(())
     }
 
     /// Apply queued or auto-defaults until `now`, or until a live pause.
@@ -3227,7 +3728,12 @@ impl GameState {
         };
         if let Some(adm) = self.admirals.iter_mut().find(|a| a.id == id) {
             adm.xp = adm.xp.saturating_add(xp).min(cap);
-            adm.trait_id = next_trait;
+            adm.trait_id = next_trait.clone();
+        }
+        if let Some(leader) = self.leaders.iter_mut().find(|row| row.id == id) {
+            leader.xp = leader.xp.saturating_add(xp).min(cap);
+            leader.trait_id = next_trait;
+            leader.skill_command = leader.skill_command.saturating_add(1);
         }
     }
 
@@ -4350,11 +4856,13 @@ impl GameState {
             * self.unrest_factor()
             * self.emission_factor_range(self.home, from, now_unix);
         let boost = self.prod_boost_mult();
+        let home_staff = self.governor_factor(self.home);
         if self.config.chains.enabled() {
             self.produce_chains(hours, factor, boost, from, now_unix);
         } else {
             for kind in ResourceKind::ALL {
-                let rate = self.base_production_range(kind, from, now_unix) * factor * boost;
+                let rate =
+                    self.base_production_range(kind, from, now_unix) * factor * boost * home_staff;
                 let cap = self.storage_cap(kind);
                 let current = self.resources.get(kind);
                 self.resources
@@ -4372,7 +4880,17 @@ impl GameState {
                 .iter()
                 .map(|c| self.emission_factor_range(c.coord, from, now_unix))
                 .collect();
-            for (colony, emission) in self.colonies.iter_mut().zip(colony_emission) {
+            let colony_staff: Vec<f64> = self
+                .colonies
+                .iter()
+                .map(|c| self.governor_factor(c.coord))
+                .collect();
+            for ((colony, emission), staff) in self
+                .colonies
+                .iter_mut()
+                .zip(colony_emission)
+                .zip(colony_staff)
+            {
                 let bonus = config.planet_types.get(colony.kind);
                 let produced = config
                     .solar_plant
@@ -4401,19 +4919,22 @@ impl GameState {
                     .production_per_hour(colony.buildings.metal_mine)
                     * (1.0 + metal_t + bonus.metal)
                     * factor
-                    * boost;
+                    * boost
+                    * staff;
                 let crystal_rate = config
                     .crystal_mine
                     .production_per_hour(colony.buildings.crystal_mine)
                     * (1.0 + crystal_t + bonus.crystal)
                     * factor
-                    * boost;
+                    * boost
+                    * staff;
                 let deut_rate = config
                     .deuterium_synthesizer
                     .production_per_hour(colony.buildings.deuterium_synthesizer)
                     * (1.0 + deut_t + bonus.deuterium)
                     * factor
-                    * boost;
+                    * boost
+                    * staff;
                 let metal_cap = config
                     .metal_storage
                     .capacity(colony.buildings.metal_storage);
@@ -4466,12 +4987,13 @@ impl GameState {
             (from, to),
         );
         let home_yard = home_buildings.shipyard as f64;
+        let home_staff = self.governor_factor(self.home);
         apply_recipes(
             RecipeRun {
                 config: &chains,
                 buildings: home_buildings,
                 deposits: &home_deposits,
-                hours,
+                hours: hours * home_staff,
                 energy_factor: home_factor,
                 boost,
             },
@@ -4566,13 +5088,14 @@ impl GameState {
                 (from, to),
             );
             let yard_s = buildings.shipyard as f64;
+            let staff = self.governor_factor(coord);
             let colony = &mut self.colonies[i];
             apply_recipes(
                 RecipeRun {
                     config: &chains,
                     buildings,
                     deposits: &deposits,
-                    hours,
+                    hours: hours * staff,
                     energy_factor: factor,
                     boost,
                 },
@@ -4828,7 +5351,28 @@ impl GameState {
         effective_in: u64,
         now_unix: u64,
     ) -> Result<u64, crate::LawError> {
+        self.propose_law_as(
+            template_id,
+            param,
+            jurisdiction,
+            effective_in,
+            now_unix,
+            crate::Actor::Player,
+        )
+    }
+
+    pub fn propose_law_as(
+        &mut self,
+        template_id: &str,
+        param: f64,
+        jurisdiction: crate::Jurisdiction,
+        effective_in: u64,
+        now_unix: u64,
+        actor: crate::Actor,
+    ) -> Result<u64, crate::LawError> {
         self.catch_up(now_unix);
+        self.authorize(actor, crate::Permission::ProposeLaw, None, 0.0)
+            .map_err(|err| crate::LawError::PermissionDenied(err.to_string()))?;
         let now = self.last_tick_unix;
         if let crate::Jurisdiction::Planet(coord) = jurisdiction
             && self.buildings_at(coord).is_none()
@@ -4893,6 +5437,7 @@ impl GameState {
     pub fn production_per_hour(&self, kind: ResourceKind) -> f64 {
         let factor = self.energy_factor() * self.unrest_factor() * self.emission_factor(self.home);
         let boost = self.prod_boost_mult();
+        let staff = self.governor_factor(self.home);
         if self.config.chains.enabled() {
             self.chain_net_per_hour(
                 ChainSite {
@@ -4908,9 +5453,9 @@ impl GameState {
                     goods: &self.goods,
                 },
                 kind,
-            )
+            ) * staff
         } else {
-            self.base_production_per_hour(kind) * factor * boost
+            self.base_production_per_hour(kind) * factor * boost * staff
         }
     }
 
@@ -5427,6 +5972,12 @@ mod tests {
             daily: crate::DailyConfig::empty(),
             moons: crate::MoonConfig::inactive(),
             tactics: crate::TacticsConfig::default(),
+            leaders: {
+                let mut leaders = crate::LeaderConfig::default();
+                leaders.empty_governor = 0.0;
+                leaders.empty_admiral = 0.0;
+                leaders
+            },
         }
     }
 
@@ -9318,5 +9869,203 @@ label = "Leave it"
             ..crate::HistoryQuery::default()
         });
         assert!(hits.len() >= 2);
+    }
+
+    #[test]
+    fn leader_permissions_delegation_and_spend_cap() {
+        let mut state = GameState::new(1_000);
+        state.resources.metal = 50_000.0;
+        state.resources.crystal = 50_000.0;
+        state.resources.deuterium = 50_000.0;
+        let admiral = 1;
+        let governor = 2;
+        let denied = state.enqueue_build_as(
+            Coord::HOME,
+            BuildingKind::MetalMine,
+            1_000,
+            crate::Actor::Leader(admiral),
+        );
+        assert!(matches!(denied, Err(BuildError::PermissionDenied(_))));
+        let still = state.enqueue_build_as(
+            Coord::HOME,
+            BuildingKind::MetalMine,
+            1_000,
+            crate::Actor::Leader(governor),
+        );
+        assert!(matches!(still, Err(BuildError::PermissionDenied(_))));
+        assert!(
+            state
+                .delegate_leader(
+                    governor,
+                    crate::Permission::QueueBuild,
+                    Some(f64::NAN),
+                    1_000
+                )
+                .is_err()
+        );
+        assert!(
+            state
+                .delegate_leader(governor, crate::Permission::QueueBuild, Some(-1.0), 1_000)
+                .is_err()
+        );
+        state
+            .delegate_leader(governor, crate::Permission::QueueBuild, Some(80.0), 1_000)
+            .unwrap();
+        let capped = state.enqueue_build_as(
+            Coord::HOME,
+            BuildingKind::MetalMine,
+            1_000,
+            crate::Actor::Leader(governor),
+        );
+        assert!(
+            matches!(capped, Err(BuildError::PermissionDenied(ref msg)) if msg.contains("spend cap")),
+            "{capped:?}"
+        );
+        state
+            .revoke_delegation(governor, Some(crate::Permission::QueueBuild), 1_000)
+            .unwrap();
+        state
+            .delegate_leader(governor, crate::Permission::QueueBuild, None, 1_000)
+            .unwrap();
+        let broke = state.resources.metal;
+        state.resources.metal = 0.0;
+        let unaffordable = state.enqueue_build_as(
+            Coord::HOME,
+            BuildingKind::MetalMine,
+            1_000,
+            crate::Actor::Leader(governor),
+        );
+        assert!(matches!(
+            unaffordable,
+            Err(BuildError::InsufficientResources { .. })
+        ));
+        assert_eq!(
+            state
+                .delegations
+                .iter()
+                .find(|row| row.leader_id == governor)
+                .map(|row| row.spent),
+            Some(0.0)
+        );
+        state.resources.metal = broke;
+        state
+            .enqueue_build_as(
+                Coord::HOME,
+                BuildingKind::MetalMine,
+                1_000,
+                crate::Actor::Leader(governor),
+            )
+            .unwrap();
+        assert_eq!(state.build_queue.len(), 1);
+        state
+            .enqueue_build(BuildingKind::CrystalMine, 1_000)
+            .unwrap();
+        assert_eq!(state.build_queue.len(), 2);
+    }
+
+    #[test]
+    fn governor_trait_raises_output_inside_energy_budget() {
+        let mut state = GameState::new(1_000);
+        let baseline = state.production_per_hour(ResourceKind::Metal);
+        if let Some(leader) = state.leaders.iter_mut().find(|row| row.id == 2) {
+            leader.trait_id = "logistics".into();
+        }
+        let boosted = state.production_per_hour(ResourceKind::Metal);
+        assert!(boosted > baseline);
+        assert!(boosted / baseline < 1.05);
+        state.assignments.retain(|row| row.leader_id != 2);
+        let empty = state.production_per_hour(ResourceKind::Metal);
+        assert!(empty < baseline);
+
+        let mut governed = GameState::new(2_000);
+        governed.resources.metal = 0.0;
+        let mut vacant = GameState::new(2_000);
+        vacant.resources.metal = 0.0;
+        vacant.assignments.retain(|row| row.leader_id != 2);
+        governed.catch_up(2_000 + 3_600);
+        vacant.catch_up(2_000 + 3_600);
+        assert!(governed.resources.metal > vacant.resources.metal);
+    }
+
+    #[test]
+    fn reassignment_delay_and_retirement() {
+        let mut state = GameState::new(1_000);
+        state.resources.metal = 5_000.0;
+        state.resources.crystal = 5_000.0;
+        let id = state.recruit_leader("Nara", "reformer", 1_000).unwrap();
+        state
+            .assign_leader(
+                id,
+                crate::RoleKind::Minister,
+                crate::AssignmentTarget::Empire,
+                1_000,
+            )
+            .unwrap();
+        assert!(state.assignment_of(id).unwrap().ready(1_000));
+        state
+            .assign_leader(
+                id,
+                crate::RoleKind::Governor,
+                crate::AssignmentTarget::Planet(Coord::HOME),
+                1_000,
+            )
+            .unwrap();
+        let ready_at = state.assignment_of(id).unwrap().ready_at;
+        assert!(ready_at > 1_000);
+        assert!(matches!(
+            state.enqueue_build_as(
+                Coord::HOME,
+                BuildingKind::MetalMine,
+                1_000,
+                crate::Actor::Leader(id)
+            ),
+            Err(BuildError::PermissionDenied(_))
+        ));
+        if let Some(leader) = state.leaders.iter_mut().find(|row| row.id == 1) {
+            leader.lifespan_secs = 10;
+        }
+        state.catch_up(1_020);
+        assert!(state.leader(1).unwrap().retired);
+        assert!(state.home_admiral_id.is_none());
+    }
+
+    #[test]
+    fn minister_needs_delegation_to_propose() {
+        let mut state = GameState::new(1_000);
+        state.resources.metal = 5_000.0;
+        state.resources.crystal = 5_000.0;
+        let id = state.recruit_leader("Iri", "reformer", 1_000).unwrap();
+        state
+            .assign_leader(
+                id,
+                crate::RoleKind::Minister,
+                crate::AssignmentTarget::Empire,
+                1_000,
+            )
+            .unwrap();
+        let template = "trade_tariff".to_string();
+        let denied = state.propose_law_as(
+            &template,
+            0.0,
+            crate::Jurisdiction::Empire,
+            0,
+            1_000,
+            crate::Actor::Leader(id),
+        );
+        assert!(matches!(denied, Err(crate::LawError::PermissionDenied(_))));
+        state
+            .delegate_leader(id, crate::Permission::ProposeLaw, None, 1_000)
+            .unwrap();
+        let param = state.config.laws.get(&template).unwrap().default;
+        state
+            .propose_law_as(
+                &template,
+                param,
+                crate::Jurisdiction::Empire,
+                0,
+                1_000,
+                crate::Actor::Leader(id),
+            )
+            .unwrap();
     }
 }

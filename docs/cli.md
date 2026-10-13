@@ -20,7 +20,12 @@ bumps that version.
 hoshi --save PATH [--seed N] [--balance PATH] state [--json]
 hoshi --save PATH advise
 hoshi --save PATH log [--type KIND] [--actor ID] [--object ID] [--from UNIX] [--to UNIX] [--lineage ID] [--at UNIX] [--export PATH]
-hoshi --save PATH build <planet> <building>
+hoshi --save PATH staff
+hoshi --save PATH staff recruit [--name TEXT] [--trait ID]
+hoshi --save PATH staff assign <id> admiral|governor|minister [--target home|empire|g:s:p]
+hoshi --save PATH staff delegate <id> [--permission queue_build|accept_battle|propose_law] [--cap N]
+hoshi --save PATH staff revoke <id> [--permission queue_build|accept_battle|propose_law]
+hoshi --save PATH build <planet> <building> [--as player|leader:ID]
 hoshi --save PATH research <tech>
 hoshi --save PATH cancel <queue-item>
 hoshi --save PATH fleet send <from> <to> <mission> <ships...>
@@ -62,6 +67,8 @@ returns the recorded empire glance at that time if it is still retained;
 last 256 events and one snapshot per event. The TUI `log` screen filters by
 type (`+`/`-`) and opens lineage (Enter) or the glance (`r`).
 
+`staff` lists leaders, roles, assignments and delegations. `staff recruit` spends the configured cost. `staff assign` places one role per leader (reassignment waits `reassign_secs`). `staff delegate` lets that leader act with an optional spending cap; `staff revoke` removes it. `build --as leader:ID` runs the same queue checks under that leader's permissions.
+
 `--seed` on a new save starts deterministic mode: the wall clock is ignored and
 `tick --advance` is allowed. Live saves refuse `tick --advance`. The TUI refuses
 a deterministic save so wall-clock catch-up cannot run on it. JSON never
@@ -69,7 +76,7 @@ includes RNG state or galaxy seed. Unknown commands and CLI-only flags print
 JSON with exit 2; they do not open the TUI. `expedition` dest must be the
 configured expedition slot.
 
-`prestige` prints score, currency and owned bonuses. `prestige buy` spends unspent currency. `prestige reset` is refused until a wonder is complete or score reaches the configured minimum; it keeps bonuses and run history. `state` includes a `waste` object (heat and pollution load versus sink, unrest, and the warning flag), a `laws` array (status, approvals, latest expected vs measured samples), a `daily` object (streak, time until reset, and slot progress), and a `tutorial` object (enabled, skipped, pending hint). `tutorial skip` hides remaining hints; `tutorial reset` clears seen ids and shows the opening again. `tactics set` stores the home fleet's formation, stance and auto-retreat threshold; `tactics action` is refused unless a live fight is waiting. `state` includes a `tactics` object. `feedback` appends a timestamped JSON line (version and a save glance, never the galaxy seed) to a `.feedback.log` beside the save; a missing or locked save still records the note. See `docs/playtest.md`. `law propose` writes a proposal; `law approve` records the player approval and enacts when the effective date is due; `law repeal` starts the same flow in reverse and restores prior parameters.
+`prestige` prints score, currency and owned bonuses. `prestige buy` spends unspent currency. `prestige reset` is refused until a wonder is complete or score reaches the configured minimum; it keeps bonuses and run history. `state` includes a `leaders` array (traits, assignment, retirement, delegations), a `waste` object (heat and pollution load versus sink, unrest, and the warning flag), a `laws` array (status, approvals, latest expected vs measured samples), a `daily` object (streak, time until reset, and slot progress), and a `tutorial` object (enabled, skipped, pending hint). `tutorial skip` hides remaining hints; `tutorial reset` clears seen ids and shows the opening again. `tactics set` stores the home fleet's formation, stance and auto-retreat threshold; `tactics action` is refused unless a live fight is waiting. `state` includes a `tactics` object. `feedback` appends a timestamped JSON line (version and a save glance, never the galaxy seed) to a `.feedback.log` beside the save; a missing or locked save still records the note. See `docs/playtest.md`. `law propose` writes a proposal; `law approve` records the player approval and enacts when the effective date is due; `law repeal` starts the same flow in reverse and restores prior parameters.
 
 `--save` / `HOSHI_SAVE` and `--balance` / `HOSHI_BALANCE` match the TUI. `hoshi` with no subcommand opens the title screen. `--save PATH` still opens that file directly. `hoshi --continue` resumes the last slot without the menu; locked slots exit 4, corrupt or newer-schema or harness slots exit 5. `hoshi new --seed <code>` writes a new live save (default slot, `--save PATH`, or `HOSHI_SAVE`) and prints the canonical grouped seed code; an existing file exits 2. Shareable codes are grouped `XXXX-XXXX-XXXX-XX` with a checksum. Encode always includes the hyphens. Grouped input is a code; ungrouped digits are a raw `u64`; an ungrouped 14-character string with letters is a pasted compact code. JSON `--seed N` on the harness CLI stays a raw integer.
 

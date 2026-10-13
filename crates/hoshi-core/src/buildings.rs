@@ -180,6 +180,7 @@ pub enum BuildError {
     },
     UnknownPlanet,
     NeedLogistics,
+    PermissionDenied(String),
 }
 
 impl fmt::Display for BuildError {
@@ -215,6 +216,7 @@ impl fmt::Display for BuildError {
                     "logistics research is required to queue on several planets"
                 )
             }
+            BuildError::PermissionDenied(msg) => write!(f, "{msg}"),
         }
     }
 }

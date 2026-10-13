@@ -76,6 +76,10 @@ keystone within 14 days.
 
 `crates/hoshi-core/data/tactics.toml` is the light combat layer on the fleet resolver. Neutral formation, stance and open terrain are identity: the same seed matches the plain resolver. Wedge, wall and screen scale attack and shields; aggressive, defensive and hit-and-run do the same plus accuracy. Terrain can cut accuracy (nebula), reduce damage to fighters (asteroid) or make retreat fail (gravity well). Every ship and defence has a fighter/bomber/capital role for rock-paper-scissors, applied only when a side leaves Neutral. Auto-retreat and reserve commits apply while the player is away. Admiral traits (`none`, `flanker`, `stalwart`) spend XP up to `xp_trait_cap`. `hoshi simulate` fails if one formation and stance pair wins every sample.
 
+## Leaders
+
+`crates/hoshi-core/data/leaders.toml` is the staff catalog. Traits scale combat and colony scheduling inside the energy budget (`production` stays near 1.0). `empty_governor` is the output drop with no ready governor. `reassign_secs` is the wait before a moved leader can act. `lifespan_secs` is a flat career length, not a demographic model. Recruit costs are paid from the home stockpile. Admirals still use `tactics.toml` XP and trait caps for combat.
+
 ## Espionage
 
 `[espionage]` scores a probe wave as `probes * probe_weight + (own_espionage - target_level) * level_weight`. Own espionage is the existing research/faction modifier. The report tier is the highest `[[espionage.tiers]]` whose `min_score` the score still meets (activity, resources, fleet, defences, garrison). Detection chance is `detect_base + probes * detect_per_probe - (own - target) * detect_per_level`, clamped to `[0, 1]`. A detection then rolls `destroy_chance` once per probe. The TUI reports screen lists outposts with report age; Enter opens the latest report; `s` sends one probe.
