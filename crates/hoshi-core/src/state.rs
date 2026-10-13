@@ -258,6 +258,8 @@ pub struct GameState {
     /// In-flight planned missions (orbital transfers).
     pub planned: Vec<crate::PlannedMission>,
     pub next_planned_id: u64,
+    /// Markings, role extra-clearance, sharing agreements and leak incidents.
+    pub classification: crate::ClassificationBoard,
     pub config: BalanceConfig,
 }
 
@@ -349,6 +351,7 @@ impl GameState {
             next_vehicle_id: 0,
             planned: Vec::new(),
             next_planned_id: 0,
+            classification: crate::ClassificationBoard::default(),
             config,
         };
         state.install_starter_staff(now_unix);
@@ -781,6 +784,7 @@ impl GameState {
         if !due.is_empty() {
             self.sync_admirals_from_leaders();
         }
+        self.tick_classification_leaks(now);
     }
 
     fn authorize(
@@ -944,6 +948,7 @@ impl GameState {
             outcome: "recruited".into(),
             ..crate::HistoryDraft::default()
         });
+        self.schedule_disloyal_if_needed(trait_id, now);
         Ok(id)
     }
 
@@ -3425,6 +3430,7 @@ impl GameState {
                 None
             },
         });
+        self.maybe_leak_spy(done_at, outcome.detected);
         self.push_event(done_at, format_spy_report(&outcome, dest, probes));
         self.missions[index]
             .ships

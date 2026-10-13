@@ -20,6 +20,22 @@
     {
       "name": "Outpost",
       "description": "A pirate or contested world."
+    },
+    {
+      "name": "Marking",
+      "description": "Classification and compartments on a fact, plan, report or law."
+    },
+    {
+      "name": "Compartment",
+      "description": "A need-to-know label that a clearance must include."
+    },
+    {
+      "name": "Clearance",
+      "description": "Highest classification and compartments a role or leader may see."
+    },
+    {
+      "name": "SharingAgreement",
+      "description": "Allied-faction access to marked objects at a stated class and compartment set."
     }
   ],
   "relations": [

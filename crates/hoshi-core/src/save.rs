@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 30;
+pub const SCHEMA_VERSION: u32 = 31;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -188,7 +188,12 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM leaders;
          DELETE FROM vehicle_ships;
          DELETE FROM vehicles;
-         DELETE FROM planned_missions;",
+         DELETE FROM planned_missions;
+         DELETE FROM classified;
+         DELETE FROM sharing_agreements;
+         DELETE FROM leak_incidents;
+         DELETE FROM leader_clearance;
+         DELETE FROM classification_meta;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -490,6 +495,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
     insert_history(&tx, state)?;
     insert_leaders(&tx, state)?;
     insert_planning(&tx, state)?;
+    insert_classification(&tx, state)?;
     for (i, colony) in state.colonies.iter().enumerate() {
         let planet_id = (i as i64) + 2;
         tx.execute(
@@ -1110,6 +1116,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     load_history(conn, &mut state)?;
     load_leaders(conn, &mut state)?;
     load_planning(conn, &mut state)?;
+    load_classification(conn, &mut state)?;
     state.sync_raid_schedule_after_standing(state.last_tick_unix);
 
     let mut stmt = conn.prepare(
@@ -1969,6 +1976,11 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "vehicles" => "SELECT COUNT(*) FROM vehicles",
         "vehicle_ships" => "SELECT COUNT(*) FROM vehicle_ships",
         "planned_missions" => "SELECT COUNT(*) FROM planned_missions",
+        "classified" => "SELECT COUNT(*) FROM classified",
+        "sharing_agreements" => "SELECT COUNT(*) FROM sharing_agreements",
+        "leak_incidents" => "SELECT COUNT(*) FROM leak_incidents",
+        "leader_clearance" => "SELECT COUNT(*) FROM leader_clearance",
+        "classification_meta" => "SELECT COUNT(*) FROM classification_meta",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -2033,7 +2045,12 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "delegations")?
         + count_rows(conn, "vehicles")?
         + count_rows(conn, "vehicle_ships")?
-        + count_rows(conn, "planned_missions")?)
+        + count_rows(conn, "planned_missions")?
+        + count_rows(conn, "classified")?
+        + count_rows(conn, "sharing_agreements")?
+        + count_rows(conn, "leak_incidents")?
+        + count_rows(conn, "leader_clearance")?
+        + count_rows(conn, "classification_meta")?)
 }
 
 fn migrate(conn: &Connection) -> Result<(), SaveError> {
@@ -2133,6 +2150,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 30 {
         migrate_v30(conn)?;
+    }
+    if found < 31 {
+        migrate_v31(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -3004,6 +3024,44 @@ fn migrate_v30(conn: &Connection) -> Result<(), SaveError> {
     Ok(())
 }
 
+fn migrate_v31(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS classified (
+            kind TEXT NOT NULL,
+            object_id TEXT NOT NULL,
+            classification TEXT NOT NULL,
+            compartments TEXT NOT NULL,
+            PRIMARY KEY (kind, object_id)
+        );
+        CREATE TABLE IF NOT EXISTS sharing_agreements (
+            faction TEXT PRIMARY KEY,
+            classification TEXT NOT NULL,
+            compartments TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS leak_incidents (
+            id INTEGER PRIMARY KEY,
+            at INTEGER NOT NULL,
+            source TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            object_id TEXT NOT NULL,
+            via TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS leader_clearance (
+            leader_id INTEGER PRIMARY KEY,
+            classification TEXT NOT NULL,
+            compartments TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS classification_meta (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            next_incident_id INTEGER NOT NULL,
+            next_disloyal_at INTEGER NOT NULL
+        );
+        ",
+    )?;
+    Ok(())
+}
+
 fn meta_last_tick(conn: &Connection) -> Result<i64, SaveError> {
     conn.query_row("SELECT last_tick_unix FROM meta WHERE id = 1", [], |row| {
         row.get(0)
@@ -3613,6 +3671,68 @@ fn insert_planning(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<
     Ok(())
 }
 
+fn insert_classification(
+    tx: &rusqlite::Transaction<'_>,
+    state: &GameState,
+) -> Result<(), SaveError> {
+    tx.execute(
+        "INSERT INTO classification_meta (id, next_incident_id, next_disloyal_at) VALUES (1, ?1, ?2)",
+        params![
+            state.classification.next_incident_id as i64,
+            state.classification.next_disloyal_at as i64,
+        ],
+    )?;
+    for (key, marking) in &state.classification.objects {
+        tx.execute(
+            "INSERT INTO classified (kind, object_id, classification, compartments)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                key.kind.as_key(),
+                key.id,
+                marking.classification.as_key(),
+                crate::join_compartments(&marking.compartments),
+            ],
+        )?;
+    }
+    for row in state.classification.agreements.values() {
+        tx.execute(
+            "INSERT INTO sharing_agreements (faction, classification, compartments)
+             VALUES (?1, ?2, ?3)",
+            params![
+                row.faction,
+                row.classification.as_key(),
+                crate::join_compartments(&row.compartments),
+            ],
+        )?;
+    }
+    for row in &state.classification.incidents {
+        tx.execute(
+            "INSERT INTO leak_incidents (id, at, source, kind, object_id, via)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                row.id as i64,
+                row.at as i64,
+                row.source,
+                row.kind.as_key(),
+                row.object_id,
+                row.via,
+            ],
+        )?;
+    }
+    for (leader_id, grant) in &state.classification.grants {
+        tx.execute(
+            "INSERT INTO leader_clearance (leader_id, classification, compartments)
+             VALUES (?1, ?2, ?3)",
+            params![
+                *leader_id as i64,
+                grant.classification.as_key(),
+                crate::join_compartments(&grant.compartments),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 fn load_planning(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
     if !table_exists(conn, "vehicles") {
         return Ok(());
@@ -3775,6 +3895,140 @@ fn load_planning(conn: &Connection, state: &mut GameState) -> Result<(), SaveErr
         .max()
         .map(|id| id.saturating_add(1))
         .unwrap_or(0);
+    Ok(())
+}
+
+fn load_classification(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
+    if !table_exists(conn, "classified") {
+        return Ok(());
+    }
+    if table_exists(conn, "classification_meta")
+        && let Some((next_incident, next_disloyal)) = conn
+            .query_row(
+                "SELECT next_incident_id, next_disloyal_at FROM classification_meta WHERE id = 1",
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()?
+    {
+        state.classification.next_incident_id = unix_ts(next_incident)?;
+        state.classification.next_disloyal_at = unix_ts(next_disloyal)?;
+    }
+    let mut stmt = conn.prepare(
+        "SELECT kind, object_id, classification, compartments FROM classified ORDER BY kind, object_id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    })?;
+    state.classification.objects.clear();
+    for row in rows {
+        let (kind, id, class, compartments) = row?;
+        let kind =
+            crate::ClassifiedKind::from_key(&kind).ok_or(SaveError::Corrupt("classified kind"))?;
+        let classification = crate::Classification::from_key(&class)
+            .ok_or(SaveError::Corrupt("classified class"))?;
+        state.classification.objects.insert(
+            crate::classification::ClassifiedRef::new(kind, id),
+            crate::Marking::new(classification, crate::split_compartments(&compartments)),
+        );
+    }
+    drop(stmt);
+    if table_exists(conn, "sharing_agreements") {
+        let mut stmt = conn.prepare(
+            "SELECT faction, classification, compartments FROM sharing_agreements ORDER BY faction",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        state.classification.agreements.clear();
+        for row in rows {
+            let (faction, class, compartments) = row?;
+            let classification = crate::Classification::from_key(&class)
+                .ok_or(SaveError::Corrupt("sharing class"))?;
+            state.classification.agreements.insert(
+                faction.clone(),
+                crate::SharingAgreement {
+                    faction,
+                    classification,
+                    compartments: crate::split_compartments(&compartments),
+                },
+            );
+        }
+    }
+    if table_exists(conn, "leak_incidents") {
+        let mut stmt = conn.prepare(
+            "SELECT id, at, source, kind, object_id, via FROM leak_incidents ORDER BY id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+            ))
+        })?;
+        state.classification.incidents.clear();
+        for row in rows {
+            let (id, at, source, kind, object_id, via) = row?;
+            let kind =
+                crate::ClassifiedKind::from_key(&kind).ok_or(SaveError::Corrupt("leak kind"))?;
+            state.classification.incidents.push(crate::LeakIncident {
+                id: unix_ts(id)?,
+                at: unix_ts(at)?,
+                source,
+                kind,
+                object_id,
+                via,
+            });
+        }
+    }
+    if table_exists(conn, "leader_clearance") {
+        let mut stmt = conn.prepare(
+            "SELECT leader_id, classification, compartments FROM leader_clearance ORDER BY leader_id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        state.classification.grants.clear();
+        for row in rows {
+            let (leader_id, class, compartments) = row?;
+            let classification =
+                crate::Classification::from_key(&class).ok_or(SaveError::Corrupt("grant class"))?;
+            state.classification.grants.insert(
+                unix_ts(leader_id)?,
+                crate::Clearance {
+                    classification,
+                    compartments: crate::split_compartments(&compartments),
+                    unrestricted: false,
+                },
+            );
+        }
+    }
+    if state.classification.next_incident_id == 0 {
+        state.classification.next_incident_id = state
+            .classification
+            .incidents
+            .iter()
+            .map(|row| row.id)
+            .max()
+            .map(|id| id.saturating_add(1))
+            .unwrap_or(0);
+    }
     Ok(())
 }
 
@@ -5873,6 +6127,72 @@ mod tests {
         assert_eq!(loaded.next_planned_id, 8);
         assert_eq!(count_rows(&conn, "vehicles").unwrap(), 1);
         assert_eq!(count_rows(&conn, "planned_missions").unwrap(), 1);
+    }
+
+    #[test]
+    fn migrate_v31_round_trips_classification() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v31(&conn).unwrap();
+        migrate_v31(&conn).unwrap();
+        let mut state = GameState::new(10);
+        state.spy_reports.push(crate::SpyReport {
+            id: 4,
+            target: Coord::HOME,
+            created_at: 10,
+            probes_sent: 1,
+            probes_lost: 0,
+            detected: false,
+            score: 1.0,
+            tier: "fleet".into(),
+            resources: None,
+            fleet: None,
+            defences: None,
+            garrison: None,
+            kind: None,
+            size: None,
+            formation: None,
+            stance: None,
+        });
+        state
+            .classify(
+                crate::Actor::Player,
+                crate::ClassifiedKind::Report,
+                "4",
+                crate::Classification::Secret,
+                [crate::COMPARTMENT_INTEL.into()],
+            )
+            .unwrap();
+        state.diplomacy.set_standing("traders", 25.0);
+        state
+            .share(
+                "traders",
+                crate::Classification::Restricted,
+                [crate::COMPARTMENT_INTEL.into()],
+            )
+            .unwrap();
+        state
+            .grant_clearance(
+                1,
+                crate::Classification::Secret,
+                [crate::COMPARTMENT_INTEL.into()],
+            )
+            .unwrap();
+        state.maybe_leak_spy(20, true);
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(
+            loaded
+                .marking_of(crate::ClassifiedKind::Report, "4")
+                .classification,
+            crate::Classification::Secret
+        );
+        assert!(loaded.classification.agreements.contains_key("traders"));
+        assert_eq!(loaded.classification.incidents.len(), 1);
+        assert!(loaded.classification.grants.contains_key(&1));
+        assert_eq!(count_rows(&conn, "classified").unwrap(), 1);
+        assert_eq!(count_rows(&conn, "sharing_agreements").unwrap(), 1);
+        assert_eq!(count_rows(&conn, "leak_incidents").unwrap(), 1);
+        assert_eq!(count_rows(&conn, "leader_clearance").unwrap(), 1);
     }
 
     #[test]

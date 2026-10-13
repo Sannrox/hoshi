@@ -745,6 +745,41 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             );
             """
         )
+    elif version == 31:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS classified (
+                kind TEXT NOT NULL,
+                object_id TEXT NOT NULL,
+                classification TEXT NOT NULL,
+                compartments TEXT NOT NULL,
+                PRIMARY KEY (kind, object_id)
+            );
+            CREATE TABLE IF NOT EXISTS sharing_agreements (
+                faction TEXT PRIMARY KEY,
+                classification TEXT NOT NULL,
+                compartments TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS leak_incidents (
+                id INTEGER PRIMARY KEY,
+                at INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                object_id TEXT NOT NULL,
+                via TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS leader_clearance (
+                leader_id INTEGER PRIMARY KEY,
+                classification TEXT NOT NULL,
+                compartments TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS classification_meta (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                next_incident_id INTEGER NOT NULL,
+                next_disloyal_at INTEGER NOT NULL
+            );
+            """
+        )
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"

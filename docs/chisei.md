@@ -38,6 +38,8 @@ bot saves as `*.chisei`. Override per run with `--backend chisei` or
 | — | — | `allied-with` (shared visibility) |
 | — | — | `cleared-for` spy marking |
 
+Need-to-know stays in the tenant SQLite codec (`classified`, sharing agreements, incidents). The shared graph does not copy marked object ids, classes or compartments, so allies and other graph readers cannot inspect them. Ontology classes Marking, Compartment, Clearance and SharingAgreement remain in `hoshi-v1.json`.
+
 Moves go through `propose` then `apply`. A refused proposal never writes the
 live state or the save.
 

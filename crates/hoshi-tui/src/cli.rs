@@ -1,11 +1,12 @@
 //! Scriptable JSON commands. Same core actions as the TUI; no extra powers.
 
 use hoshi_core::{
-    Actor, AssignmentTarget, BackendKind, BalanceConfig, BuildingKind, Clock, Coord, Customer,
-    DefenceKind, FakeClock, Fleet, GameState, HistoryKind, HistoryQuery, Intent, Jurisdiction,
-    JurisdictionKind, MoonFacility, Payload, Permission, PlanRequest, ResourceKind, RoleKind,
-    RoundAction, SCHEMA_VERSION as SAVE_SCHEMA, SaveError, ShipKind, SpyReport, SystemClock,
-    TransferKind, advise, inspect_save, lock_save, open_storage, resolve_save_path, save_is_locked,
+    Actor, AssignmentTarget, BackendKind, BalanceConfig, BuildingKind, Classification,
+    ClassifiedKind, Clock, Coord, Customer, DefenceKind, FakeClock, Fleet, GameState, HistoryKind,
+    HistoryQuery, Intent, Jurisdiction, JurisdictionKind, MoonFacility, Payload, Permission,
+    PlanRequest, ResourceKind, RoleKind, RoundAction, SCHEMA_VERSION as SAVE_SCHEMA, SaveError,
+    ShipKind, SpyReport, SystemClock, TransferKind, advise, inspect_save, lock_save, open_storage,
+    resolve_save_path, save_is_locked,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -25,7 +26,24 @@ pub struct CliOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Command {
-    State,
+    State {
+        actor: Actor,
+    },
+    Classify {
+        kind: ClassifiedKind,
+        id: String,
+        class: Classification,
+        compartments: Vec<String>,
+        actor: Actor,
+    },
+    Share {
+        faction: String,
+        class: Classification,
+        compartments: Vec<String>,
+    },
+    Incidents {
+        actor: Actor,
+    },
     Build {
         planet: Coord,
         building: BuildingKind,
@@ -114,6 +132,11 @@ enum Command {
     StaffRevoke {
         id: u64,
         permission: Option<Permission>,
+    },
+    StaffClearance {
+        id: u64,
+        class: Classification,
+        compartments: Vec<String>,
     },
     ArenaRun {
         seed: Option<u64>,
@@ -418,11 +441,39 @@ fn governed(state: &mut GameState, intent: Intent, now: u64) -> Result<(), CliEr
 
 fn apply(state: &mut GameState, now: u64, command: &Command) -> Result<Value, CliError> {
     match command {
-        Command::State => {
+        Command::State { actor } => {
             if !state.deterministic {
                 state.catch_up(now);
             }
-            Ok(state_value(state))
+            Ok(state_value(state, *actor))
+        }
+        Command::Classify {
+            kind,
+            id,
+            class,
+            compartments,
+            actor,
+        } => {
+            state
+                .classify(*actor, *kind, id, *class, compartments.clone())
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state_as(state, "classified", *actor))
+        }
+        Command::Share {
+            faction,
+            class,
+            compartments,
+        } => {
+            state
+                .share(faction, *class, compartments.clone())
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, "sharing updated"))
+        }
+        Command::Incidents { actor } => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            Ok(incidents_value(state, *actor))
         }
         Command::Build {
             planet,
@@ -834,6 +885,16 @@ fn apply(state: &mut GameState, now: u64, command: &Command) -> Result<Value, Cl
                 .map_err(|e| CliError::Refused(e.to_string()))?;
             Ok(ok_state(state, "revoked delegation"))
         }
+        Command::StaffClearance {
+            id,
+            class,
+            compartments,
+        } => {
+            state
+                .grant_clearance(*id, *class, compartments.clone())
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, "clearance granted"))
+        }
         Command::MoonScan { planet } => {
             if !state.deterministic {
                 state.catch_up(now);
@@ -861,12 +922,39 @@ fn apply(state: &mut GameState, now: u64, command: &Command) -> Result<Value, Cl
 }
 
 fn ok_state(state: &GameState, message: &str) -> Value {
-    let mut value = state_value(state);
+    ok_state_as(state, message, Actor::Player)
+}
+
+fn ok_state_as(state: &GameState, message: &str, actor: Actor) -> Value {
+    let mut value = state_value(state, actor);
     value["message"] = json!(message);
     value
 }
 
-fn state_value(state: &GameState) -> Value {
+fn incidents_value(state: &GameState, actor: Actor) -> Value {
+    json!({
+        "schema_version": SCHEMA_VERSION,
+        "ok": true,
+        "incidents": state.visible_incidents(actor).iter().map(|row| json!({
+            "id": row.id,
+            "at": row.at,
+            "source": row.source,
+            "kind": row.kind.as_key(),
+            "object_id": row.object_id,
+            "via": row.via,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn marking_value(state: &GameState, kind: ClassifiedKind, id: &str) -> Value {
+    let marking = state.marking_of(kind, id);
+    json!({
+        "class": marking.classification.as_key(),
+        "compartments": marking.compartments.iter().cloned().collect::<Vec<_>>(),
+    })
+}
+
+fn state_value(state: &GameState, actor: Actor) -> Value {
     let raid = state.next_raid_at.map(|at| {
         json!({
             "lands_in_secs": at.saturating_sub(state.last_tick_unix),
@@ -913,8 +1001,8 @@ fn state_value(state: &GameState) -> Value {
         })
         .collect();
     let events: Vec<Value> = state
-        .events
-        .iter()
+        .visible_events(actor)
+        .into_iter()
         .map(|e| json!({"at": e.at, "text": e.text}))
         .collect();
     let admiral = state
@@ -969,9 +1057,8 @@ fn state_value(state: &GameState) -> Value {
         })
         .collect();
     let laws: Vec<Value> = state
-        .laws
-        .laws
-        .iter()
+        .visible_laws(actor)
+        .into_iter()
         .map(|law| {
             json!({
                 "id": law.id,
@@ -991,6 +1078,7 @@ fn state_value(state: &GameState) -> Value {
                     "actual": s.actual,
                     "at": s.at,
                 })).collect::<Vec<_>>(),
+                "marking": marking_value(state, ClassifiedKind::Law, &law.id.to_string()),
             })
         })
         .collect();
@@ -1050,9 +1138,17 @@ fn state_value(state: &GameState) -> Value {
             "defences": o.defences.total(),
             "garrison": o.garrison,
             "rare": o.rare,
-            "report": state.latest_report(o.coord).map(|r| spy_report_value(r, state.last_tick_unix)),
+            "report": state.latest_report_for(actor, o.coord).map(|r| spy_report_value(r, state.last_tick_unix, state)),
         })).collect::<Vec<_>>(),
-        "spy_reports": state.spy_reports.iter().map(|r| spy_report_value(r, state.last_tick_unix)).collect::<Vec<_>>(),
+        "spy_reports": state.visible_reports(actor).into_iter().map(|r| spy_report_value(r, state.last_tick_unix, state)).collect::<Vec<_>>(),
+        "incidents": state.visible_incidents(actor).into_iter().map(|row| json!({
+            "id": row.id,
+            "at": row.at,
+            "source": row.source,
+            "kind": row.kind.as_key(),
+            "object_id": row.object_id,
+            "via": row.via,
+        })).collect::<Vec<_>>(),
         "events": events,
         "raid": raid,
         "prestige": {
@@ -1102,7 +1198,7 @@ fn state_value(state: &GameState) -> Value {
             "coord": v.coord.to_string(),
             "free_at": v.free_at,
         })).collect::<Vec<_>>(),
-        "planned": state.planned.iter().map(|m| json!({
+        "planned": state.visible_plans(actor).into_iter().map(|m| json!({
             "id": m.id,
             "vehicle_id": m.vehicle_id,
             "origin": m.route.origin.to_string(),
@@ -1111,11 +1207,12 @@ fn state_value(state: &GameState) -> Value {
             "customer": m.customer.as_key(),
             "arrives_at": m.arrives_at,
             "delta_v": m.delta_v,
+            "marking": marking_value(state, ClassifiedKind::Plan, &m.id.to_string()),
         })).collect::<Vec<_>>(),
     })
 }
 
-fn spy_report_value(report: &SpyReport, now: u64) -> Value {
+fn spy_report_value(report: &SpyReport, now: u64, state: &GameState) -> Value {
     json!({
         "id": report.id,
         "target": report.target.to_string(),
@@ -1137,6 +1234,7 @@ fn spy_report_value(report: &SpyReport, now: u64) -> Value {
         "garrison": report.garrison,
         "formation": report.formation,
         "stance": report.stance,
+        "marking": marking_value(state, ClassifiedKind::Report, &report.id.to_string()),
     })
 }
 
@@ -1231,10 +1329,10 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
         return Err(CliError::Invalid("missing command".into()));
     };
     match name {
-        "state" => {
-            expect_end(args, 1)?;
-            Ok(Command::State)
-        }
+        "state" => parse_actor_command(args, |actor| Command::State { actor }),
+        "classify" => parse_classify_command(args),
+        "share" => parse_share_command(args),
+        "incidents" => parse_actor_command(args, |actor| Command::Incidents { actor }),
         "advise" => {
             expect_end(args, 1)?;
             Ok(Command::Advise)
@@ -2020,6 +2118,38 @@ fn parse_staff_command(args: &[String]) -> Result<Command, CliError> {
             }
             Ok(Command::StaffRevoke { id, permission })
         }
+        Some("clearance") => {
+            let id = parse_leader_id(nth(args, 2, "staff clearance <id>")?)?;
+            let mut class = None;
+            let mut compartments = Vec::new();
+            let mut i = 3;
+            while i < args.len() {
+                let a = args[i].as_str();
+                if a == "--class" {
+                    let raw = nth(args, i + 1, "staff clearance --class <id>")?;
+                    class = Some(Classification::from_key(raw).ok_or_else(|| {
+                        CliError::Invalid(format!("unknown classification {raw}"))
+                    })?);
+                    i += 2;
+                    continue;
+                }
+                if a == "--compartment" {
+                    compartments
+                        .push(nth(args, i + 1, "staff clearance --compartment <id>")?.to_string());
+                    i += 2;
+                    continue;
+                }
+                return Err(CliError::Invalid(format!(
+                    "unknown staff clearance flag {a}"
+                )));
+            }
+            Ok(Command::StaffClearance {
+                id,
+                class: class
+                    .ok_or_else(|| CliError::Invalid("staff clearance needs --class".into()))?,
+                compartments,
+            })
+        }
         Some(other) => Err(CliError::Invalid(format!("unknown staff command {other}"))),
     }
 }
@@ -2274,6 +2404,95 @@ fn expect_end(args: &[String], used: usize) -> Result<(), CliError> {
         Some(extra) => Err(CliError::Invalid(format!("unexpected argument {extra}"))),
         None => Ok(()),
     }
+}
+
+fn parse_actor_flag(args: &[String], start: usize) -> Result<Actor, CliError> {
+    let mut actor = Actor::Player;
+    let mut i = start;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "--as" {
+            let raw = nth(args, i + 1, "--as <actor>")?;
+            actor = Actor::parse(raw)
+                .ok_or_else(|| CliError::Invalid(format!("invalid --as {raw}")))?;
+            i += 2;
+            continue;
+        }
+        return Err(CliError::Invalid(format!("unexpected argument {a}")));
+    }
+    Ok(actor)
+}
+
+fn parse_actor_command(
+    args: &[String],
+    wrap: impl FnOnce(Actor) -> Command,
+) -> Result<Command, CliError> {
+    Ok(wrap(parse_actor_flag(args, 1)?))
+}
+
+fn parse_marking_flags(
+    args: &[String],
+    mut i: usize,
+) -> Result<(Classification, Vec<String>, Actor, usize), CliError> {
+    let mut class = None;
+    let mut compartments = Vec::new();
+    let mut actor = Actor::Player;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "--class" {
+            let raw = nth(args, i + 1, "--class <id>")?;
+            class = Some(
+                Classification::from_key(raw)
+                    .ok_or_else(|| CliError::Invalid(format!("unknown classification {raw}")))?,
+            );
+            i += 2;
+            continue;
+        }
+        if a == "--compartment" {
+            compartments.push(nth(args, i + 1, "--compartment <id>")?.to_string());
+            i += 2;
+            continue;
+        }
+        if a == "--as" {
+            let raw = nth(args, i + 1, "--as <actor>")?;
+            actor = Actor::parse(raw)
+                .ok_or_else(|| CliError::Invalid(format!("invalid --as {raw}")))?;
+            i += 2;
+            continue;
+        }
+        return Err(CliError::Invalid(format!("unexpected argument {a}")));
+    }
+    Ok((
+        class.ok_or_else(|| CliError::Invalid("needs --class".into()))?,
+        compartments,
+        actor,
+        i,
+    ))
+}
+
+fn parse_classify_command(args: &[String]) -> Result<Command, CliError> {
+    let kind_raw = nth(args, 1, "classify <kind> <id>")?;
+    let kind = ClassifiedKind::from_key(kind_raw)
+        .ok_or_else(|| CliError::Invalid(format!("unknown classified kind {kind_raw}")))?;
+    let id = nth(args, 2, "classify <kind> <id>")?.to_string();
+    let (class, compartments, actor, _) = parse_marking_flags(args, 3)?;
+    Ok(Command::Classify {
+        kind,
+        id,
+        class,
+        compartments,
+        actor,
+    })
+}
+
+fn parse_share_command(args: &[String]) -> Result<Command, CliError> {
+    let faction = nth(args, 1, "share <faction>")?.to_string();
+    let (class, compartments, _, _) = parse_marking_flags(args, 2)?;
+    Ok(Command::Share {
+        faction,
+        class,
+        compartments,
+    })
 }
 
 fn parse_coord(text: &str) -> Result<Coord, CliError> {
@@ -3063,6 +3282,127 @@ mod tests {
         let value: Value = serde_json::from_str(&out.json).unwrap();
         assert_eq!(value["bots"][0]["status"], "ok");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn state_hides_secret_reports_from_uncleared_leader() {
+        let save = unique_save("classify");
+        let mut conn = open_save(&save).unwrap();
+        let mut state = GameState::with_seed(10, BalanceConfig::default(), 1);
+        state.spy_reports.push(SpyReport {
+            id: 0,
+            target: Coord::HOME,
+            created_at: 10,
+            probes_sent: 1,
+            probes_lost: 0,
+            detected: false,
+            score: 1.0,
+            tier: "fleet".into(),
+            resources: None,
+            fleet: None,
+            defences: None,
+            garrison: None,
+            kind: None,
+            size: None,
+            formation: None,
+            stance: None,
+        });
+        state
+            .classify(
+                Actor::Player,
+                ClassifiedKind::Report,
+                "0",
+                Classification::Secret,
+                [hoshi_core::COMPARTMENT_INTEL.into()],
+            )
+            .unwrap();
+        state.events.push(hoshi_core::GameEvent {
+            at: 10,
+            text: format!(
+                "outpost {}: spy. score 1 fleet. detected no. lost 0/1",
+                Coord::HOME
+            ),
+        });
+        save_state(&mut conn, &state).unwrap();
+        drop(conn);
+        let (player, exit) = run_on(&save, &["state"]);
+        assert_eq!(exit, EXIT_OK, "{player}");
+        assert_eq!(player["spy_reports"].as_array().unwrap().len(), 1);
+        assert!(
+            player["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["text"].as_str().unwrap_or("").contains("spy"))
+        );
+        let (hidden, exit) = run_on(&save, &["state", "--as", "leader:1"]);
+        assert_eq!(exit, EXIT_OK, "{hidden}");
+        assert!(hidden["spy_reports"].as_array().unwrap().is_empty());
+        assert!(
+            hidden["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|row| !row["text"].as_str().unwrap_or("").contains("spy"))
+        );
+        let (classified, exit) = run_on(
+            &save,
+            &[
+                "classify",
+                "fact",
+                "note",
+                "--class",
+                "internal",
+                "--compartment",
+                "fleet",
+                "--as",
+                "leader:1",
+            ],
+        );
+        assert_eq!(exit, EXIT_OK, "{classified}");
+        assert!(classified["spy_reports"].as_array().unwrap().is_empty());
+        let _ = std::fs::remove_file(&save);
+    }
+
+    #[test]
+    fn parse_classify_and_share() {
+        let opts = parse_cli(&args(&[
+            "classify",
+            "report",
+            "0",
+            "--class",
+            "secret",
+            "--compartment",
+            "intel",
+        ]))
+        .unwrap();
+        assert_eq!(
+            opts.command,
+            Command::Classify {
+                kind: ClassifiedKind::Report,
+                id: "0".into(),
+                class: Classification::Secret,
+                compartments: vec!["intel".into()],
+                actor: Actor::Player,
+            }
+        );
+        let opts = parse_cli(&args(&[
+            "share",
+            "traders",
+            "--class",
+            "restricted",
+            "--compartment",
+            "intel",
+        ]))
+        .unwrap();
+        assert_eq!(
+            opts.command,
+            Command::Share {
+                faction: "traders".into(),
+                class: Classification::Restricted,
+                compartments: vec!["intel".into()],
+            }
+        );
     }
 
     #[test]
