@@ -23,6 +23,10 @@ alone for hours.
 6. **Load the save the next day.** Continue from the title screen (or
    `hoshi --continue`). The slot loads; the away summary lists deliveries,
    stalls and completed items, and can be dismissed with `x`.
+7. **History log.** Tab to the log screen (or `hoshi log --type build`). A
+   finished mine upgrade should show queue then complete, with lineage on
+   Enter. Time travel (`r` / `hoshi log --at`) matches the stockpile recorded
+   at that event.
 
 ## Questions
 

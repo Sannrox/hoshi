@@ -41,6 +41,14 @@
     },
     "planets": { "type": "array" },
     "events": { "type": "array" },
+    "snapshot": {
+      "type": ["object", "null"],
+      "description": "Recorded empire glance for `hoshi log --at`. Null when the time is outside the retained window."
+    },
+    "exported": {
+      "type": ["string", "null"],
+      "description": "Path written by `hoshi log --export` as JSON lines."
+    },
     "raid": {
       "type": ["object", "null"],
       "description": "Visible raid countdown, matching the TUI overview."

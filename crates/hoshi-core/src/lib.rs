@@ -16,6 +16,7 @@ mod espionage;
 mod expedition;
 mod fleets;
 mod galaxy;
+mod history;
 mod laws;
 mod market;
 mod moons;
@@ -85,6 +86,10 @@ pub use fleets::{
 pub use galaxy::{
     GALAXY_GENERATOR_VERSION, GalaxyPreview, encode_galaxy_seed, parse_galaxy_seed, preview_galaxy,
     supports_galaxy_generator,
+};
+pub use history::{
+    EmpireSnapshot, HISTORY_EVENT_CAP, HistoryDraft, HistoryEvent, HistoryKind, HistoryLog,
+    HistoryQuery,
 };
 pub use laws::{
     CLOCK as LAW_CLOCK, Jurisdiction, JurisdictionKind, Law, LawAction, LawActionKind, LawApproval,

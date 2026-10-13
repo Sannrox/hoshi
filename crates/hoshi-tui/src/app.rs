@@ -8,9 +8,9 @@ use crate::portraits::{self, PortraitView, Protocol, Slot};
 use crate::title::AwaySummary;
 use hoshi_core::{
     BuildingKind, CombatLog, CombatWinner, CommentaryCatalog, Coord, DefenceKind, Fleet, GameState,
-    HintScreen, Jurisdiction, JurisdictionKind, LawStatus, ResourceKind, Resources, ShipKind,
-    SpyReport, StoryEvent, TechBranch, TechNodeState, WonderError, advise, encode_galaxy_seed,
-    polish_all_named, rephrase_lines,
+    HintScreen, HistoryKind, HistoryQuery, Jurisdiction, JurisdictionKind, LawStatus, ResourceKind,
+    Resources, ShipKind, SpyReport, StoryEvent, TechBranch, TechNodeState, WonderError, advise,
+    encode_galaxy_seed, polish_all_named, rephrase_lines,
 };
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
@@ -32,7 +32,15 @@ pub enum Screen {
     Diplomacy,
     Laws,
     Reports,
+    History,
     Map,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HistoryPane {
+    List,
+    Lineage,
+    AsOf,
 }
 
 const MAP_SYSTEM_MAX: u16 = 81;
@@ -105,6 +113,9 @@ pub struct App {
     activity_scroll: usize,
     bridge_log: Vec<BridgeLine>,
     prod_history: Vec<f64>,
+    history_pane: HistoryPane,
+    history_kind: Option<HistoryKind>,
+    history_actor: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -159,6 +170,9 @@ impl App {
             activity_scroll: 0,
             bridge_log: Vec::new(),
             prod_history: Vec::new(),
+            history_pane: HistoryPane::List,
+            history_kind: None,
+            history_actor: None,
         }
     }
 
@@ -381,6 +395,9 @@ impl App {
         }
         match self.keymap.lookup(ctx, code) {
             Some(Binding::Quit) => return Action::Quit,
+            Some(Binding::Replay) if self.screen == Screen::History => {
+                self.toggle_history_as_of();
+            }
             Some(Binding::Replay) if self.screen == Screen::Overview => {
                 self.open_latest_replay();
             }
@@ -424,6 +441,12 @@ impl App {
             }
             Some(Binding::Increase) if self.dispatch.is_some() => self.nudge_dispatch_ships(1),
             Some(Binding::Decrease) if self.dispatch.is_some() => self.nudge_dispatch_ships(-1),
+            Some(Binding::Increase) if self.screen == Screen::History => {
+                self.cycle_history_kind();
+            }
+            Some(Binding::Decrease) if self.screen == Screen::History => {
+                self.cycle_history_actor();
+            }
             Some(Binding::Increase) if self.screen == Screen::Market => {
                 self.trade_amount = (self.trade_amount + 10.0).min(1_000_000.0);
             }
@@ -458,7 +481,8 @@ impl App {
             Screen::Market => Screen::Diplomacy,
             Screen::Diplomacy => Screen::Laws,
             Screen::Laws => Screen::Reports,
-            Screen::Reports => Screen::Map,
+            Screen::Reports => Screen::History,
+            Screen::History => Screen::Map,
             Screen::Map => Screen::Overview,
         };
         self.selected = 0;
@@ -466,6 +490,7 @@ impl App {
         self.confirming_prestige = false;
         self.opened_report = false;
         self.dispatch = None;
+        self.history_pane = HistoryPane::List;
     }
 
     fn help_context(&self) -> HelpContext {
@@ -500,6 +525,7 @@ impl App {
             Screen::Diplomacy => HelpContext::Diplomacy,
             Screen::Laws => HelpContext::Laws,
             Screen::Reports => HelpContext::Reports,
+            Screen::History => HelpContext::History,
             Screen::Map => HelpContext::Map,
         }
     }
@@ -530,43 +556,46 @@ impl App {
     pub fn draw(&self, frame: &mut Frame<'_>) {
         let title = match self.screen {
             Screen::Overview => {
-                " hoshi  [overview] planet shipyard wonder prestige ach daily prod market diplo laws reports map "
+                " hoshi  [overview] planet shipyard wonder prestige ach daily prod market diplo laws rpt log map "
             }
             Screen::Planet => {
-                " hoshi  overview [planet] shipyard wonder prestige ach daily prod market diplo laws reports map "
+                " hoshi  overview [planet] shipyard wonder prestige ach daily prod market diplo laws rpt log map "
             }
             Screen::Shipyard => {
-                " hoshi  overview planet [shipyard] wonder prestige ach daily prod market diplo laws reports map "
+                " hoshi  overview planet [shipyard] wonder prestige ach daily prod market diplo laws rpt log map "
             }
             Screen::Wonder => {
-                " hoshi  overview planet shipyard [wonder] prestige ach daily prod market diplo laws reports map "
+                " hoshi  overview planet shipyard [wonder] prestige ach daily prod market diplo laws rpt log map "
             }
             Screen::Prestige => {
-                " hoshi  overview planet shipyard wonder [prestige] ach daily prod market diplo laws reports map "
+                " hoshi  overview planet shipyard wonder [prestige] ach daily prod market diplo laws rpt log map "
             }
             Screen::Achievements => {
-                " hoshi  overview planet shipyard wonder prestige [ach] daily prod market diplo laws reports map "
+                " hoshi  overview planet shipyard wonder prestige [ach] daily prod market diplo laws rpt log map "
             }
             Screen::Daily => {
-                " hoshi  overview planet shipyard wonder prestige ach [daily] prod market diplo laws reports map "
+                " hoshi  overview planet shipyard wonder prestige ach [daily] prod market diplo laws rpt log map "
             }
             Screen::Production => {
-                " hoshi  overview planet shipyard wonder prestige ach daily [prod] market diplo laws reports map "
+                " hoshi  overview planet shipyard wonder prestige ach daily [prod] market diplo laws rpt log map "
             }
             Screen::Market => {
-                " hoshi  overview planet shipyard wonder prestige ach daily prod [market] diplo laws reports map "
+                " hoshi  overview planet shipyard wonder prestige ach daily prod [market] diplo laws rpt log map "
             }
             Screen::Diplomacy => {
-                " hoshi  overview planet shipyard wonder prestige ach daily prod market [diplo] laws reports map "
+                " hoshi  overview planet shipyard wonder prestige ach daily prod market [diplo] laws rpt log map "
             }
             Screen::Laws => {
-                " hoshi  overview planet shipyard wonder prestige ach daily prod market diplo [laws] reports map "
+                " hoshi  overview planet shipyard wonder prestige ach daily prod market diplo [laws] rpt log map "
             }
             Screen::Reports => {
-                " hoshi  overview planet shipyard wonder prestige ach daily prod market diplo laws [reports] map "
+                " hoshi  overview planet shipyard wonder prestige ach daily prod market diplo laws [reports] log map "
+            }
+            Screen::History => {
+                " hoshi  overview planet shipyard wonder prestige ach daily prod market diplo laws rpt [log] map "
             }
             Screen::Map => {
-                " hoshi  overview planet shipyard wonder prestige ach daily prod market diplo laws reports [map] "
+                " hoshi  overview planet shipyard wonder prestige ach daily prod market diplo laws rpt log [map] "
             }
         };
         let block = Block::bordered().title(title);
@@ -616,6 +645,8 @@ impl App {
             self.draw_report(frame);
         } else if let Some(form) = &self.dispatch {
             self.draw_dispatch(frame, form);
+        } else if self.screen == Screen::History && self.history_pane != HistoryPane::List {
+            self.draw_history_overlay(frame);
         }
         if self.activity_open {
             self.draw_activity(frame);
@@ -657,6 +688,7 @@ impl App {
             || self.opened_report
             || self.dispatch.is_some()
             || self.replay.is_some()
+            || (self.screen == Screen::History && self.history_pane != HistoryPane::List)
         {
             return portraits::erase_inline_graphics(out);
         }
@@ -924,6 +956,7 @@ impl App {
             Screen::Market => self.activate_market(now_unix),
             Screen::Diplomacy => self.activate_diplomacy(now_unix),
             Screen::Laws => self.activate_law(now_unix),
+            Screen::History => self.toggle_history_lineage(),
             Screen::Map => self.activate_map(now_unix),
             Screen::Reports => {
                 if self
@@ -1202,6 +1235,9 @@ impl App {
                 self.status.clear();
             }
             Screen::Map => self.dispatch = None,
+            Screen::History => {
+                self.history_pane = HistoryPane::List;
+            }
             Screen::Achievements
             | Screen::Daily
             | Screen::Production
@@ -1232,6 +1268,7 @@ impl App {
             Screen::Diplomacy => self.state.config.diplomacy.len(),
             Screen::Laws => self.state.config.laws.len() + self.state.laws.laws.len(),
             Screen::Reports => self.state.outposts.len(),
+            Screen::History => self.history_rows().len(),
             Screen::Map => 0,
         }
     }
@@ -1421,6 +1458,10 @@ impl App {
                 "{tab} screens  {select}  {confirm} report  {} send probe  {quit}  {help}",
                 k.primary(Binding::SendProbe)
             ),
+            Screen::History => format!(
+                "{tab} screens  {select}  {confirm} lineage  {} glance  +/- filter  {quit}  {help}",
+                k.primary(Binding::Replay)
+            ),
             Screen::Map => format!(
                 "{tab} screens  {}{}{}{} cursor  {confirm} dispatch  {quit}  {help}",
                 k.primary(Binding::CursorLeft),
@@ -1529,6 +1570,7 @@ impl App {
             Screen::Diplomacy => self.diplomacy_lines(height),
             Screen::Laws => self.law_lines(height),
             Screen::Reports => self.report_lines(height),
+            Screen::History => self.history_lines(height),
             Screen::Map => self.map_lines(height),
         }
     }
@@ -2386,6 +2428,144 @@ impl App {
         append_windowed(&mut rows, &entries, self.selected, height)
     }
 
+    fn history_rows(&self) -> Vec<&hoshi_core::HistoryEvent> {
+        self.state.history.search(&HistoryQuery {
+            kind: self.history_kind,
+            actor: self.history_actor.clone(),
+            ..HistoryQuery::default()
+        })
+    }
+
+    fn selected_history(&self) -> Option<&hoshi_core::HistoryEvent> {
+        self.history_rows().get(self.selected).copied()
+    }
+
+    fn cycle_history_kind(&mut self) {
+        self.selected = 0;
+        self.history_kind = match self.history_kind {
+            None => Some(HistoryKind::ALL[0]),
+            Some(kind) => {
+                let idx = HistoryKind::ALL
+                    .iter()
+                    .position(|k| *k == kind)
+                    .unwrap_or(0);
+                HistoryKind::ALL.get(idx + 1).copied()
+            }
+        };
+    }
+
+    fn cycle_history_actor(&mut self) {
+        self.selected = 0;
+        self.history_actor = match self.history_actor.as_deref() {
+            None => Some("player".into()),
+            Some("player") => Some("simulation".into()),
+            Some("simulation") => Some("bridge".into()),
+            _ => None,
+        };
+    }
+
+    fn toggle_history_lineage(&mut self) {
+        self.history_pane = if self.history_pane == HistoryPane::Lineage {
+            HistoryPane::List
+        } else {
+            HistoryPane::Lineage
+        };
+    }
+
+    fn toggle_history_as_of(&mut self) {
+        self.history_pane = if self.history_pane == HistoryPane::AsOf {
+            HistoryPane::List
+        } else {
+            HistoryPane::AsOf
+        };
+    }
+
+    fn history_lines(&self, height: usize) -> Vec<Line<'static>> {
+        let kind = self
+            .history_kind
+            .map(|k| k.as_key().to_string())
+            .unwrap_or_else(|| "all".into());
+        let actor = self.history_actor.clone().unwrap_or_else(|| "all".into());
+        let mut rows = vec![Line::from(format!(
+            "[log] type:{kind} actor:{actor}  {} retained",
+            self.state.history.events.len()
+        ))];
+        let events = self.history_rows();
+        if events.is_empty() {
+            rows.push(Line::from("no history yet"));
+            return rows;
+        }
+        let entries: Vec<Line<'static>> = events
+            .iter()
+            .enumerate()
+            .map(|(i, event)| {
+                let mark = if i == self.selected { '>' } else { ' ' };
+                Line::from(format!(
+                    "{mark} #{} t{} {} {} {}  {}",
+                    event.id,
+                    event.at,
+                    event.kind.as_key(),
+                    event.actor,
+                    event.action,
+                    event.objects.join(",")
+                ))
+            })
+            .collect();
+        append_windowed(&mut rows, &entries, self.selected, height)
+    }
+
+    fn draw_history_overlay(&self, frame: &mut Frame<'_>) {
+        let Some(event) = self.selected_history() else {
+            render_overlay(frame, " history ", vec![Line::from("no event selected")]);
+            return;
+        };
+        match self.history_pane {
+            HistoryPane::List => {}
+            HistoryPane::Lineage => {
+                let mut lines = vec![Line::from(format!("lineage of #{}", event.id))];
+                for row in self.state.history.lineage(event.id) {
+                    lines.push(Line::from(format!(
+                        "#{} t{} {} {} → {}",
+                        row.id,
+                        row.at,
+                        row.kind.as_key(),
+                        row.action,
+                        row.outcome
+                    )));
+                }
+                lines.push(Line::from(""));
+                lines.push(Line::from(format!(
+                    "{} closes",
+                    self.keymap.primary(Binding::Cancel)
+                )));
+                render_overlay(frame, " lineage ", lines);
+            }
+            HistoryPane::AsOf => {
+                let snap = self.state.history.as_of(event.at);
+                let mut lines = vec![Line::from(format!("empire at t{}", event.at))];
+                match snap {
+                    Some(snap) => {
+                        lines.push(Line::from(format!(
+                            "M{:.0} C{:.0} D{:.0}  energy {:.0}  heat {:.0}",
+                            snap.metal, snap.crystal, snap.deuterium, snap.energy, snap.heat
+                        )));
+                        lines.push(Line::from(format!(
+                            "home {}  buildings {}",
+                            snap.home_kind, snap.building_levels
+                        )));
+                    }
+                    None => lines.push(Line::from("outside retained window")),
+                }
+                lines.push(Line::from(""));
+                lines.push(Line::from(format!(
+                    "{} closes",
+                    self.keymap.primary(Binding::Cancel)
+                )));
+                render_overlay(frame, " time travel ", lines);
+            }
+        }
+    }
+
     fn draw_report(&self, frame: &mut Frame<'_>) {
         let dest = self.selected_outpost();
         let title = dest
@@ -3055,6 +3235,7 @@ mod tests {
         app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
+        app.handle_key(KeyCode::Tab, clock.now_unix());
         assert_eq!(app.screen, Screen::Overview);
         let energy = app
             .overview_techs()
@@ -3129,7 +3310,7 @@ mod tests {
     }
 
     fn open_map(app: &mut App, now: u64) {
-        for _ in 0..12 {
+        for _ in 0..13 {
             app.handle_key(KeyCode::Tab, now);
         }
         assert_eq!(app.screen, Screen::Map);
@@ -3241,6 +3422,7 @@ mod tests {
         assert!(app.state.ship_queue.is_empty());
         assert_eq!(app.state.build_queue.len(), 1);
 
+        app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
@@ -3798,6 +3980,23 @@ mod tests {
         let text = render_text(&app, 100, 32);
         assert!(text.contains("[reports]"), "{text}");
         assert!(!text.contains("detected yes"), "{text}");
+    }
+
+    #[test]
+    fn history_screen_lists_queued_build_and_opens_lineage() {
+        let mut state = GameState::with_seed(0, BalanceConfig::default(), 1);
+        state.enqueue_build(BuildingKind::MetalMine, 0).unwrap();
+        let mut app = App::new(state);
+        for _ in 0..12 {
+            app.handle_key(KeyCode::Tab, 0);
+        }
+        assert_eq!(app.screen, Screen::History);
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("[log]"), "{text}");
+        assert!(text.contains("queue"), "{text}");
+        app.handle_key(KeyCode::Enter, 0);
+        let overlay = render_text(&app, 100, 32);
+        assert!(overlay.contains("lineage"), "{overlay}");
     }
 
     #[test]

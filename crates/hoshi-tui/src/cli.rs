@@ -2,10 +2,10 @@
 
 use hoshi_core::{
     BalanceConfig, BuildingKind, Clock, Coord, DefenceKind, FakeClock, Fleet, GameState,
-    Jurisdiction, JurisdictionKind, MoonFacility, ResourceKind, RoundAction,
-    SCHEMA_VERSION as SAVE_SCHEMA, SaveError, ShipKind, SpyReport, SystemClock, advise,
-    inspect_save, load_or_new, load_or_new_with_seed, lock_save, open_save, resolve_save_path,
-    save_is_locked, save_state,
+    HistoryKind, HistoryQuery, Jurisdiction, JurisdictionKind, MoonFacility, ResourceKind,
+    RoundAction, SCHEMA_VERSION as SAVE_SCHEMA, SaveError, ShipKind, SpyReport, SystemClock,
+    advise, inspect_save, load_or_new, load_or_new_with_seed, lock_save, open_save,
+    resolve_save_path, save_is_locked, save_state,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -88,6 +88,12 @@ enum Command {
         note: String,
     },
     Advise,
+    Log {
+        query: HistoryQuery,
+        lineage: Option<u64>,
+        as_of: Option<u64>,
+        export: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -538,6 +544,12 @@ fn apply(state: &mut GameState, now: u64, command: &Command) -> Result<Value, Cl
                     .collect::<Vec<_>>(),
             }))
         }
+        Command::Log {
+            query,
+            lineage,
+            as_of,
+            export,
+        } => apply_log(state, now, query, *lineage, *as_of, export.as_deref()),
         Command::MoonScan { planet } => {
             if !state.deterministic {
                 state.catch_up(now);
@@ -884,6 +896,7 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
             expect_end(args, 1)?;
             Ok(Command::Advise)
         }
+        "log" => parse_log_command(args),
         "build" => {
             let planet = parse_coord(nth(args, 1, "build <planet> <building>")?)?;
             let building = BuildingKind::from_key(nth(args, 2, "build <planet> <building>")?)
@@ -981,6 +994,198 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
         }
         other => Err(CliError::Invalid(format!("unknown command {other}"))),
     }
+}
+
+fn parse_log_command(args: &[String]) -> Result<Command, CliError> {
+    let mut query = HistoryQuery::default();
+    let mut lineage = None;
+    let mut as_of = None;
+    let mut export = None;
+    let mut i = 1;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if let Some(v) = a.strip_prefix("--type=") {
+            query.kind = Some(
+                HistoryKind::from_key(v)
+                    .ok_or_else(|| CliError::Invalid("unknown log type".into()))?,
+            );
+            i += 1;
+            continue;
+        }
+        if a == "--type" {
+            let v = nth(args, i + 1, "log --type <kind>")?;
+            query.kind = Some(
+                HistoryKind::from_key(v)
+                    .ok_or_else(|| CliError::Invalid("unknown log type".into()))?,
+            );
+            i += 2;
+            continue;
+        }
+        if let Some(v) = a.strip_prefix("--actor=") {
+            query.actor = Some(v.to_string());
+            i += 1;
+            continue;
+        }
+        if a == "--actor" {
+            query.actor = Some(nth(args, i + 1, "log --actor <id>")?.to_string());
+            i += 2;
+            continue;
+        }
+        if let Some(v) = a.strip_prefix("--object=") {
+            query.object = Some(v.to_string());
+            i += 1;
+            continue;
+        }
+        if a == "--object" {
+            query.object = Some(nth(args, i + 1, "log --object <id>")?.to_string());
+            i += 2;
+            continue;
+        }
+        if let Some(v) = a.strip_prefix("--from=") {
+            query.from = Some(parse_unix(v)?);
+            i += 1;
+            continue;
+        }
+        if a == "--from" {
+            query.from = Some(parse_unix(nth(args, i + 1, "log --from <unix>")?)?);
+            i += 2;
+            continue;
+        }
+        if let Some(v) = a.strip_prefix("--to=") {
+            query.to = Some(parse_unix(v)?);
+            i += 1;
+            continue;
+        }
+        if a == "--to" {
+            query.to = Some(parse_unix(nth(args, i + 1, "log --to <unix>")?)?);
+            i += 2;
+            continue;
+        }
+        if let Some(v) = a.strip_prefix("--lineage=") {
+            lineage = Some(parse_unix(v)?);
+            i += 1;
+            continue;
+        }
+        if a == "--lineage" {
+            lineage = Some(parse_unix(nth(args, i + 1, "log --lineage <id>")?)?);
+            i += 2;
+            continue;
+        }
+        if let Some(v) = a.strip_prefix("--at=") {
+            as_of = Some(parse_unix(v)?);
+            i += 1;
+            continue;
+        }
+        if a == "--at" {
+            as_of = Some(parse_unix(nth(args, i + 1, "log --at <unix>")?)?);
+            i += 2;
+            continue;
+        }
+        if let Some(v) = a.strip_prefix("--export=") {
+            export = Some(PathBuf::from(v));
+            i += 1;
+            continue;
+        }
+        if a == "--export" {
+            export = Some(PathBuf::from(nth(args, i + 1, "log --export <path>")?));
+            i += 2;
+            continue;
+        }
+        return Err(CliError::Invalid(format!("unknown log flag {a}")));
+    }
+    Ok(Command::Log {
+        query,
+        lineage,
+        as_of,
+        export,
+    })
+}
+
+fn parse_unix(v: &str) -> Result<u64, CliError> {
+    v.parse()
+        .map_err(|_| CliError::Invalid(format!("invalid unix time {v}")))
+}
+
+fn apply_log(
+    state: &mut GameState,
+    now: u64,
+    query: &HistoryQuery,
+    lineage: Option<u64>,
+    as_of: Option<u64>,
+    export: Option<&Path>,
+) -> Result<Value, CliError> {
+    if !state.deterministic {
+        state.catch_up(now);
+    }
+    let events: Vec<Value> = if let Some(id) = lineage {
+        state
+            .history
+            .lineage(id)
+            .into_iter()
+            .map(history_event_value)
+            .collect()
+    } else {
+        state
+            .history
+            .search(query)
+            .into_iter()
+            .map(history_event_value)
+            .collect()
+    };
+    let snapshot = as_of.and_then(|at| state.history.as_of(at)).map(|snap| {
+        json!({
+            "at": snap.at,
+            "event_id": snap.event_id,
+            "metal": snap.metal,
+            "crystal": snap.crystal,
+            "deuterium": snap.deuterium,
+            "energy": snap.energy,
+            "heat": snap.heat,
+            "home_kind": snap.home_kind,
+            "building_levels": snap.building_levels,
+        })
+    });
+    if let Some(path) = export {
+        let mut buf = Vec::new();
+        state
+            .history
+            .export_jsonl(&mut buf)
+            .map_err(|e| CliError::Internal(e.to_string()))?;
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent).map_err(|e| CliError::Internal(e.to_string()))?;
+        }
+        std::fs::write(path, buf).map_err(|e| CliError::Internal(e.to_string()))?;
+    }
+    Ok(json!({
+        "schema_version": SCHEMA_VERSION,
+        "ok": true,
+        "message": "log",
+        "now": state.last_tick_unix,
+        "events": events,
+        "snapshot": snapshot,
+        "exported": export.map(|p| p.display().to_string()),
+    }))
+}
+
+fn history_event_value(event: &hoshi_core::HistoryEvent) -> Value {
+    json!({
+        "id": event.id,
+        "at": event.at,
+        "kind": event.kind.as_key(),
+        "actor": event.actor,
+        "action": event.action,
+        "objects": event.objects,
+        "inputs": event.inputs,
+        "outcome": event.outcome,
+        "reason": event.reason,
+        "cause_key": event.cause_key,
+        "parent_ids": event.parent_ids,
+        "energy": event.energy,
+        "heat": event.heat,
+        "mass": event.mass,
+    })
 }
 
 fn parse_tactics_command(args: &[String]) -> Result<Command, CliError> {
@@ -1631,5 +1836,37 @@ mod tests {
                 .contains("expedition dest")
         );
         let _ = std::fs::remove_file(&save);
+    }
+
+    #[test]
+    fn log_search_lineage_and_jsonl_export() {
+        let save = unique_save("log");
+        let (created, exit) = run_on(&save, &["--seed=1", "build", "home", "metal_mine"]);
+        assert_eq!(exit, EXIT_OK, "{created}");
+        let (tick, exit) = run_on(&save, &["tick", "--advance", "1h"]);
+        assert_eq!(exit, EXIT_OK, "{tick}");
+        let (value, exit) = run_on(&save, &["log", "--type", "build"]);
+        assert_eq!(exit, EXIT_OK, "{value}");
+        let events = value["events"].as_array().expect("events");
+        assert!(events.iter().any(|e| e["action"] == "queue"), "{value}");
+        assert!(events.iter().any(|e| e["action"] == "complete"), "{value}");
+        let queued = events.iter().find(|e| e["action"] == "queue").unwrap();
+        let complete = events.iter().find(|e| e["action"] == "complete").unwrap();
+        assert_eq!(complete["parent_ids"][0], queued["id"]);
+        let id = complete["id"].as_u64().unwrap();
+        let (lineage, exit) = run_on(&save, &["log", "--lineage", &id.to_string()]);
+        assert_eq!(exit, EXIT_OK, "{lineage}");
+        assert_eq!(lineage["events"].as_array().unwrap().len(), 2);
+        let at = queued["at"].as_u64().unwrap();
+        let (travel, exit) = run_on(&save, &["log", "--at", &at.to_string()]);
+        assert_eq!(exit, EXIT_OK, "{travel}");
+        assert_eq!(travel["snapshot"]["event_id"], queued["id"]);
+        let jsonl = save.with_extension("jsonl");
+        let (exported, exit) = run_on(&save, &["log", "--export", jsonl.to_str().unwrap()]);
+        assert_eq!(exit, EXIT_OK, "{exported}");
+        let text = std::fs::read_to_string(&jsonl).unwrap();
+        assert!(text.contains("\"action\":\"queue\""));
+        let _ = std::fs::remove_file(&save);
+        let _ = std::fs::remove_file(&jsonl);
     }
 }
