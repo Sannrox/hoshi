@@ -21,8 +21,8 @@ alone for hours.
    and any finished builds or research should have caught up; nothing should
    error.
 6. **Load the save the next day.** Continue from the title screen (or
-   `hoshi --continue`). The slot loads; the away summary can be dismissed with
-   `x`.
+   `hoshi --continue`). The slot loads; the away summary lists deliveries,
+   stalls and completed items, and can be dismissed with `x`.
 
 ## Questions
 

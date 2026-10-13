@@ -5,7 +5,7 @@ use crate::activity::{
 };
 use crate::balance::BalanceConfig;
 use crate::buildings::{BuildError, BuildJob, BuildingKind, Buildings};
-use crate::chains::{RecipeRun, apply_recipes};
+use crate::chains::{RecipeRun, apply_recipes, available, component_kind};
 use crate::combat::{
     CombatReport, CombatWinner, RoundAction, next_u64, plunder_from, rapid_fire_table,
     resolve_ground, stats_from_catalog,
@@ -24,6 +24,7 @@ use crate::planets::{Colony, PlanetType, planet_profile};
 use crate::prestige::{
     PRESTIGE_KEPT, PRESTIGE_LOST, Prestige, PrestigeError, PrestigePreview, RunStats,
 };
+use crate::production::LimitingFactor;
 use crate::research::{
     ModifierKind, PrereqGap, ResearchError, ResearchJob, TechBranch, TechNodeState,
 };
@@ -32,6 +33,7 @@ use crate::wonders::{WonderError, WonderJob};
 use std::collections::BTreeMap;
 
 const EVENT_LOG_CAP: usize = 32;
+const LOGISTICS_LOG_CAP: usize = 48;
 
 struct BuildTarget<'a> {
     buildings: Buildings,
@@ -46,6 +48,14 @@ struct BuildTarget<'a> {
 pub struct GameEvent {
     pub at: u64,
     pub text: String,
+}
+
+/// Session glance for an offline gap. Not saved; catch-up fills it for the away overlay.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LogisticsGlance {
+    pub deliveries: Vec<String>,
+    pub stalls: Vec<String>,
+    pub completed: Vec<String>,
 }
 
 /// Stored resources. Energy is a balance, not a stockpile.
@@ -233,6 +243,9 @@ pub struct GameState {
     /// When true, home raids pause between rounds for a keypress. Catch-up and
     /// saves always auto-finish; the TUI sets this for the live session only.
     pub interactive_tactics: bool,
+    /// Deliveries, stalls and completed items from catch-up in this session.
+    /// Not persisted; the away overlay reads it after a gap.
+    pub logistics: LogisticsGlance,
     pub config: BalanceConfig,
 }
 
@@ -319,6 +332,7 @@ impl GameState {
             reserves: crate::Fleet::default(),
             pending_tactical: None,
             interactive_tactics: false,
+            logistics: LogisticsGlance::default(),
             config,
         };
         state.apply_prestige_start();
@@ -404,35 +418,40 @@ impl GameState {
             let market_at = self.next_market_at();
             let diplomacy_at = self.next_diplomacy_at();
             let law_at = self.next_law_at();
+            let logistics_at = self.next_logistics_at();
             let Some(done_at) = min_time(
                 min_time(
                     min_time(
                         min_time(
-                            min_time(min_time(build_at, research_at), ship_at),
-                            mission_at,
-                        ),
-                        min_time(raid_at, tactical_at),
-                    ),
-                    route_at,
-                ),
-                min_time(
-                    min_time(prod_boost_at, research_boost_at),
-                    min_time(
-                        wonder_at,
-                        min_time(
-                            rebuild_at,
                             min_time(
-                                story_at,
-                                min_time(market_at, min_time(diplomacy_at, law_at)),
+                                min_time(min_time(build_at, research_at), ship_at),
+                                mission_at,
+                            ),
+                            min_time(raid_at, tactical_at),
+                        ),
+                        route_at,
+                    ),
+                    min_time(
+                        min_time(prod_boost_at, research_boost_at),
+                        min_time(
+                            wonder_at,
+                            min_time(
+                                rebuild_at,
+                                min_time(
+                                    story_at,
+                                    min_time(market_at, min_time(diplomacy_at, law_at)),
+                                ),
                             ),
                         ),
                     ),
                 ),
+                logistics_at,
             ) else {
                 self.produce_until(now_unix);
                 self.apply_laws_at(now_unix);
                 self.resolve_story(now_unix);
                 self.evaluate_achievements(now_unix);
+                self.note_logistics_stalls(now_unix);
                 return;
             };
             if done_at > now_unix {
@@ -440,6 +459,7 @@ impl GameState {
                 self.apply_laws_at(now_unix);
                 self.resolve_story(now_unix);
                 self.evaluate_achievements(now_unix);
+                self.note_logistics_stalls(now_unix);
                 return;
             }
             self.produce_until(done_at);
@@ -448,6 +468,10 @@ impl GameState {
                 let job = self.build_queue.remove(0);
                 self.buildings.increment(job.building);
                 self.start_head(done_at);
+                self.note_completed(
+                    done_at,
+                    format!("{} lv {}", job.building, job.from_level.saturating_add(1)),
+                );
                 if mine_kind(job.building) {
                     self.note_daily(DailyAction::MineUpgrade, done_at);
                 }
@@ -465,6 +489,10 @@ impl GameState {
                 let job = self.colonies[i].build_queue.remove(0);
                 self.colonies[i].buildings.increment(job.building);
                 self.start_colony_head(i, done_at);
+                self.note_completed(
+                    done_at,
+                    format!("{} lv {}", job.building, job.from_level.saturating_add(1)),
+                );
                 if mine_kind(job.building) {
                     self.note_daily(DailyAction::MineUpgrade, done_at);
                 }
@@ -472,8 +500,11 @@ impl GameState {
             if research_at == Some(done_at)
                 && let Some(job) = self.research.take()
             {
+                let tech = job.tech.clone();
                 let level = self.tech_levels.entry(job.tech).or_insert(0);
                 *level = level.saturating_add(1);
+                let level = *level;
+                self.note_completed(done_at, format!("research {tech} lv {level}"));
                 self.note_daily(DailyAction::ResearchComplete, done_at);
             }
             if ship_at == Some(done_at) {
@@ -518,6 +549,7 @@ impl GameState {
             }
             self.resolve_story(done_at);
             self.evaluate_achievements(done_at);
+            self.note_logistics_stalls(done_at);
         }
     }
 
@@ -1349,6 +1381,9 @@ impl GameState {
         if need > cap + 1e-9 {
             return Err(FleetError::CargoExceedsCapacity { need, cap });
         }
+        if cargo_has_mass(cargo) && !self.dest_has_room_for(dest, cargo) {
+            return Err(FleetError::DestFull);
+        }
         let (outbound_secs, fuel) = self.flight_from(origin, dest, ships, speed_percent)?;
         let needed = Resources {
             metal: cargo.metal,
@@ -1499,7 +1534,7 @@ impl GameState {
                 done_at,
             ) {
                 Ok(_) => {}
-                Err(err) => self.push_event(done_at, format!("route {id}: skipped ({err})")),
+                Err(err) => self.note_stall(done_at, format!("route {id}: skipped ({err})")),
             }
         }
     }
@@ -2527,8 +2562,21 @@ impl GameState {
                     if self.missions[index].transport {
                         let dest = self.missions[index].dest;
                         let cargo = self.missions[index].cargo;
-                        self.credit_at(dest, cargo);
-                        self.missions[index].cargo = Resources::ZERO;
+                        let accepted = self.accept_up_to_cap(dest, cargo);
+                        let leftover = cargo.saturating_sub(accepted);
+                        self.missions[index].cargo = leftover;
+                        if cargo_has_mass(accepted) {
+                            self.note_delivery(
+                                done_at,
+                                format!("delivered {} to {dest}", format_cargo(accepted)),
+                            );
+                        }
+                        if cargo_has_mass(leftover) {
+                            self.note_stall(
+                                done_at,
+                                format!("stall: bounced cargo at {dest} (storage full)"),
+                            );
+                        }
                     }
                     let ret = self.missions[index].outbound_secs;
                     self.missions[index].phase = MissionPhase::Return;
@@ -3312,6 +3360,287 @@ impl GameState {
         }
     }
 
+    fn next_logistics_at(&self) -> Option<u64> {
+        let mut soonest: Option<u64> = None;
+        let push = |soonest: &mut Option<u64>, secs: f64| {
+            if secs.is_finite() && secs > 1e-9 {
+                let wait = secs.ceil().max(1.0) as u64;
+                let at = self.last_tick_unix.saturating_add(wait);
+                *soonest = Some(soonest.map_or(at, |s| s.min(at)));
+            }
+        };
+        for coord in self.owned_coords() {
+            for kind in ResourceKind::ALL {
+                let rate = self.production_at(coord, kind);
+                let have = self.resources_at(coord).map(|r| r.get(kind)).unwrap_or(0.0);
+                let cap = self.storage_cap_at(coord, kind);
+                if rate > 1e-12 && have + 1e-9 < cap {
+                    push(&mut soonest, (cap - have) / rate * 3600.0);
+                }
+            }
+            for secs in self.chain_input_empty_secs(coord) {
+                push(&mut soonest, secs);
+            }
+        }
+        soonest.filter(|&t| t > self.last_tick_unix)
+    }
+
+    /// Unconstrained recipe rates so shared inputs empty when all consumers
+    /// would drain them together, matching second-by-second catch-up.
+    fn chain_input_empty_secs(&self, coord: Coord) -> Vec<f64> {
+        if !self.config.chains.enabled() {
+            return Vec::new();
+        }
+        let Some(buildings) = self.buildings_at(coord).copied() else {
+            return Vec::new();
+        };
+        let Some(kind) = self.planet_kind(coord) else {
+            return Vec::new();
+        };
+        let Some(resources) = self.resources_at(coord).copied() else {
+            return Vec::new();
+        };
+        let goods = if coord == self.home {
+            self.goods.clone()
+        } else {
+            self.colonies
+                .iter()
+                .find(|c| c.coord == coord)
+                .map(|c| c.goods.clone())
+                .unwrap_or_default()
+        };
+        let extra = if coord == self.home {
+            (0.0, 0.0, 0.0)
+        } else {
+            self.colonies
+                .iter()
+                .find(|c| c.coord == coord)
+                .map(|c| {
+                    let rare = self.rare_bonus_for(c);
+                    (rare.metal, rare.crystal, rare.deuterium)
+                })
+                .unwrap_or((0.0, 0.0, 0.0))
+        };
+        let now = self.last_tick_unix;
+        let throttle = self.chain_throttle_at(coord);
+        if throttle <= 0.0 {
+            return Vec::new();
+        }
+        let deposits = self
+            .config
+            .chains
+            .deposits_for(kind, self.galaxy_seed, coord);
+        let mut consume: BTreeMap<String, f64> = BTreeMap::new();
+        let mut produce: BTreeMap<String, f64> = BTreeMap::new();
+        for recipe in &self.config.chains.recipes {
+            if buildings.get(recipe.building) == 0 {
+                continue;
+            }
+            let level_scale =
+                self.recipe_building_scale(buildings, kind, extra, recipe.building, (now, now));
+            if level_scale <= 0.0 {
+                continue;
+            }
+            let deposit = recipe
+                .deposit
+                .as_ref()
+                .map(|id| deposits.get(id).copied().unwrap_or(0.0))
+                .unwrap_or(1.0);
+            if recipe.deposit.is_some() && deposit <= 0.0 {
+                continue;
+            }
+            let mut scale = level_scale * throttle * deposit;
+            if scale <= 0.0 {
+                continue;
+            }
+            for (id, qty) in &recipe.outputs {
+                if *qty <= 0.0 {
+                    continue;
+                }
+                let Some(resource) = component_kind(id) else {
+                    continue;
+                };
+                let cap = self.storage_cap_at(coord, resource);
+                if resources.get(resource) + 1e-9 >= cap {
+                    scale = 0.0;
+                    break;
+                }
+            }
+            if scale <= 0.0 {
+                continue;
+            }
+            for (id, qty) in &recipe.inputs {
+                if *qty > 0.0 {
+                    *consume.entry(id.clone()).or_insert(0.0) += *qty * scale;
+                }
+            }
+            for (id, qty) in &recipe.outputs {
+                if *qty > 0.0 {
+                    *produce.entry(id.clone()).or_insert(0.0) += *qty * scale;
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for (id, used) in consume {
+            let made = produce.get(&id).copied().unwrap_or(0.0);
+            if used <= made + 1e-12 {
+                continue;
+            }
+            let have = available(&resources, &goods, &id);
+            if have > 1e-9 {
+                out.push(have / (used - made) * 3600.0);
+            }
+        }
+        out
+    }
+
+    fn chain_throttle_at(&self, coord: Coord) -> f64 {
+        let Some(buildings) = self.buildings_at(coord).copied() else {
+            return 0.0;
+        };
+        let Some(kind) = self.planet_kind(coord) else {
+            return 0.0;
+        };
+        let energy = if coord == self.home {
+            self.energy_factor()
+        } else {
+            self.colonies
+                .iter()
+                .find(|c| c.coord == coord)
+                .map(|colony| {
+                    let bonus = self.config.planet_types.get(colony.kind);
+                    let rare = self.rare_bonus_for(colony);
+                    let produced = self
+                        .config
+                        .solar_plant
+                        .energy_output(colony.buildings.solar_plant)
+                        * (1.0
+                            + self.tech_modifier(ModifierKind::EnergyOutput)
+                            + bonus.energy
+                            + rare.energy)
+                            .max(0.0);
+                    let consumed = self.config.energy_draw(&colony.buildings);
+                    if consumed <= 0.0 {
+                        1.0
+                    } else {
+                        (produced / consumed).clamp(0.0, 1.0)
+                    }
+                })
+                .unwrap_or(1.0)
+        };
+        let unrest = if coord == self.home {
+            self.unrest_factor()
+        } else {
+            self.unrest_for(buildings, kind)
+        };
+        energy.max(0.0)
+            * unrest.max(0.0)
+            * self.emission_factor(coord).max(0.0)
+            * self.prod_boost_mult().max(0.0)
+    }
+
+    fn storage_cap_at(&self, coord: Coord, kind: ResourceKind) -> f64 {
+        let Some(buildings) = self.buildings_at(coord) else {
+            return 0.0;
+        };
+        match kind {
+            ResourceKind::Metal => self.config.metal_storage.capacity(buildings.metal_storage),
+            ResourceKind::Crystal => self
+                .config
+                .crystal_storage
+                .capacity(buildings.crystal_storage),
+            ResourceKind::Deuterium => self
+                .config
+                .deuterium_storage
+                .capacity(buildings.deuterium_storage),
+        }
+    }
+
+    fn room_at(&self, coord: Coord, kind: ResourceKind) -> f64 {
+        let have = self.resources_at(coord).map(|r| r.get(kind)).unwrap_or(0.0);
+        (self.storage_cap_at(coord, kind) - have).max(0.0)
+    }
+
+    fn dest_has_room_for(&self, dest: Coord, cargo: Resources) -> bool {
+        ResourceKind::ALL
+            .iter()
+            .any(|&kind| cargo.get(kind) > 1e-9 && self.room_at(dest, kind) > 1e-9)
+    }
+
+    fn accept_up_to_cap(&mut self, coord: Coord, cargo: Resources) -> Resources {
+        let mut accepted = Resources::ZERO;
+        for kind in ResourceKind::ALL {
+            let take = cargo.get(kind).min(self.room_at(coord, kind));
+            accepted.set(kind, take);
+        }
+        if cargo_has_mass(accepted) {
+            self.credit_at(coord, accepted);
+        }
+        accepted
+    }
+
+    fn note_logistics_stalls(&mut self, at: u64) {
+        let report = self.production_report();
+        let mut lines = Vec::new();
+        for step in &report.steps {
+            let line = match &step.limited_by {
+                LimitingFactor::FullBuffer { good } => {
+                    format!("stall: full storage ({good}) at {}", step.planet)
+                }
+                LimitingFactor::Input { good } => {
+                    format!("stall: missing {good} at {}", step.planet)
+                }
+                LimitingFactor::Energy => {
+                    format!("stall: energy deficit at {}", step.planet)
+                }
+                LimitingFactor::Heat => {
+                    format!("stall: heat overflow at {}", step.planet)
+                }
+                LimitingFactor::Pollution => {
+                    format!("stall: pollution overflow at {}", step.planet)
+                }
+                LimitingFactor::Transport { good, from, .. } => {
+                    format!("stall: awaiting {good} from {from} at {}", step.planet)
+                }
+                LimitingFactor::None => continue,
+            };
+            lines.push(line);
+        }
+        if report.steps.is_empty() {
+            match &report.limited_by {
+                LimitingFactor::Energy => {
+                    lines.push(format!("stall: energy deficit at {}", self.home));
+                }
+                LimitingFactor::FullBuffer { good } => {
+                    lines.push(format!("stall: full storage ({good}) at {}", self.home));
+                }
+                LimitingFactor::Input { good } => {
+                    lines.push(format!("stall: missing {good} at {}", self.home));
+                }
+                _ => {}
+            }
+        }
+        for line in lines {
+            self.note_stall(at, line);
+        }
+    }
+
+    fn note_stall(&mut self, at: u64, line: String) {
+        if self.logistics.stalls.iter().any(|s| s == &line) {
+            return;
+        }
+        push_logistics_line(&mut self.logistics.stalls, line.clone());
+        self.push_event(at, line);
+    }
+
+    fn note_delivery(&mut self, _at: u64, line: String) {
+        push_logistics_line(&mut self.logistics.deliveries, line);
+    }
+
+    fn note_completed(&mut self, _at: u64, line: String) {
+        push_logistics_line(&mut self.logistics.completed, line);
+    }
+
     /// Next timeout or first eligible offer after `last_tick_unix`.
     fn next_story_at(&self) -> Option<u64> {
         if self.config.story.is_empty() {
@@ -3784,8 +4113,13 @@ impl GameState {
         let job = &mut self.ship_queue[0];
         job.remaining = job.remaining.saturating_sub(1);
         if job.remaining == 0 {
+            let label = defence
+                .map(|kind| kind.to_string())
+                .or_else(|| ship.map(|kind| kind.to_string()))
+                .unwrap_or_else(|| "yard job".into());
             self.ship_queue.remove(0);
             self.start_ship_head(done_at);
+            self.note_completed(done_at, label);
             return;
         }
         job.started_at = Some(done_at);
@@ -4759,6 +5093,33 @@ fn add_capped(current: f64, rate_per_hour: f64, hours: f64, cap: f64) -> f64 {
     }
 }
 
+fn cargo_has_mass(cargo: Resources) -> bool {
+    ResourceKind::ALL.iter().any(|&kind| cargo.get(kind) > 1e-9)
+}
+
+fn format_cargo(cargo: Resources) -> String {
+    let mut parts = Vec::new();
+    for kind in ResourceKind::ALL {
+        let n = cargo.get(kind);
+        if n > 1e-9 {
+            parts.push(format!("{:.0} {}", n, kind.as_key()));
+        }
+    }
+    if parts.is_empty() {
+        "nothing".into()
+    } else {
+        parts.join(", ")
+    }
+}
+
+fn push_logistics_line(buf: &mut Vec<String>, line: String) {
+    buf.push(line);
+    if buf.len() > LOGISTICS_LOG_CAP {
+        let drop = buf.len() - LOGISTICS_LOG_CAP;
+        buf.drain(..drop);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5329,6 +5690,335 @@ mod tests {
                 "cap violated trial {trial}"
             );
         }
+    }
+
+    #[test]
+    fn catch_up_routes_chains_queues_match_step_by_step() {
+        let mut seed = 0xA11CE_u64;
+        for trial in 0..20 {
+            let gap = 1 + splitmix(&mut seed) % (2 * 24 * 3600);
+            let mut cfg = logistics_config();
+            cfg.chains = crate::ChainConfig {
+                goods: vec![crate::GoodSpec {
+                    id: "steel".into(),
+                    kind: crate::GoodKind::Refined,
+                }],
+                recipes: vec![crate::Recipe {
+                    id: "forge".into(),
+                    building: BuildingKind::MetalMine,
+                    deposit: None,
+                    inputs: BTreeMap::from([("steel".into(), 1.0)]),
+                    outputs: BTreeMap::from([("frames".into(), 1.0)]),
+                    heat: 0.0,
+                    pollution: 0.0,
+                }],
+                deposits: BTreeMap::new(),
+                deposit_jitter: 0.0,
+            };
+            cfg.buildings.metal_mine = cheap_spec(1_800.0);
+            cfg.starting_resources.metal = 20_000.0;
+            cfg.starting_resources.deuterium = 500.0;
+            cfg.starting_resources.crystal = 5_000.0;
+
+            let mut one_shot = GameState::with_config(0, cfg.clone());
+            plant_colony(&mut one_shot, neighbor());
+            one_shot.fleet.add(ShipKind::SmallCargo, 2);
+            one_shot.goods.insert("steel".into(), 40.0);
+            one_shot
+                .schedule_route(
+                    one_shot.home,
+                    neighbor(),
+                    cargo_fleet(),
+                    Resources {
+                        metal: 50.0,
+                        crystal: 0.0,
+                        deuterium: 0.0,
+                    },
+                    30,
+                    0,
+                )
+                .unwrap();
+            one_shot.enqueue_build(BuildingKind::MetalMine, 0).unwrap();
+
+            let mut stepped = GameState::with_config(0, cfg);
+            plant_colony(&mut stepped, neighbor());
+            stepped.fleet.add(ShipKind::SmallCargo, 2);
+            stepped.goods.insert("steel".into(), 40.0);
+            stepped
+                .schedule_route(
+                    stepped.home,
+                    neighbor(),
+                    cargo_fleet(),
+                    Resources {
+                        metal: 50.0,
+                        crystal: 0.0,
+                        deuterium: 0.0,
+                    },
+                    30,
+                    0,
+                )
+                .unwrap();
+            stepped.enqueue_build(BuildingKind::MetalMine, 0).unwrap();
+
+            one_shot.catch_up(gap);
+            let step = if gap > 7200 { 60 } else { 1 };
+            let mut t = 0u64;
+            while t + step < gap {
+                t += step;
+                stepped.catch_up(t);
+            }
+            stepped.catch_up(gap);
+
+            assert_eq!(one_shot.last_tick_unix, gap, "trial {trial}");
+            close(one_shot.resources.metal, stepped.resources.metal);
+            close(one_shot.resources.crystal, stepped.resources.crystal);
+            close(one_shot.resources.deuterium, stepped.resources.deuterium);
+            close(
+                one_shot.colonies[0].resources.metal,
+                stepped.colonies[0].resources.metal,
+            );
+            close(
+                one_shot.goods.get("steel").copied().unwrap_or(0.0),
+                stepped.goods.get("steel").copied().unwrap_or(0.0),
+            );
+            assert_eq!(one_shot.buildings.metal_mine, stepped.buildings.metal_mine);
+            assert_eq!(one_shot.missions.len(), stepped.missions.len());
+            assert_eq!(
+                one_shot.routes[0].next_at, stepped.routes[0].next_at,
+                "trial {trial}"
+            );
+            assert_eq!(
+                one_shot.fleet.get(ShipKind::SmallCargo),
+                stepped.fleet.get(ShipKind::SmallCargo)
+            );
+        }
+    }
+
+    #[test]
+    fn catch_up_seven_days_on_a_large_empire_finishes_under_one_second() {
+        let mut cfg = test_config();
+        cfg.metal_storage.base = 50_000_000.0;
+        cfg.crystal_storage.base = 50_000_000.0;
+        cfg.deuterium_storage.base = 50_000_000.0;
+        cfg.starting_buildings.metal_mine = 18;
+        cfg.starting_buildings.crystal_mine = 16;
+        cfg.starting_buildings.solar_plant = 24;
+        cfg.starting_buildings.robotics_factory = 8;
+        cfg.starting_buildings.shipyard = 6;
+        cfg.starting_resources = Resources {
+            metal: 1_000_000.0,
+            crystal: 1_000_000.0,
+            deuterium: 50_000.0,
+        };
+        cfg.flight.base_fleet_slots = 16;
+        let mut state = GameState::with_config(0, cfg);
+        for pos in 2..=8u16 {
+            let coord = Coord {
+                galaxy: 1,
+                system: 1,
+                position: pos,
+            };
+            plant_colony(&mut state, coord);
+            let colony = state.colonies.last_mut().unwrap();
+            colony.buildings.metal_mine = 12;
+            colony.buildings.crystal_mine = 10;
+            colony.buildings.solar_plant = 16;
+            colony.resources = Resources {
+                metal: 10_000.0,
+                crystal: 10_000.0,
+                deuterium: 1_000.0,
+            };
+        }
+        state.fleet.add(ShipKind::SmallCargo, 12);
+        for i in 0..4 {
+            let dest = state.colonies[i].coord;
+            state
+                .schedule_route(
+                    state.home,
+                    dest,
+                    cargo_fleet(),
+                    Resources {
+                        metal: 80.0,
+                        crystal: 0.0,
+                        deuterium: 0.0,
+                    },
+                    3_600,
+                    0,
+                )
+                .unwrap();
+        }
+        let started = std::time::Instant::now();
+        state.catch_up(7 * 24 * 3600);
+        let elapsed = started.elapsed();
+        let budget = if cfg!(debug_assertions) {
+            std::time::Duration::from_millis(2_500)
+        } else {
+            std::time::Duration::from_secs(1)
+        };
+        assert!(
+            elapsed < budget,
+            "7-day catch-up took {elapsed:?} (budget {budget:?})"
+        );
+        assert_eq!(state.last_tick_unix, 7 * 24 * 3600);
+    }
+
+    #[test]
+    fn storage_full_pauses_at_fill_instant_and_notes_a_stall() {
+        let mut cfg = test_config();
+        cfg.metal_storage.base = 150.0;
+        cfg.starting_resources.metal = 100.0;
+        let mut state = GameState::with_config(0, cfg);
+        state.catch_up(1800);
+        close(state.resources.metal, 150.0);
+        assert!(
+            state
+                .logistics
+                .stalls
+                .iter()
+                .any(|s| s.contains("full storage") && s.contains("metal")),
+            "{:?}",
+            state.logistics.stalls
+        );
+        state.catch_up(3600);
+        close(state.resources.metal, 150.0);
+    }
+
+    #[test]
+    fn missing_chain_input_pauses_then_resumes() {
+        let mut cfg = test_config();
+        cfg.starting_buildings.crystal_mine = 0;
+        cfg.chains = crate::ChainConfig {
+            goods: vec![crate::GoodSpec {
+                id: "steel".into(),
+                kind: crate::GoodKind::Refined,
+            }],
+            recipes: vec![crate::Recipe {
+                id: "forge".into(),
+                building: BuildingKind::MetalMine,
+                deposit: None,
+                inputs: BTreeMap::from([("steel".into(), 1.0)]),
+                outputs: BTreeMap::from([("frames".into(), 1.0)]),
+                heat: 0.0,
+                pollution: 0.0,
+            }],
+            deposits: BTreeMap::new(),
+            deposit_jitter: 0.0,
+        };
+        let mut state = GameState::with_config(0, cfg);
+        state.goods.insert("steel".into(), 50.0);
+        state.catch_up(1800);
+        close(state.goods.get("steel").copied().unwrap_or(0.0), 0.0);
+        close(state.resources.metal, 50.0);
+        assert!(
+            state
+                .logistics
+                .stalls
+                .iter()
+                .any(|s| s.contains("missing steel")),
+            "{:?}",
+            state.logistics.stalls
+        );
+        state.goods.insert("steel".into(), 50.0);
+        state.catch_up(3600);
+        close(state.goods.get("steel").copied().unwrap_or(0.0), 0.0);
+        close(state.resources.metal, 100.0);
+    }
+
+    #[test]
+    fn catch_up_shared_chain_inputs_match_step_by_step() {
+        let mut cfg = test_config();
+        cfg.starting_buildings.crystal_mine = 1;
+        cfg.starting_buildings.metal_mine = 1;
+        cfg.crystal_mine.base_per_hour = 100.0;
+        cfg.chains = crate::ChainConfig {
+            goods: vec![crate::GoodSpec {
+                id: "steel".into(),
+                kind: crate::GoodKind::Refined,
+            }],
+            recipes: vec![
+                crate::Recipe {
+                    id: "forge".into(),
+                    building: BuildingKind::MetalMine,
+                    deposit: None,
+                    inputs: BTreeMap::from([("steel".into(), 1.0)]),
+                    outputs: BTreeMap::from([("frames".into(), 1.0)]),
+                    heat: 0.0,
+                    pollution: 0.0,
+                },
+                crate::Recipe {
+                    id: "circuit".into(),
+                    building: BuildingKind::CrystalMine,
+                    deposit: None,
+                    inputs: BTreeMap::from([("steel".into(), 1.0)]),
+                    outputs: BTreeMap::from([("electronics".into(), 1.0)]),
+                    heat: 0.0,
+                    pollution: 0.0,
+                },
+            ],
+            deposits: BTreeMap::new(),
+            deposit_jitter: 0.0,
+        };
+        let mut one_shot = GameState::with_config(0, cfg.clone());
+        one_shot.goods.insert("steel".into(), 100.0);
+        one_shot.catch_up(3600);
+
+        let mut stepped = GameState::with_config(0, cfg);
+        stepped.goods.insert("steel".into(), 100.0);
+        for t in 1..=3600 {
+            stepped.catch_up(t);
+        }
+
+        close(one_shot.goods.get("steel").copied().unwrap_or(0.0), 0.0);
+        close(stepped.goods.get("steel").copied().unwrap_or(0.0), 0.0);
+        close(one_shot.resources.metal, stepped.resources.metal);
+        close(one_shot.resources.crystal, stepped.resources.crystal);
+        close(one_shot.resources.metal, 50.0);
+        close(one_shot.resources.crystal, 50.0);
+        assert!(
+            one_shot
+                .logistics
+                .stalls
+                .iter()
+                .any(|s| s.contains("missing steel")),
+            "{:?}",
+            one_shot.logistics.stalls
+        );
+    }
+
+    #[test]
+    fn energy_deficit_pauses_then_resumes_when_solar_completes() {
+        let mut cfg = queue_config();
+        cfg.starting_buildings.solar_plant = 0;
+        cfg.starting_buildings.metal_mine = 1;
+        cfg.starting_buildings.crystal_mine = 0;
+        cfg.starting_resources.metal = 1_000.0;
+        let mut state = GameState::with_config(0, cfg);
+        assert!(state.energy_factor() < 1e-12);
+        state.enqueue_build(BuildingKind::SolarPlant, 0).unwrap();
+        state.catch_up(1_800);
+        close(state.resources.metal, 1_000.0);
+        assert!(
+            state
+                .logistics
+                .stalls
+                .iter()
+                .any(|s| s.contains("energy deficit")),
+            "{:?}",
+            state.logistics.stalls
+        );
+        state.catch_up(7_200);
+        assert_eq!(state.buildings.solar_plant, 1);
+        assert!(state.energy_factor() > 0.99);
+        close(state.resources.metal, 1_100.0);
+        assert!(
+            state
+                .logistics
+                .completed
+                .iter()
+                .any(|s| s.contains("solar plant")),
+            "{:?}",
+            state.logistics.completed
+        );
     }
 
     fn splitmix(state: &mut u64) -> u64 {
@@ -6978,6 +7668,79 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         state.catch_up(100);
         assert_eq!(state.events.len(), events);
         assert!(state.routes.is_empty());
+    }
+
+    #[test]
+    fn repeating_route_skips_when_destination_storage_is_full() {
+        let mut state = GameState::with_config(0, logistics_config());
+        plant_colony(&mut state, neighbor());
+        let cap = state.storage_cap_at(neighbor(), ResourceKind::Metal);
+        state.colonies[0].resources.metal = cap;
+        state.fleet.add(ShipKind::SmallCargo, 1);
+        state.resources.metal = 10_000.0;
+        state.resources.deuterium = 50.0;
+        let cargo = Resources {
+            metal: 100.0,
+            crystal: 0.0,
+            deuterium: 0.0,
+        };
+        let id = state
+            .schedule_route(state.home, neighbor(), cargo_fleet(), cargo, 10, 0)
+            .unwrap();
+        state.catch_up(1);
+        assert!(
+            state
+                .logistics
+                .stalls
+                .iter()
+                .any(|s| s.contains(&format!("route {id}: skipped")) && s.contains("storage")),
+            "{:?}",
+            state.logistics.stalls
+        );
+        assert!(state.missions.is_empty());
+        assert_eq!(state.fleet.get(ShipKind::SmallCargo), 1);
+        close(state.colonies[0].resources.metal, cap);
+    }
+
+    #[test]
+    fn transport_bounces_overflow_when_dest_has_no_room() {
+        let mut state = GameState::with_config(0, logistics_config());
+        plant_colony(&mut state, neighbor());
+        let cap = state.storage_cap_at(neighbor(), ResourceKind::Metal);
+        state.colonies[0].resources.metal = cap - 1.0;
+        state.fleet.add(ShipKind::SmallCargo, 1);
+        state.resources.metal = 10_000.0;
+        state.resources.deuterium = 50.0;
+        let cargo = Resources {
+            metal: 100.0,
+            crystal: 0.0,
+            deuterium: 0.0,
+        };
+        state
+            .launch_transport(state.home, neighbor(), cargo_fleet(), cargo, 100, 0)
+            .unwrap();
+        state.catch_up(1);
+        close(state.colonies[0].resources.metal, cap);
+        assert!(
+            state
+                .logistics
+                .stalls
+                .iter()
+                .any(|s| s.contains("bounced cargo")),
+            "{:?}",
+            state.logistics.stalls
+        );
+        assert!(
+            state
+                .logistics
+                .deliveries
+                .iter()
+                .any(|s| s.contains("delivered")),
+            "{:?}",
+            state.logistics.deliveries
+        );
+        assert_eq!(state.missions.len(), 1);
+        close(state.missions[0].cargo.metal, 99.0);
     }
 
     #[test]
