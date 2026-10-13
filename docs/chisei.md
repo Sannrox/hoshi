@@ -51,9 +51,9 @@ Needs `--features chisei`. Without the feature the path or flag is refused.
 
 ## Throughput
 
-The unit test `apply_save_throughput_stays_under_two_seconds_for_fifty` runs
+The unit test `apply_save_throughput_stays_under_five_seconds_for_fifty` runs
 50 propose-apply-save cycles (build queue + catch-up) and requires the whole
-loop to finish in under two seconds. CLI and TUI still persist once per
+loop to finish in under five seconds. CLI and TUI still persist once per
 command, not per tick. Catch-up stays in memory, then one save.
 
 ```sh

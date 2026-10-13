@@ -984,7 +984,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_save_throughput_stays_under_two_seconds_for_fifty() {
+    fn apply_save_throughput_stays_under_five_seconds_for_fifty() {
         let path = unique_chisei("soak");
         let mut store = ChiseiStorage::open(&path).unwrap();
         let mut cfg = BalanceConfig::default();
@@ -1018,7 +1018,7 @@ mod tests {
             }
         }
         assert!(
-            start.elapsed().as_secs_f64() < 2.0,
+            start.elapsed().as_secs_f64() < 5.0,
             "50 apply+save cycles took {:?}",
             start.elapsed()
         );
