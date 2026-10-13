@@ -1,11 +1,11 @@
 //! Scriptable JSON commands. Same core actions as the TUI; no extra powers.
 
 use hoshi_core::{
-    BalanceConfig, BuildingKind, Clock, Coord, DefenceKind, FakeClock, Fleet, GameState,
-    HistoryKind, HistoryQuery, Jurisdiction, JurisdictionKind, MoonFacility, ResourceKind,
-    RoundAction, SCHEMA_VERSION as SAVE_SCHEMA, SaveError, ShipKind, SpyReport, SystemClock,
-    advise, inspect_save, load_or_new, load_or_new_with_seed, lock_save, open_save,
-    resolve_save_path, save_is_locked, save_state,
+    Actor, AssignmentTarget, BalanceConfig, BuildingKind, Clock, Coord, DefenceKind, FakeClock,
+    Fleet, GameState, HistoryKind, HistoryQuery, Jurisdiction, JurisdictionKind, MoonFacility,
+    Permission, ResourceKind, RoleKind, RoundAction, SCHEMA_VERSION as SAVE_SCHEMA, SaveError,
+    ShipKind, SpyReport, SystemClock, advise, inspect_save, load_or_new, load_or_new_with_seed,
+    lock_save, open_save, resolve_save_path, save_is_locked, save_state,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -28,6 +28,7 @@ enum Command {
     Build {
         planet: Coord,
         building: BuildingKind,
+        actor: Actor,
     },
     Research {
         tech: String,
@@ -93,6 +94,25 @@ enum Command {
         lineage: Option<u64>,
         as_of: Option<u64>,
         export: Option<PathBuf>,
+    },
+    Staff,
+    StaffRecruit {
+        name: String,
+        trait_id: String,
+    },
+    StaffAssign {
+        id: u64,
+        role: RoleKind,
+        target: AssignmentTarget,
+    },
+    StaffDelegate {
+        id: u64,
+        permission: Permission,
+        cap: Option<String>,
+    },
+    StaffRevoke {
+        id: u64,
+        permission: Option<Permission>,
     },
 }
 
@@ -321,9 +341,13 @@ fn apply(state: &mut GameState, now: u64, command: &Command) -> Result<Value, Cl
             }
             Ok(state_value(state))
         }
-        Command::Build { planet, building } => {
+        Command::Build {
+            planet,
+            building,
+            actor,
+        } => {
             state
-                .enqueue_build_on(*planet, *building, now)
+                .enqueue_build_as(*planet, *building, now, *actor)
                 .map_err(|e| CliError::Refused(e.to_string()))?;
             Ok(ok_state(state, "queued build"))
         }
@@ -550,6 +574,52 @@ fn apply(state: &mut GameState, now: u64, command: &Command) -> Result<Value, Cl
             as_of,
             export,
         } => apply_log(state, now, query, *lineage, *as_of, export.as_deref()),
+        Command::Staff => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            Ok(ok_state(state, "staff"))
+        }
+        Command::StaffRecruit { name, trait_id } => {
+            let id = state
+                .recruit_leader(name, trait_id, now)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, &format!("recruited leader #{id}")))
+        }
+        Command::StaffAssign { id, role, target } => {
+            state
+                .assign_leader(*id, *role, *target, now)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, "assigned leader"))
+        }
+        Command::StaffDelegate {
+            id,
+            permission,
+            cap,
+        } => {
+            let spend_cap = match cap {
+                Some(raw) => {
+                    let value = raw
+                        .parse::<f64>()
+                        .map_err(|_| CliError::Invalid(format!("invalid --cap {raw}")))?;
+                    if !value.is_finite() || value < 0.0 {
+                        return Err(CliError::Invalid(format!("invalid --cap {raw}")));
+                    }
+                    Some(value)
+                }
+                None => None,
+            };
+            state
+                .delegate_leader(*id, *permission, spend_cap, now)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, "delegated"))
+        }
+        Command::StaffRevoke { id, permission } => {
+            state
+                .revoke_delegation(*id, *permission, now)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, "revoked delegation"))
+        }
         Command::MoonScan { planet } => {
             if !state.deterministic {
                 state.catch_up(now);
@@ -652,6 +722,38 @@ fn state_value(state: &GameState) -> Value {
         "admiral": admiral,
         "pending": state.pending_tactical.is_some(),
     });
+    let leaders: Vec<Value> = state
+        .leaders
+        .iter()
+        .map(|leader| {
+            let assignment = state.assignment_of(leader.id);
+            json!({
+                "id": leader.id,
+                "name": leader.name,
+                "species": leader.species,
+                "trait": leader.trait_id,
+                "xp": leader.xp,
+                "skills": {
+                    "command": leader.skill_command,
+                    "logistics": leader.skill_logistics,
+                    "policy": leader.skill_policy,
+                },
+                "born_at": leader.born_at,
+                "retires_at": leader.retires_at(),
+                "retired": leader.retired,
+                "role": assignment.map(|row| row.role.as_key()),
+                "target": assignment.map(|row| row.target.as_key()),
+                "ready_at": assignment.map(|row| row.ready_at),
+                "delegations": state.delegations.iter().filter(|row| row.leader_id == leader.id).map(|row| {
+                    json!({
+                        "permission": row.permission.as_key(),
+                        "spend_cap": row.spend_cap,
+                        "spent": row.spent,
+                    })
+                }).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
     let laws: Vec<Value> = state
         .laws
         .laws
@@ -779,6 +881,7 @@ fn state_value(state: &GameState) -> Value {
             })
         }).collect::<Vec<_>>(),
         "laws": laws,
+        "leaders": leaders,
     })
 }
 
@@ -901,9 +1004,26 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
             let planet = parse_coord(nth(args, 1, "build <planet> <building>")?)?;
             let building = BuildingKind::from_key(nth(args, 2, "build <planet> <building>")?)
                 .ok_or_else(|| CliError::Invalid("unknown building".into()))?;
-            expect_end(args, 3)?;
-            Ok(Command::Build { planet, building })
+            let mut actor = Actor::Player;
+            let mut i = 3;
+            while i < args.len() {
+                let a = args[i].as_str();
+                if a == "--as" {
+                    let raw = nth(args, i + 1, "build --as <actor>")?;
+                    actor = Actor::parse(raw)
+                        .ok_or_else(|| CliError::Invalid(format!("invalid --as {raw}")))?;
+                    i += 2;
+                    continue;
+                }
+                return Err(CliError::Invalid(format!("unexpected argument {a}")));
+            }
+            Ok(Command::Build {
+                planet,
+                building,
+                actor,
+            })
         }
+        "staff" => parse_staff_command(args),
         "research" => {
             let tech = nth(args, 1, "research <tech>")?.to_string();
             expect_end(args, 2)?;
@@ -1241,6 +1361,112 @@ fn parse_tactics_command(args: &[String]) -> Result<Command, CliError> {
     }
 }
 
+fn parse_staff_command(args: &[String]) -> Result<Command, CliError> {
+    match args.get(1).map(String::as_str) {
+        None => {
+            expect_end(args, 1)?;
+            Ok(Command::Staff)
+        }
+        Some("recruit") => {
+            let mut name = String::new();
+            let mut trait_id = "none".to_string();
+            let mut i = 2;
+            while i < args.len() {
+                let a = args[i].as_str();
+                if a == "--name" {
+                    name = nth(args, i + 1, "staff recruit --name <text>")?.to_string();
+                    i += 2;
+                    continue;
+                }
+                if a == "--trait" {
+                    trait_id = nth(args, i + 1, "staff recruit --trait <id>")?.to_string();
+                    i += 2;
+                    continue;
+                }
+                return Err(CliError::Invalid(format!("unknown staff recruit flag {a}")));
+            }
+            Ok(Command::StaffRecruit { name, trait_id })
+        }
+        Some("assign") => {
+            let id = parse_leader_id(nth(args, 2, "staff assign <id> <role>")?)?;
+            let role = RoleKind::from_key(nth(args, 3, "staff assign <id> <role>")?)
+                .ok_or_else(|| CliError::Invalid("unknown role".into()))?;
+            let mut target = match role {
+                RoleKind::Admiral => AssignmentTarget::HomeFleet,
+                RoleKind::Governor => AssignmentTarget::Planet(Coord::HOME),
+                RoleKind::Minister => AssignmentTarget::Empire,
+            };
+            let mut i = 4;
+            while i < args.len() {
+                let a = args[i].as_str();
+                if a == "--target" {
+                    let raw = nth(args, i + 1, "staff assign --target <id>")?;
+                    target = AssignmentTarget::parse(raw)
+                        .ok_or_else(|| CliError::Invalid(format!("invalid --target {raw}")))?;
+                    i += 2;
+                    continue;
+                }
+                return Err(CliError::Invalid(format!("unknown staff assign flag {a}")));
+            }
+            Ok(Command::StaffAssign { id, role, target })
+        }
+        Some("delegate") => {
+            let id = parse_leader_id(nth(args, 2, "staff delegate <id>")?)?;
+            let mut permission = Permission::QueueBuild;
+            let mut cap = None;
+            let mut i = 3;
+            while i < args.len() {
+                let a = args[i].as_str();
+                if a == "--permission" {
+                    let raw = nth(args, i + 1, "staff delegate --permission <id>")?;
+                    permission = Permission::from_key(raw)
+                        .ok_or_else(|| CliError::Invalid(format!("unknown permission {raw}")))?;
+                    i += 2;
+                    continue;
+                }
+                if a == "--cap" {
+                    cap = Some(nth(args, i + 1, "staff delegate --cap <n>")?.to_string());
+                    i += 2;
+                    continue;
+                }
+                return Err(CliError::Invalid(format!(
+                    "unknown staff delegate flag {a}"
+                )));
+            }
+            Ok(Command::StaffDelegate {
+                id,
+                permission,
+                cap,
+            })
+        }
+        Some("revoke") => {
+            let id = parse_leader_id(nth(args, 2, "staff revoke <id>")?)?;
+            let mut permission = None;
+            let mut i = 3;
+            while i < args.len() {
+                let a = args[i].as_str();
+                if a == "--permission" {
+                    let raw = nth(args, i + 1, "staff revoke --permission <id>")?;
+                    permission =
+                        Some(Permission::from_key(raw).ok_or_else(|| {
+                            CliError::Invalid(format!("unknown permission {raw}"))
+                        })?);
+                    i += 2;
+                    continue;
+                }
+                return Err(CliError::Invalid(format!("unknown staff revoke flag {a}")));
+            }
+            Ok(Command::StaffRevoke { id, permission })
+        }
+        Some(other) => Err(CliError::Invalid(format!("unknown staff command {other}"))),
+    }
+}
+
+fn parse_leader_id(text: &str) -> Result<u64, CliError> {
+    text.parse()
+        .map_err(|_| CliError::Invalid(format!("invalid leader id {text}")))
+}
+
 fn parse_moon_command(args: &[String]) -> Result<Command, CliError> {
     match args.get(1).map(String::as_str) {
         Some("build") => {
@@ -1473,6 +1699,7 @@ mod tests {
             Command::Build {
                 planet: Coord::HOME,
                 building: BuildingKind::MetalMine,
+                actor: Actor::Player,
             }
         );
         let opts = parse_cli(&args(&["tick", "--advance", "3m"])).unwrap();
@@ -1532,6 +1759,8 @@ mod tests {
         assert!(value["daily"]["slots"].is_array());
         assert_eq!(value["daily"]["slots"].as_array().unwrap().len(), 3);
         assert!(value["moons"].is_array());
+        assert!(value["leaders"].is_array());
+        assert_eq!(value["leaders"].as_array().unwrap().len(), 2);
         let _ = std::fs::remove_file(&save);
     }
 
@@ -1868,5 +2097,77 @@ mod tests {
         assert!(text.contains("\"action\":\"queue\""));
         let _ = std::fs::remove_file(&save);
         let _ = std::fs::remove_file(&jsonl);
+    }
+
+    #[test]
+    fn staff_recruit_and_as_build_respects_permissions() {
+        let save = unique_save("staff");
+        let (value, exit) = run_on(&save, &["--seed=1", "staff"]);
+        assert_eq!(exit, EXIT_OK, "{value}");
+        assert_eq!(value["leaders"].as_array().unwrap().len(), 2);
+        let (value, exit) = run_on(
+            &save,
+            &["staff", "recruit", "--name", "Kai", "--trait", "logistics"],
+        );
+        assert_eq!(exit, EXIT_OK, "{value}");
+        let id = value["leaders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["name"] == "Kai")
+            .unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        let (denied, exit) = run_on(
+            &save,
+            &[
+                "build",
+                "home",
+                "metal_mine",
+                "--as",
+                &format!("leader:{id}"),
+            ],
+        );
+        assert_eq!(exit, EXIT_REFUSED, "{denied}");
+        let (ok, exit) = run_on(&save, &["staff", "assign", &id.to_string(), "governor"]);
+        assert_eq!(exit, EXIT_OK, "{ok}");
+        let (bad, exit) = run_on(
+            &save,
+            &[
+                "staff",
+                "delegate",
+                &id.to_string(),
+                "--permission",
+                "queue_build",
+                "--cap",
+                "NaN",
+            ],
+        );
+        assert_eq!(exit, EXIT_INVALID, "{bad}");
+        let (ok, exit) = run_on(
+            &save,
+            &[
+                "staff",
+                "delegate",
+                &id.to_string(),
+                "--permission",
+                "queue_build",
+            ],
+        );
+        assert_eq!(exit, EXIT_OK, "{ok}");
+        let (tick, exit) = run_on(&save, &["tick", "--advance", "4h"]);
+        assert_eq!(exit, EXIT_OK, "{tick}");
+        let (queued, exit) = run_on(
+            &save,
+            &[
+                "build",
+                "home",
+                "metal_mine",
+                "--as",
+                &format!("leader:{id}"),
+            ],
+        );
+        assert_eq!(exit, EXIT_OK, "{queued}");
+        let _ = std::fs::remove_file(&save);
     }
 }

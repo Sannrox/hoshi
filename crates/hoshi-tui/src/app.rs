@@ -7,10 +7,11 @@ use crate::notify::{self, Prefs as NotifyPrefs, Watch as NotifyWatch};
 use crate::portraits::{self, PortraitView, Protocol, Slot};
 use crate::title::AwaySummary;
 use hoshi_core::{
-    BuildingKind, CombatLog, CombatWinner, CommentaryCatalog, Coord, DefenceKind, Fleet, GameState,
-    HintScreen, HistoryKind, HistoryQuery, Jurisdiction, JurisdictionKind, LawStatus, ResourceKind,
-    Resources, ShipKind, SpyReport, StoryEvent, TechBranch, TechNodeState, WonderError, advise,
-    encode_galaxy_seed, polish_all_named, rephrase_lines,
+    AssignmentTarget, BuildingKind, CombatLog, CombatWinner, CommentaryCatalog, Coord, DefenceKind,
+    Fleet, GameState, HintScreen, HistoryKind, HistoryQuery, Jurisdiction, JurisdictionKind,
+    LawStatus, Permission, ResourceKind, Resources, RoleKind, ShipKind, SpyReport, StoryEvent,
+    TechBranch, TechNodeState, WonderError, advise, encode_galaxy_seed, polish_all_named,
+    rephrase_lines,
 };
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
@@ -33,6 +34,7 @@ pub enum Screen {
     Laws,
     Reports,
     History,
+    Staff,
     Map,
 }
 
@@ -447,6 +449,9 @@ impl App {
             Some(Binding::Decrease) if self.screen == Screen::History => {
                 self.cycle_history_actor();
             }
+            Some(Binding::Increase) if self.screen == Screen::Staff => {
+                self.recruit_selected_leader(now_unix);
+            }
             Some(Binding::Increase) if self.screen == Screen::Market => {
                 self.trade_amount = (self.trade_amount + 10.0).min(1_000_000.0);
             }
@@ -482,7 +487,8 @@ impl App {
             Screen::Diplomacy => Screen::Laws,
             Screen::Laws => Screen::Reports,
             Screen::Reports => Screen::History,
-            Screen::History => Screen::Map,
+            Screen::History => Screen::Staff,
+            Screen::Staff => Screen::Map,
             Screen::Map => Screen::Overview,
         };
         self.selected = 0;
@@ -526,6 +532,7 @@ impl App {
             Screen::Laws => HelpContext::Laws,
             Screen::Reports => HelpContext::Reports,
             Screen::History => HelpContext::History,
+            Screen::Staff => HelpContext::Staff,
             Screen::Map => HelpContext::Map,
         }
     }
@@ -556,46 +563,49 @@ impl App {
     pub fn draw(&self, frame: &mut Frame<'_>) {
         let title = match self.screen {
             Screen::Overview => {
-                " hoshi  [overview] planet shipyard wonder prestige ach daily prod market diplo laws rpt log map "
+                " hoshi  [overview] planet shipyard wonder pres ach daily prod market diplo laws rpt log stf map "
             }
             Screen::Planet => {
-                " hoshi  overview [planet] shipyard wonder prestige ach daily prod market diplo laws rpt log map "
+                " hoshi  overview [planet] shipyard wonder pres ach daily prod market diplo laws rpt log stf map "
             }
             Screen::Shipyard => {
-                " hoshi  overview planet [shipyard] wonder prestige ach daily prod market diplo laws rpt log map "
+                " hoshi  overview planet [shipyard] wonder pres ach daily prod market diplo laws rpt log stf map "
             }
             Screen::Wonder => {
-                " hoshi  overview planet shipyard [wonder] prestige ach daily prod market diplo laws rpt log map "
+                " hoshi  overview planet shipyard [wonder] pres ach daily prod market diplo laws rpt log stf map "
             }
             Screen::Prestige => {
-                " hoshi  overview planet shipyard wonder [prestige] ach daily prod market diplo laws rpt log map "
+                " hoshi  overview planet shipyard wonder [prestige] ach daily prod market diplo laws rpt log stf map "
             }
             Screen::Achievements => {
-                " hoshi  overview planet shipyard wonder prestige [ach] daily prod market diplo laws rpt log map "
+                " hoshi  overview planet shipyard wonder pres [ach] daily prod market diplo laws rpt log stf map "
             }
             Screen::Daily => {
-                " hoshi  overview planet shipyard wonder prestige ach [daily] prod market diplo laws rpt log map "
+                " hoshi  overview planet shipyard wonder pres ach [daily] prod market diplo laws rpt log stf map "
             }
             Screen::Production => {
-                " hoshi  overview planet shipyard wonder prestige ach daily [prod] market diplo laws rpt log map "
+                " hoshi  overview planet shipyard wonder pres ach daily [prod] market diplo laws rpt log stf map "
             }
             Screen::Market => {
-                " hoshi  overview planet shipyard wonder prestige ach daily prod [market] diplo laws rpt log map "
+                " hoshi  overview planet shipyard wonder pres ach daily prod [market] diplo laws rpt log stf map "
             }
             Screen::Diplomacy => {
-                " hoshi  overview planet shipyard wonder prestige ach daily prod market [diplo] laws rpt log map "
+                " hoshi  overview planet shipyard wonder pres ach daily prod market [diplo] laws rpt log stf map "
             }
             Screen::Laws => {
-                " hoshi  overview planet shipyard wonder prestige ach daily prod market diplo [laws] rpt log map "
+                " hoshi  overview planet shipyard wonder pres ach daily prod market diplo [laws] rpt log stf map "
             }
             Screen::Reports => {
-                " hoshi  overview planet shipyard wonder prestige ach daily prod market diplo laws [reports] log map "
+                " hoshi  overview planet shipyard wonder pres ach daily prod market diplo laws [reports] log stf map "
             }
             Screen::History => {
-                " hoshi  overview planet shipyard wonder prestige ach daily prod market diplo laws rpt [log] map "
+                " hoshi  overview planet shipyard wonder pres ach daily prod market diplo laws rpt [log] stf map "
+            }
+            Screen::Staff => {
+                " hoshi  overview planet shipyard wonder pres ach daily prod market diplo laws rpt log [stf] map "
             }
             Screen::Map => {
-                " hoshi  overview planet shipyard wonder prestige ach daily prod market diplo laws rpt log [map] "
+                " hoshi  overview planet shipyard wonder pres ach daily prod market diplo laws rpt log stf [map] "
             }
         };
         let block = Block::bordered().title(title);
@@ -663,7 +673,7 @@ impl App {
         let coord = self.selected_coord();
         portraits::slot_for_screen(
             self.screen == Screen::Planet,
-            self.screen == Screen::Shipyard,
+            self.screen == Screen::Shipyard || self.screen == Screen::Staff,
             self.state.planet_kind(coord),
             self.state.rare_bonus_at(coord).is_some(),
             self.state.events.last().map(|e| e.text.as_str()),
@@ -957,6 +967,7 @@ impl App {
             Screen::Diplomacy => self.activate_diplomacy(now_unix),
             Screen::Laws => self.activate_law(now_unix),
             Screen::History => self.toggle_history_lineage(),
+            Screen::Staff => self.activate_staff(now_unix),
             Screen::Map => self.activate_map(now_unix),
             Screen::Reports => {
                 if self
@@ -1238,6 +1249,7 @@ impl App {
             Screen::History => {
                 self.history_pane = HistoryPane::List;
             }
+            Screen::Staff => self.revoke_selected_leader(now_unix),
             Screen::Achievements
             | Screen::Daily
             | Screen::Production
@@ -1269,6 +1281,7 @@ impl App {
             Screen::Laws => self.state.config.laws.len() + self.state.laws.laws.len(),
             Screen::Reports => self.state.outposts.len(),
             Screen::History => self.history_rows().len(),
+            Screen::Staff => self.state.leaders.len(),
             Screen::Map => 0,
         }
     }
@@ -1462,6 +1475,10 @@ impl App {
                 "{tab} screens  {select}  {confirm} lineage  {} glance  +/- filter  {quit}  {help}",
                 k.primary(Binding::Replay)
             ),
+            Screen::Staff => format!(
+                "{tab} screens  {select}  {confirm} assign/delegate  {cancel} revoke  {} recruit  {quit}  {help}",
+                k.primary(Binding::Increase)
+            ),
             Screen::Map => format!(
                 "{tab} screens  {}{}{}{} cursor  {confirm} dispatch  {quit}  {help}",
                 k.primary(Binding::CursorLeft),
@@ -1571,6 +1588,7 @@ impl App {
             Screen::Laws => self.law_lines(height),
             Screen::Reports => self.report_lines(height),
             Screen::History => self.history_lines(height),
+            Screen::Staff => self.staff_lines(height),
             Screen::Map => self.map_lines(height),
         }
     }
@@ -2514,6 +2532,115 @@ impl App {
         append_windowed(&mut rows, &entries, self.selected, height)
     }
 
+    fn staff_lines(&self, height: usize) -> Vec<Line<'static>> {
+        let mut rows = vec![Line::from(format!(
+            "[stf] {} leaders  empty gov {:.0}%",
+            self.state.leaders.len(),
+            self.state.config.leaders.empty_governor * 100.0
+        ))];
+        if self.state.leaders.is_empty() {
+            rows.push(Line::from("no leaders"));
+            return rows;
+        }
+        let entries: Vec<Line<'static>> = self
+            .state
+            .leaders
+            .iter()
+            .enumerate()
+            .map(|(i, leader)| {
+                let mark = if i == self.selected { '>' } else { ' ' };
+                let assignment = self.state.assignment_of(leader.id);
+                let role = assignment.map(|row| row.role.as_key()).unwrap_or("idle");
+                let target = assignment
+                    .map(|row| row.target.as_key())
+                    .unwrap_or_else(|| "-".into());
+                let ready = assignment
+                    .map(|row| {
+                        if row.ready(self.state.last_tick_unix) {
+                            "ready".into()
+                        } else {
+                            format!(
+                                "eta {}",
+                                row.ready_at.saturating_sub(self.state.last_tick_unix)
+                            )
+                        }
+                    })
+                    .unwrap_or_else(|| "unassigned".into());
+                let retired = if leader.retired { " retired" } else { "" };
+                Line::from(format!(
+                    "{mark} #{id} {name}  {trait_id}  {role} {target}  {ready}{retired}",
+                    id = leader.id,
+                    name = leader.name,
+                    trait_id = leader.trait_id
+                ))
+            })
+            .collect();
+        append_windowed(&mut rows, &entries, self.selected, height)
+    }
+
+    fn selected_leader_id(&self) -> Option<u64> {
+        self.state.leaders.get(self.selected).map(|row| row.id)
+    }
+
+    fn activate_staff(&mut self, now_unix: u64) {
+        let Some(id) = self.selected_leader_id() else {
+            return;
+        };
+        if self.state.assignment_of(id).is_none() {
+            let coord = self.selected_coord();
+            match self.state.assign_leader(
+                id,
+                RoleKind::Governor,
+                AssignmentTarget::Planet(coord),
+                now_unix,
+            ) {
+                Ok(()) => self.status.clear(),
+                Err(e) => self.status = e.to_string(),
+            }
+            return;
+        }
+        let permission = self
+            .state
+            .assignment_of(id)
+            .and_then(|row| {
+                RoleKind::ALL
+                    .iter()
+                    .copied()
+                    .find(|role| *role == row.role)
+                    .and_then(|role| {
+                        [
+                            Permission::QueueBuild,
+                            Permission::AcceptBattle,
+                            Permission::ProposeLaw,
+                        ]
+                        .into_iter()
+                        .find(|perm| role.grants(*perm))
+                    })
+            })
+            .unwrap_or(Permission::QueueBuild);
+        match self.state.delegate_leader(id, permission, None, now_unix) {
+            Ok(()) => self.status.clear(),
+            Err(e) => self.status = e.to_string(),
+        }
+    }
+
+    fn recruit_selected_leader(&mut self, now_unix: u64) {
+        match self.state.recruit_leader("", "none", now_unix) {
+            Ok(_) => self.status.clear(),
+            Err(e) => self.status = e.to_string(),
+        }
+    }
+
+    fn revoke_selected_leader(&mut self, now_unix: u64) {
+        let Some(id) = self.selected_leader_id() else {
+            return;
+        };
+        match self.state.revoke_delegation(id, None, now_unix) {
+            Ok(()) => self.status.clear(),
+            Err(e) => self.status = e.to_string(),
+        }
+    }
+
     fn draw_history_overlay(&self, frame: &mut Frame<'_>) {
         let Some(event) = self.selected_history() else {
             render_overlay(frame, " history ", vec![Line::from("no event selected")]);
@@ -3236,6 +3363,7 @@ mod tests {
         app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
+        app.handle_key(KeyCode::Tab, clock.now_unix());
         assert_eq!(app.screen, Screen::Overview);
         let energy = app
             .overview_techs()
@@ -3310,7 +3438,7 @@ mod tests {
     }
 
     fn open_map(app: &mut App, now: u64) {
-        for _ in 0..13 {
+        for _ in 0..14 {
             app.handle_key(KeyCode::Tab, now);
         }
         assert_eq!(app.screen, Screen::Map);
@@ -3422,6 +3550,7 @@ mod tests {
         assert!(app.state.ship_queue.is_empty());
         assert_eq!(app.state.build_queue.len(), 1);
 
+        app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
@@ -3997,6 +4126,19 @@ mod tests {
         app.handle_key(KeyCode::Enter, 0);
         let overlay = render_text(&app, 100, 32);
         assert!(overlay.contains("lineage"), "{overlay}");
+    }
+
+    #[test]
+    fn staff_screen_lists_home_leaders() {
+        let mut app = App::new(GameState::new(1_000));
+        for _ in 0..13 {
+            app.handle_key(KeyCode::Tab, 1_000);
+        }
+        assert_eq!(app.screen, Screen::Staff);
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("[stf]"), "{text}");
+        assert!(text.contains("Home fleet"), "{text}");
+        assert!(text.contains("governor"), "{text}");
     }
 
     #[test]

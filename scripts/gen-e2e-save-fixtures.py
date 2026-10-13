@@ -639,6 +639,72 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             for column in ("formation", "stance"):
                 if not has_column(conn, "spy_reports", column):
                     conn.execute(f"ALTER TABLE spy_reports ADD COLUMN {column} TEXT")
+    elif version == 28:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS history_events (
+                id INTEGER PRIMARY KEY,
+                at INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                actor TEXT NOT NULL,
+                action TEXT NOT NULL,
+                objects TEXT NOT NULL,
+                inputs TEXT NOT NULL,
+                outcome TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                cause_key TEXT,
+                parent_ids TEXT NOT NULL,
+                energy REAL NOT NULL,
+                heat REAL NOT NULL,
+                mass REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS history_snapshots (
+                at INTEGER NOT NULL,
+                event_id INTEGER NOT NULL,
+                metal REAL NOT NULL,
+                crystal REAL NOT NULL,
+                deuterium REAL NOT NULL,
+                energy REAL NOT NULL,
+                heat REAL NOT NULL,
+                home_kind TEXT NOT NULL,
+                building_levels INTEGER NOT NULL,
+                PRIMARY KEY (event_id)
+            );
+            """
+        )
+    elif version == 29:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS leaders (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                species TEXT NOT NULL,
+                trait_id TEXT NOT NULL,
+                skill_command INTEGER NOT NULL,
+                skill_logistics INTEGER NOT NULL,
+                skill_policy INTEGER NOT NULL,
+                xp INTEGER NOT NULL,
+                born_at INTEGER NOT NULL,
+                lifespan_secs INTEGER NOT NULL,
+                retired INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS assignments (
+                leader_id INTEGER PRIMARY KEY,
+                role TEXT NOT NULL,
+                target TEXT NOT NULL,
+                assigned_at INTEGER NOT NULL,
+                ready_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS delegations (
+                leader_id INTEGER NOT NULL,
+                permission TEXT NOT NULL,
+                spend_cap REAL,
+                spent REAL NOT NULL,
+                period_start INTEGER NOT NULL,
+                PRIMARY KEY (leader_id, permission)
+            );
+            """
+        )
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"

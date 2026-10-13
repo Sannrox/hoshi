@@ -18,6 +18,7 @@ mod fleets;
 mod galaxy;
 mod history;
 mod laws;
+mod leaders;
 mod market;
 mod moons;
 mod outposts;
@@ -95,6 +96,10 @@ pub use laws::{
     CLOCK as LAW_CLOCK, Jurisdiction, JurisdictionKind, Law, LawAction, LawActionKind, LawApproval,
     LawConfig, LawEffectKind, LawError, LawMetric, LawMetrics, LawSample, LawState, LawStatus,
     LawTemplate, PLAYER as LAW_PLAYER, emission_throttle,
+};
+pub use leaders::{
+    Actor, Assignment, AssignmentTarget, Delegation, Leader, LeaderConfig, LeaderError,
+    PLAYER as LEADER_PLAYER, Permission, RoleKind, TraitSpec,
 };
 pub use market::{MarketConfig, MarketError, MarketState, TradeQuote};
 pub use moons::{Moon, MoonConfig, MoonError, MoonFacility, PhalanxContact};

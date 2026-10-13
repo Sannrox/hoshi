@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 28;
+pub const SCHEMA_VERSION: u32 = 29;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -180,7 +180,10 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM fleet_tactics;
          DELETE FROM reserve_ships;
          DELETE FROM history_snapshots;
-         DELETE FROM history_events;",
+         DELETE FROM history_events;
+         DELETE FROM delegations;
+         DELETE FROM assignments;
+         DELETE FROM leaders;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -480,6 +483,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
     insert_tutorial(&tx, state)?;
     insert_tactics(&tx, state)?;
     insert_history(&tx, state)?;
+    insert_leaders(&tx, state)?;
     for (i, colony) in state.colonies.iter().enumerate() {
         let planet_id = (i as i64) + 2;
         tx.execute(
@@ -1098,6 +1102,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     load_tutorial(conn, &mut state)?;
     load_tactics(conn, &mut state)?;
     load_history(conn, &mut state)?;
+    load_leaders(conn, &mut state)?;
     state.sync_raid_schedule_after_standing(state.last_tick_unix);
 
     let mut stmt = conn.prepare(
@@ -1939,6 +1944,9 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "reserve_ships" => "SELECT COUNT(*) FROM reserve_ships",
         "history_events" => "SELECT COUNT(*) FROM history_events",
         "history_snapshots" => "SELECT COUNT(*) FROM history_snapshots",
+        "leaders" => "SELECT COUNT(*) FROM leaders",
+        "assignments" => "SELECT COUNT(*) FROM assignments",
+        "delegations" => "SELECT COUNT(*) FROM delegations",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -1997,7 +2005,10 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "admirals")?
         + count_rows(conn, "reserve_ships")?
         + count_rows(conn, "history_events")?
-        + count_rows(conn, "history_snapshots")?)
+        + count_rows(conn, "history_snapshots")?
+        + count_rows(conn, "leaders")?
+        + count_rows(conn, "assignments")?
+        + count_rows(conn, "delegations")?)
 }
 
 fn migrate(conn: &Connection) -> Result<(), SaveError> {
@@ -2091,6 +2102,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 28 {
         migrate_v28(conn)?;
+    }
+    if found < 29 {
+        migrate_v29(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -2862,6 +2876,102 @@ fn migrate_v28(conn: &Connection) -> Result<(), SaveError> {
     Ok(())
 }
 
+fn migrate_v29(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS leaders (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            species TEXT NOT NULL,
+            trait_id TEXT NOT NULL,
+            skill_command INTEGER NOT NULL,
+            skill_logistics INTEGER NOT NULL,
+            skill_policy INTEGER NOT NULL,
+            xp INTEGER NOT NULL,
+            born_at INTEGER NOT NULL,
+            lifespan_secs INTEGER NOT NULL,
+            retired INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS assignments (
+            leader_id INTEGER PRIMARY KEY,
+            role TEXT NOT NULL,
+            target TEXT NOT NULL,
+            assigned_at INTEGER NOT NULL,
+            ready_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS delegations (
+            leader_id INTEGER NOT NULL,
+            permission TEXT NOT NULL,
+            spend_cap REAL,
+            spent REAL NOT NULL,
+            period_start INTEGER NOT NULL,
+            PRIMARY KEY (leader_id, permission)
+        );
+        ",
+    )?;
+    if table_exists(conn, "admirals") && table_exists(conn, "leaders") {
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM leaders", [], |row| row.get(0))?;
+        if count == 0 && count_rows(conn, "admirals")? > 0 {
+            let born = meta_last_tick(conn)?;
+            let life = i64::try_from(crate::LeaderConfig::default().lifespan_secs)
+                .map_err(|_| SaveError::Corrupt("leader lifespan"))?;
+            conn.execute(
+                "INSERT INTO leaders (id, name, species, trait_id, skill_command, skill_logistics, skill_policy, xp, born_at, lifespan_secs, retired)
+                 SELECT id, name, 'human', trait_id, 0, 0, 0, xp, ?1, ?2, 0 FROM admirals",
+                params![born, life],
+            )?;
+            conn.execute(
+                "INSERT OR IGNORE INTO assignments (leader_id, role, target, assigned_at, ready_at)
+                 SELECT id, 'admiral', 'fleet:home', ?1, ?1 FROM admirals",
+                params![born],
+            )?;
+        }
+    }
+    if table_exists(conn, "meta") && count_rows(conn, "meta")? > 0 {
+        ensure_home_governor(conn)?;
+    }
+    Ok(())
+}
+
+fn meta_last_tick(conn: &Connection) -> Result<i64, SaveError> {
+    conn.query_row("SELECT last_tick_unix FROM meta WHERE id = 1", [], |row| {
+        row.get(0)
+    })
+    .optional()?
+    .ok_or(SaveError::Corrupt("missing meta row"))
+}
+
+fn ensure_home_governor(conn: &Connection) -> Result<(), SaveError> {
+    if !table_exists(conn, "leaders") || !table_exists(conn, "assignments") {
+        return Ok(());
+    }
+    let governors: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM assignments WHERE role = 'governor'",
+        [],
+        |row| row.get(0),
+    )?;
+    if governors > 0 {
+        return Ok(());
+    }
+    let next: i64 = conn.query_row("SELECT COALESCE(MAX(id), 0) + 1 FROM leaders", [], |row| {
+        row.get(0)
+    })?;
+    let born = meta_last_tick(conn)?;
+    let life = i64::try_from(crate::LeaderConfig::default().lifespan_secs)
+        .map_err(|_| SaveError::Corrupt("leader lifespan"))?;
+    conn.execute(
+        "INSERT INTO leaders (id, name, species, trait_id, skill_command, skill_logistics, skill_policy, xp, born_at, lifespan_secs, retired)
+         VALUES (?1, 'Home colony', 'human', 'none', 0, 1, 0, 0, ?2, ?3, 0)",
+        params![next, born, life],
+    )?;
+    conn.execute(
+        "INSERT INTO assignments (leader_id, role, target, assigned_at, ready_at)
+         VALUES (?1, 'governor', 'planet:home', ?2, ?2)",
+        params![next, born],
+    )?;
+    Ok(())
+}
+
 fn spy_reports_has_column(conn: &Connection, column: &str) -> Result<bool, SaveError> {
     let mut stmt = conn.prepare("PRAGMA table_info(spy_reports)")?;
     let names = stmt.query_map([], |row| row.get::<_, String>(1))?;
@@ -3177,6 +3287,200 @@ fn load_tactics(conn: &Connection, state: &mut GameState) -> Result<(), SaveErro
             );
         }
     }
+    Ok(())
+}
+
+fn insert_leaders(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<(), SaveError> {
+    for leader in &state.leaders {
+        let admiral = state.admirals.iter().find(|row| row.id == leader.id);
+        let trait_id = admiral
+            .map(|row| row.trait_id.as_str())
+            .unwrap_or(&leader.trait_id);
+        let xp = admiral.map(|row| row.xp).unwrap_or(leader.xp);
+        let name = admiral.map(|row| row.name.as_str()).unwrap_or(&leader.name);
+        tx.execute(
+            "INSERT INTO leaders (id, name, species, trait_id, skill_command, skill_logistics, skill_policy, xp, born_at, lifespan_secs, retired)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                leader.id as i64,
+                name,
+                leader.species,
+                trait_id,
+                leader.skill_command as i64,
+                leader.skill_logistics as i64,
+                leader.skill_policy as i64,
+                xp as i64,
+                leader.born_at as i64,
+                leader.lifespan_secs as i64,
+                i64::from(leader.retired),
+            ],
+        )?;
+    }
+    for row in &state.assignments {
+        tx.execute(
+            "INSERT INTO assignments (leader_id, role, target, assigned_at, ready_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                row.leader_id as i64,
+                row.role.as_key(),
+                row.target.as_key(),
+                row.assigned_at as i64,
+                row.ready_at as i64,
+            ],
+        )?;
+    }
+    for row in &state.delegations {
+        tx.execute(
+            "INSERT INTO delegations (leader_id, permission, spend_cap, spent, period_start)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                row.leader_id as i64,
+                row.permission.as_key(),
+                row.spend_cap,
+                row.spent,
+                row.period_start as i64,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn load_leaders(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
+    if !table_exists(conn, "leaders") {
+        return Ok(());
+    }
+    let mut stmt = conn.prepare(
+        "SELECT id, name, species, trait_id, skill_command, skill_logistics, skill_policy, xp, born_at, lifespan_secs, retired
+         FROM leaders ORDER BY id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, i64>(5)?,
+            row.get::<_, i64>(6)?,
+            row.get::<_, i64>(7)?,
+            row.get::<_, i64>(8)?,
+            row.get::<_, i64>(9)?,
+            row.get::<_, i64>(10)?,
+        ))
+    })?;
+    state.leaders.clear();
+    let mut max_id = 0;
+    for row in rows {
+        let (id, name, species, trait_id, command, logistics, policy, xp, born, life, retired) =
+            row?;
+        let id = unix_ts(id)?;
+        max_id = max_id.max(id);
+        state.leaders.push(crate::Leader {
+            id,
+            name,
+            species,
+            trait_id,
+            skill_command: u32::try_from(command).map_err(|_| SaveError::Corrupt("skill"))?,
+            skill_logistics: u32::try_from(logistics).map_err(|_| SaveError::Corrupt("skill"))?,
+            skill_policy: u32::try_from(policy).map_err(|_| SaveError::Corrupt("skill"))?,
+            xp: u32::try_from(xp).map_err(|_| SaveError::Corrupt("leader xp"))?,
+            born_at: unix_ts(born)?,
+            lifespan_secs: unix_ts(life)?,
+            retired: retired != 0,
+        });
+    }
+    if table_exists(conn, "assignments") {
+        let mut stmt = conn.prepare(
+            "SELECT leader_id, role, target, assigned_at, ready_at FROM assignments ORDER BY leader_id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })?;
+        state.assignments.clear();
+        for row in rows {
+            let (id, role, target, assigned, ready) = row?;
+            let role =
+                crate::RoleKind::from_key(&role).ok_or(SaveError::Corrupt("assignment role"))?;
+            let target = crate::AssignmentTarget::parse(&target)
+                .ok_or(SaveError::Corrupt("assignment target"))?;
+            state.assignments.push(crate::Assignment {
+                leader_id: unix_ts(id)?,
+                role,
+                target,
+                assigned_at: unix_ts(assigned)?,
+                ready_at: unix_ts(ready)?,
+            });
+        }
+    }
+    if table_exists(conn, "delegations") {
+        let mut stmt = conn.prepare(
+            "SELECT leader_id, permission, spend_cap, spent, period_start FROM delegations",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<f64>>(2)?,
+                row.get::<_, f64>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })?;
+        state.delegations.clear();
+        for row in rows {
+            let (id, perm, cap, spent, start) = row?;
+            let permission =
+                crate::Permission::from_key(&perm).ok_or(SaveError::Corrupt("delegation perm"))?;
+            if cap.is_some_and(|c| !c.is_finite() || c < 0.0) {
+                return Err(SaveError::Corrupt("delegation spend cap"));
+            }
+            if !spent.is_finite() || spent < 0.0 {
+                return Err(SaveError::Corrupt("delegation spent"));
+            }
+            state.delegations.push(crate::Delegation {
+                leader_id: unix_ts(id)?,
+                permission,
+                spend_cap: cap,
+                spent,
+                period_start: unix_ts(start)?,
+            });
+        }
+    }
+    if state.leaders.is_empty() && !state.admirals.is_empty() {
+        for admiral in &state.admirals {
+            max_id = max_id.max(admiral.id);
+            state.leaders.push(crate::Leader {
+                id: admiral.id,
+                name: admiral.name.clone(),
+                species: "human".into(),
+                trait_id: admiral.trait_id.clone(),
+                skill_command: 0,
+                skill_logistics: 0,
+                skill_policy: 0,
+                xp: admiral.xp,
+                born_at: state.last_tick_unix,
+                lifespan_secs: state.config.leaders.lifespan_secs,
+                retired: false,
+            });
+            if Some(admiral.id) == state.home_admiral_id {
+                state.assignments.push(crate::Assignment {
+                    leader_id: admiral.id,
+                    role: crate::RoleKind::Admiral,
+                    target: crate::AssignmentTarget::HomeFleet,
+                    assigned_at: state.last_tick_unix,
+                    ready_at: state.last_tick_unix,
+                });
+            }
+        }
+    }
+    state.next_leader_id = max_id.saturating_add(1).max(state.next_admiral_id);
+    state.next_admiral_id = state.next_leader_id;
+    state.sync_admirals_from_leaders();
     Ok(())
 }
 
@@ -5146,6 +5450,74 @@ mod tests {
         assert_eq!(loaded.admirals[0].trait_id, "flanker");
         assert_eq!(count_rows(&conn, "fleet_tactics").unwrap(), 1);
         assert_eq!(count_rows(&conn, "admirals").unwrap(), 1);
+    }
+
+    #[test]
+    fn migrate_v29_round_trips_leaders() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v29(&conn).unwrap();
+        migrate_v29(&conn).unwrap();
+        let mut state = GameState::new(10);
+        state.resources.metal = 5_000.0;
+        state.resources.crystal = 5_000.0;
+        let id = state.recruit_leader("Kai", "logistics", 10).unwrap();
+        state
+            .assign_leader(
+                id,
+                crate::RoleKind::Minister,
+                crate::AssignmentTarget::Empire,
+                10,
+            )
+            .unwrap();
+        state
+            .delegate_leader(id, crate::Permission::ProposeLaw, Some(100.0), 10)
+            .unwrap();
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.leaders.len(), state.leaders.len());
+        assert_eq!(loaded.assignments.len(), state.assignments.len());
+        assert_eq!(loaded.delegations.len(), 1);
+        assert_eq!(loaded.delegations[0].spend_cap, Some(100.0));
+        assert_eq!(
+            count_rows(&conn, "leaders").unwrap(),
+            loaded.leaders.len() as i64
+        );
+    }
+
+    #[test]
+    fn migrate_v29_seeds_home_governor_when_only_admirals_exist() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let state = GameState::new(10);
+        save_state(&mut conn, &state).unwrap();
+        conn.execute_batch(
+            "DELETE FROM leaders; DELETE FROM assignments; DELETE FROM delegations;",
+        )
+        .unwrap();
+        migrate_v29(&conn).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM leaders", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(n, 2);
+        let role: String = conn
+            .query_row(
+                "SELECT role FROM assignments WHERE role = 'governor'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(role, "governor");
+        let born: i64 = conn
+            .query_row("SELECT MIN(born_at) FROM leaders", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(born, 10);
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert!(loaded.leaders.iter().all(|row| !row.retired));
+        assert!(
+            loaded
+                .leaders
+                .iter()
+                .all(|row| row.retires_at() > loaded.last_tick_unix)
+        );
     }
 
     #[test]

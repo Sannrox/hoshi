@@ -348,6 +348,7 @@ pub struct BalanceConfig {
     pub daily: crate::DailyConfig,
     pub moons: crate::MoonConfig,
     pub tactics: crate::TacticsConfig,
+    pub leaders: crate::LeaderConfig,
 }
 
 impl BalanceConfig {
@@ -1331,6 +1332,7 @@ impl File {
                 .map(crate::moons::FileMoons::into_config)
                 .unwrap_or_default(),
             tactics: crate::TacticsConfig::default(),
+            leaders: crate::LeaderConfig::default(),
             market: crate::MarketConfig {
                 enabled: self.market.enabled,
                 tick_secs: self.market.tick_secs,

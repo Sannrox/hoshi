@@ -81,6 +81,10 @@
       "type": "array",
       "description": "Proposed, enacted and repealed laws with approvals and latest expected vs measured samples."
     },
+    "leaders": {
+      "type": "array",
+      "description": "Leaders with traits, assignment, retirement and delegations."
+    },
     "error": {
       "type": "object",
       "required": ["code", "message"],

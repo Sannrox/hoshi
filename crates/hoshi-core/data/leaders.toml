@@ -1,0 +1,65 @@
+# Leaders, roles and permissions. Trait production is scheduling efficiency
+# inside the energy and heat budget; it never creates free energy.
+
+reassign_secs = 3600
+lifespan_secs = 7776000
+period_secs = 86400
+empty_governor = 0.05
+empty_admiral = 0.10
+recruit_metal = 500.0
+recruit_crystal = 200.0
+recruit_deuterium = 0.0
+
+[[traits]]
+id = "none"
+name = "None"
+portrait = "admiral"
+attack = 1.0
+shield = 1.0
+production = 1.0
+policy = 1.0
+
+[[traits]]
+id = "logistics"
+name = "Logistics expert"
+portrait = "governor"
+attack = 1.0
+shield = 1.0
+production = 1.04
+policy = 1.0
+
+[[traits]]
+id = "cautious"
+name = "Cautious"
+portrait = "admiral"
+attack = 0.95
+shield = 1.08
+production = 1.0
+policy = 1.0
+
+[[traits]]
+id = "reformer"
+name = "Reformer"
+portrait = "governor"
+attack = 1.0
+shield = 1.0
+production = 1.0
+policy = 1.03
+
+[[traits]]
+id = "flanker"
+name = "Flanker"
+portrait = "admiral"
+attack = 1.08
+shield = 0.95
+production = 1.0
+policy = 1.0
+
+[[traits]]
+id = "stalwart"
+name = "Stalwart"
+portrait = "admiral"
+attack = 0.95
+shield = 1.1
+production = 1.0
+policy = 1.0

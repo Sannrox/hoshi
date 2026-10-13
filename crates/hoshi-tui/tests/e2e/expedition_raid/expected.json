@@ -112,6 +112,27 @@
     "troop_transport": 0
   },
   "laws": [],
+  "leaders": [
+    {
+      "born_at": 0,
+      "delegations": [],
+      "id": 1,
+      "name": "Home colony",
+      "ready_at": 0,
+      "retired": false,
+      "retires_at": 7776000,
+      "role": "governor",
+      "skills": {
+        "command": 0,
+        "logistics": 1,
+        "policy": 0
+      },
+      "species": "human",
+      "target": "planet:1:1:1",
+      "trait": "none",
+      "xp": 0
+    }
+  ],
   "missions": [],
   "moons": [
     {
@@ -242,16 +263,11 @@
     "deuterium": 2500.0,
     "metal": 638.75
   },
-  "save_schema": 28,
+  "save_schema": 29,
   "schema_version": 1,
   "spy_reports": [],
   "tactics": {
-    "admiral": {
-      "id": 1,
-      "name": "Home fleet",
-      "trait": "none",
-      "xp": 2
-    },
+    "admiral": null,
     "formation": "neutral",
     "pending": false,
     "retreat_below": 0.4,

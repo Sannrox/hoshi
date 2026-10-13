@@ -27,6 +27,9 @@ alone for hours.
    finished mine upgrade should show queue then complete, with lineage on
    Enter. Time travel (`r` / `hoshi log --at`) matches the stockpile recorded
    at that event.
+8. **Staff.** Tab to the staff screen (or `hoshi staff`). Home has an admiral
+   and a governor. Recruiting spends resources; assigning a second role waits
+   out the delay; a delegated governor can queue a build with `build --as`.
 
 ## Questions
 
