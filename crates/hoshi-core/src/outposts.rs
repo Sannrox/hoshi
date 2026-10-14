@@ -15,6 +15,8 @@ pub struct Outpost {
     pub garrison: u32,
     pub rare: Option<String>,
     pub last_rebuild_at: u64,
+    /// True for the pirate fortress used by the conquest victory path.
+    pub homeworld: bool,
 }
 
 impl Outpost {
@@ -200,9 +202,68 @@ pub fn generate_outposts(
             garrison: scaled_garrison(0.0, cfg),
             rare,
             last_rebuild_at: now,
+            homeworld: false,
         });
     }
     out
+}
+
+/// Scale and placement knobs for the pirate homeworld fortress.
+pub struct HomeworldSpec {
+    pub min_system: u16,
+    pub defence_mult: f64,
+    pub garrison_mult: f64,
+}
+
+/// Far pirate fortress used by the conquest victory path. Same seed, same coord.
+pub fn generate_homeworld(
+    galaxy_seed: u64,
+    now: u64,
+    cfg: &OutpostConfig,
+    occupied: &[Coord],
+    version: u32,
+    spec: HomeworldSpec,
+) -> Outpost {
+    let mut seed = galaxy_seed ^ 0xA11E_4F07_A11E_4F07;
+    let mut coord = Coord {
+        galaxy: 1,
+        system: spec.min_system.max(2),
+        position: 16,
+    };
+    for _ in 0..200 {
+        let roll = next_u64(&mut seed);
+        let system = spec.min_system.max(2) + (roll % 40) as u16;
+        let position = 8 + ((roll >> 16) % 8) as u16;
+        let candidate = Coord {
+            galaxy: 1,
+            system: system.min(80),
+            position: position.min(16),
+        };
+        if !occupied.contains(&candidate) {
+            coord = candidate;
+            break;
+        }
+    }
+    let (kind, size) = planet_profile(galaxy_seed, coord, version);
+    let mut defences = scaled_defence(0.0, cfg);
+    let n = ((defences.get(ShipKind::LightFighter) as f64) * spec.defence_mult.max(1.0))
+        .ceil()
+        .max(1.0) as u32;
+    defences = Fleet::default();
+    defences.add(ShipKind::LightFighter, n);
+    let garrison = ((scaled_garrison(0.0, cfg) as f64) * spec.garrison_mult.max(1.0))
+        .ceil()
+        .max(1.0) as u32;
+    Outpost {
+        coord,
+        kind,
+        size,
+        defences,
+        garrison,
+        rare: None,
+        last_rebuild_at: now,
+        homeworld: true,
+    }
 }
 
 fn pick_rare(seed: &mut u64, cfg: &OutpostConfig) -> Option<String> {

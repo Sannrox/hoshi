@@ -152,8 +152,8 @@
     },
     {
       "coord": "1:76:5",
-      "defences": 1,
-      "garrison": 2,
+      "defences": 3,
+      "garrison": 6,
       "rare": null,
       "report": null
     }
@@ -220,7 +220,7 @@
     "deuterium": 30.0,
     "metal": 10.0
   },
-  "save_schema": 32,
+  "save_schema": 33,
   "schema_version": 1,
   "spy_reports": [],
   "tactics": {
@@ -236,6 +236,28 @@
     "skipped": false
   },
   "vehicles": [],
+  "victory": {
+    "enabled": true,
+    "homeworld": "1:76:5",
+    "paths": {
+      "conquest": {
+        "next": "invade pirate homeworld 1:76:5",
+        "ratio": 0.0,
+        "ready": false
+      },
+      "diplomacy": {
+        "next": "ally with every faction",
+        "ratio": 0.0,
+        "ready": false
+      },
+      "wonder": {
+        "next": "start dyson_ring",
+        "ratio": 0.0,
+        "ready": false
+      }
+    },
+    "record": null
+  },
   "waste": {
     "heat_load": 16.510000000000005,
     "heat_sink": 92.0,

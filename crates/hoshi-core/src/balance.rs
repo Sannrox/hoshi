@@ -350,6 +350,7 @@ pub struct BalanceConfig {
     pub tactics: crate::TacticsConfig,
     pub leaders: crate::LeaderConfig,
     pub orbits: crate::OrbitConfig,
+    pub victory: crate::VictoryConfig,
 }
 
 impl BalanceConfig {
@@ -436,6 +437,8 @@ struct File {
     moons: Option<crate::moons::FileMoons>,
     #[serde(default)]
     orbits: crate::orbits::FileOrbits,
+    #[serde(default)]
+    victory: FileVictory,
 }
 
 #[derive(Deserialize)]
@@ -624,6 +627,127 @@ impl Default for FileMarket {
             npc_order_size: default_market_npc_size(),
             contract_penalty: default_market_penalty(),
             order_ttl_secs: default_market_ttl(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct FileVictory {
+    #[serde(default = "default_true")]
+    enabled: bool,
+    #[serde(default = "default_victory_wonder")]
+    wonder_id: String,
+    #[serde(default = "default_victory_allied")]
+    allied_min: f64,
+    #[serde(default = "default_victory_hold")]
+    hold_secs: u64,
+    #[serde(default = "default_victory_base")]
+    base_prestige: u32,
+    #[serde(default = "default_victory_conquest")]
+    conquest_bonus: u32,
+    #[serde(default = "default_victory_wonder_bonus")]
+    wonder_bonus: u32,
+    #[serde(default = "default_victory_diplo")]
+    diplomacy_bonus: u32,
+    #[serde(default = "default_victory_speed")]
+    speed_bonus_max: u32,
+    #[serde(default = "default_victory_target")]
+    speed_target_secs: u64,
+    #[serde(default = "default_victory_casual_min")]
+    casual_min_secs: u64,
+    #[serde(default = "default_victory_casual_max")]
+    casual_max_secs: u64,
+    #[serde(default = "default_victory_home_sys")]
+    homeworld_min_system: u16,
+    #[serde(default = "default_victory_def_mult")]
+    homeworld_defence_mult: f64,
+    #[serde(default = "default_victory_gar_mult")]
+    homeworld_garrison_mult: f64,
+}
+
+impl Default for FileVictory {
+    fn default() -> Self {
+        Self {
+            enabled: default_true(),
+            wonder_id: default_victory_wonder(),
+            allied_min: default_victory_allied(),
+            hold_secs: default_victory_hold(),
+            base_prestige: default_victory_base(),
+            conquest_bonus: default_victory_conquest(),
+            wonder_bonus: default_victory_wonder_bonus(),
+            diplomacy_bonus: default_victory_diplo(),
+            speed_bonus_max: default_victory_speed(),
+            speed_target_secs: default_victory_target(),
+            casual_min_secs: default_victory_casual_min(),
+            casual_max_secs: default_victory_casual_max(),
+            homeworld_min_system: default_victory_home_sys(),
+            homeworld_defence_mult: default_victory_def_mult(),
+            homeworld_garrison_mult: default_victory_gar_mult(),
+        }
+    }
+}
+
+fn default_victory_wonder() -> String {
+    "dyson_ring".into()
+}
+fn default_victory_allied() -> f64 {
+    40.0
+}
+fn default_victory_hold() -> u64 {
+    86_400
+}
+fn default_victory_base() -> u32 {
+    20
+}
+fn default_victory_conquest() -> u32 {
+    8
+}
+fn default_victory_wonder_bonus() -> u32 {
+    6
+}
+fn default_victory_diplo() -> u32 {
+    10
+}
+fn default_victory_speed() -> u32 {
+    8
+}
+fn default_victory_target() -> u64 {
+    1_209_600
+}
+fn default_victory_casual_min() -> u64 {
+    1_209_600
+}
+fn default_victory_casual_max() -> u64 {
+    2_419_200
+}
+fn default_victory_home_sys() -> u16 {
+    40
+}
+fn default_victory_def_mult() -> f64 {
+    3.0
+}
+fn default_victory_gar_mult() -> f64 {
+    3.0
+}
+
+impl FileVictory {
+    fn into_config(self) -> crate::VictoryConfig {
+        crate::VictoryConfig {
+            enabled: self.enabled,
+            wonder_id: self.wonder_id,
+            allied_min: self.allied_min,
+            hold_secs: self.hold_secs,
+            base_prestige: self.base_prestige,
+            conquest_bonus: self.conquest_bonus,
+            wonder_bonus: self.wonder_bonus,
+            diplomacy_bonus: self.diplomacy_bonus,
+            speed_bonus_max: self.speed_bonus_max,
+            speed_target_secs: self.speed_target_secs,
+            casual_min_secs: self.casual_min_secs,
+            casual_max_secs: self.casual_max_secs,
+            homeworld_min_system: self.homeworld_min_system,
+            homeworld_defence_mult: self.homeworld_defence_mult,
+            homeworld_garrison_mult: self.homeworld_garrison_mult,
         }
     }
 }
@@ -1412,6 +1536,7 @@ impl File {
                 contract_penalty: self.market.contract_penalty,
                 order_ttl_secs: self.market.order_ttl_secs,
             },
+            victory: self.victory.into_config(),
         };
         let wonders = config.wonders.clone();
         config.achievements.drop_unknown_wonders(&wonders);

@@ -338,6 +338,7 @@ pub(crate) fn assert_storage_contract(store: &mut dyn Storage) {
         garrison: 40,
         rare: None,
         last_rebuild_at: now,
+        homeworld: false,
     });
     store.apply_batch(&original).unwrap();
     let batched = store.load(cfg.clone()).unwrap();

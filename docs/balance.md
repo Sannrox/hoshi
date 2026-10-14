@@ -106,9 +106,13 @@ comparison). `troop_strength` is the landing power of one troop transport.
 
 `[moons]` is debris-to-moon formation around an owned planet. Hull lost in a fight adds `debris_per_hull` to that coord. Once debris passes `form_threshold`, each extra point rolls `form_chance_per_debris` (capped) against a seeded RNG; the same seed repeats the same moon. A moon is an orbital facility of its parent, not a new map slot. `phalanx_range_systems` is the sensor radius in systems; `jump_cooldown_secs` is the gate cooldown. Jump is instant between two moons that both have a jump gate, and is refused if the destination has none. Costs are `phalanx_*` and `gate_*`. Set `enabled = false` to skip formation.
 
+## Victory
+
+`[victory]` is the galaxy end. Conquest needs the pirate homeworld colonised and its outpost gone. Wonder needs `wonder_id` in `completed_wonders` (default `dyson_ring`). Diplomacy needs every faction at `allied_min` standing, then `hold_secs` without dropping below. The first matching path wins once and awards `base_prestige` plus a path bonus plus a speed bonus that falls to 0 at `speed_target_secs`. The farthest outpost at or beyond `homeworld_min_system` is marked the pirate homeworld; its defences and garrison scale by `homeworld_defence_mult` / `homeworld_garrison_mult`. Casual-play profiles should land in `casual_min_secs`–`casual_max_secs` (14–28 days in the bundle). Set `enabled = false` to skip checks. `hoshi simulate` (when days cover the casual floor) reports the three paths.
+
 ## Prestige
 
-`[prestige]` is the late-game reset. Score is building levels plus research levels plus `colony_weight` per colony plus `wonder_weight` per completed wonder. Reset is allowed with a completed wonder or when score reaches `min_score`. Currency earned is `score / points_per_currency`, at least 1. `[[prestige.bonuses]]` rows are permanent purchases: extra starting resources, production and research speed, extra build-queue slots. They live in the save apart from the run. `hoshi simulate` reports three runs with 0, 1 and 2 mine-focus bonuses so later runs produce more without skipping construction time.
+`[prestige]` is the late-game reset. Score is building levels plus research levels plus `colony_weight` per colony plus `wonder_weight` per completed wonder. Reset is allowed after a galaxy victory, with a completed wonder, or when score reaches `min_score`. Currency earned is `score / points_per_currency`, at least 1. `[[prestige.bonuses]]` rows are permanent purchases: extra starting resources, production and research speed, extra build-queue slots. They live in the save apart from the run. `hoshi simulate` reports three runs with 0, 1 and 2 mine-focus bonuses so later runs produce more without skipping construction time.
 
 ## Market
 

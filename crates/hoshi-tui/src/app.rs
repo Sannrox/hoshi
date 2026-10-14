@@ -1,4 +1,4 @@
-//! Overview, planet, shipyard, wonder, prestige, achievements, daily, production, market, diplomacy, laws, reports, ops and map screens.
+//! Overview, planet, shipyard, wonder, prestige, achievements, daily, goals, production, market, diplomacy, laws, reports, ops and map screens.
 //! Core owns the rules; this module only renders and turns keys into core commands.
 
 use crate::clip::copy_to_clipboard;
@@ -28,6 +28,7 @@ pub enum Screen {
     Prestige,
     Achievements,
     Daily,
+    Goals,
     Production,
     Market,
     Diplomacy,
@@ -346,6 +347,16 @@ impl App {
         if self.state.pending_tactical.is_some() {
             return self.handle_tactical_key(code, now_unix);
         }
+        if self.shows_victory_overlay() {
+            match self.keymap.lookup(ctx, code) {
+                Some(Binding::Confirm) => {
+                    let _ = self.state.keep_playing_after_victory();
+                }
+                Some(Binding::Quit) => return Action::Quit,
+                _ => {}
+            }
+            return Action::None;
+        }
         if self.story_event().is_some() {
             match self.keymap.lookup(ctx, code) {
                 Some(Binding::Quit) => return Action::Quit,
@@ -495,7 +506,8 @@ impl App {
             Screen::Wonder => Screen::Prestige,
             Screen::Prestige => Screen::Achievements,
             Screen::Achievements => Screen::Daily,
-            Screen::Daily => Screen::Production,
+            Screen::Daily => Screen::Goals,
+            Screen::Goals => Screen::Production,
             Screen::Production => Screen::Market,
             Screen::Market => Screen::Diplomacy,
             Screen::Diplomacy => Screen::Laws,
@@ -525,6 +537,9 @@ impl App {
         if self.state.pending_tactical.is_some() {
             return HelpContext::Tactical;
         }
+        if self.shows_victory_overlay() {
+            return HelpContext::Victory;
+        }
         if self.story_event().is_some() {
             return HelpContext::Story;
         }
@@ -542,6 +557,7 @@ impl App {
             Screen::Prestige => HelpContext::Prestige,
             Screen::Achievements => HelpContext::Achievements,
             Screen::Daily => HelpContext::Daily,
+            Screen::Goals => HelpContext::Goals,
             Screen::Production => HelpContext::Production,
             Screen::Market => HelpContext::Market,
             Screen::Diplomacy => HelpContext::Diplomacy,
@@ -580,52 +596,55 @@ impl App {
     pub fn draw(&self, frame: &mut Frame<'_>) {
         let title = match self.screen {
             Screen::Overview => {
-                " hoshi  [overview] planet yard wonder pres ach daily prod market diplo laws rpt log stf ops map "
+                " hoshi  [overview] planet yard wonder pres ach daily g prod market diplo laws rpt log stf ops map "
             }
             Screen::Planet => {
-                " hoshi  overview [planet] yard wonder pres ach daily prod market diplo laws rpt log stf ops map "
+                " hoshi  overview [planet] yard wonder pres ach daily g prod market diplo laws rpt log stf ops map "
             }
             Screen::Shipyard => {
-                " hoshi  overview planet [yard] wonder pres ach daily prod market diplo laws rpt log stf ops map "
+                " hoshi  overview planet [yard] wonder pres ach daily g prod market diplo laws rpt log stf ops map "
             }
             Screen::Wonder => {
-                " hoshi  overview planet yard [wonder] pres ach daily prod market diplo laws rpt log stf ops map "
+                " hoshi  overview planet yard [wonder] pres ach daily g prod market diplo laws rpt log stf ops map "
             }
             Screen::Prestige => {
-                " hoshi  overview planet yard wonder [prestige] ach daily prod market diplo laws rpt log stf ops map "
+                " hoshi  overview planet yard wonder [prestige] ach daily g prod market diplo laws rpt log stf ops map "
             }
             Screen::Achievements => {
-                " hoshi  overview planet yard wonder pres [ach] daily prod market diplo laws rpt log stf ops map "
+                " hoshi  overview planet yard wonder pres [ach] daily g prod market diplo laws rpt log stf ops map "
             }
             Screen::Daily => {
-                " hoshi  overview planet yard wonder pres ach [daily] prod market diplo laws rpt log stf ops map "
+                " hoshi  overview planet yard wonder pres ach [daily] g prod market diplo laws rpt log stf ops map "
+            }
+            Screen::Goals => {
+                " hoshi  overview planet yard wonder pres ach daily [g] prod market diplo laws rpt log stf ops map "
             }
             Screen::Production => {
-                " hoshi  overview planet yard wonder pres ach daily [prod] market diplo laws rpt log stf ops map "
+                " hoshi  overview planet yard wonder pres ach daily g [prod] market diplo laws rpt log stf ops map "
             }
             Screen::Market => {
-                " hoshi  overview planet yard wonder pres ach daily prod [market] diplo laws rpt log stf ops map "
+                " hoshi  overview planet yard wonder pres ach daily g prod [market] diplo laws rpt log stf ops map "
             }
             Screen::Diplomacy => {
-                " hoshi  overview planet yard wonder pres ach daily prod market [diplo] laws rpt log stf ops map "
+                " hoshi  overview planet yard wonder pres ach daily g prod market [diplo] laws rpt log stf ops map "
             }
             Screen::Laws => {
-                " hoshi  overview planet yard wonder pres ach daily prod market diplo [laws] rpt log stf ops map "
+                " hoshi  overview planet yard wonder pres ach daily g prod market diplo [laws] rpt log stf ops map "
             }
             Screen::Reports => {
-                " hoshi  overview planet yard wonder pres ach daily prod market diplo laws [reports] log stf ops map "
+                " hoshi  overview planet yard wonder pres ach daily g prod market diplo laws [reports] log stf ops map "
             }
             Screen::History => {
-                " hoshi  overview planet yard wonder pres ach daily prod market diplo laws rpt [log] stf ops map "
+                " hoshi  overview planet yard wonder pres ach daily g prod market diplo laws rpt [log] stf ops map "
             }
             Screen::Staff => {
-                " hoshi  overview planet yard wonder pres ach daily prod market diplo laws rpt log [stf] ops map "
+                " hoshi  overview planet yard wonder pres ach daily g prod market diplo laws rpt log [stf] ops map "
             }
             Screen::Ops => {
-                " hoshi  overview planet yard wonder pres ach daily prod market diplo laws rpt log stf [ops] map "
+                " hoshi  overview planet yard wonder pres ach daily g prod market diplo laws rpt log stf [ops] map "
             }
             Screen::Map => {
-                " hoshi  overview planet yard wonder pres ach daily prod market diplo laws rpt log stf ops [map] "
+                " hoshi  overview planet yard wonder pres ach daily g prod market diplo laws rpt log stf ops [map] "
             }
         };
         let block = Block::bordered().title(title);
@@ -669,6 +688,8 @@ impl App {
             self.draw_away(frame, away);
         } else if self.state.pending_tactical.is_some() {
             self.draw_tactical(frame);
+        } else if self.shows_victory_overlay() {
+            self.draw_victory(frame);
         } else if let Some(event) = self.story_event() {
             self.draw_story(frame, event);
         } else if self.opened_report {
@@ -716,6 +737,7 @@ impl App {
             || self.advisor_open
             || (self.away.is_some() && !self.away_hidden)
             || self.state.pending_tactical.is_some()
+            || self.shows_victory_overlay()
             || self.story_event().is_some()
             || self.opened_report
             || self.dispatch.is_some()
@@ -985,7 +1007,11 @@ impl App {
             }
             Screen::Wonder => self.activate_wonder(now_unix),
             Screen::Prestige => self.activate_prestige(now_unix),
-            Screen::Achievements | Screen::Daily | Screen::Production | Screen::Ops => {}
+            Screen::Achievements
+            | Screen::Daily
+            | Screen::Goals
+            | Screen::Production
+            | Screen::Ops => {}
             Screen::Market => self.activate_market(now_unix),
             Screen::Diplomacy => self.activate_diplomacy(now_unix),
             Screen::Laws => self.activate_law(now_unix),
@@ -1334,6 +1360,7 @@ impl App {
             Screen::Staff => self.revoke_selected_leader(now_unix),
             Screen::Achievements
             | Screen::Daily
+            | Screen::Goals
             | Screen::Production
             | Screen::Market
             | Screen::Diplomacy
@@ -1352,6 +1379,7 @@ impl App {
             Screen::Prestige => 1 + self.state.config.prestige.bonuses.len(),
             Screen::Achievements => self.state.config.achievements.len(),
             Screen::Daily => self.state.daily.slots.len(),
+            Screen::Goals => 3,
             Screen::Production => self
                 .state
                 .production_report()
@@ -1545,7 +1573,7 @@ impl App {
             Screen::Prestige => {
                 format!("{tab} screens  {select}  {confirm} buy/reset  {cancel}  {quit}  {help}")
             }
-            Screen::Achievements | Screen::Daily | Screen::Production => {
+            Screen::Achievements | Screen::Daily | Screen::Goals | Screen::Production => {
                 format!("{tab} screens  {planets}  {select}  {quit}  {help}")
             }
             Screen::Market => format!(
@@ -1677,6 +1705,7 @@ impl App {
             Screen::Prestige => self.prestige_lines(height),
             Screen::Achievements => self.achievement_lines(height),
             Screen::Daily => self.daily_lines(height),
+            Screen::Goals => self.goals_lines(height),
             Screen::Production => self.production_lines(height),
             Screen::Market => self.market_lines(height),
             Screen::Diplomacy => self.diplomacy_lines(height),
@@ -2230,6 +2259,64 @@ impl App {
                 Line::from(format!(
                     "{mark} {name}  {}/{}{done}",
                     slot.progress, slot.target
+                ))
+            })
+            .collect();
+        append_windowed(&mut rows, &entries, self.selected, height)
+    }
+
+    fn shows_victory_overlay(&self) -> bool {
+        self.state
+            .victory
+            .as_ref()
+            .is_some_and(|record| !record.kept_playing)
+    }
+
+    fn draw_victory(&self, frame: &mut Frame<'_>) {
+        let Some(record) = &self.state.victory else {
+            return;
+        };
+        let lines = vec![
+            Line::from(format!("Galaxy complete: {}", record.path.label())),
+            Line::from(format!(
+                "+{} prestige in {}s",
+                record.prestige, record.elapsed_secs
+            )),
+            Line::from("Enter keep playing. Prestige screen starts a new galaxy."),
+        ];
+        render_overlay(frame, " victory ", lines);
+    }
+
+    fn goals_lines(&self, height: usize) -> Vec<Line<'static>> {
+        let progress = self.state.victory_progress();
+        let mut rows = Vec::new();
+        if let Some(record) = &self.state.victory {
+            rows.push(Line::from(format!(
+                "Won via {}  +{} prestige",
+                record.path.label(),
+                record.prestige
+            )));
+        } else {
+            rows.push(Line::from("Galaxy victory: first path wins"));
+        }
+        if let Some(coord) = self.state.pirate_homeworld() {
+            rows.push(Line::from(format!("Pirate homeworld {coord}")));
+        }
+        let paths = [
+            ("Conquest", &progress.conquest),
+            ("Wonder", &progress.wonder),
+            ("Diplomacy", &progress.diplomacy),
+        ];
+        let entries: Vec<Line<'static>> = paths
+            .iter()
+            .enumerate()
+            .map(|(i, (name, path))| {
+                let mark = if i == self.selected { '>' } else { ' ' };
+                let ready = if path.ready { " ready" } else { "" };
+                Line::from(format!(
+                    "{mark} {name}  {:.0}%  {}{ready}",
+                    path.ratio * 100.0,
+                    path.next_step
                 ))
             })
             .collect();
@@ -3203,7 +3290,7 @@ mod tests {
     use hoshi_core::{
         BalanceConfig, Buildings, Clock, Colony, Coord, DiplomacyConfig, FakeClock, Fleet,
         GameState, MarketConfig, Outpost, PlanetType, RaidConfig, Resources, StoryCatalog, Vehicle,
-        load_state, open_save, save_state,
+        VictoryPath, VictoryRecord, load_state, open_save, save_state,
     };
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -3548,6 +3635,7 @@ mod tests {
         app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
+        app.handle_key(KeyCode::Tab, clock.now_unix());
         assert_eq!(app.screen, Screen::Overview);
         let energy = app
             .overview_techs()
@@ -3622,7 +3710,7 @@ mod tests {
     }
 
     fn open_map(app: &mut App, now: u64) {
-        for _ in 0..15 {
+        for _ in 0..16 {
             app.handle_key(KeyCode::Tab, now);
         }
         assert_eq!(app.screen, Screen::Map);
@@ -3734,6 +3822,7 @@ mod tests {
         assert!(app.state.ship_queue.is_empty());
         assert_eq!(app.state.build_queue.len(), 1);
 
+        app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
@@ -4018,6 +4107,59 @@ mod tests {
     }
 
     #[test]
+    fn goals_screen_lists_three_paths() {
+        let mut app = App::new(GameState::new(1_000));
+        for _ in 0..7 {
+            app.handle_key(KeyCode::Tab, 1_000);
+        }
+        assert_eq!(app.screen, Screen::Goals);
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("[g]"), "{text}");
+        assert!(text.contains("Conquest"), "{text}");
+        assert!(text.contains("Wonder"), "{text}");
+        assert!(text.contains("Diplomacy"), "{text}");
+        assert!(text.contains("Pirate homeworld"), "{text}");
+    }
+
+    #[test]
+    fn victory_overlay_enter_keeps_playing() {
+        let mut app = App::new(GameState::new(1_000));
+        app.state.victory = Some(VictoryRecord {
+            path: VictoryPath::Wonder,
+            at: 1_000,
+            prestige: 26,
+            elapsed_secs: 1_209_600,
+            kept_playing: false,
+        });
+        let text = render_text(&app, 80, 24);
+        assert!(text.contains("victory"), "{text}");
+        assert!(text.contains("wonder"), "{text}");
+        assert!(!text.contains("[overview]"), "{text}");
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.state.victory.as_ref().unwrap().kept_playing);
+        let after = render_text(&app, 80, 24);
+        assert!(after.contains("[overview]"), "{after}");
+    }
+
+    #[test]
+    fn victory_overlay_enter_works_from_daily() {
+        let mut app = App::new(GameState::new(1_000));
+        for _ in 0..6 {
+            app.handle_key(KeyCode::Tab, 1_000);
+        }
+        assert_eq!(app.screen, Screen::Daily);
+        app.state.victory = Some(VictoryRecord {
+            path: VictoryPath::Conquest,
+            at: 1_000,
+            prestige: 28,
+            elapsed_secs: 1_209_600,
+            kept_playing: false,
+        });
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.state.victory.as_ref().unwrap().kept_playing);
+    }
+
+    #[test]
     fn production_history_samples_on_idle_ticks() {
         let mut app = App::new(GameState::new(1_000));
         app.catch_up_now(1_000);
@@ -4031,7 +4173,7 @@ mod tests {
     #[test]
     fn production_screen_shows_limit_energy_heat_and_fits_80x24() {
         let mut app = App::new(GameState::new(1_000));
-        for _ in 0..7 {
+        for _ in 0..8 {
             app.handle_key(KeyCode::Tab, 1_000);
         }
         assert_eq!(app.screen, Screen::Production);
@@ -4108,7 +4250,7 @@ mod tests {
         let mut state = GameState::new(1_000);
         state.resources.metal = 1_000.0;
         let mut app = App::new(state);
-        for _ in 0..8 {
+        for _ in 0..9 {
             app.handle_key(KeyCode::Tab, 1_000);
         }
         assert_eq!(app.screen, Screen::Market);
@@ -4136,7 +4278,7 @@ mod tests {
         let mut state = GameState::new(1_000);
         state.resources.metal = 1_000.0;
         let mut app = App::new(state);
-        for _ in 0..9 {
+        for _ in 0..10 {
             app.handle_key(KeyCode::Tab, 1_000);
         }
         assert_eq!(app.screen, Screen::Diplomacy);
@@ -4174,7 +4316,7 @@ mod tests {
             ..BalanceConfig::default()
         };
         let mut app = App::new(GameState::with_config(1_000, cfg));
-        for _ in 0..10 {
+        for _ in 0..11 {
             app.handle_key(KeyCode::Tab, 1_000);
         }
         assert_eq!(app.screen, Screen::Laws);
@@ -4230,7 +4372,7 @@ mod tests {
         });
         let mut app = App::new(state);
         app.handle_key(KeyCode::Char(']'), 1_000);
-        for _ in 0..10 {
+        for _ in 0..11 {
             app.handle_key(KeyCode::Tab, 1_000);
         }
         assert_eq!(app.screen, Screen::Laws);
@@ -4271,7 +4413,7 @@ mod tests {
             stance: Some("neutral".into()),
         });
         let mut app = App::new(state);
-        for _ in 0..11 {
+        for _ in 0..12 {
             app.handle_key(KeyCode::Tab, 1_000);
         }
         assert_eq!(app.screen, Screen::Reports);
@@ -4301,7 +4443,7 @@ mod tests {
         let mut state = GameState::with_seed(0, BalanceConfig::default(), 1);
         state.enqueue_build(BuildingKind::MetalMine, 0).unwrap();
         let mut app = App::new(state);
-        for _ in 0..12 {
+        for _ in 0..13 {
             app.handle_key(KeyCode::Tab, 0);
         }
         assert_eq!(app.screen, Screen::History);
@@ -4316,7 +4458,7 @@ mod tests {
     #[test]
     fn staff_screen_lists_home_leaders() {
         let mut app = App::new(GameState::new(1_000));
-        for _ in 0..13 {
+        for _ in 0..14 {
             app.handle_key(KeyCode::Tab, 1_000);
         }
         assert_eq!(app.screen, Screen::Staff);
@@ -4329,7 +4471,7 @@ mod tests {
     #[test]
     fn ops_screen_lists_schedule_alerts() {
         let mut app = App::new(GameState::new(1_000));
-        for _ in 0..14 {
+        for _ in 0..15 {
             app.handle_key(KeyCode::Tab, 1_000);
         }
         assert_eq!(app.screen, Screen::Ops);
@@ -4351,7 +4493,7 @@ mod tests {
             });
         }
         let mut app = App::new(state);
-        for _ in 0..14 {
+        for _ in 0..15 {
             app.handle_key(KeyCode::Tab, 1_000);
         }
         assert_eq!(app.screen, Screen::Ops);
@@ -4472,6 +4614,7 @@ mod tests {
             garrison: 2,
             rare: None,
             last_rebuild_at: 0,
+            homeworld: false,
         });
         let mut app = App::new(state);
         app.governance = true;
@@ -4540,7 +4683,7 @@ mod tests {
         assert!(overview.contains("copy galaxy seed"), "{overview}");
         assert!(overview.contains("?"), "{overview}");
         app.handle_key(KeyCode::Char('?'), 1_000);
-        for _ in 0..8 {
+        for _ in 0..9 {
             app.handle_key(KeyCode::Tab, 1_000);
         }
         app.handle_key(KeyCode::Char('?'), 1_000);

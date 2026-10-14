@@ -40,6 +40,7 @@ mod storage;
 mod story;
 mod tactics;
 mod tutorial;
+mod victory;
 mod waste;
 mod wonders;
 
@@ -133,7 +134,8 @@ pub use orbits::{
     rocket_delta_v,
 };
 pub use outposts::{
-    Outpost, OutpostConfig, RarePlanetBonus, generate_outposts, scaled_defence, scaled_garrison,
+    HomeworldSpec, Outpost, OutpostConfig, RarePlanetBonus, generate_homeworld, generate_outposts,
+    scaled_defence, scaled_garrison,
 };
 pub use planets::{Colony, PlanetType, PlanetTypeBonus, PlanetTypeCatalog, planet_profile};
 pub use planning::{
@@ -161,8 +163,8 @@ pub use ships::{
     ShipStats,
 };
 pub use simulate::{
-    DaySnapshot, HeavyIndustryReport, PrestigeSimRow, SimReport, heavy_industry_check,
-    simulate_greedy, tactics_no_combo_dominates,
+    DaySnapshot, HeavyIndustryReport, PrestigeSimRow, SimReport, VictorySimRow,
+    heavy_industry_check, simulate_greedy, simulate_victory_paths, tactics_no_combo_dominates,
 };
 pub use state::{GameEvent, GameState, LogisticsGlance, ResourceKind, Resources};
 #[cfg(feature = "chisei")]
@@ -177,6 +179,9 @@ pub use tactics::{
 };
 pub use tutorial::{
     HintScreen, HintSpec, HintTrigger, TutorialBoard, TutorialCatalog, TutorialError,
+};
+pub use victory::{
+    PathProgress, VictoryConfig, VictoryError, VictoryPath, VictoryProgress, VictoryRecord,
 };
 pub use waste::{WasteConfig, WasteReport, report as waste_report};
 pub use wonders::{WonderError, WonderJob, WonderModifier, WonderSpec, WonderStage};

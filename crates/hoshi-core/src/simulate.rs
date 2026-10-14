@@ -1,10 +1,13 @@
 //! Scripted greedy pacing run. Uses [`GameState::catch_up`] so the report
 //! matches live production, queues and activity.
 
+use crate::Colony;
 use crate::activity::ActivityPulse;
 use crate::balance::{BalanceConfig, PacingTargets};
 use crate::buildings::{BuildError, BuildingKind, Buildings};
+use crate::planets::PlanetType;
 use crate::research::{TechBranch, TechNodeState};
+use crate::ships::Fleet;
 use crate::state::{GameState, ResourceKind};
 use std::collections::BTreeMap;
 
@@ -46,6 +49,16 @@ pub struct SimReport {
     pub heavy: HeavyIndustryReport,
     pub keystone_secs: BTreeMap<String, Option<u64>>,
     pub tactics_ok: bool,
+    pub victory_paths: Vec<VictorySimRow>,
+    pub victory_min_secs: u64,
+    pub victory_max_secs: u64,
+}
+
+/// One casual-play victory path and when it landed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VictorySimRow {
+    pub path: String,
+    pub elapsed_secs: Option<u64>,
 }
 
 impl SimReport {
@@ -153,6 +166,29 @@ impl SimReport {
             "- tactics: no combo dominates ({})\n",
             mark(self.tactics_ok)
         ));
+        if !self.victory_paths.is_empty() {
+            out.push_str("\n## Victory paths\n\n");
+            out.push_str("Casual opener of 14 days, then a focused finish per path.\n\n");
+            out.push_str("| path | elapsed | band |\n");
+            out.push_str("| --- | --- | --- |\n");
+            let min = self.victory_min_secs;
+            let max = self.victory_max_secs;
+            for row in &self.victory_paths {
+                let elapsed = match row.elapsed_secs {
+                    Some(secs) => format!("{secs}s"),
+                    None => "never".into(),
+                };
+                let in_band = row
+                    .elapsed_secs
+                    .is_some_and(|secs| secs >= min && secs <= max);
+                out.push_str(&format!(
+                    "| {} | {elapsed} | {} |\n",
+                    row.path,
+                    mark(in_band)
+                ));
+            }
+            out.push('\n');
+        }
         if !self.prestige_runs.is_empty() {
             out.push_str("\n## Prestige runs\n\n");
             out.push_str("| run | bonuses | first upgrade | metal mine | metal | metal/h |\n");
@@ -224,6 +260,13 @@ pub fn simulate_greedy(config: BalanceConfig, days: u32) -> SimReport {
     let heavy = heavy_industry_check(&config);
     let keystone_secs = simulate_keystones(config.clone(), pacing.keystone_secs);
     let tactics_ok = tactics_no_combo_dominates(&config);
+    let victory_min_secs = config.victory.casual_min_secs;
+    let victory_max_secs = config.victory.casual_max_secs;
+    let victory_paths = if u64::from(days).saturating_mul(86_400) >= victory_min_secs {
+        simulate_victory_paths(config.clone())
+    } else {
+        Vec::new()
+    };
     let prestige_runs = vec![
         prestige_row(&quiet, 1, 0),
         prestige_row(&run_once(config.clone(), days, false, 1), 2, 1),
@@ -247,6 +290,9 @@ pub fn simulate_greedy(config: BalanceConfig, days: u32) -> SimReport {
         heavy,
         keystone_secs,
         tactics_ok,
+        victory_paths,
+        victory_min_secs,
+        victory_max_secs,
     }
 }
 
@@ -695,6 +741,129 @@ fn secs_until_afford(state: &GameState, kind: BuildingKind) -> Option<u64> {
     Some(wait.ceil().max(1.0) as u64)
 }
 
+/// Casual 14-day opener, then a focused finish for each galaxy victory path.
+pub fn simulate_victory_paths(config: BalanceConfig) -> Vec<VictorySimRow> {
+    let min = config.victory.casual_min_secs;
+    let max = config.victory.casual_max_secs;
+    vec![
+        finish_wonder(config.clone(), min, max),
+        finish_diplomacy(config.clone(), min, max),
+        finish_conquest(config, min, max),
+    ]
+}
+
+fn developed(mut config: BalanceConfig, until: u64) -> GameState {
+    config.raid = crate::RaidConfig::inactive();
+    config.market.enabled = false;
+    config.activity.enabled = false;
+    let mut state = GameState::with_config(0, config);
+    let mut steps = 0_u32;
+    while state.last_tick_unix < until && steps < 200_000 {
+        steps += 1;
+        fill_queue(&mut state);
+        try_research_toward_keystones(&mut state);
+        let mut jump = until;
+        if let Some(job) = state.build_queue.first()
+            && let Some(at) = job.completes_at
+        {
+            jump = jump.min(at);
+        }
+        if let Some(job) = &state.research {
+            jump = jump.min(job.completes_at);
+        }
+        if jump <= state.last_tick_unix {
+            jump = state.last_tick_unix.saturating_add(1).min(until);
+        }
+        state.catch_up(jump);
+        if state.build_queue.is_empty() && state.research.is_none() && jump >= until {
+            break;
+        }
+    }
+    if state.last_tick_unix < until {
+        state.catch_up(until);
+    }
+    state
+}
+
+fn finish_wonder(config: BalanceConfig, min: u64, max: u64) -> VictorySimRow {
+    let id = config.victory.wonder_id.clone();
+    let mut state = developed(config, min);
+    state.tech_levels.insert("energy".into(), 8);
+    state.resources.metal += 100_000.0;
+    state.resources.crystal += 100_000.0;
+    state.resources.deuterium += 50_000.0;
+    let _ = state.start_wonder(&id, state.last_tick_unix);
+    let mut steps = 0_u32;
+    while state.victory.is_none() && state.last_tick_unix < max && steps < 50_000 {
+        steps += 1;
+        let _ = state.contribute_wonder(state.home, state.last_tick_unix);
+        let jump = state
+            .wonder
+            .as_ref()
+            .and_then(|job| job.completes_at)
+            .unwrap_or(state.last_tick_unix.saturating_add(86_400))
+            .min(max);
+        if jump <= state.last_tick_unix {
+            state.catch_up(state.last_tick_unix.saturating_add(1).min(max));
+        } else {
+            state.catch_up(jump);
+        }
+    }
+    VictorySimRow {
+        path: "wonder".into(),
+        elapsed_secs: state.victory.as_ref().map(|record| record.elapsed_secs),
+    }
+}
+
+fn finish_diplomacy(mut config: BalanceConfig, min: u64, max: u64) -> VictorySimRow {
+    config.diplomacy.decay = 0.0;
+    let standing = config.diplomacy.max_standing;
+    let hold = config.victory.hold_secs;
+    let mut state = developed(config, min);
+    let ids: Vec<String> = state
+        .config
+        .diplomacy
+        .iter()
+        .map(|faction| faction.id.clone())
+        .collect();
+    for id in ids {
+        state.diplomacy.set_standing(&id, standing);
+    }
+    state.maybe_declare_victory(state.last_tick_unix);
+    let ready_at = state.last_tick_unix.saturating_add(hold).min(max);
+    if state.last_tick_unix < ready_at {
+        state.catch_up(ready_at);
+    }
+    VictorySimRow {
+        path: "diplomacy".into(),
+        elapsed_secs: state.victory.as_ref().map(|record| record.elapsed_secs),
+    }
+}
+
+fn finish_conquest(config: BalanceConfig, min: u64, max: u64) -> VictorySimRow {
+    let mut state = developed(config, min);
+    if let Some(home) = state.pirate_homeworld() {
+        state.outposts.retain(|outpost| outpost.coord != home);
+        state.colonies.push(Colony {
+            coord: home,
+            kind: PlanetType::Rocky,
+            size: 8,
+            resources: crate::Resources::ZERO,
+            buildings: Buildings::default(),
+            fleet: Fleet::default(),
+            defences: crate::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            rare: None,
+            goods: Default::default(),
+        });
+        state.maybe_declare_victory(state.last_tick_unix.min(max));
+    }
+    VictorySimRow {
+        path: "conquest".into(),
+        elapsed_secs: state.victory.as_ref().map(|record| record.elapsed_secs),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -802,5 +971,22 @@ mod tests {
         assert!(report.passed(), "{}", report.to_markdown());
         let md = report.to_markdown();
         assert!(md.contains("each branch keystone"), "{md}");
+    }
+
+    #[test]
+    fn victory_paths_land_in_the_casual_band() {
+        let config = BalanceConfig::default();
+        let min = config.victory.casual_min_secs;
+        let max = config.victory.casual_max_secs;
+        let rows = simulate_victory_paths(config);
+        assert_eq!(rows.len(), 3);
+        for row in &rows {
+            let elapsed = row.elapsed_secs.expect(&row.path);
+            assert!(
+                elapsed >= min && elapsed <= max,
+                "{} at {elapsed}s outside {min}..={max}",
+                row.path
+            );
+        }
     }
 }
