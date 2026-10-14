@@ -96,6 +96,10 @@ pub enum AchievementCondition {
     OutpostConquered {
         count: u32,
     },
+    SeasonComplete {
+        #[serde(default)]
+        id: Option<String>,
+    },
 }
 
 impl AchievementCondition {
@@ -152,6 +156,7 @@ impl AchievementCondition {
                     return Err(AchievementError::UnknownExclusive(id.clone()));
                 }
             }
+            AchievementCondition::SeasonComplete { .. } => {}
         }
         Ok(())
     }
@@ -203,6 +208,15 @@ impl AchievementCondition {
                 }
             }
             AchievementCondition::OutpostConquered { .. } => f64::from(state.outposts_conquered),
+            AchievementCondition::SeasonComplete { id } => {
+                let Some(run) = state.season.as_ref() else {
+                    return 0.0;
+                };
+                if id.as_ref().is_some_and(|want| want != &run.ruleset_id) {
+                    return 0.0;
+                }
+                if state.victory.is_some() { 1.0 } else { 0.0 }
+            }
         }
     }
 
@@ -216,7 +230,9 @@ impl AchievementCondition {
             | AchievementCondition::PrestigeRuns { count }
             | AchievementCondition::RaidSurvived { count }
             | AchievementCondition::OutpostConquered { count } => f64::from(*count),
-            AchievementCondition::Wonder { .. } | AchievementCondition::ExclusivePick { .. } => 1.0,
+            AchievementCondition::Wonder { .. }
+            | AchievementCondition::ExclusivePick { .. }
+            | AchievementCondition::SeasonComplete { .. } => 1.0,
             AchievementCondition::Standing { min, .. } => *min,
         }
     }
@@ -244,7 +260,8 @@ impl AchievementCondition {
             | AchievementCondition::TechLevel { .. }
             | AchievementCondition::ShipCount { .. }
             | AchievementCondition::Standing { .. }
-            | AchievementCondition::ExclusivePick { .. } => return None,
+            | AchievementCondition::ExclusivePick { .. }
+            | AchievementCondition::SeasonComplete { .. } => return None,
         };
         Some((current, self.target()))
     }

@@ -1359,6 +1359,16 @@ fn state_value(state: &GameState, actor: Actor) -> Value {
         })).collect::<Vec<_>>(),
     });
     value["victory"] = victory_json(state);
+    value["season"] = match &state.season {
+        Some(run) => json!({
+            "id": run.ruleset_id,
+            "window_start": run.window_start,
+            "window_end": run.window_end,
+            "seed": run.seed,
+            "prestige": run.prestige,
+        }),
+        None => Value::Null,
+    };
     value
 }
 

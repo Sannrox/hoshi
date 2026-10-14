@@ -13,8 +13,8 @@ mod title;
 
 use app::{Action, App};
 use hoshi_core::{
-    BackendKind, BalanceConfig, Clock, GameState, SaveError, SystemClock, default_save_dir,
-    encode_galaxy_seed, inspect_save, lock_save, open_storage, parse_galaxy_seed,
+    BackendKind, BalanceConfig, Clock, GameState, SaveError, SeasonCatalog, SystemClock,
+    default_save_dir, encode_galaxy_seed, inspect_save, lock_save, open_storage, parse_galaxy_seed,
     resolve_save_path, simulate_greedy,
 };
 use portraits::{PortraitView, Protocol, detect_protocol};
@@ -58,6 +58,15 @@ fn main() {
             Err(e) => {
                 eprintln!("hoshi: {e}");
                 std::process::exit(2);
+            }
+        }
+    }
+    if args.get(1).map(String::as_str) == Some("season") {
+        match run_season(&args[2..]) {
+            Ok(()) => return,
+            Err(e) => {
+                eprintln!("hoshi: {e}");
+                std::process::exit(e.exit);
             }
         }
     }
@@ -147,6 +156,83 @@ fn run_post(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         let _ = args;
         Err("post requires a build with --features bridge".into())
     }
+}
+
+fn run_season(args: &[String]) -> Result<(), LaunchError> {
+    let catalog = SeasonCatalog::default();
+    let now = SystemClock.now_unix();
+    let window = catalog.window(now);
+    if args.is_empty() {
+        println!(
+            "window {}–{}s UTC  ({}s)",
+            window.start, window.end, catalog.duration_secs
+        );
+        for ruleset in catalog.iter() {
+            let prestige = if ruleset.prestige {
+                "shares prestige"
+            } else {
+                "prestige isolated"
+            };
+            println!(
+                "{}  {}  {prestige}  {}",
+                ruleset.id, ruleset.name, ruleset.blurb
+            );
+        }
+        return Ok(());
+    }
+    if args[0] != "start" {
+        return Err(LaunchError {
+            message: "season start <id>".into(),
+            exit: cli::EXIT_INVALID,
+        });
+    }
+    let id = args.get(1).ok_or_else(|| LaunchError {
+        message: "season start <id>".into(),
+        exit: cli::EXIT_INVALID,
+    })?;
+    let mut save = None;
+    let mut i = 2;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "--save" {
+            let v = args.get(i + 1).ok_or_else(|| LaunchError {
+                message: "--save needs a value".into(),
+                exit: cli::EXIT_INVALID,
+            })?;
+            save = Some(PathBuf::from(v));
+            i += 2;
+            continue;
+        }
+        if let Some(v) = a.strip_prefix("--save=") {
+            save = Some(PathBuf::from(v));
+            i += 1;
+            continue;
+        }
+        return Err(LaunchError {
+            message: format!("unknown season argument {a}"),
+            exit: cli::EXIT_INVALID,
+        });
+    }
+    let name = hoshi_core::season_slot_name(id, window.start);
+    let path = save.unwrap_or_else(|| default_save_dir().join(format!("{name}.sqlite")));
+    if path.exists() {
+        return Err(LaunchError {
+            message: "save already exists".into(),
+            exit: cli::EXIT_INVALID,
+        });
+    }
+    let state =
+        GameState::new_season(now, &catalog, id, BalanceConfig::default()).map_err(|e| {
+            LaunchError {
+                message: e.to_string(),
+                exit: cli::EXIT_INVALID,
+            }
+        })?;
+    let _lock = lock_save(&path)?;
+    let mut store = open_storage(&path)?;
+    store.save(&state)?;
+    println!("{}", encode_galaxy_seed(state.galaxy_seed));
+    Ok(())
 }
 
 fn run_new_game(args: &[String]) -> Result<(), LaunchError> {
@@ -556,11 +642,21 @@ fn play_path(
     let mut store = open_storage(path)?;
     let mut state = if let Some(spec) = new_spec {
         apply_difficulty(&mut config, &spec.difficulty);
-        let seed = spec.seed.unwrap_or(now.wrapping_mul(0x9E37_79B9_7F4A_7C15));
-        let mut state = GameState::new_live_galaxy(now, config, seed);
-        if spec.prestige.lifetime > 0
-            || !spec.prestige.owned.is_empty()
-            || !spec.prestige.runs.is_empty()
+        let mut state = if let Some(id) = spec.season_id.as_deref() {
+            let catalog = SeasonCatalog::default();
+            GameState::new_season(now, &catalog, id, config).map_err(|e| LaunchError {
+                message: e.to_string(),
+                exit: cli::EXIT_INVALID,
+            })?
+        } else {
+            let seed = spec.seed.unwrap_or(now.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            GameState::new_live_galaxy(now, config, seed)
+        };
+        let share = state.season.as_ref().is_none_or(|run| run.prestige);
+        if share
+            && (spec.prestige.lifetime > 0
+                || !spec.prestige.owned.is_empty()
+                || !spec.prestige.runs.is_empty())
         {
             state.inherit_prestige(spec.prestige);
         }

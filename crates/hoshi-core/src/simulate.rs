@@ -974,6 +974,20 @@ mod tests {
     }
 
     #[test]
+    fn season_overlays_keep_three_rule_sets() {
+        let cat = crate::SeasonCatalog::default();
+        assert!(cat.len() >= 3);
+        for ruleset in cat.iter() {
+            let mut cfg = BalanceConfig::default();
+            ruleset.apply(&mut cfg);
+        }
+        let mut closed = BalanceConfig::default();
+        closed.market.enabled = true;
+        cat.get("closed_market").unwrap().apply(&mut closed);
+        assert!(!closed.market.enabled);
+    }
+
+    #[test]
     fn victory_paths_land_in_the_casual_band() {
         let config = BalanceConfig::default();
         let min = config.victory.casual_min_secs;

@@ -110,6 +110,10 @@ comparison). `troop_strength` is the landing power of one troop transport.
 
 `[victory]` is the galaxy end. Conquest needs the pirate homeworld colonised and its outpost gone. Wonder needs `wonder_id` in `completed_wonders` (default `dyson_ring`). Diplomacy needs every faction at `allied_min` standing, then `hold_secs` without dropping below. The first matching path wins once and awards `base_prestige` plus a path bonus plus a speed bonus that falls to 0 at `speed_target_secs`. The farthest outpost at or beyond `homeworld_min_system` is marked the pirate homeworld; its defences and garrison scale by `homeworld_defence_mult` / `homeworld_garrison_mult`. Casual-play profiles should land in `casual_min_secs`–`casual_max_secs` (14–28 days in the bundle). Set `enabled = false` to skip checks. `hoshi simulate` (when days cover the casual floor) reports the three paths.
 
+## Seasons
+
+Rule sets live in `crates/hoshi-core/data/seasons.toml`, not in `balance.toml`. `epoch_unix` and `duration_secs` define UTC windows from the injected clock. Each `[[season]]` row may toggle known systems (`raid`, `market`, `activity`, `victory`, `moons`), scale expedition finds with `reward_mult`, and override raid timing. Unknown system keys fail load. Seasonal saves store the rule-set id and window so load re-applies the overlay. Prestige stays isolated unless `prestige = true`.
+
 ## Prestige
 
 `[prestige]` is the late-game reset. Score is building levels plus research levels plus `colony_weight` per colony plus `wonder_weight` per completed wonder. Reset is allowed after a galaxy victory, with a completed wonder, or when score reaches `min_score`. Currency earned is `score / points_per_currency`, at least 1. `[[prestige.bonuses]]` rows are permanent purchases: extra starting resources, production and research speed, extra build-queue slots. They live in the save apart from the run. `hoshi simulate` reports three runs with 0, 1 and 2 mine-focus bonuses so later runs produce more without skipping construction time.

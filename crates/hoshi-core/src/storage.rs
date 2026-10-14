@@ -226,6 +226,8 @@ pub(crate) fn inspect_backend_career(path: &Path) -> Result<crate::CareerGlance,
         raids_survived: state.raids_survived,
         outposts_conquered: state.outposts_conquered,
         wonder_ids,
+        seasonal: state.season.is_some(),
+        shares_prestige: state.season.as_ref().is_some_and(|run| run.prestige),
     })
 }
 

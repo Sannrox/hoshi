@@ -268,6 +268,8 @@ pub struct GameState {
     pub victory: Option<crate::VictoryRecord>,
     /// First instant every faction met `allied_min`. Cleared if standing drops.
     pub allied_since: Option<u64>,
+    /// Present on seasonal saves. Main career prestige ignores this unless opted in.
+    pub season: Option<crate::SeasonRun>,
     pub config: BalanceConfig,
 }
 
@@ -364,6 +366,7 @@ impl GameState {
             pirate_home: Coord::HOME,
             victory: None,
             allied_since: None,
+            season: None,
             config,
         };
         state.seed_pirate_home(now_unix);
@@ -2872,6 +2875,7 @@ impl GameState {
         let config = self.config.clone();
         let prestige = self.prestige.clone();
         let achievements = self.achievements.clone();
+        let season = self.season.clone();
         let deterministic = self.deterministic;
         let next_seed = self
             .galaxy_seed
@@ -2897,6 +2901,7 @@ impl GameState {
         );
         next.victory = None;
         next.allied_since = None;
+        next.season = season;
         next.seed_pirate_home(now);
         next.resources = next.config.starting_resources;
         next.apply_prestige_start();

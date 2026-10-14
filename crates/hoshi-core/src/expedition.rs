@@ -99,6 +99,8 @@ pub struct ExpeditionConfig {
     pub pirate_per_point: f64,
     pub pirate_min: u32,
     pub delay_secs: u64,
+    /// Scales resource and ship finds. Seasonal rule sets set this above 1.
+    pub reward_mult: f64,
 }
 
 impl Default for ExpeditionConfig {
@@ -122,6 +124,7 @@ impl Default for ExpeditionConfig {
             pirate_per_point: 0.002,
             pirate_min: 1,
             delay_secs: 3600,
+            reward_mult: 1.0,
         }
     }
 }
@@ -204,13 +207,20 @@ pub fn roll_expedition(
         ExpeditionKind::Resources => {
             let scale = 0.5 + (next_u64(&mut rng) % 1001) as f64 / 1000.0;
             ExpeditionResult::Resources(Resources {
-                metal: (points * cfg.metal_per_point * scale).floor().max(1.0),
-                crystal: (points * cfg.crystal_per_point * scale).floor().max(0.0),
-                deuterium: (points * cfg.deuterium_per_point * scale).floor().max(0.0),
+                metal: (points * cfg.metal_per_point * scale * cfg.reward_mult.max(0.0))
+                    .floor()
+                    .max(1.0),
+                crystal: (points * cfg.crystal_per_point * scale * cfg.reward_mult.max(0.0))
+                    .floor()
+                    .max(0.0),
+                deuterium: (points * cfg.deuterium_per_point * scale * cfg.reward_mult.max(0.0))
+                    .floor()
+                    .max(0.0),
             })
         }
         ExpeditionKind::Ships => {
-            let n = ((points * cfg.ships_per_point).floor() as u32).clamp(1, cfg.ships_max.max(1));
+            let n = ((points * cfg.ships_per_point * cfg.reward_mult.max(0.0)).floor() as u32)
+                .clamp(1, cfg.ships_max.max(1));
             let mut found = Fleet::default();
             found.add(cfg.ship_kind, n);
             ExpeditionResult::Ships(found)

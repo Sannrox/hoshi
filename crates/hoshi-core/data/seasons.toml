@@ -1,0 +1,34 @@
+# Seasonal galaxies. Each row is a rule set that overlays bundled balance.
+# Windows are UTC periods from epoch_unix. Core never reads the wall clock.
+
+version = 1
+epoch_unix = 1704067200
+duration_secs = 1209600
+
+[[season]]
+id = "double_haul"
+name = "Double haul"
+blurb = "Expedition yields are doubled for this window."
+prestige = false
+[season.expedition]
+reward_mult = 2.0
+
+[[season]]
+id = "closed_market"
+name = "Closed markets"
+blurb = "The trade book and regional market stay shut."
+prestige = false
+[season.systems]
+market = false
+
+[[season]]
+id = "pirate_weather"
+name = "Pirate weather"
+blurb = "Raids stay on, land sooner, and hit harder."
+prestige = false
+[season.systems]
+raid = true
+[season.raid]
+first_delay_secs = 600
+interval_secs = 3600
+strength_factor = 0.8

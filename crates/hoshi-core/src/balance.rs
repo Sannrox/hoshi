@@ -1217,6 +1217,12 @@ struct FileExpedition {
     pirate_per_point: f64,
     pirate_min: u32,
     delay_secs: u64,
+    #[serde(default = "default_expedition_reward_mult")]
+    reward_mult: f64,
+}
+
+fn default_expedition_reward_mult() -> f64 {
+    1.0
 }
 
 #[derive(Deserialize)]
@@ -1360,6 +1366,13 @@ impl File {
                 pirate_per_point: self.expedition.pirate_per_point,
                 pirate_min: self.expedition.pirate_min,
                 delay_secs: self.expedition.delay_secs,
+                reward_mult: if self.expedition.reward_mult.is_finite()
+                    && self.expedition.reward_mult >= 0.0
+                {
+                    self.expedition.reward_mult
+                } else {
+                    1.0
+                },
             },
             starting_resources: self.starting_resources.into_resources(),
             starting_buildings: Buildings {

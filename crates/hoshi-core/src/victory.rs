@@ -330,7 +330,11 @@ impl GameState {
         };
         let started = self.prestige.current.started_at.min(at);
         let elapsed = at.saturating_sub(started);
-        let prestige = self.config.victory.award(path, elapsed);
+        let prestige = if self.season.as_ref().is_some_and(|run| !run.prestige) {
+            0
+        } else {
+            self.config.victory.award(path, elapsed)
+        };
         self.prestige.currency = self.prestige.currency.saturating_add(prestige);
         self.prestige.lifetime = self.prestige.lifetime.saturating_add(prestige);
         self.victory = Some(VictoryRecord {
@@ -347,6 +351,7 @@ impl GameState {
                 path.label()
             ),
         );
+        self.evaluate_achievements(at);
     }
 
     pub fn keep_playing_after_victory(&mut self) -> Result<(), VictoryError> {
