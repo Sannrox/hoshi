@@ -400,6 +400,7 @@ fn prime_invasion(state: &mut GameState) {
             garrison: 2,
             rare: None,
             last_rebuild_at: 0,
+            homeworld: false,
         });
     } else {
         state.outposts[0].defences = Fleet::default();

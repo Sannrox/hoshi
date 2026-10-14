@@ -262,6 +262,12 @@ pub struct GameState {
     pub classification: crate::ClassificationBoard,
     /// Regional order books, contracts and shipments. Home barter stays on `market`.
     pub board: crate::MarketBoard,
+    /// Pirate fortress for the conquest victory path. Stable for the galaxy.
+    pub pirate_home: Coord,
+    /// Recorded once. Prestige reset starts a new galaxy.
+    pub victory: Option<crate::VictoryRecord>,
+    /// First instant every faction met `allied_min`. Cleared if standing drops.
+    pub allied_since: Option<u64>,
     pub config: BalanceConfig,
 }
 
@@ -355,8 +361,12 @@ impl GameState {
             next_planned_id: 0,
             classification: crate::ClassificationBoard::default(),
             board: crate::MarketBoard::default(),
+            pirate_home: Coord::HOME,
+            victory: None,
+            allied_since: None,
             config,
         };
+        state.seed_pirate_home(now_unix);
         state.install_starter_staff(now_unix);
         state.apply_prestige_start();
         state.sync_daily(now_unix);
@@ -380,6 +390,7 @@ impl GameState {
             &[Coord::HOME],
             version,
         );
+        state.seed_pirate_home(now_unix);
         state.daily = DailyBoard::default();
         state.sync_daily(now_unix);
         state
@@ -473,7 +484,10 @@ impl GameState {
                 ),
                 min_time(
                     logistics_at,
-                    min_time(staff_at, min_time(planned_at, board_at)),
+                    min_time(
+                        staff_at,
+                        min_time(planned_at, min_time(board_at, self.next_victory_at())),
+                    ),
                 ),
             ) else {
                 self.produce_until(now_unix);
@@ -481,6 +495,7 @@ impl GameState {
                 self.tick_staff(now_unix);
                 self.resolve_story(now_unix);
                 self.evaluate_achievements(now_unix);
+                self.maybe_declare_victory(now_unix);
                 self.note_logistics_stalls(now_unix);
                 return;
             };
@@ -490,6 +505,7 @@ impl GameState {
                 self.tick_staff(now_unix);
                 self.resolve_story(now_unix);
                 self.evaluate_achievements(now_unix);
+                self.maybe_declare_victory(now_unix);
                 self.note_logistics_stalls(now_unix);
                 return;
             }
@@ -600,6 +616,7 @@ impl GameState {
             }
             self.resolve_story(done_at);
             self.evaluate_achievements(done_at);
+            self.maybe_declare_victory(done_at);
             self.note_logistics_stalls(done_at);
         }
     }
@@ -2761,9 +2778,11 @@ impl GameState {
     }
 
     pub fn can_prestige(&self) -> bool {
-        self.config
-            .prestige
-            .can_reset(self.completed_wonders.len() as u32, self.prestige_score())
+        self.victory.is_some()
+            || self
+                .config
+                .prestige
+                .can_reset(self.completed_wonders.len() as u32, self.prestige_score())
     }
 
     /// Copy meta progress onto a fresh galaxy and apply starting bonuses.
@@ -2876,6 +2895,9 @@ impl GameState {
             &[Coord::HOME],
             next.generator_version,
         );
+        next.victory = None;
+        next.allied_since = None;
+        next.seed_pirate_home(now);
         next.resources = next.config.starting_resources;
         next.apply_prestige_start();
         next.daily = DailyBoard::default();
@@ -3369,11 +3391,24 @@ impl GameState {
     fn rebuild_outposts_at(&mut self, done_at: u64) {
         let interval = self.config.outposts.rebuild_secs;
         let progress = self.fighter_equivalent();
-        let cfg = &self.config.outposts;
+        let cfg = self.config.outposts.clone();
+        let def_mult = self.config.victory.homeworld_defence_mult.max(1.0);
+        let gar_mult = self.config.victory.homeworld_garrison_mult.max(1.0);
+        let victory_on = self.config.victory.enabled;
         for outpost in &mut self.outposts {
             if outpost.next_rebuild_at(interval) == done_at {
-                outpost.defences = scaled_defence(progress, cfg);
-                outpost.garrison = scaled_garrison(progress, cfg);
+                let mut defences = scaled_defence(progress, &cfg);
+                let mut garrison = scaled_garrison(progress, &cfg);
+                if outpost.homeworld && victory_on {
+                    let n = ((defences.get(ShipKind::LightFighter) as f64) * def_mult)
+                        .ceil()
+                        .max(1.0) as u32;
+                    defences = Fleet::default();
+                    defences.add(ShipKind::LightFighter, n);
+                    garrison = ((garrison as f64) * gar_mult).ceil().max(1.0) as u32;
+                }
+                outpost.defences = defences;
+                outpost.garrison = garrison;
                 outpost.last_rebuild_at = done_at;
             }
         }
@@ -3558,6 +3593,7 @@ impl GameState {
             goods: BTreeMap::new(),
         });
         self.evaluate_achievements(done_at);
+        self.maybe_declare_victory(done_at);
         true
     }
 
@@ -4615,6 +4651,7 @@ impl GameState {
         }
         self.last_diplomacy_at = at;
         self.sync_raid_schedule_after_standing(at);
+        self.maybe_declare_victory(at);
     }
 
     fn clamp_standing(&self, value: f64) -> f64 {
@@ -4717,6 +4754,7 @@ impl GameState {
             });
         }
         self.sync_raid_schedule_after_standing(at);
+        self.maybe_declare_victory(at);
     }
 
     pub(crate) fn sync_raid_schedule_after_standing(&mut self, at: u64) {
@@ -6010,6 +6048,7 @@ mod tests {
                 leaders
             },
             orbits: crate::OrbitConfig::default(),
+            victory: crate::VictoryConfig::inactive(),
         }
     }
 

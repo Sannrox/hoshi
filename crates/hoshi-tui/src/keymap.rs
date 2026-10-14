@@ -38,6 +38,8 @@ pub enum HelpContext {
     Prestige,
     Achievements,
     Daily,
+    Goals,
+    Victory,
     Production,
     Market,
     Diplomacy,
@@ -178,6 +180,8 @@ impl HelpContext {
             HelpContext::Prestige => "prestige",
             HelpContext::Achievements => "achievements",
             HelpContext::Daily => "daily",
+            HelpContext::Goals => "goals",
+            HelpContext::Victory => "victory",
             HelpContext::Production => "production",
             HelpContext::Market => "market",
             HelpContext::Diplomacy => "diplomacy",
@@ -247,7 +251,11 @@ impl HelpContext {
                 Binding::Cancel,
                 Binding::CopySeed,
             ],
-            HelpContext::Achievements | HelpContext::Daily | HelpContext::Production => &[
+            HelpContext::Victory => &[Binding::Help, Binding::Quit, Binding::Confirm],
+            HelpContext::Achievements
+            | HelpContext::Daily
+            | HelpContext::Goals
+            | HelpContext::Production => &[
                 Binding::Help,
                 Binding::Quit,
                 Binding::NextScreen,
@@ -615,6 +623,8 @@ impl Keymap {
             HelpContext::Prestige,
             HelpContext::Achievements,
             HelpContext::Daily,
+            HelpContext::Goals,
+            HelpContext::Victory,
             HelpContext::Production,
             HelpContext::Market,
             HelpContext::Diplomacy,
@@ -699,6 +709,8 @@ impl Keymap {
             HelpContext::Prestige,
             HelpContext::Achievements,
             HelpContext::Daily,
+            HelpContext::Goals,
+            HelpContext::Victory,
             HelpContext::Production,
             HelpContext::Market,
             HelpContext::Diplomacy,

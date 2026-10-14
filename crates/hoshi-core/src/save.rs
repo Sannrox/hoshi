@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 32;
+pub const SCHEMA_VERSION: u32 = 33;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -199,7 +199,8 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM market_orders;
          DELETE FROM market_contracts;
          DELETE FROM market_shipments;
-         DELETE FROM market_board_meta;",
+         DELETE FROM market_board_meta;
+         DELETE FROM victory;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -568,8 +569,8 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
         let planet_id = (i as i64) + 1;
         tx.execute(
             "INSERT INTO outposts (
-                planet_id, galaxy, system, position, kind, size, garrison, rare, last_rebuild_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                planet_id, galaxy, system, position, kind, size, garrison, rare, last_rebuild_at, homeworld
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 planet_id,
                 outpost.coord.galaxy as i64,
@@ -580,6 +581,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 outpost.garrison as i64,
                 outpost.rare.as_deref(),
                 outpost.last_rebuild_at as i64,
+                if outpost.homeworld { 1 } else { 0 },
             ],
         )?;
         for kind in ShipKind::ALL {
@@ -602,6 +604,23 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
             state.prestige.lifetime as i64,
             state.prestige.current.index as i64,
             state.prestige.current.started_at as i64,
+        ],
+    )?;
+    tx.execute(
+        "INSERT INTO victory (
+            id, path, at, prestige, elapsed_secs, kept_playing, allied_since,
+            pirate_g, pirate_s, pirate_p
+         ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            state.victory.as_ref().map(|v| v.path.as_key()),
+            state.victory.as_ref().map(|v| v.at as i64),
+            state.victory.as_ref().map(|v| v.prestige as i64),
+            state.victory.as_ref().map(|v| v.elapsed_secs as i64),
+            state.victory.as_ref().map(|v| i64::from(v.kept_playing)),
+            state.allied_since.map(|t| t as i64),
+            state.pirate_home.galaxy as i64,
+            state.pirate_home.system as i64,
+            state.pirate_home.position as i64,
         ],
     )?;
     for (id, count) in &state.prestige.owned {
@@ -1294,12 +1313,61 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         );
     }
 
+    let mut loaded_pirate_home = false;
+    if let Some((path, at, prestige, elapsed, kept, allied, pg, ps, pp)) = conn
+        .query_row(
+            "SELECT path, at, prestige, elapsed_secs, kept_playing, allied_since, pirate_g, pirate_s, pirate_p
+             FROM victory WHERE id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, i64>(8)?,
+                ))
+            },
+        )
+        .optional()?
+    {
+        state.pirate_home = Coord {
+            galaxy: u16_coord(pg)?,
+            system: u16_coord(ps)?,
+            position: u16_coord(pp)?,
+        };
+        loaded_pirate_home = true;
+        state.allied_since = unix_ts_opt(allied)?;
+        if let (Some(path), Some(at), Some(prestige), Some(elapsed), Some(kept)) =
+            (path, at, prestige, elapsed, kept)
+        {
+            let path = crate::VictoryPath::from_key(&path)
+                .ok_or(SaveError::Corrupt("unknown victory path"))?;
+            state.victory = Some(crate::VictoryRecord {
+                path,
+                at: unix_ts(at)?,
+                prestige: u32::try_from(prestige).map_err(|_| SaveError::Corrupt("victory prestige"))?,
+                elapsed_secs: u64::try_from(elapsed).map_err(|_| SaveError::Corrupt("victory elapsed"))?,
+                kept_playing: kept != 0,
+            });
+        }
+    }
+    if let Some(hw) = state.outposts.iter().find(|o| o.homeworld) {
+        state.pirate_home = hw.coord;
+    } else if !loaded_pirate_home {
+        state.seed_pirate_home(state.last_tick_unix);
+    }
+
     Ok(state)
 }
 
 fn read_outposts(conn: &Connection) -> Result<Vec<Outpost>, SaveError> {
     let mut stmt = conn.prepare(
-        "SELECT planet_id, galaxy, system, position, kind, size, garrison, rare, last_rebuild_at
+        "SELECT planet_id, galaxy, system, position, kind, size, garrison, rare, last_rebuild_at, homeworld
          FROM outposts ORDER BY planet_id",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -1313,6 +1381,7 @@ fn read_outposts(conn: &Connection) -> Result<Vec<Outpost>, SaveError> {
             row.get::<_, i64>(6)?,
             row.get::<_, Option<String>>(7)?,
             row.get::<_, i64>(8)?,
+            row.get::<_, i64>(9)?,
         ))
     })?;
     let mut pending = Vec::new();
@@ -1321,7 +1390,7 @@ fn read_outposts(conn: &Connection) -> Result<Vec<Outpost>, SaveError> {
     }
     drop(stmt);
     let mut outposts = Vec::new();
-    for (planet_id, g, s, p, kind, size, garrison, rare, last_rebuild_at) in pending {
+    for (planet_id, g, s, p, kind, size, garrison, rare, last_rebuild_at, homeworld) in pending {
         let kind =
             PlanetType::from_key(&kind).ok_or(SaveError::Corrupt("unknown outpost planet type"))?;
         let mut defences = Fleet::default();
@@ -1348,6 +1417,7 @@ fn read_outposts(conn: &Connection) -> Result<Vec<Outpost>, SaveError> {
                 .map_err(|_| SaveError::Corrupt("outpost garrison"))?,
             rare,
             last_rebuild_at: unix_ts(last_rebuild_at)?,
+            homeworld: homeworld != 0,
         });
     }
     Ok(outposts)
@@ -1995,6 +2065,7 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "market_contracts" => "SELECT COUNT(*) FROM market_contracts",
         "market_shipments" => "SELECT COUNT(*) FROM market_shipments",
         "market_board_meta" => "SELECT COUNT(*) FROM market_board_meta",
+        "victory" => "SELECT COUNT(*) FROM victory",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -2070,7 +2141,8 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "market_orders")?
         + count_rows(conn, "market_contracts")?
         + count_rows(conn, "market_shipments")?
-        + count_rows(conn, "market_board_meta")?)
+        + count_rows(conn, "market_board_meta")?
+        + count_rows(conn, "victory")?)
 }
 
 fn migrate(conn: &Connection) -> Result<(), SaveError> {
@@ -2176,6 +2248,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 32 {
         migrate_v32(conn)?;
+    }
+    if found < 33 {
+        migrate_v33(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -3126,6 +3201,42 @@ fn migrate_v32(conn: &Connection) -> Result<(), SaveError> {
             next_order_id INTEGER NOT NULL,
             next_contract_id INTEGER NOT NULL,
             next_shipment_id INTEGER NOT NULL
+        );
+        ",
+    )?;
+    Ok(())
+}
+
+fn migrate_v33(conn: &Connection) -> Result<(), SaveError> {
+    let mut has_homeworld = false;
+    let mut stmt = conn.prepare("PRAGMA table_info(outposts)")?;
+    let names = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for name in names {
+        if name? == "homeworld" {
+            has_homeworld = true;
+            break;
+        }
+    }
+    drop(stmt);
+    if !has_homeworld {
+        conn.execute(
+            "ALTER TABLE outposts ADD COLUMN homeworld INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS victory (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            path TEXT,
+            at INTEGER,
+            prestige INTEGER,
+            elapsed_secs INTEGER,
+            kept_playing INTEGER,
+            allied_since INTEGER,
+            pirate_g INTEGER NOT NULL DEFAULT 1,
+            pirate_s INTEGER NOT NULL DEFAULT 80,
+            pirate_p INTEGER NOT NULL DEFAULT 16
         );
         ",
     )?;
@@ -6783,6 +6894,84 @@ mod tests {
         assert_eq!(loaded.board.next_order_id, state.board.next_order_id);
         assert!(!loaded.board.regions.is_empty());
         assert_eq!(count_rows(&conn, "market_board_meta").unwrap(), 1);
+    }
+
+    #[test]
+    fn migrate_v33_round_trips_victory() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v33(&conn).unwrap();
+        migrate_v33(&conn).unwrap();
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.enabled = false;
+        cfg.market.enabled = false;
+        let mut state = GameState::with_config(1_000, cfg);
+        state.completed_wonders.push("dyson_ring".into());
+        state.maybe_declare_victory(1_000);
+        assert!(state.victory.is_some());
+        let home = state.pirate_home;
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.victory, state.victory);
+        assert_eq!(loaded.pirate_home, home);
+        assert_eq!(loaded.allied_since, state.allied_since);
+        assert_eq!(loaded.outposts.iter().filter(|o| o.homeworld).count(), 1);
+        assert_eq!(count_rows(&conn, "victory").unwrap(), 1);
+    }
+
+    #[test]
+    fn load_keeps_pirate_home_when_fortress_is_gone() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.enabled = false;
+        cfg.market.enabled = false;
+        let mut state = GameState::with_config(1_000, cfg);
+        let home = state.pirate_homeworld().expect("homeworld");
+        state.outposts.retain(|o| o.coord != home);
+        assert!(state.victory.is_none());
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.pirate_home, home);
+        assert!(loaded.victory.is_none());
+        assert!(!loaded.outposts.iter().any(|o| o.homeworld));
+        assert!(!loaded.outposts.iter().any(|o| o.coord == home));
+    }
+
+    #[test]
+    fn load_keeps_a_conquered_homeworld_coord() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.enabled = false;
+        cfg.market.enabled = false;
+        let mut state = GameState::with_config(1_000, cfg);
+        let home = state.pirate_homeworld().expect("homeworld");
+        state.outposts.retain(|o| o.coord != home);
+        state.colonies.push(crate::Colony {
+            coord: home,
+            kind: crate::PlanetType::Rocky,
+            size: 8,
+            resources: crate::Resources::ZERO,
+            buildings: crate::Buildings::default(),
+            fleet: crate::Fleet::default(),
+            defences: crate::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            rare: None,
+            goods: Default::default(),
+        });
+        state.maybe_declare_victory(1_050);
+        assert_eq!(
+            state.victory.as_ref().map(|v| v.path),
+            Some(crate::VictoryPath::Conquest)
+        );
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.pirate_home, home);
+        assert_eq!(
+            loaded.victory.as_ref().map(|v| v.path),
+            Some(crate::VictoryPath::Conquest)
+        );
+        assert!(!loaded.outposts.iter().any(|o| o.homeworld));
+        assert!(loaded.colonies.iter().any(|c| c.coord == home));
+        assert!(loaded.victory_progress().conquest.ready);
     }
 
     #[test]

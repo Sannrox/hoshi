@@ -69,6 +69,8 @@ enum Command {
         id: String,
     },
     PrestigeReset,
+    Goals,
+    GoalsKeep,
     LawPropose {
         template: String,
         param: Option<String>,
@@ -628,6 +630,18 @@ fn apply(state: &mut GameState, now: u64, command: &Command) -> Result<Value, Cl
                 .map_err(|e| CliError::Refused(e.to_string()))?;
             Ok(ok_state(state, "prestiged"))
         }
+        Command::Goals => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            Ok(goals_value(state))
+        }
+        Command::GoalsKeep => {
+            state
+                .keep_playing_after_victory()
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, "kept playing"))
+        }
         Command::LawPropose {
             template,
             param,
@@ -1021,6 +1035,40 @@ fn apply(state: &mut GameState, now: u64, command: &Command) -> Result<Value, Cl
     }
 }
 
+fn path_json(path: &hoshi_core::PathProgress) -> Value {
+    json!({
+        "ready": path.ready,
+        "next": path.next_step,
+        "ratio": path.ratio,
+    })
+}
+
+fn victory_json(state: &GameState) -> Value {
+    let progress = state.victory_progress();
+    json!({
+        "enabled": state.config.victory.enabled,
+        "homeworld": state.pirate_homeworld().map(|coord| coord.to_string()),
+        "record": state.victory.as_ref().map(|record| json!({
+            "path": record.path.as_key(),
+            "at": record.at,
+            "prestige": record.prestige,
+            "elapsed_secs": record.elapsed_secs,
+            "kept_playing": record.kept_playing,
+        })),
+        "paths": {
+            "conquest": path_json(&progress.conquest),
+            "wonder": path_json(&progress.wonder),
+            "diplomacy": path_json(&progress.diplomacy),
+        },
+    })
+}
+
+fn goals_value(state: &GameState) -> Value {
+    let mut value = state_value(state, Actor::Player);
+    value["message"] = json!("goals");
+    value
+}
+
 fn ok_state(state: &GameState, message: &str) -> Value {
     ok_state_as(state, message, Actor::Player)
 }
@@ -1183,7 +1231,7 @@ fn state_value(state: &GameState, actor: Actor) -> Value {
         })
         .collect();
     let waste = state.waste_home();
-    json!({
+    let mut value = json!({
         "schema_version": SCHEMA_VERSION,
         "ok": true,
         "now": state.last_tick_unix,
@@ -1309,7 +1357,9 @@ fn state_value(state: &GameState, actor: Actor) -> Value {
             "delta_v": m.delta_v,
             "marking": marking_value(state, ClassifiedKind::Plan, &m.id.to_string()),
         })).collect::<Vec<_>>(),
-    })
+    });
+    value["victory"] = victory_json(state);
+    value
 }
 
 fn spy_report_value(report: &SpyReport, now: u64, state: &GameState) -> Value {
@@ -1493,6 +1543,17 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
                 ships,
             })
         }
+        "goals" => match args.get(1).map(String::as_str) {
+            None => {
+                expect_end(args, 1)?;
+                Ok(Command::Goals)
+            }
+            Some("keep") => {
+                expect_end(args, 2)?;
+                Ok(Command::GoalsKeep)
+            }
+            Some(other) => Err(CliError::Invalid(format!("unknown goals command {other}"))),
+        },
         "prestige" => match args.get(1).map(String::as_str) {
             None => {
                 expect_end(args, 1)?;
@@ -3047,6 +3108,10 @@ mod tests {
         );
         let opts = parse_cli(&args(&["tick", "--advance", "3m"])).unwrap();
         assert_eq!(opts.command, Command::Tick { advance: 180 });
+        let opts = parse_cli(&args(&["goals"])).unwrap();
+        assert_eq!(opts.command, Command::Goals);
+        let opts = parse_cli(&args(&["goals", "keep"])).unwrap();
+        assert_eq!(opts.command, Command::GoalsKeep);
         let opts = parse_cli(&args(&[
             "market", "order", "home", "buy", "crystal", "10", "--limit", "2",
         ]))

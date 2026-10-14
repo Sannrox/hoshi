@@ -13,6 +13,23 @@ min_metal_mine_per_day = 1
 # metal(with max PR-merge pulses) / metal(activity off) must stay at or below this.
 max_bridge_metal_ratio = 8.0
 
+[victory]
+enabled = true
+wonder_id = "dyson_ring"
+allied_min = 40.0
+hold_secs = 86400
+base_prestige = 20
+conquest_bonus = 8
+wonder_bonus = 6
+diplomacy_bonus = 10
+speed_bonus_max = 8
+speed_target_secs = 1209600
+casual_min_secs = 1209600
+casual_max_secs = 2419200
+homeworld_min_system = 40
+homeworld_defence_mult = 3.0
+homeworld_garrison_mult = 3.0
+
 [metal_mine]
 base_per_hour = 30.0
 growth = 1.5
