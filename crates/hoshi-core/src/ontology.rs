@@ -10,7 +10,7 @@ pub const CHISEI_API_VERSION: &str = "1.3.0";
 /// Portable ontology document version accepted by `sekai import`.
 pub const ONTOLOGY_SCHEMA_VERSION: u32 = 1;
 
-pub const OBJECT_TYPES: [&str; 9] = [
+pub const OBJECT_TYPES: [&str; 16] = [
     "Player",
     "Planet",
     "Fleet",
@@ -20,9 +20,33 @@ pub const OBJECT_TYPES: [&str; 9] = [
     "Compartment",
     "Clearance",
     "SharingAgreement",
+    "Region",
+    "Warehouse",
+    "Good",
+    "Order",
+    "Contract",
+    "Trader",
+    "Shipment",
 ];
-pub const RELATIONS: [&str; 3] = ["owns", "stationed-at", "allied-with"];
-pub const ACTIONS: [&str; 5] = ["build", "research", "launch", "colonize", "invade"];
+pub const RELATIONS: [&str; 6] = [
+    "owns",
+    "stationed-at",
+    "allied-with",
+    "placed-in",
+    "binds",
+    "fulfils",
+];
+pub const ACTIONS: [&str; 9] = [
+    "build",
+    "research",
+    "launch",
+    "colonize",
+    "invade",
+    "place_order",
+    "accept_contract",
+    "fulfil_contract",
+    "ship_goods",
+];
 
 const ONTOLOGY_JSON: &str = include_str!("../data/ontology/hoshi-v1.json");
 

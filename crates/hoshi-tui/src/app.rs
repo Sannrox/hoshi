@@ -2340,7 +2340,38 @@ impl App {
                 }
             })
             .collect();
-        append_windowed(&mut rows, &entries, self.selected, height)
+        let mut rows = append_windowed(&mut rows, &entries, self.selected, height);
+        rows.push(Line::from(format!(
+            "hub {}  orders {}  contracts {}  shipments {}",
+            self.state.config.market.hub(),
+            self.state.board.orders.len(),
+            self.state.board.contracts.len(),
+            self.state
+                .board
+                .shipments
+                .values()
+                .filter(|s| !s.delivered)
+                .count()
+        )));
+        if let Some(region) = self.state.board.regions.get(&self.state.home) {
+            rows.push(Line::from(format!(
+                "home book  crystal {}  deut {}",
+                sparkline(region.history(ResourceKind::Crystal), 16),
+                sparkline(region.history(ResourceKind::Deuterium), 16)
+            )));
+        }
+        for contract in self.state.board.contracts.values().take(3) {
+            rows.push(Line::from(format!(
+                "contract #{} {} {:.0} {} {} due {}",
+                contract.id,
+                contract.kind.as_key(),
+                contract.remaining,
+                contract.good.label(),
+                contract.status.as_key(),
+                contract.deadline
+            )));
+        }
+        rows
     }
 
     fn law_lines(&self, height: usize) -> Vec<Line<'static>> {

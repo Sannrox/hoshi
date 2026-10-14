@@ -260,6 +260,8 @@ pub struct GameState {
     pub next_planned_id: u64,
     /// Markings, role extra-clearance, sharing agreements and leak incidents.
     pub classification: crate::ClassificationBoard,
+    /// Regional order books, contracts and shipments. Home barter stays on `market`.
+    pub board: crate::MarketBoard,
     pub config: BalanceConfig,
 }
 
@@ -352,6 +354,7 @@ impl GameState {
             planned: Vec::new(),
             next_planned_id: 0,
             classification: crate::ClassificationBoard::default(),
+            board: crate::MarketBoard::default(),
             config,
         };
         state.install_starter_staff(now_unix);
@@ -441,6 +444,7 @@ impl GameState {
             let logistics_at = self.next_logistics_at();
             let staff_at = self.next_staff_at();
             let planned_at = self.next_planned_at();
+            let board_at = self.next_board_at();
             let Some(done_at) = min_time(
                 min_time(
                     min_time(
@@ -467,7 +471,10 @@ impl GameState {
                         ),
                     ),
                 ),
-                min_time(logistics_at, min_time(staff_at, planned_at)),
+                min_time(
+                    logistics_at,
+                    min_time(staff_at, min_time(planned_at, board_at)),
+                ),
             ) else {
                 self.produce_until(now_unix);
                 self.apply_laws_at(now_unix);
@@ -553,6 +560,9 @@ impl GameState {
             }
             if planned_at == Some(done_at) {
                 self.advance_planned_at(done_at);
+            }
+            if board_at == Some(done_at) {
+                self.advance_board_at(done_at);
             }
             if route_at == Some(done_at) {
                 self.fire_routes_at(done_at);
@@ -1636,7 +1646,7 @@ impl GameState {
         self.flight_from(self.home, dest, ships, speed_percent)
     }
 
-    fn flight_from(
+    pub(crate) fn flight_from(
         &self,
         origin: Coord,
         dest: Coord,
@@ -4486,12 +4496,13 @@ impl GameState {
         }
     }
 
-    fn tick_market(&mut self, at: u64) {
+    pub(crate) fn tick_market(&mut self, at: u64) {
         if !self.config.market.enabled {
             return;
         }
         self.market.tick(&self.config.market, &mut self.rng_seed);
         self.last_market_at = at;
+        self.on_market_tick(at);
     }
 
     pub fn quote_market(
@@ -7624,6 +7635,7 @@ modifiers = []
         let mut cfg = BalanceConfig::default();
         cfg.raid.first_delay_secs = 7200;
         cfg.raid.min_warning_secs = 1800;
+        cfg.market.enabled = false;
         let mut state = GameState::with_config(100, cfg);
         assert_eq!(state.next_raid_at, Some(7300));
         assert_eq!(state.raid_countdown_secs(), None);

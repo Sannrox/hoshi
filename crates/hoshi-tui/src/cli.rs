@@ -3,10 +3,10 @@
 use hoshi_core::{
     Actor, AssignmentTarget, BackendKind, BalanceConfig, BuildingKind, Classification,
     ClassifiedKind, Clock, Coord, Customer, DefenceKind, FakeClock, Fleet, GameState, HistoryKind,
-    HistoryQuery, Intent, Jurisdiction, JurisdictionKind, MoonFacility, Payload, Permission,
-    PlanRequest, ResourceKind, RoleKind, RoundAction, SCHEMA_VERSION as SAVE_SCHEMA, SaveError,
-    ShipKind, SpyReport, SystemClock, TransferKind, advise, inspect_save, lock_save, open_storage,
-    resolve_save_path, save_is_locked,
+    HistoryQuery, Intent, Jurisdiction, JurisdictionKind, MoonFacility, OrderSide, Payload,
+    Permission, PlanRequest, ResourceKind, RoleKind, RoundAction, SCHEMA_VERSION as SAVE_SCHEMA,
+    SaveError, ShipKind, SpyReport, SystemClock, TransferKind, advise, inspect_save, lock_save,
+    open_storage, resolve_save_path, save_is_locked,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -181,6 +181,35 @@ enum Command {
         window: Option<usize>,
     },
     MissionSchedule,
+    MarketRegion {
+        region: Option<Coord>,
+    },
+    MarketOrder {
+        region: Coord,
+        side: OrderSide,
+        good: ResourceKind,
+        amount: String,
+        limit: Option<String>,
+        ttl: Option<u64>,
+    },
+    MarketAccept {
+        id: u64,
+    },
+    MarketFulfil {
+        id: u64,
+    },
+    MarketShip {
+        from: Coord,
+        to: Coord,
+        metal: String,
+        crystal: String,
+        deuterium: String,
+        contract: Option<u64>,
+    },
+    MarketHistory {
+        region: Option<Coord>,
+        export: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -879,6 +908,77 @@ fn apply(state: &mut GameState, now: u64, command: &Command) -> Result<Value, Cl
                 })).collect::<Vec<_>>(),
             }))
         }
+        Command::MarketRegion { region } => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            Ok(market_region_value(state, *region))
+        }
+        Command::MarketOrder {
+            region,
+            side,
+            good,
+            amount,
+            limit,
+            ttl,
+        } => {
+            let amount = parse_amount(amount)?;
+            let limit = match limit.as_deref() {
+                Some(text) => Some(parse_amount(text)?),
+                None => None,
+            };
+            governed(
+                state,
+                Intent::PlaceOrder {
+                    region: *region,
+                    side: *side,
+                    good: *good,
+                    amount,
+                    limit,
+                    ttl_secs: ttl.unwrap_or(0),
+                },
+                now,
+            )?;
+            Ok(ok_state(state, "placed order"))
+        }
+        Command::MarketAccept { id } => {
+            governed(state, Intent::AcceptContract { id: *id }, now)?;
+            Ok(ok_state(state, "accepted contract"))
+        }
+        Command::MarketFulfil { id } => {
+            governed(state, Intent::FulfilContract { id: *id }, now)?;
+            Ok(ok_state(state, "fulfilled contract"))
+        }
+        Command::MarketShip {
+            from,
+            to,
+            metal,
+            crystal,
+            deuterium,
+            contract,
+        } => {
+            governed(
+                state,
+                Intent::ShipGoods {
+                    origin: *from,
+                    dest: *to,
+                    cargo: hoshi_core::Resources {
+                        metal: parse_amount(metal)?,
+                        crystal: parse_amount(crystal)?,
+                        deuterium: parse_amount(deuterium)?,
+                    },
+                    contract: *contract,
+                },
+                now,
+            )?;
+            Ok(ok_state(state, "launched shipment"))
+        }
+        Command::MarketHistory { region, export } => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            apply_market_history(state, *region, export.as_deref())
+        }
         Command::StaffRevoke { id, permission } => {
             state
                 .revoke_delegation(*id, *permission, now)
@@ -1366,6 +1466,7 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
         "staff" => parse_staff_command(args),
         "vehicle" => parse_vehicle_command(args),
         "mission" => parse_mission_command(args),
+        "market" => parse_market_command(args),
         "research" => {
             let tech = nth(args, 1, "research <tech>")?.to_string();
             expect_end(args, 2)?;
@@ -2301,6 +2402,325 @@ fn parse_mission_command(args: &[String]) -> Result<Command, CliError> {
     }
 }
 
+fn parse_market_command(args: &[String]) -> Result<Command, CliError> {
+    match args.get(1).map(String::as_str) {
+        Some("region") => {
+            let region = match args.get(2) {
+                Some(text) => Some(parse_coord(text)?),
+                None => None,
+            };
+            if args.len() > 3 {
+                return Err(CliError::Invalid(
+                    "market region takes at most a coord".into(),
+                ));
+            }
+            Ok(Command::MarketRegion { region })
+        }
+        Some("order") => {
+            let region = parse_coord(nth(
+                args,
+                2,
+                "market order <region> buy|sell <good> <amount>",
+            )?)?;
+            let side = OrderSide::from_key(nth(
+                args,
+                3,
+                "market order <region> buy|sell <good> <amount>",
+            )?)
+            .ok_or_else(|| CliError::Invalid("market order needs buy or sell".into()))?;
+            let good = ResourceKind::from_key(nth(
+                args,
+                4,
+                "market order <region> buy|sell <good> <amount>",
+            )?)
+            .ok_or_else(|| CliError::Invalid("unknown market good".into()))?;
+            let amount =
+                nth(args, 5, "market order <region> buy|sell <good> <amount>")?.to_string();
+            let mut limit = None;
+            let mut ttl = None;
+            let mut i = 6;
+            while i < args.len() {
+                let a = args[i].as_str();
+                if a == "--limit" {
+                    limit = Some(nth(args, i + 1, "market order --limit <price>")?.to_string());
+                    i += 2;
+                    continue;
+                }
+                if a == "--ttl" {
+                    ttl = Some(parse_u64_flag(
+                        nth(args, i + 1, "market order --ttl <secs>")?,
+                        "--ttl",
+                    )?);
+                    i += 2;
+                    continue;
+                }
+                return Err(CliError::Invalid(format!("unknown market order flag {a}")));
+            }
+            Ok(Command::MarketOrder {
+                region,
+                side,
+                good,
+                amount,
+                limit,
+                ttl,
+            })
+        }
+        Some("contract") => match args.get(2).map(String::as_str) {
+            Some("list") | None => {
+                if args.get(2).is_some() && args.len() > 3 {
+                    return Err(CliError::Invalid(
+                        "market contract list takes no arguments".into(),
+                    ));
+                }
+                Ok(Command::MarketRegion { region: None })
+            }
+            Some("accept") => {
+                let id =
+                    parse_u64_flag(nth(args, 3, "market contract accept <id>")?, "contract id")?;
+                expect_end(args, 4)?;
+                Ok(Command::MarketAccept { id })
+            }
+            Some("fulfil") => {
+                let id =
+                    parse_u64_flag(nth(args, 3, "market contract fulfil <id>")?, "contract id")?;
+                expect_end(args, 4)?;
+                Ok(Command::MarketFulfil { id })
+            }
+            Some(other) => Err(CliError::Invalid(format!(
+                "unknown market contract command {other}"
+            ))),
+        },
+        Some("ship") => {
+            let from = parse_coord(nth(args, 2, "market ship <from> <to>")?)?;
+            let to = parse_coord(nth(args, 3, "market ship <from> <to>")?)?;
+            let mut metal = "0".to_string();
+            let mut crystal = "0".to_string();
+            let mut deuterium = "0".to_string();
+            let mut contract = None;
+            let mut i = 4;
+            while i < args.len() {
+                let a = args[i].as_str();
+                if a == "--metal" {
+                    metal = nth(args, i + 1, "market ship --metal <n>")?.to_string();
+                    i += 2;
+                    continue;
+                }
+                if a == "--crystal" {
+                    crystal = nth(args, i + 1, "market ship --crystal <n>")?.to_string();
+                    i += 2;
+                    continue;
+                }
+                if a == "--deuterium" {
+                    deuterium = nth(args, i + 1, "market ship --deuterium <n>")?.to_string();
+                    i += 2;
+                    continue;
+                }
+                if a == "--contract" {
+                    contract = Some(parse_u64_flag(
+                        nth(args, i + 1, "market ship --contract <id>")?,
+                        "--contract",
+                    )?);
+                    i += 2;
+                    continue;
+                }
+                return Err(CliError::Invalid(format!("unknown market ship flag {a}")));
+            }
+            Ok(Command::MarketShip {
+                from,
+                to,
+                metal,
+                crystal,
+                deuterium,
+                contract,
+            })
+        }
+        Some("history") => {
+            let mut region = None;
+            let mut export = None;
+            let mut i = 2;
+            while i < args.len() {
+                let a = args[i].as_str();
+                if a == "--export" {
+                    export = Some(PathBuf::from(nth(
+                        args,
+                        i + 1,
+                        "market history --export <path>",
+                    )?));
+                    i += 2;
+                    continue;
+                }
+                if a.starts_with('-') {
+                    return Err(CliError::Invalid(format!(
+                        "unknown market history flag {a}"
+                    )));
+                }
+                if region.is_some() {
+                    return Err(CliError::Invalid(
+                        "market history takes at most one coord".into(),
+                    ));
+                }
+                region = Some(parse_coord(a)?);
+                i += 1;
+            }
+            Ok(Command::MarketHistory { region, export })
+        }
+        Some(other) => Err(CliError::Invalid(format!("unknown market command {other}"))),
+        None => Ok(Command::MarketRegion { region: None }),
+    }
+}
+
+fn market_region_value(state: &GameState, filter: Option<Coord>) -> Value {
+    let orders: Vec<Value> = state
+        .board
+        .orders
+        .values()
+        .filter(|o| filter.is_none_or(|c| o.region == c))
+        .map(|o| {
+            json!({
+                "id": o.id,
+                "region": o.region.to_string(),
+                "trader": o.trader.as_key(),
+                "side": o.side.as_key(),
+                "good": o.good.as_key(),
+                "remaining": o.remaining,
+                "price": o.price,
+                "expires_at": o.expires_at,
+                "market": o.is_market,
+            })
+        })
+        .collect();
+    let contracts: Vec<Value> = state
+        .board
+        .contracts
+        .values()
+        .filter(|c| filter.is_none_or(|r| c.region == r))
+        .map(|c| {
+            json!({
+                "id": c.id,
+                "kind": c.kind.as_key(),
+                "region": c.region.to_string(),
+                "good": c.good.as_key(),
+                "remaining": c.remaining,
+                "amount": c.amount,
+                "price": c.price,
+                "deadline": c.deadline,
+                "penalty": c.penalty,
+                "status": c.status.as_key(),
+                "holder": c.holder.map(|t| t.as_key()),
+            })
+        })
+        .collect();
+    let shipments: Vec<Value> = state
+        .board
+        .shipments
+        .values()
+        .filter(|s| filter.is_none_or(|c| s.origin == c || s.dest == c))
+        .map(|s| {
+            json!({
+                "id": s.id,
+                "origin": s.origin.to_string(),
+                "dest": s.dest.to_string(),
+                "metal": s.cargo.metal,
+                "crystal": s.cargo.crystal,
+                "deuterium": s.cargo.deuterium,
+                "fuel": s.fuel,
+                "arrives_at": s.arrives_at,
+                "delivered": s.delivered,
+                "contract": s.contract_id,
+            })
+        })
+        .collect();
+    let regions: Vec<Value> = state
+        .board
+        .regions
+        .values()
+        .filter(|r| filter.is_none_or(|c| r.coord == c))
+        .map(|r| {
+            json!({
+                "coord": r.coord.to_string(),
+                "npc": {
+                    "metal": r.npc_warehouse.metal,
+                    "crystal": r.npc_warehouse.crystal,
+                    "deuterium": r.npc_warehouse.deuterium,
+                },
+                "player": {
+                    "metal": r.player_warehouse.metal,
+                    "crystal": r.player_warehouse.crystal,
+                    "deuterium": r.player_warehouse.deuterium,
+                },
+            })
+        })
+        .collect();
+    json!({
+        "schema_version": SCHEMA_VERSION,
+        "ok": true,
+        "message": "market",
+        "now": state.last_tick_unix,
+        "hub": state.config.market.hub().to_string(),
+        "mids": {
+            "metal": state.market.metal,
+            "crystal": state.market.crystal,
+            "deuterium": state.market.deuterium,
+        },
+        "regions": regions,
+        "orders": orders,
+        "contracts": contracts,
+        "shipments": shipments,
+    })
+}
+
+fn apply_market_history(
+    state: &GameState,
+    filter: Option<Coord>,
+    export: Option<&Path>,
+) -> Result<Value, CliError> {
+    let mut rows: Vec<Value> = Vec::new();
+    for region in state.board.regions.values() {
+        if let Some(coord) = filter
+            && region.coord != coord
+        {
+            continue;
+        }
+        for kind in ResourceKind::ALL {
+            rows.push(json!({
+                "region": region.coord.to_string(),
+                "good": kind.as_key(),
+                "prices": region.history(kind),
+            }));
+        }
+    }
+    if rows.is_empty() {
+        for kind in ResourceKind::ALL {
+            rows.push(json!({
+                "region": state.home.to_string(),
+                "good": kind.as_key(),
+                "prices": state.market.history(kind),
+            }));
+        }
+    }
+    if let Some(path) = export {
+        let mut buf = String::new();
+        for row in &rows {
+            buf.push_str(&row.to_string());
+            buf.push('\n');
+        }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent).map_err(|e| CliError::Internal(e.to_string()))?;
+        }
+        std::fs::write(path, buf).map_err(|e| CliError::Internal(e.to_string()))?;
+    }
+    Ok(json!({
+        "schema_version": SCHEMA_VERSION,
+        "ok": true,
+        "message": "market history",
+        "now": state.last_tick_unix,
+        "history": rows,
+        "exported": export.map(|p| p.display().to_string()),
+    }))
+}
+
 fn parse_moon_command(args: &[String]) -> Result<Command, CliError> {
     match args.get(1).map(String::as_str) {
         Some("build") => {
@@ -2627,6 +3047,21 @@ mod tests {
         );
         let opts = parse_cli(&args(&["tick", "--advance", "3m"])).unwrap();
         assert_eq!(opts.command, Command::Tick { advance: 180 });
+        let opts = parse_cli(&args(&[
+            "market", "order", "home", "buy", "crystal", "10", "--limit", "2",
+        ]))
+        .unwrap();
+        assert_eq!(
+            opts.command,
+            Command::MarketOrder {
+                region: Coord::HOME,
+                side: OrderSide::Buy,
+                good: ResourceKind::Crystal,
+                amount: "10".into(),
+                limit: Some("2".into()),
+                ttl: None,
+            }
+        );
         let opts = parse_cli(&args(&[
             "fleet",
             "send",
