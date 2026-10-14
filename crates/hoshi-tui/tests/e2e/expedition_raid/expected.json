@@ -265,8 +265,9 @@
     "deuterium": 2500.0,
     "metal": 638.75
   },
-  "save_schema": 33,
+  "save_schema": 34,
   "schema_version": 1,
+  "season": null,
   "spy_reports": [],
   "tactics": {
     "admiral": null,

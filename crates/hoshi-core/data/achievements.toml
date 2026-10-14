@@ -146,3 +146,21 @@ title = "Smuggler"
 description = "Pick the smuggler network."
 hidden = true
 condition = { kind = "exclusive_pick", id = "smuggler_network" }
+
+[[achievements]]
+id = "season_double_haul"
+title = "Double haul"
+description = "Finish a Double haul seasonal galaxy."
+condition = { kind = "season_complete", id = "double_haul" }
+
+[[achievements]]
+id = "season_closed_market"
+title = "Closed markets"
+description = "Finish a Closed markets seasonal galaxy."
+condition = { kind = "season_complete", id = "closed_market" }
+
+[[achievements]]
+id = "season_pirate_weather"
+title = "Pirate weather"
+description = "Finish a Pirate weather seasonal galaxy."
+condition = { kind = "season_complete", id = "pirate_weather" }

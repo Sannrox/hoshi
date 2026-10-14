@@ -33,6 +33,7 @@ mod prestige;
 mod production;
 mod research;
 mod save;
+mod season;
 mod ships;
 mod simulate;
 mod state;
@@ -157,6 +158,10 @@ pub use save::{
     default_save_path, inspect_career, inspect_save, load_or_new, load_or_new_with_seed,
     load_state, lock_save, open_save, resolve_save_path, save_is_locked, save_lock_path,
     save_state,
+};
+pub use season::{
+    SEASON_SYSTEMS, SeasonCatalog, SeasonError, SeasonRuleset, SeasonRun, SeasonWindow,
+    season_slot_name,
 };
 pub use ships::{
     Fleet, SHIP_KINDS, ShipCatalog, ShipCatalogError, ShipError, ShipJob, ShipKind, ShipSpec,

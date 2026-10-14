@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 33;
+pub const SCHEMA_VERSION: u32 = 34;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -200,7 +200,8 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM market_contracts;
          DELETE FROM market_shipments;
          DELETE FROM market_board_meta;
-         DELETE FROM victory;",
+         DELETE FROM victory;
+         DELETE FROM season;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -623,6 +624,20 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
             state.pirate_home.position as i64,
         ],
     )?;
+    if let Some(run) = &state.season {
+        tx.execute(
+            "INSERT INTO season (
+                id, ruleset_id, window_start, window_end, seed, prestige
+             ) VALUES (1, ?1, ?2, ?3, ?4, ?5)",
+            params![
+                run.ruleset_id,
+                run.window_start as i64,
+                run.window_end as i64,
+                run.seed as i64,
+                i64::from(run.prestige),
+            ],
+        )?;
+    }
     for (id, count) in &state.prestige.owned {
         tx.execute(
             "INSERT INTO prestige_owned (bonus_id, count) VALUES (?1, ?2)",
@@ -1361,6 +1376,37 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     } else if !loaded_pirate_home {
         state.seed_pirate_home(state.last_tick_unix);
     }
+    if table_exists(conn, "season")
+        && let Some((ruleset_id, start, end, seed, prestige)) = conn
+            .query_row(
+                "SELECT ruleset_id, window_start, window_end, seed, prestige FROM season WHERE id = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
+                },
+            )
+            .optional()?
+    {
+        state.season = Some(crate::SeasonRun {
+            ruleset_id,
+            window_start: unix_ts(start)?,
+            window_end: unix_ts(end)?,
+            seed: seed as u64,
+            prestige: prestige != 0,
+        });
+        state
+            .apply_loaded_season(&crate::SeasonCatalog::default())
+            .map_err(|e| SaveError::Corrupt(match e {
+                crate::SeasonError::UnknownRuleset(_) => "unknown season ruleset",
+                _ => "invalid season overlay",
+            }))?;
+    }
 
     Ok(state)
 }
@@ -1655,6 +1701,8 @@ pub struct CareerGlance {
     pub raids_survived: u32,
     pub outposts_conquered: u32,
     pub wonder_ids: std::collections::BTreeSet<String>,
+    pub seasonal: bool,
+    pub shares_prestige: bool,
 }
 
 impl CareerGlance {
@@ -1682,20 +1730,23 @@ impl CareerGlance {
         self.wonders = self.wonders.saturating_add(other.wonders);
         self.galaxies_wonder = self.galaxies_wonder.saturating_add(other.galaxies_wonder);
         self.galaxies_score = self.galaxies_score.saturating_add(other.galaxies_score);
-        self.prestige_runs = self.prestige_runs.max(other.prestige_runs);
-        let take_other = other.prestige.lifetime > self.prestige.lifetime
-            || (other.prestige.lifetime == self.prestige.lifetime
-                && other.prestige.currency > self.prestige.currency);
+        let take_other = !other.seasonal || other.shares_prestige;
         if take_other {
-            self.prestige = other.prestige;
-        }
-        self.prestige_currency = self.prestige_currency.max(other.prestige_currency);
-        self.prestige_lifetime = self.prestige_lifetime.max(other.prestige_lifetime);
-        for (id, count) in other.prestige_owned {
-            self.prestige_owned
-                .entry(id)
-                .and_modify(|had| *had = (*had).max(count))
-                .or_insert(count);
+            self.prestige_runs = self.prestige_runs.max(other.prestige_runs);
+            let better = other.prestige.lifetime > self.prestige.lifetime
+                || (other.prestige.lifetime == self.prestige.lifetime
+                    && other.prestige.currency > self.prestige.currency);
+            if better {
+                self.prestige = other.prestige;
+            }
+            self.prestige_currency = self.prestige_currency.max(other.prestige_currency);
+            self.prestige_lifetime = self.prestige_lifetime.max(other.prestige_lifetime);
+            for (id, count) in other.prestige_owned {
+                self.prestige_owned
+                    .entry(id)
+                    .and_modify(|had| *had = (*had).max(count))
+                    .or_insert(count);
+            }
         }
         self.building_levels = self.building_levels.max(other.building_levels);
         self.research_levels = self.research_levels.max(other.research_levels);
@@ -1847,6 +1898,18 @@ pub fn inspect_career(path: &Path) -> Result<CareerGlance, SaveError> {
         raids_survived = u32_field(raids, "raids survived")?;
         outposts_conquered = u32_field(conquests, "outposts conquered")?;
     }
+    let mut seasonal = false;
+    let mut shares_prestige = false;
+    if table_exists(&conn, "season")
+        && let Some((prestige_flag,)) = conn
+            .query_row("SELECT prestige FROM season WHERE id = 1", [], |row| {
+                Ok((row.get::<_, i64>(0)?,))
+            })
+            .optional()?
+    {
+        seasonal = true;
+        shares_prestige = prestige_flag != 0;
+    }
     Ok(CareerGlance {
         unlocks,
         playtime_secs,
@@ -1866,6 +1929,8 @@ pub fn inspect_career(path: &Path) -> Result<CareerGlance, SaveError> {
         raids_survived,
         outposts_conquered,
         wonder_ids,
+        seasonal,
+        shares_prestige,
     })
 }
 
@@ -2066,6 +2131,7 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "market_shipments" => "SELECT COUNT(*) FROM market_shipments",
         "market_board_meta" => "SELECT COUNT(*) FROM market_board_meta",
         "victory" => "SELECT COUNT(*) FROM victory",
+        "season" => "SELECT COUNT(*) FROM season",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -2142,7 +2208,8 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "market_contracts")?
         + count_rows(conn, "market_shipments")?
         + count_rows(conn, "market_board_meta")?
-        + count_rows(conn, "victory")?)
+        + count_rows(conn, "victory")?
+        + count_rows(conn, "season")?)
 }
 
 fn migrate(conn: &Connection) -> Result<(), SaveError> {
@@ -2251,6 +2318,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 33 {
         migrate_v33(conn)?;
+    }
+    if found < 34 {
+        migrate_v34(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -3201,6 +3271,22 @@ fn migrate_v32(conn: &Connection) -> Result<(), SaveError> {
             next_order_id INTEGER NOT NULL,
             next_contract_id INTEGER NOT NULL,
             next_shipment_id INTEGER NOT NULL
+        );
+        ",
+    )?;
+    Ok(())
+}
+
+fn migrate_v34(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS season (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            ruleset_id TEXT NOT NULL,
+            window_start INTEGER NOT NULL,
+            window_end INTEGER NOT NULL,
+            seed INTEGER NOT NULL,
+            prestige INTEGER NOT NULL
         );
         ",
     )?;
@@ -6919,6 +7005,24 @@ mod tests {
     }
 
     #[test]
+    fn migrate_v34_round_trips_a_season() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v34(&conn).unwrap();
+        migrate_v34(&conn).unwrap();
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.enabled = false;
+        cfg.market.enabled = false;
+        let cat = crate::SeasonCatalog::default();
+        let state = GameState::new_season(1_800_000_000, &cat, "closed_market", cfg).unwrap();
+        let run = state.season.clone().expect("season");
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.season, Some(run));
+        assert!(!loaded.config.market.enabled);
+        assert_eq!(count_rows(&conn, "season").unwrap(), 1);
+    }
+
+    #[test]
     fn load_keeps_pirate_home_when_fortress_is_gone() {
         let mut conn = open_save(Path::new(":memory:")).unwrap();
         let mut cfg = BalanceConfig::default();
@@ -7254,6 +7358,30 @@ mod tests {
         assert_eq!(merged.galaxies_score, 2);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(save_lock_path(&path));
+    }
+
+    #[test]
+    fn isolated_seasonal_glance_does_not_merge_prestige() {
+        let mut career = CareerGlance {
+            prestige_currency: 3,
+            prestige_lifetime: 5,
+            prestige_runs: 1,
+            ..CareerGlance::default()
+        };
+        let mut seasonal = CareerGlance {
+            seasonal: true,
+            shares_prestige: false,
+            prestige_currency: 99,
+            prestige_lifetime: 99,
+            prestige_runs: 8,
+            ..CareerGlance::default()
+        };
+        seasonal.unlocks.insert("season_double_haul".into(), 1);
+        career.merge(seasonal);
+        assert_eq!(career.prestige_currency, 3);
+        assert_eq!(career.prestige_lifetime, 5);
+        assert_eq!(career.prestige_runs, 1);
+        assert_eq!(career.unlocks.get("season_double_haul"), Some(&1));
     }
 
     #[test]

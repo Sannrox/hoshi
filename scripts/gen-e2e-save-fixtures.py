@@ -862,6 +862,27 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             );
             """
         )
+    elif version == 33:
+        if not has_column(conn, "outposts", "homeworld"):
+            conn.execute(
+                "ALTER TABLE outposts ADD COLUMN homeworld INTEGER NOT NULL DEFAULT 0"
+            )
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS victory (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                path TEXT,
+                at INTEGER,
+                prestige INTEGER,
+                elapsed_secs INTEGER,
+                kept_playing INTEGER,
+                allied_since INTEGER,
+                pirate_g INTEGER NOT NULL DEFAULT 1,
+                pirate_s INTEGER NOT NULL DEFAULT 80,
+                pirate_p INTEGER NOT NULL DEFAULT 16
+            );
+            """
+        )
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"

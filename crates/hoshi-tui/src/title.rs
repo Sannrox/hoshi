@@ -5,9 +5,9 @@ use crate::config::UserConfig;
 use crate::keymap::{Binding, HelpContext, Keymap};
 use hoshi_core::{
     AchievementConfig, BalanceConfig, CareerGlance, Prestige, PrestigeConfig, PrestigeError,
-    SaveError, SaveGlance, advisor_endpoint_allowed, encode_galaxy_seed, inspect_career,
-    inspect_save, lock_save, open_storage, parse_galaxy_seed, preview_galaxy, probe_model_endpoint,
-    save_is_locked,
+    SaveError, SaveGlance, SeasonCatalog, advisor_endpoint_allowed, encode_galaxy_seed,
+    inspect_career, inspect_save, lock_save, open_storage, parse_galaxy_seed, preview_galaxy,
+    probe_model_endpoint, save_is_locked, season_slot_name,
 };
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
@@ -29,6 +29,7 @@ pub enum TitleAction {
 enum Page {
     Menu,
     New,
+    Season,
     Load,
     Settings,
     Advisor,
@@ -167,6 +168,7 @@ pub struct Title {
     prestige_confirm: bool,
     prestige_source: Option<PathBuf>,
     prestige_menu: bool,
+    season_id: Option<String>,
     advisor_selected: usize,
     advisor_editing: bool,
     advisor_draft: String,
@@ -214,6 +216,7 @@ impl Title {
             prestige_confirm: false,
             prestige_source: None,
             prestige_menu: false,
+            season_id: None,
             advisor_selected: 0,
             advisor_editing: false,
             advisor_draft: String::new(),
@@ -257,6 +260,7 @@ impl Title {
         let mut items = vec![
             "Continue",
             "New game",
+            "Season",
             "Load game",
             "Settings",
             "Achievements",
@@ -332,7 +336,8 @@ impl Title {
         let mut source_prestige: Option<Prestige> = None;
         for slot in &self.slots {
             if let Ok(glance) = inspect_career(&slot.path) {
-                let ready = glance.reset_available(&self.prestige_cfg);
+                let ready = glance.reset_available(&self.prestige_cfg)
+                    && (!glance.seasonal || glance.shares_prestige);
                 if ready {
                     self.prestige_menu = true;
                     let take = source_prestige.is_none()
@@ -377,6 +382,7 @@ impl Title {
         match self.page {
             Page::Menu => self.handle_menu(code),
             Page::New => self.handle_new(code),
+            Page::Season => self.handle_season(code),
             Page::Load => self.handle_load(code),
             Page::Settings => self.handle_settings(code),
             Page::Advisor => self.handle_advisor(code),
@@ -398,6 +404,7 @@ impl Title {
         match self.page {
             Page::Menu => HelpContext::TitleMenu,
             Page::New => HelpContext::TitleNew,
+            Page::Season => HelpContext::TitleSeason,
             Page::Load if self.rename_from.is_some() => HelpContext::TitleRename,
             Page::Load if self.confirm_delete.is_some() => HelpContext::TitleDelete,
             Page::Load => HelpContext::TitleLoad,
@@ -439,6 +446,13 @@ impl Title {
                         self.page = Page::New;
                         self.status.clear();
                         self.pick_default_name();
+                        TitleAction::None
+                    }
+                    "Season" => {
+                        self.page = Page::Season;
+                        self.selected = 0;
+                        self.season_id = None;
+                        self.status.clear();
                         TitleAction::None
                     }
                     "Load game" => {
@@ -673,6 +687,52 @@ impl Title {
         self.config.last_slot = Some(name.to_string());
         let _ = self.config.save(&self.dir);
         self.play_path = Some(path);
+        self.season_id = None;
+        TitleAction::Play(0)
+    }
+
+    fn handle_season(&mut self, code: KeyCode) -> TitleAction {
+        let cat = SeasonCatalog::default();
+        let n = cat.len().max(1);
+        match self.config.keys.lookup(HelpContext::TitleSeason, code) {
+            Some(Binding::Cancel) => {
+                self.page = Page::Menu;
+                self.selected = 2;
+                TitleAction::None
+            }
+            Some(Binding::SelectNext) => {
+                self.selected = (self.selected + 1) % n;
+                TitleAction::None
+            }
+            Some(Binding::SelectPrev) => {
+                self.selected = (self.selected + n - 1) % n;
+                TitleAction::None
+            }
+            Some(Binding::Confirm) => self.start_season(),
+            _ => TitleAction::None,
+        }
+    }
+
+    fn start_season(&mut self) -> TitleAction {
+        let cat = SeasonCatalog::default();
+        let Some(ruleset) = cat.iter().nth(self.selected) else {
+            self.status = "no seasonal rule set".into();
+            return TitleAction::None;
+        };
+        let window = cat.window(self.now_unix);
+        let name = season_slot_name(&ruleset.id, window.start);
+        let path = self.dir.join(format!("{name}.sqlite"));
+        if path.exists() {
+            self.season_id = None;
+            self.play_path = Some(path);
+            self.config.last_slot = Some(name);
+            let _ = self.config.save(&self.dir);
+            return TitleAction::Play(0);
+        }
+        self.season_id = Some(ruleset.id.clone());
+        self.play_path = Some(path);
+        self.config.last_slot = Some(name);
+        let _ = self.config.save(&self.dir);
         TitleAction::Play(0)
     }
 
@@ -1303,6 +1363,30 @@ impl Title {
                     self.config.keys.primary(Binding::CopySeed)
                 )));
             }
+            Page::Season => {
+                let cat = SeasonCatalog::default();
+                let window = cat.window(self.now_unix);
+                lines.push(Line::from(format!(
+                    "Season  window {}–{}s UTC",
+                    window.start, window.end
+                )));
+                lines.push(Line::from(
+                    "Local date window; galaxy seed is derived from the rule set.",
+                ));
+                lines.push(Line::from(""));
+                for (i, ruleset) in cat.iter().enumerate() {
+                    let mark = if i == self.selected { "> " } else { "  " };
+                    let prestige = if ruleset.prestige {
+                        "shares prestige"
+                    } else {
+                        "prestige isolated"
+                    };
+                    lines.push(Line::from(format!(
+                        "{mark}{} — {} ({prestige})",
+                        ruleset.name, ruleset.blurb
+                    )));
+                }
+            }
             Page::New => {
                 lines.push(Line::from("New game  Humans"));
                 lines.push(field_line(
@@ -1594,6 +1678,7 @@ impl Title {
             seed: parse_seed(&self.new_seed).ok().flatten(),
             difficulty: self.new_difficulty.as_label().to_string(),
             prestige: self.career.prestige.clone(),
+            season_id: self.season_id.clone(),
         }
     }
 }
@@ -1604,6 +1689,7 @@ pub struct NewGameSpec {
     pub seed: Option<u64>,
     pub difficulty: String,
     pub prestige: Prestige,
+    pub season_id: Option<String>,
 }
 
 pub fn parse_seed(text: &str) -> Result<Option<u64>, String> {
@@ -1986,6 +2072,20 @@ mod tests {
     }
 
     #[test]
+    fn season_page_lists_shipped_rule_sets() {
+        let dir = unique_dir();
+        let mut title = Title::new(dir.clone(), 1_800_000_000);
+        title.handle_key(KeyCode::Char('j'));
+        title.handle_key(KeyCode::Char('j'));
+        title.handle_key(KeyCode::Enter);
+        let text = render(&title, 80, 24);
+        assert!(text.contains("Double haul"), "{text}");
+        assert!(text.contains("Closed markets"), "{text}");
+        assert!(text.contains("Pirate weather"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn summarize_away_lists_deliveries_stalls_and_completed() {
         let mut state = GameState::new(0);
         let before = snapshot_away(&state);
@@ -2057,6 +2157,7 @@ mod tests {
         let _holder = lock_save(&locked_path).unwrap();
 
         let mut title = Title::new(dir.clone(), 40);
+        title.handle_key(KeyCode::Down);
         title.handle_key(KeyCode::Down);
         title.handle_key(KeyCode::Down);
         title.handle_key(KeyCode::Enter);
@@ -2381,7 +2482,7 @@ mod tests {
         beta.completed_wonders.push("observatory".into());
         write_save(&dir, "beta", &beta);
         let mut title = Title::new(dir.clone(), 200);
-        for _ in 0..4 {
+        for _ in 0..5 {
             title.handle_key(KeyCode::Down);
         }
         title.handle_key(KeyCode::Enter);

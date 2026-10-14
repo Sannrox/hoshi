@@ -220,8 +220,9 @@
     "deuterium": 30.0,
     "metal": 10.0
   },
-  "save_schema": 33,
+  "save_schema": 34,
   "schema_version": 1,
+  "season": null,
   "spy_reports": [],
   "tactics": {
     "admiral": null,
