@@ -118,7 +118,10 @@ pub use leaders::{
     Actor, Assignment, AssignmentTarget, Delegation, Leader, LeaderConfig, LeaderError,
     PLAYER as LEADER_PLAYER, Permission, RoleKind, TraitSpec,
 };
-pub use market::{MarketConfig, MarketError, MarketState, TradeQuote};
+pub use market::{
+    ContractKind, ContractStatus, MarketBoard, MarketConfig, MarketContract, MarketError,
+    MarketState, OrderSide, RegionMarket, RestingOrder, Shipment, TradeQuote, TraderId,
+};
 pub use moons::{Moon, MoonConfig, MoonError, MoonFacility, PhalanxContact};
 pub use ontology::{
     ACTIONS as ONTOLOGY_ACTIONS, BalanceLineage, CHISEI_API_VERSION, OBJECT_TYPES,

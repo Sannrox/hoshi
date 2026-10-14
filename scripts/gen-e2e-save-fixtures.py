@@ -780,6 +780,88 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             );
             """
         )
+    elif version == 32:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS market_regions (
+                galaxy INTEGER NOT NULL,
+                system INTEGER NOT NULL,
+                position INTEGER NOT NULL,
+                npc_metal REAL NOT NULL,
+                npc_crystal REAL NOT NULL,
+                npc_deuterium REAL NOT NULL,
+                player_metal REAL NOT NULL,
+                player_crystal REAL NOT NULL,
+                player_deuterium REAL NOT NULL,
+                PRIMARY KEY (galaxy, system, position)
+            );
+            CREATE TABLE IF NOT EXISTS market_region_history (
+                galaxy INTEGER NOT NULL,
+                system INTEGER NOT NULL,
+                position INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                hist_index INTEGER NOT NULL,
+                price REAL NOT NULL,
+                PRIMARY KEY (galaxy, system, position, kind, hist_index)
+            );
+            CREATE TABLE IF NOT EXISTS market_orders (
+                id INTEGER PRIMARY KEY,
+                galaxy INTEGER NOT NULL,
+                system INTEGER NOT NULL,
+                position INTEGER NOT NULL,
+                trader TEXT NOT NULL,
+                side TEXT NOT NULL,
+                good TEXT NOT NULL,
+                remaining REAL NOT NULL,
+                price REAL NOT NULL,
+                escrow_metal REAL NOT NULL,
+                escrow_good REAL NOT NULL,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER,
+                is_market INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS market_contracts (
+                id INTEGER PRIMARY KEY,
+                kind TEXT NOT NULL,
+                galaxy INTEGER NOT NULL,
+                system INTEGER NOT NULL,
+                position INTEGER NOT NULL,
+                good TEXT NOT NULL,
+                amount REAL NOT NULL,
+                remaining REAL NOT NULL,
+                price REAL NOT NULL,
+                deadline INTEGER NOT NULL,
+                penalty REAL NOT NULL,
+                issuer TEXT NOT NULL,
+                holder TEXT,
+                status TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS market_shipments (
+                id INTEGER PRIMARY KEY,
+                origin_g INTEGER NOT NULL,
+                origin_s INTEGER NOT NULL,
+                origin_p INTEGER NOT NULL,
+                dest_g INTEGER NOT NULL,
+                dest_s INTEGER NOT NULL,
+                dest_p INTEGER NOT NULL,
+                metal REAL NOT NULL,
+                crystal REAL NOT NULL,
+                deuterium REAL NOT NULL,
+                fuel REAL NOT NULL,
+                launched_at INTEGER NOT NULL,
+                arrives_at INTEGER NOT NULL,
+                contract_id INTEGER,
+                trader TEXT NOT NULL,
+                delivered INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS market_board_meta (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                next_order_id INTEGER NOT NULL,
+                next_contract_id INTEGER NOT NULL,
+                next_shipment_id INTEGER NOT NULL
+            );
+            """
+        )
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"

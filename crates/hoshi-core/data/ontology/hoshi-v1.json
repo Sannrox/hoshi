@@ -36,6 +36,34 @@
     {
       "name": "SharingAgreement",
       "description": "Allied-faction access to marked objects at a stated class and compartment set."
+    },
+    {
+      "name": "Region",
+      "description": "A market venue keyed by a star-system coordinate."
+    },
+    {
+      "name": "Warehouse",
+      "description": "Per-region inventory for a trader."
+    },
+    {
+      "name": "Good",
+      "description": "A traded resource priced in metal."
+    },
+    {
+      "name": "Order",
+      "description": "A limit or market bid or ask on a regional book."
+    },
+    {
+      "name": "Contract",
+      "description": "A delivery or procurement agreement with a deadline and penalty."
+    },
+    {
+      "name": "Trader",
+      "description": "The player or an NPC counterparty on the regional market."
+    },
+    {
+      "name": "Shipment",
+      "description": "Goods in transit between regions. Pays fuel and takes flight time."
     }
   ],
   "relations": [
@@ -56,6 +84,24 @@
       "domain": "Player",
       "range": "Player",
       "description": "Alliance that grants shared visibility."
+    },
+    {
+      "name": "placed-in",
+      "domain": "Order",
+      "range": "Region",
+      "description": "The book that holds the order."
+    },
+    {
+      "name": "binds",
+      "domain": "Contract",
+      "range": "Trader",
+      "description": "The holder who accepted the contract."
+    },
+    {
+      "name": "fulfils",
+      "domain": "Shipment",
+      "range": "Contract",
+      "description": "A shipment that delivers against an accepted contract."
     }
   ],
   "provenance": [

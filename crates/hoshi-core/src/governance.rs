@@ -171,7 +171,11 @@ pub fn dest_of(intent: &Intent) -> Option<Coord> {
         | Intent::Colonize { dest, .. }
         | Intent::Invade { dest, .. } => Some(*dest),
         Intent::Build { planet, .. } => Some(*planet),
-        Intent::Research { .. } => None,
+        Intent::PlaceOrder { region, .. } => Some(*region),
+        Intent::ShipGoods { dest, .. } => Some(*dest),
+        Intent::Research { .. } | Intent::AcceptContract { .. } | Intent::FulfilContract { .. } => {
+            None
+        }
     }
 }
 
@@ -207,6 +211,28 @@ pub fn spend_of(state: &GameState, intent: &Intent, _now: u64) -> f64 {
             ships.add(ShipKind::ColonyShip, 1);
             fuel_of(state, ships, *dest, *speed_percent)
         }
+        Intent::PlaceOrder {
+            amount,
+            limit,
+            side,
+            good,
+            ..
+        } => match side {
+            crate::OrderSide::Buy => state.buy_order_escrow(*good, *amount, *limit),
+            crate::OrderSide::Sell => *amount,
+        },
+        Intent::ShipGoods {
+            origin,
+            dest,
+            cargo,
+            ..
+        } => {
+            cargo.metal
+                + cargo.crystal
+                + cargo.deuterium
+                + state.shipment_fuel(*origin, *dest, *cargo)
+        }
+        Intent::AcceptContract { .. } | Intent::FulfilContract { .. } => 0.0,
     }
 }
 
@@ -574,5 +600,60 @@ mod tests {
         );
         assert!(Coord::from_key("player:1:2:4").is_none());
         assert!(Coord::from_key("nope").is_none());
+    }
+
+    #[test]
+    fn market_buy_spend_uses_escrow_not_a_unit_price() {
+        let state = quiet_state();
+        let intent = Intent::PlaceOrder {
+            region: Coord::HOME,
+            side: crate::OrderSide::Buy,
+            good: crate::ResourceKind::Crystal,
+            amount: 10.0,
+            limit: None,
+            ttl_secs: 86_400,
+        };
+        let spent = spend_of(&state, &intent, 1_000);
+        let escrow = state.buy_order_escrow(crate::ResourceKind::Crystal, 10.0, None);
+        assert!((spent - escrow).abs() < 1e-9);
+        assert!(
+            spent > 10.0,
+            "market buy must not look like 1 metal per unit, got {spent}"
+        );
+        let cfg = GovernanceConfig {
+            spend_cap_per_turn: 10.0,
+            ..GovernanceConfig::default()
+        };
+        let err = check_move(
+            &state,
+            &intent,
+            &[],
+            &GovernanceLedger::default(),
+            &cfg,
+            InvasionApproval::Granted,
+            1_000,
+        )
+        .unwrap_err();
+        assert_eq!(err.rule, "spend-cap-turn");
+    }
+
+    #[test]
+    fn ship_goods_spend_includes_fuel() {
+        let state = quiet_state();
+        let cargo = Resources {
+            metal: 20.0,
+            ..Resources::ZERO
+        };
+        let dest = state.config.market.hub();
+        let intent = Intent::ShipGoods {
+            origin: Coord::HOME,
+            dest,
+            cargo,
+            contract: None,
+        };
+        let spent = spend_of(&state, &intent, 1_000);
+        let fuel = state.shipment_fuel(Coord::HOME, dest, cargo);
+        assert!(fuel > 0.0, "expected flight fuel, got {fuel}");
+        assert!((spent - (20.0 + fuel)).abs() < 1e-9);
     }
 }

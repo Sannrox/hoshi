@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 31;
+pub const SCHEMA_VERSION: u32 = 32;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -193,7 +193,13 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM sharing_agreements;
          DELETE FROM leak_incidents;
          DELETE FROM leader_clearance;
-         DELETE FROM classification_meta;",
+         DELETE FROM classification_meta;
+         DELETE FROM market_region_history;
+         DELETE FROM market_regions;
+         DELETE FROM market_orders;
+         DELETE FROM market_contracts;
+         DELETE FROM market_shipments;
+         DELETE FROM market_board_meta;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -496,6 +502,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
     insert_leaders(&tx, state)?;
     insert_planning(&tx, state)?;
     insert_classification(&tx, state)?;
+    insert_board(&tx, state)?;
     for (i, colony) in state.colonies.iter().enumerate() {
         let planet_id = (i as i64) + 2;
         tx.execute(
@@ -1117,6 +1124,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     load_leaders(conn, &mut state)?;
     load_planning(conn, &mut state)?;
     load_classification(conn, &mut state)?;
+    load_board(conn, &mut state)?;
     state.sync_raid_schedule_after_standing(state.last_tick_unix);
 
     let mut stmt = conn.prepare(
@@ -1981,6 +1989,12 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "leak_incidents" => "SELECT COUNT(*) FROM leak_incidents",
         "leader_clearance" => "SELECT COUNT(*) FROM leader_clearance",
         "classification_meta" => "SELECT COUNT(*) FROM classification_meta",
+        "market_regions" => "SELECT COUNT(*) FROM market_regions",
+        "market_region_history" => "SELECT COUNT(*) FROM market_region_history",
+        "market_orders" => "SELECT COUNT(*) FROM market_orders",
+        "market_contracts" => "SELECT COUNT(*) FROM market_contracts",
+        "market_shipments" => "SELECT COUNT(*) FROM market_shipments",
+        "market_board_meta" => "SELECT COUNT(*) FROM market_board_meta",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -2050,7 +2064,13 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "sharing_agreements")?
         + count_rows(conn, "leak_incidents")?
         + count_rows(conn, "leader_clearance")?
-        + count_rows(conn, "classification_meta")?)
+        + count_rows(conn, "classification_meta")?
+        + count_rows(conn, "market_regions")?
+        + count_rows(conn, "market_region_history")?
+        + count_rows(conn, "market_orders")?
+        + count_rows(conn, "market_contracts")?
+        + count_rows(conn, "market_shipments")?
+        + count_rows(conn, "market_board_meta")?)
 }
 
 fn migrate(conn: &Connection) -> Result<(), SaveError> {
@@ -2153,6 +2173,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 31 {
         migrate_v31(conn)?;
+    }
+    if found < 32 {
+        migrate_v32(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -3024,6 +3047,91 @@ fn migrate_v30(conn: &Connection) -> Result<(), SaveError> {
     Ok(())
 }
 
+fn migrate_v32(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS market_regions (
+            galaxy INTEGER NOT NULL,
+            system INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            npc_metal REAL NOT NULL,
+            npc_crystal REAL NOT NULL,
+            npc_deuterium REAL NOT NULL,
+            player_metal REAL NOT NULL,
+            player_crystal REAL NOT NULL,
+            player_deuterium REAL NOT NULL,
+            PRIMARY KEY (galaxy, system, position)
+        );
+        CREATE TABLE IF NOT EXISTS market_region_history (
+            galaxy INTEGER NOT NULL,
+            system INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            hist_index INTEGER NOT NULL,
+            price REAL NOT NULL,
+            PRIMARY KEY (galaxy, system, position, kind, hist_index)
+        );
+        CREATE TABLE IF NOT EXISTS market_orders (
+            id INTEGER PRIMARY KEY,
+            galaxy INTEGER NOT NULL,
+            system INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            trader TEXT NOT NULL,
+            side TEXT NOT NULL,
+            good TEXT NOT NULL,
+            remaining REAL NOT NULL,
+            price REAL NOT NULL,
+            escrow_metal REAL NOT NULL,
+            escrow_good REAL NOT NULL,
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER,
+            is_market INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS market_contracts (
+            id INTEGER PRIMARY KEY,
+            kind TEXT NOT NULL,
+            galaxy INTEGER NOT NULL,
+            system INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            good TEXT NOT NULL,
+            amount REAL NOT NULL,
+            remaining REAL NOT NULL,
+            price REAL NOT NULL,
+            deadline INTEGER NOT NULL,
+            penalty REAL NOT NULL,
+            issuer TEXT NOT NULL,
+            holder TEXT,
+            status TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS market_shipments (
+            id INTEGER PRIMARY KEY,
+            origin_g INTEGER NOT NULL,
+            origin_s INTEGER NOT NULL,
+            origin_p INTEGER NOT NULL,
+            dest_g INTEGER NOT NULL,
+            dest_s INTEGER NOT NULL,
+            dest_p INTEGER NOT NULL,
+            metal REAL NOT NULL,
+            crystal REAL NOT NULL,
+            deuterium REAL NOT NULL,
+            fuel REAL NOT NULL,
+            launched_at INTEGER NOT NULL,
+            arrives_at INTEGER NOT NULL,
+            contract_id INTEGER,
+            trader TEXT NOT NULL,
+            delivered INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS market_board_meta (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            next_order_id INTEGER NOT NULL,
+            next_contract_id INTEGER NOT NULL,
+            next_shipment_id INTEGER NOT NULL
+        );
+        ",
+    )?;
+    Ok(())
+}
+
 fn migrate_v31(conn: &Connection) -> Result<(), SaveError> {
     conn.execute_batch(
         "
@@ -3733,6 +3841,130 @@ fn insert_classification(
     Ok(())
 }
 
+fn insert_board(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<(), SaveError> {
+    tx.execute(
+        "INSERT INTO market_board_meta (id, next_order_id, next_contract_id, next_shipment_id)
+         VALUES (1, ?1, ?2, ?3)",
+        params![
+            state.board.next_order_id as i64,
+            state.board.next_contract_id as i64,
+            state.board.next_shipment_id as i64,
+        ],
+    )?;
+    for region in state.board.regions.values() {
+        tx.execute(
+            "INSERT INTO market_regions (
+                galaxy, system, position, npc_metal, npc_crystal, npc_deuterium,
+                player_metal, player_crystal, player_deuterium
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                region.coord.galaxy as i64,
+                region.coord.system as i64,
+                region.coord.position as i64,
+                region.npc_warehouse.metal,
+                region.npc_warehouse.crystal,
+                region.npc_warehouse.deuterium,
+                region.player_warehouse.metal,
+                region.player_warehouse.crystal,
+                region.player_warehouse.deuterium,
+            ],
+        )?;
+        for kind in crate::ResourceKind::ALL {
+            for (i, price) in region.history(kind).iter().enumerate() {
+                tx.execute(
+                    "INSERT INTO market_region_history (
+                        galaxy, system, position, kind, hist_index, price
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        region.coord.galaxy as i64,
+                        region.coord.system as i64,
+                        region.coord.position as i64,
+                        kind.as_key(),
+                        i as i64,
+                        price,
+                    ],
+                )?;
+            }
+        }
+    }
+    for order in state.board.orders.values() {
+        tx.execute(
+            "INSERT INTO market_orders (
+                id, galaxy, system, position, trader, side, good, remaining, price,
+                escrow_metal, escrow_good, created_at, expires_at, is_market
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            params![
+                order.id as i64,
+                order.region.galaxy as i64,
+                order.region.system as i64,
+                order.region.position as i64,
+                order.trader.as_key(),
+                order.side.as_key(),
+                order.good.as_key(),
+                order.remaining,
+                order.price,
+                order.escrow_metal,
+                order.escrow_good,
+                order.created_at as i64,
+                order.expires_at.map(|t| t as i64),
+                i64::from(order.is_market),
+            ],
+        )?;
+    }
+    for contract in state.board.contracts.values() {
+        tx.execute(
+            "INSERT INTO market_contracts (
+                id, kind, galaxy, system, position, good, amount, remaining, price,
+                deadline, penalty, issuer, holder, status
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            params![
+                contract.id as i64,
+                contract.kind.as_key(),
+                contract.region.galaxy as i64,
+                contract.region.system as i64,
+                contract.region.position as i64,
+                contract.good.as_key(),
+                contract.amount,
+                contract.remaining,
+                contract.price,
+                contract.deadline as i64,
+                contract.penalty,
+                contract.issuer.as_key(),
+                contract.holder.map(|t| t.as_key().to_string()),
+                contract.status.as_key(),
+            ],
+        )?;
+    }
+    for ship in state.board.shipments.values() {
+        tx.execute(
+            "INSERT INTO market_shipments (
+                id, origin_g, origin_s, origin_p, dest_g, dest_s, dest_p,
+                metal, crystal, deuterium, fuel, launched_at, arrives_at,
+                contract_id, trader, delivered
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            params![
+                ship.id as i64,
+                ship.origin.galaxy as i64,
+                ship.origin.system as i64,
+                ship.origin.position as i64,
+                ship.dest.galaxy as i64,
+                ship.dest.system as i64,
+                ship.dest.position as i64,
+                ship.cargo.metal,
+                ship.cargo.crystal,
+                ship.cargo.deuterium,
+                ship.fuel,
+                ship.launched_at as i64,
+                ship.arrives_at as i64,
+                ship.contract_id.map(|id| id as i64),
+                ship.trader.as_key(),
+                i64::from(ship.delivered),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 fn load_planning(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
     if !table_exists(conn, "vehicles") {
         return Ok(());
@@ -4028,6 +4260,334 @@ fn load_classification(conn: &Connection, state: &mut GameState) -> Result<(), S
             .max()
             .map(|id| id.saturating_add(1))
             .unwrap_or(0);
+    }
+    Ok(())
+}
+
+fn load_board(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
+    if !table_exists(conn, "market_board_meta") {
+        return Ok(());
+    }
+    if let Some((next_order, next_contract, next_ship)) = conn
+        .query_row(
+            "SELECT next_order_id, next_contract_id, next_shipment_id FROM market_board_meta WHERE id = 1",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?)),
+        )
+        .optional()?
+    {
+        state.board.next_order_id = unix_ts(next_order)?;
+        state.board.next_contract_id = unix_ts(next_contract)?;
+        state.board.next_shipment_id = unix_ts(next_ship)?;
+    }
+    if table_exists(conn, "market_regions") {
+        let mut stmt = conn.prepare(
+            "SELECT galaxy, system, position, npc_metal, npc_crystal, npc_deuterium,
+                    player_metal, player_crystal, player_deuterium
+             FROM market_regions",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, f64>(3)?,
+                row.get::<_, f64>(4)?,
+                row.get::<_, f64>(5)?,
+                row.get::<_, f64>(6)?,
+                row.get::<_, f64>(7)?,
+                row.get::<_, f64>(8)?,
+            ))
+        })?;
+        state.board.regions.clear();
+        for row in rows {
+            let (g, s, p, nm, nc, nd, pm, pc, pd) = row?;
+            let coord = Coord {
+                galaxy: u16_coord(g)?,
+                system: u16_coord(s)?,
+                position: u16_coord(p)?,
+            };
+            state.board.regions.insert(
+                coord,
+                crate::RegionMarket {
+                    coord,
+                    npc_warehouse: Resources {
+                        metal: nm,
+                        crystal: nc,
+                        deuterium: nd,
+                    },
+                    player_warehouse: Resources {
+                        metal: pm,
+                        crystal: pc,
+                        deuterium: pd,
+                    },
+                    metal_hist: Vec::new(),
+                    crystal_hist: Vec::new(),
+                    deuterium_hist: Vec::new(),
+                    last_crystal: None,
+                    last_deuterium: None,
+                },
+            );
+        }
+    }
+    if table_exists(conn, "market_region_history") {
+        let mut stmt = conn.prepare(
+            "SELECT galaxy, system, position, kind, hist_index, price
+             FROM market_region_history ORDER BY galaxy, system, position, kind, hist_index",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, f64>(5)?,
+            ))
+        })?;
+        for row in rows {
+            let (g, s, p, kind, _idx, price) = row?;
+            if !price.is_finite() || price <= 0.0 {
+                return Err(SaveError::Corrupt("region market history"));
+            }
+            let coord = Coord {
+                galaxy: u16_coord(g)?,
+                system: u16_coord(s)?,
+                position: u16_coord(p)?,
+            };
+            let kind = crate::ResourceKind::from_key(&kind)
+                .ok_or(SaveError::Corrupt("region market history kind"))?;
+            if let Some(region) = state.board.regions.get_mut(&coord) {
+                match kind {
+                    crate::ResourceKind::Metal => region.metal_hist.push(price),
+                    crate::ResourceKind::Crystal => region.crystal_hist.push(price),
+                    crate::ResourceKind::Deuterium => region.deuterium_hist.push(price),
+                }
+            }
+        }
+    }
+    if table_exists(conn, "market_orders") {
+        let mut stmt = conn.prepare(
+            "SELECT id, galaxy, system, position, trader, side, good, remaining, price,
+                    escrow_metal, escrow_good, created_at, expires_at, is_market
+             FROM market_orders ORDER BY id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, f64>(7)?,
+                row.get::<_, f64>(8)?,
+                row.get::<_, f64>(9)?,
+                row.get::<_, f64>(10)?,
+                row.get::<_, i64>(11)?,
+                row.get::<_, Option<i64>>(12)?,
+                row.get::<_, i64>(13)?,
+            ))
+        })?;
+        state.board.orders.clear();
+        for row in rows {
+            let (
+                id,
+                g,
+                s,
+                p,
+                trader,
+                side,
+                good,
+                remaining,
+                price,
+                escrow_metal,
+                escrow_good,
+                created,
+                expires,
+                is_market,
+            ) = row?;
+            let id = unix_ts(id)?;
+            let order = crate::RestingOrder {
+                id,
+                region: Coord {
+                    galaxy: u16_coord(g)?,
+                    system: u16_coord(s)?,
+                    position: u16_coord(p)?,
+                },
+                trader: crate::TraderId::from_key(&trader)
+                    .ok_or(SaveError::Corrupt("market trader"))?,
+                side: crate::OrderSide::from_key(&side).ok_or(SaveError::Corrupt("market side"))?,
+                good: crate::ResourceKind::from_key(&good)
+                    .ok_or(SaveError::Corrupt("market good"))?,
+                remaining,
+                price,
+                escrow_metal,
+                escrow_good,
+                created_at: unix_ts(created)?,
+                expires_at: match expires {
+                    Some(t) => Some(unix_ts(t)?),
+                    None => None,
+                },
+                is_market: is_market != 0,
+            };
+            state.board.orders.insert(id, order);
+        }
+    }
+    if table_exists(conn, "market_contracts") {
+        let mut stmt = conn.prepare(
+            "SELECT id, kind, galaxy, system, position, good, amount, remaining, price,
+                    deadline, penalty, issuer, holder, status
+             FROM market_contracts ORDER BY id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, f64>(6)?,
+                row.get::<_, f64>(7)?,
+                row.get::<_, f64>(8)?,
+                row.get::<_, i64>(9)?,
+                row.get::<_, f64>(10)?,
+                row.get::<_, String>(11)?,
+                row.get::<_, Option<String>>(12)?,
+                row.get::<_, String>(13)?,
+            ))
+        })?;
+        state.board.contracts.clear();
+        for row in rows {
+            let (
+                id,
+                kind,
+                g,
+                s,
+                p,
+                good,
+                amount,
+                remaining,
+                price,
+                deadline,
+                penalty,
+                issuer,
+                holder,
+                status,
+            ) = row?;
+            let id = unix_ts(id)?;
+            let holder = match holder {
+                Some(text) => Some(
+                    crate::TraderId::from_key(&text)
+                        .ok_or(SaveError::Corrupt("contract holder"))?,
+                ),
+                None => None,
+            };
+            let contract = crate::MarketContract {
+                id,
+                kind: crate::ContractKind::from_key(&kind)
+                    .ok_or(SaveError::Corrupt("contract kind"))?,
+                region: Coord {
+                    galaxy: u16_coord(g)?,
+                    system: u16_coord(s)?,
+                    position: u16_coord(p)?,
+                },
+                good: crate::ResourceKind::from_key(&good)
+                    .ok_or(SaveError::Corrupt("contract good"))?,
+                amount,
+                remaining,
+                price,
+                deadline: unix_ts(deadline)?,
+                penalty,
+                issuer: crate::TraderId::from_key(&issuer)
+                    .ok_or(SaveError::Corrupt("contract issuer"))?,
+                holder,
+                status: crate::ContractStatus::from_key(&status)
+                    .ok_or(SaveError::Corrupt("contract status"))?,
+            };
+            state.board.contracts.insert(id, contract);
+        }
+    }
+    if table_exists(conn, "market_shipments") {
+        let mut stmt = conn.prepare(
+            "SELECT id, origin_g, origin_s, origin_p, dest_g, dest_s, dest_p,
+                    metal, crystal, deuterium, fuel, launched_at, arrives_at,
+                    contract_id, trader, delivered
+             FROM market_shipments ORDER BY id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, f64>(7)?,
+                row.get::<_, f64>(8)?,
+                row.get::<_, f64>(9)?,
+                row.get::<_, f64>(10)?,
+                row.get::<_, i64>(11)?,
+                row.get::<_, i64>(12)?,
+                row.get::<_, Option<i64>>(13)?,
+                row.get::<_, String>(14)?,
+                row.get::<_, i64>(15)?,
+            ))
+        })?;
+        state.board.shipments.clear();
+        for row in rows {
+            let (
+                id,
+                og,
+                os,
+                op,
+                dg,
+                ds,
+                dp,
+                metal,
+                crystal,
+                deuterium,
+                fuel,
+                launched,
+                arrives,
+                contract_id,
+                trader,
+                delivered,
+            ) = row?;
+            let id = unix_ts(id)?;
+            let ship = crate::Shipment {
+                id,
+                origin: Coord {
+                    galaxy: u16_coord(og)?,
+                    system: u16_coord(os)?,
+                    position: u16_coord(op)?,
+                },
+                dest: Coord {
+                    galaxy: u16_coord(dg)?,
+                    system: u16_coord(ds)?,
+                    position: u16_coord(dp)?,
+                },
+                cargo: Resources {
+                    metal,
+                    crystal,
+                    deuterium,
+                },
+                fuel,
+                launched_at: unix_ts(launched)?,
+                arrives_at: unix_ts(arrives)?,
+                contract_id: match contract_id {
+                    Some(cid) => Some(unix_ts(cid)?),
+                    None => None,
+                },
+                trader: crate::TraderId::from_key(&trader)
+                    .ok_or(SaveError::Corrupt("shipment trader"))?,
+                delivered: delivered != 0,
+            };
+            state.board.shipments.insert(id, ship);
+        }
     }
     Ok(())
 }
@@ -6193,6 +6753,36 @@ mod tests {
         assert_eq!(count_rows(&conn, "sharing_agreements").unwrap(), 1);
         assert_eq!(count_rows(&conn, "leak_incidents").unwrap(), 1);
         assert_eq!(count_rows(&conn, "leader_clearance").unwrap(), 1);
+    }
+
+    #[test]
+    fn migrate_v32_round_trips_regional_market() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v32(&conn).unwrap();
+        migrate_v32(&conn).unwrap();
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.enabled = false;
+        let mut state = GameState::with_config(1_000, cfg);
+        state.resources.metal = 50_000.0;
+        state.resources.crystal = 50_000.0;
+        state.resources.deuterium = 50_000.0;
+        state
+            .place_order(
+                Coord::HOME,
+                crate::OrderSide::Buy,
+                crate::ResourceKind::Crystal,
+                5.0,
+                Some(2.0),
+                1_000,
+                1_000,
+            )
+            .unwrap();
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.board.orders.len(), state.board.orders.len());
+        assert_eq!(loaded.board.next_order_id, state.board.next_order_id);
+        assert!(!loaded.board.regions.is_empty());
+        assert_eq!(count_rows(&conn, "market_board_meta").unwrap(), 1);
     }
 
     #[test]

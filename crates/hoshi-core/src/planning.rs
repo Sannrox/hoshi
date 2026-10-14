@@ -234,7 +234,10 @@ impl fmt::Display for PlanError {
             PlanError::UnknownTransfer(id) => write!(f, "unknown transfer {id}"),
             PlanError::UnknownCustomer(id) => write!(f, "unknown customer {id}"),
             PlanError::MarketContracts => {
-                write!(f, "market-contract customers are not in this schema")
+                write!(
+                    f,
+                    "market is off; contract customers need an enabled market"
+                )
             }
             PlanError::DestNotOwned => write!(f, "colony customer needs an owned destination"),
             PlanError::UnknownFaction(id) => write!(f, "unknown faction {id}"),
@@ -422,7 +425,11 @@ impl GameState {
             return Err(PlanError::InvalidCargo);
         }
         match &plan.customer {
-            Customer::Market => return Err(PlanError::MarketContracts),
+            Customer::Market => {
+                if !self.config.market.enabled {
+                    return Err(PlanError::MarketContracts);
+                }
+            }
             Customer::Colony => {
                 if !self.owned_coords().contains(&plan.route.dest) {
                     return Err(PlanError::DestNotOwned);
@@ -634,7 +641,9 @@ impl GameState {
                 Customer::Faction(id) => {
                     self.apply_faction_delta(id, |f| f.trade_delta, "mission", done_at);
                 }
-                Customer::Market => {}
+                Customer::Market => {
+                    self.credit_market_delivery(mission.route.dest, mission.payload.cargo, done_at);
+                }
             }
             self.push_event(
                 done_at,
@@ -1215,8 +1224,9 @@ mod tests {
     }
 
     #[test]
-    fn market_customer_is_refused() {
+    fn market_customer_is_refused_when_the_market_is_off() {
         let mut state = ready(1_000);
+        state.config.market.enabled = false;
         let mut ships = Fleet::default();
         ships.add(ShipKind::SmallCargo, 1);
         let id = state.register_vehicle(Coord::HOME, ships, 1_000).unwrap();
@@ -1243,6 +1253,36 @@ mod tests {
             .unwrap();
         let err = state.check_mission(&plan, now).unwrap_err();
         assert!(matches!(err, PlanError::MarketContracts), "{err:?}");
+    }
+
+    #[test]
+    fn market_customer_is_accepted_when_the_market_is_on() {
+        let mut state = ready(1_000);
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::SmallCargo, 1);
+        let id = state.register_vehicle(Coord::HOME, ships, 1_000).unwrap();
+        let dest = neighbor();
+        let estimate = state
+            .mission_windows(Coord::HOME, dest, TransferKind::Hohmann, 1_000)
+            .unwrap();
+        let now = estimate.windows[0].opens_at;
+        state.last_tick_unix = now;
+        let plan = state
+            .propose_mission(
+                &PlanRequest {
+                    vehicle_id: id,
+                    dest,
+                    transfer: TransferKind::Hohmann,
+                    customer: Customer::Market,
+                    payload: Payload {
+                        cargo: Resources::ZERO,
+                    },
+                    window_index: Some(0),
+                },
+                now,
+            )
+            .unwrap();
+        state.check_mission(&plan, now).unwrap();
     }
 
     #[test]

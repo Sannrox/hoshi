@@ -506,6 +506,24 @@ struct FileMarket {
     deuterium_mean: f64,
     #[serde(default = "default_market_cargo")]
     cargo_free: f64,
+    #[serde(default = "default_market_hub_galaxy")]
+    hub_galaxy: u16,
+    #[serde(default = "default_market_hub_system")]
+    hub_system: u16,
+    #[serde(default = "default_market_hub_position")]
+    hub_position: u16,
+    #[serde(default = "default_market_hub_stock")]
+    hub_metal: f64,
+    #[serde(default = "default_market_hub_stock")]
+    hub_crystal: f64,
+    #[serde(default = "default_market_hub_stock")]
+    hub_deuterium: f64,
+    #[serde(default = "default_market_npc_size")]
+    npc_order_size: f64,
+    #[serde(default = "default_market_penalty")]
+    contract_penalty: f64,
+    #[serde(default = "default_market_ttl")]
+    order_ttl_secs: u64,
 }
 
 fn default_true() -> bool {
@@ -556,6 +574,27 @@ fn default_market_deut() -> f64 {
 fn default_market_cargo() -> f64 {
     50.0
 }
+fn default_market_hub_galaxy() -> u16 {
+    1
+}
+fn default_market_hub_system() -> u16 {
+    1
+}
+fn default_market_hub_position() -> u16 {
+    16
+}
+fn default_market_hub_stock() -> f64 {
+    10_000.0
+}
+fn default_market_npc_size() -> f64 {
+    50.0
+}
+fn default_market_penalty() -> f64 {
+    0.2
+}
+fn default_market_ttl() -> u64 {
+    86_400
+}
 
 impl Default for FileMarket {
     fn default() -> Self {
@@ -576,6 +615,15 @@ impl Default for FileMarket {
             crystal_mean: default_market_crystal(),
             deuterium_mean: default_market_deut(),
             cargo_free: default_market_cargo(),
+            hub_galaxy: default_market_hub_galaxy(),
+            hub_system: default_market_hub_system(),
+            hub_position: default_market_hub_position(),
+            hub_metal: default_market_hub_stock(),
+            hub_crystal: default_market_hub_stock(),
+            hub_deuterium: default_market_hub_stock(),
+            npc_order_size: default_market_npc_size(),
+            contract_penalty: default_market_penalty(),
+            order_ttl_secs: default_market_ttl(),
         }
     }
 }
@@ -1354,6 +1402,15 @@ impl File {
                 crystal_mean: self.market.crystal_mean,
                 deuterium_mean: self.market.deuterium_mean,
                 cargo_free: self.market.cargo_free,
+                hub_galaxy: self.market.hub_galaxy,
+                hub_system: self.market.hub_system,
+                hub_position: self.market.hub_position,
+                hub_metal: self.market.hub_metal,
+                hub_crystal: self.market.hub_crystal,
+                hub_deuterium: self.market.hub_deuterium,
+                npc_order_size: self.market.npc_order_size,
+                contract_penalty: self.market.contract_penalty,
+                order_ttl_secs: self.market.order_ttl_secs,
             },
         };
         let wonders = config.wonders.clone();
@@ -1755,6 +1812,24 @@ impl BalanceConfig {
             finite_positive("market.crystal_mean", self.market.crystal_mean)?;
             finite_positive("market.deuterium_mean", self.market.deuterium_mean)?;
             nonneg_finite("market.cargo_free", self.market.cargo_free)?;
+            if self.market.hub_galaxy == 0
+                || self.market.hub_system == 0
+                || self.market.hub_position == 0
+            {
+                return Err(BalanceError::Invalid(
+                    "market hub coordinates must be at least 1".into(),
+                ));
+            }
+            nonneg_finite("market.hub_metal", self.market.hub_metal)?;
+            nonneg_finite("market.hub_crystal", self.market.hub_crystal)?;
+            nonneg_finite("market.hub_deuterium", self.market.hub_deuterium)?;
+            nonneg_finite("market.npc_order_size", self.market.npc_order_size)?;
+            nonneg_finite("market.contract_penalty", self.market.contract_penalty)?;
+            if self.market.order_ttl_secs == 0 {
+                return Err(BalanceError::Invalid(
+                    "market.order_ttl_secs must be positive".into(),
+                ));
+            }
         }
         if !self.espionage.target_level.is_finite() {
             return Err(BalanceError::Invalid(

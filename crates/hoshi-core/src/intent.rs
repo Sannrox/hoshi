@@ -3,9 +3,10 @@
 use crate::buildings::{BuildError, BuildingKind};
 use crate::fleets::{Coord, FleetError};
 use crate::leaders::Actor;
+use crate::market::{MarketError, OrderSide};
 use crate::research::ResearchError;
 use crate::ships::{Fleet, ShipKind};
-use crate::state::GameState;
+use crate::state::{GameState, ResourceKind, Resources};
 use std::fmt;
 
 /// One governed move. Names match the ontology action list.
@@ -34,6 +35,26 @@ pub enum Intent {
         dest: Coord,
         speed_percent: u8,
     },
+    PlaceOrder {
+        region: Coord,
+        side: OrderSide,
+        good: ResourceKind,
+        amount: f64,
+        limit: Option<f64>,
+        ttl_secs: u64,
+    },
+    AcceptContract {
+        id: u64,
+    },
+    FulfilContract {
+        id: u64,
+    },
+    ShipGoods {
+        origin: Coord,
+        dest: Coord,
+        cargo: Resources,
+        contract: Option<u64>,
+    },
 }
 
 impl Intent {
@@ -44,6 +65,10 @@ impl Intent {
             Intent::Launch { .. } => "launch",
             Intent::Colonize { .. } => "colonize",
             Intent::Invade { .. } => "invade",
+            Intent::PlaceOrder { .. } => "place_order",
+            Intent::AcceptContract { .. } => "accept_contract",
+            Intent::FulfilContract { .. } => "fulfil_contract",
+            Intent::ShipGoods { .. } => "ship_goods",
         }
     }
 }
@@ -60,6 +85,7 @@ pub enum IntentError {
     Build(BuildError),
     Research(ResearchError),
     Fleet(FleetError),
+    Market(MarketError),
     Save(String),
 }
 
@@ -69,6 +95,7 @@ impl fmt::Display for IntentError {
             IntentError::Build(e) => write!(f, "{e}"),
             IntentError::Research(e) => write!(f, "{e}"),
             IntentError::Fleet(e) => write!(f, "{e}"),
+            IntentError::Market(e) => write!(f, "{e}"),
             IntentError::Save(e) => write!(f, "save backend: {e}"),
         }
     }
@@ -118,6 +145,33 @@ fn proposal_id(intent: &Intent, now_unix: u64, tick: u64) -> String {
         } => format!(
             "invade:{now_unix}:{tick}:{dest}:{speed_percent}:{}",
             fleet_sig(ships)
+        ),
+        Intent::PlaceOrder {
+            region,
+            side,
+            good,
+            amount,
+            limit,
+            ttl_secs,
+        } => format!(
+            "place_order:{now_unix}:{tick}:{region}:{}:{}:{amount}:{}:{ttl_secs}",
+            side.as_key(),
+            good.as_key(),
+            limit.map(|p| p.to_string()).unwrap_or_else(|| "mkt".into()),
+        ),
+        Intent::AcceptContract { id } => format!("accept_contract:{now_unix}:{tick}:{id}"),
+        Intent::FulfilContract { id } => format!("fulfil_contract:{now_unix}:{tick}:{id}"),
+        Intent::ShipGoods {
+            origin,
+            dest,
+            cargo,
+            contract,
+        } => format!(
+            "ship_goods:{now_unix}:{tick}:{origin}:{dest}:{}:{}:{}:{}",
+            cargo.metal,
+            cargo.crystal,
+            cargo.deuterium,
+            contract.map(|id| id.to_string()).unwrap_or_default(),
         ),
     }
 }
@@ -170,6 +224,32 @@ fn apply_inner(state: &mut GameState, intent: &Intent, now_unix: u64) -> Result<
             .launch_invasion(*ships, *dest, *speed_percent, now_unix)
             .map(|_| ())
             .map_err(IntentError::Fleet),
+        Intent::PlaceOrder {
+            region,
+            side,
+            good,
+            amount,
+            limit,
+            ttl_secs,
+        } => state
+            .place_order(*region, *side, *good, *amount, *limit, *ttl_secs, now_unix)
+            .map(|_| ())
+            .map_err(IntentError::Market),
+        Intent::AcceptContract { id } => state
+            .accept_contract(*id, now_unix)
+            .map_err(IntentError::Market),
+        Intent::FulfilContract { id } => state
+            .fulfil_contract(*id, now_unix)
+            .map_err(IntentError::Market),
+        Intent::ShipGoods {
+            origin,
+            dest,
+            cargo,
+            contract,
+        } => state
+            .ship_goods(*origin, *dest, *cargo, *contract, now_unix)
+            .map(|_| ())
+            .map_err(IntentError::Market),
     }
 }
 
@@ -209,6 +289,24 @@ mod tests {
                 ships: Fleet::default(),
                 dest: Coord::HOME,
                 speed_percent: 100,
+            }
+            .as_key(),
+            Intent::PlaceOrder {
+                region: Coord::HOME,
+                side: OrderSide::Buy,
+                good: ResourceKind::Crystal,
+                amount: 1.0,
+                limit: Some(2.0),
+                ttl_secs: 1,
+            }
+            .as_key(),
+            Intent::AcceptContract { id: 1 }.as_key(),
+            Intent::FulfilContract { id: 1 }.as_key(),
+            Intent::ShipGoods {
+                origin: Coord::HOME,
+                dest: Coord::HOME,
+                cargo: Resources::ZERO,
+                contract: None,
             }
             .as_key(),
         ];

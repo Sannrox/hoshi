@@ -21,9 +21,9 @@ When adding a feature, name:
 
 | Piece | Meaning |
 | --- | --- |
-| Object types | The nouns (planet, fleet, faction, outpost, route, facility, good, law, proposal, approver, jurisdiction, measurement, leader, role, assignment, permission, delegation, marking, compartment, clearance, sharing agreement). |
-| Links | How those nouns point at each other (fleet at coord, route between owned planets, standing on a faction id, a proposal that amends a law in a jurisdiction, a leader holding a role through an assignment, a role granting permissions, a delegation with limits, owned by a leader, approved by approvers, a marking on a fact/plan/report/law, a clearance that includes compartments, a sharing agreement with an allied faction). |
-| Actions | Propose, check, apply. The TUI and CLI call the same `hoshi-core` function. They do not write the save. `AssignLeader`, `Delegate` and `RevokeDelegation` are the staff path. `ProposeLaw`, `ApproveLaw`, `EnactLaw` and `RepealLaw` are the law path: owner, approvals, effective date, audit trail. Every action a leader takes is checked against the role and recorded. |
+| Object types | The nouns (planet, fleet, faction, outpost, route, facility, good, law, proposal, approver, jurisdiction, measurement, leader, role, assignment, permission, delegation, marking, compartment, clearance, sharing agreement, region, warehouse, order, contract, trader, shipment). |
+| Links | How those nouns point at each other (fleet at coord, route between owned planets, standing on a faction id, a proposal that amends a law in a jurisdiction, a leader holding a role through an assignment, a role granting permissions, a delegation with limits, owned by a leader, approved by approvers, a marking on a fact/plan/report/law, a clearance that includes compartments, a sharing agreement with an allied faction, an order placed in a region, a contract that binds a trader, a shipment that fulfils a contract). |
+| Actions | Propose, check, apply. The TUI and CLI call the same `hoshi-core` function. They do not write the save. `AssignLeader`, `Delegate` and `RevokeDelegation` are the staff path. `ProposeLaw`, `ApproveLaw`, `EnactLaw` and `RepealLaw` are the law path: owner, approvals, effective date, audit trail. `PlaceOrder`, `AcceptContract`, `FulfilContract` and `ShipGoods` are the regional market path. Every action a leader takes is checked against the role and recorded. |
 | Outcomes | A typed result plus a log line (`GameEvent`) with a timestamp. Catch-up and live play share that path. Measured effects attach to the law as evidence. |
 
 State changes go through core actions. Offline catch-up replays the same
@@ -178,7 +178,8 @@ silent extra departure; they extend this list.
 | Hull points map to kilograms through `kg_per_hull` | Keeps a combustion cargo inside a mid-game deuterium stockpile for a 1–1.5 AU hop. |
 | Propellant mass is paid from deuterium; it does not fill cargo volume | Tanks are part of the vehicle; cargo is payload. |
 | Inter-system and galaxy hops sit on summed AU radii around the same star | Keeps one μ and one Hohmann formula; ordering of hop size stays. |
-| Market-contract customers wait on later work | Colony and faction customers are live; the market lane is a later Issue. |
+| NPC hub and home books start with a finite guild warehouse | Depth for PlaceOrder without minting player stockpiles; the warehouse does not restock from nothing. |
+| Regional shipments bill fuel and transit from a cargo-capacity flight but leave the parked fleet in place | They model contracted haulers rather than a second fleet object. Catch-up stays event-driven. |
 | Construction stockpiles named metal / crystal / deuterium | Three columns keep the TUI and save small; chains already have real material names underneath. |
 | Solar output ignores orbital radius | Energy is already a cap; radius falloff is a follow-up, not a hidden extra. |
 | Round-based combat with rapid-fire tables | Seeded, short, offline-safe fights. Map new stats onto energy and mass rather than replacing the resolver. |
