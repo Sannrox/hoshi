@@ -1,0 +1,759 @@
+//! Read-only selection details for the TUI side panel. No game maths in the UI.
+
+use crate::buildings::BuildingKind;
+use crate::defences::DefenceKind;
+use crate::fleets::Coord;
+use crate::ships::{Fleet, ShipKind};
+use crate::state::{GameState, ResourceKind, Resources};
+
+/// What the side panel is describing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DetailSubject {
+    Building {
+        kind: BuildingKind,
+        planet: Coord,
+    },
+    Tech(String),
+    Ship(ShipKind),
+    Defence(DefenceKind),
+    Wonder(String),
+    Law(String),
+    Trade {
+        pay: ResourceKind,
+        recv: ResourceKind,
+    },
+    Production {
+        planet: Coord,
+        id: String,
+    },
+    Faction(String),
+    Coord(Coord),
+}
+
+/// Time until the stockpile can pay `cost` at current net income.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AffordEta {
+    Now,
+    In(u64),
+    Never,
+}
+
+/// One construction stockpile versus the next payment.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MaterialLine {
+    pub id: &'static str,
+    pub stock: f64,
+    pub cost: f64,
+    pub missing: f64,
+}
+
+/// Current versus next-level quantity.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeltaLine {
+    pub label: String,
+    pub from: String,
+    pub to: String,
+}
+
+/// A prerequisite with whether it is already met.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequirementLine {
+    pub text: String,
+    pub met: bool,
+}
+
+/// Ship performance plus optional travel to a map target.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShipTravel {
+    pub speed: f64,
+    pub fuel_per_unit: f64,
+    pub cargo: f64,
+    pub outbound_secs: Option<u64>,
+    pub fuel_cost: Option<f64>,
+}
+
+/// Structured panel body. The TUI only formats these fields.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Detail {
+    pub name: String,
+    pub description: String,
+    pub level: u32,
+    pub costs: Vec<MaterialLine>,
+    pub energy_draw: Option<f64>,
+    pub heat: Option<f64>,
+    pub duration_secs: Option<u64>,
+    pub afford: Option<AffordEta>,
+    pub deltas: Vec<DeltaLine>,
+    pub requirements: Vec<RequirementLine>,
+    pub unlocks: Vec<String>,
+    pub exclusive_warning: Option<String>,
+    pub ship: Option<ShipTravel>,
+}
+
+impl GameState {
+    /// Pure glance for a list selection. `travel_dest` is the map cursor for ships.
+    pub fn describe(&self, subject: DetailSubject, travel_dest: Option<Coord>) -> Option<Detail> {
+        match subject {
+            DetailSubject::Building { kind, planet } => self.describe_building(kind, planet),
+            DetailSubject::Tech(id) => self.describe_tech(&id),
+            DetailSubject::Ship(kind) => Some(self.describe_ship(kind, travel_dest)),
+            DetailSubject::Defence(kind) => Some(self.describe_defence(kind)),
+            DetailSubject::Wonder(id) => self.describe_wonder(&id),
+            DetailSubject::Law(id) => self.describe_law(&id),
+            DetailSubject::Trade { pay, recv } => Some(self.describe_trade(pay, recv)),
+            DetailSubject::Production { planet, id } => self.describe_production(planet, &id),
+            DetailSubject::Faction(id) => self.describe_faction(&id),
+            DetailSubject::Coord(coord) => Some(self.describe_coord(coord)),
+        }
+    }
+
+    fn describe_building(&self, kind: BuildingKind, planet: Coord) -> Option<Detail> {
+        let buildings = *self.buildings_at(planet)?;
+        let queue = self.queue_at(planet).unwrap_or(&[]);
+        let level =
+            buildings.get(kind) + queue.iter().filter(|job| job.building == kind).count() as u32;
+        let spec = self.config.buildings.get(kind);
+        let cost = self.build_cost_on(planet, kind);
+        let duration = self.build_time_secs_on(planet, kind);
+        let mut next_state = self.clone();
+        if planet == next_state.home {
+            next_state.buildings.increment(kind);
+        } else if let Some(colony) = next_state
+            .colonies
+            .iter_mut()
+            .find(|colony| colony.coord == planet)
+        {
+            colony.buildings.increment(kind);
+        }
+        let next_buildings = *next_state.buildings_at(planet).unwrap_or(&buildings);
+        let energy_now = self.config.energy_draw(&buildings);
+        let energy_next = next_state.config.energy_draw(&next_buildings);
+        let mut deltas = Vec::new();
+        for kind_res in ResourceKind::ALL {
+            deltas.push(DeltaLine {
+                label: format!("{} /h", kind_res.as_key()),
+                from: format!("{:.1}", self.production_at(planet, kind_res)),
+                to: format!("{:.1}", next_state.production_at(planet, kind_res)),
+            });
+        }
+        deltas.push(DeltaLine {
+            label: "energy draw".into(),
+            from: format!("{energy_now:.0}"),
+            to: format!("{energy_next:.0}"),
+        });
+        if let (Some(waste_now), Some(waste_next)) =
+            (self.waste_at(planet), next_state.waste_at(planet))
+        {
+            deltas.push(DeltaLine {
+                label: "heat load".into(),
+                from: format!("{:.0}", waste_now.heat_load),
+                to: format!("{:.0}", waste_next.heat_load),
+            });
+        }
+        let requirements = spec
+            .prerequisites
+            .iter()
+            .map(|&(building, required)| {
+                let actual = buildings.get(building);
+                RequirementLine {
+                    text: format!("{building} {required} (have {actual})"),
+                    met: actual >= required,
+                }
+            })
+            .collect();
+        Some(Detail {
+            name: kind.to_string(),
+            description: format!("next level {}", level.saturating_add(1)),
+            level,
+            costs: material_lines_at(self, planet, cost),
+            energy_draw: Some(energy_next - energy_now),
+            heat: None,
+            duration_secs: Some(duration),
+            afford: Some(afford_eta_at(self, planet, cost)),
+            deltas,
+            requirements,
+            unlocks: unlocks_from_building(self, kind),
+            exclusive_warning: None,
+            ship: None,
+        })
+    }
+
+    fn describe_tech(&self, id: &str) -> Option<Detail> {
+        let spec = self.config.techs.get(id)?;
+        let level = self.tech_level(id);
+        let cost = spec.cost(level);
+        let duration = spec.duration_secs(level);
+        let requirements = spec
+            .prereq_buildings
+            .iter()
+            .map(|pre| {
+                let actual = self.buildings.get(pre.building);
+                RequirementLine {
+                    text: format!("{} {} (have {actual})", pre.building, pre.level),
+                    met: actual >= pre.level,
+                }
+            })
+            .chain(spec.prereq_techs.iter().map(|pre| {
+                let actual = self.tech_level(&pre.id);
+                RequirementLine {
+                    text: format!("{} {} (have {actual})", pre.id, pre.level),
+                    met: actual >= pre.level,
+                }
+            }))
+            .collect();
+        Some(Detail {
+            name: spec.name.clone(),
+            description: format!("{} tier {}", spec.branch.as_key(), spec.tier),
+            level,
+            costs: material_lines(self, cost),
+            energy_draw: None,
+            heat: None,
+            duration_secs: Some(duration),
+            afford: Some(afford_eta(self, cost)),
+            deltas: spec
+                .modifiers
+                .iter()
+                .map(|m| DeltaLine {
+                    label: format!("{:?}", m.kind).to_ascii_lowercase(),
+                    from: format!("{:.2}", m.per_level * f64::from(level)),
+                    to: format!("{:.2}", m.per_level * f64::from(level.saturating_add(1))),
+                })
+                .collect(),
+            requirements,
+            unlocks: unlocks_from_tech(self, id),
+            exclusive_warning: exclusive_warning(self, spec),
+            ship: None,
+        })
+    }
+
+    fn describe_ship(&self, kind: ShipKind, travel_dest: Option<Coord>) -> Detail {
+        let spec = self.config.ships.get(kind);
+        let stats = self.ship_stats(kind);
+        let cost = spec.unit_cost();
+        let mut fleet = Fleet::default();
+        fleet.add(kind, 1);
+        let travel =
+            travel_dest.and_then(|dest| self.flight_from(self.home, dest, fleet, 100).ok());
+        let requirements: Vec<RequirementLine> = self
+            .missing_ship_prereqs(kind)
+            .into_iter()
+            .map(|gap| RequirementLine {
+                text: gap.to_string(),
+                met: false,
+            })
+            .collect();
+        Detail {
+            name: spec.name.clone(),
+            description: format!("drive {}", spec.drive),
+            level: 0,
+            costs: material_lines(self, cost),
+            energy_draw: None,
+            heat: None,
+            duration_secs: Some(spec.duration_secs()),
+            afford: Some(afford_eta(self, cost)),
+            deltas: vec![
+                DeltaLine {
+                    label: "attack".into(),
+                    from: "0".into(),
+                    to: format!("{:.0}", stats.attack),
+                },
+                DeltaLine {
+                    label: "hull".into(),
+                    from: "0".into(),
+                    to: format!("{:.0}", stats.hull),
+                },
+            ],
+            requirements,
+            unlocks: Vec::new(),
+            exclusive_warning: None,
+            ship: Some(ShipTravel {
+                speed: stats.speed,
+                fuel_per_unit: stats.fuel,
+                cargo: stats.cargo,
+                outbound_secs: travel.map(|(s, _)| s),
+                fuel_cost: travel.map(|(_, f)| f),
+            }),
+        }
+    }
+
+    fn describe_defence(&self, kind: DefenceKind) -> Detail {
+        let spec = self.config.defences.get(kind);
+        let cost = spec.unit_cost();
+        Detail {
+            name: spec.name.clone(),
+            description: "orbital or ground defence".into(),
+            level: self.defences.get(kind),
+            costs: material_lines(self, cost),
+            energy_draw: None,
+            heat: None,
+            duration_secs: Some(spec.duration_secs()),
+            afford: Some(afford_eta(self, cost)),
+            deltas: Vec::new(),
+            requirements: Vec::new(),
+            unlocks: Vec::new(),
+            exclusive_warning: None,
+            ship: None,
+        }
+    }
+
+    fn describe_wonder(&self, id: &str) -> Option<Detail> {
+        let spec = self.config.wonders.iter().find(|s| s.id == id)?;
+        let stage = spec.stages.first()?;
+        let requirements = spec
+            .prereq_techs
+            .iter()
+            .map(|pre| {
+                let actual = self.tech_level(&pre.id);
+                RequirementLine {
+                    text: format!("{} {} (have {actual})", pre.id, pre.level),
+                    met: actual >= pre.level,
+                }
+            })
+            .collect();
+        Some(Detail {
+            name: spec.name.clone(),
+            description: format!("{} stages", spec.stages.len()),
+            level: u32::from(self.completed_wonders.iter().any(|done| done == id)),
+            costs: material_lines(self, stage.cost),
+            energy_draw: None,
+            heat: None,
+            duration_secs: Some(stage.duration_secs),
+            afford: Some(afford_eta(self, stage.cost)),
+            deltas: Vec::new(),
+            requirements,
+            unlocks: Vec::new(),
+            exclusive_warning: None,
+            ship: None,
+        })
+    }
+
+    fn describe_law(&self, id: &str) -> Option<Detail> {
+        let spec = self.config.laws.get(id)?;
+        let effects: Vec<String> = spec
+            .effects
+            .iter()
+            .map(|e| format!("{:?}", e.kind))
+            .collect();
+        Some(Detail {
+            name: spec.title.clone(),
+            description: effects.join(", "),
+            level: 0,
+            costs: Vec::new(),
+            energy_draw: None,
+            heat: None,
+            duration_secs: Some(spec.phase_in_secs),
+            afford: None,
+            deltas: Vec::new(),
+            requirements: Vec::new(),
+            unlocks: Vec::new(),
+            exclusive_warning: None,
+            ship: None,
+        })
+    }
+
+    fn describe_trade(&self, pay: ResourceKind, recv: ResourceKind) -> Detail {
+        let quote = self.quote_market(pay, recv, 10.0).ok();
+        let mut deltas = vec![DeltaLine {
+            label: format!("{} stock", pay.as_key()),
+            from: format!("{:.0}", self.resources.get(pay)),
+            to: format!("{:.0}", self.resources.get(pay)),
+        }];
+        if let Some(q) = &quote {
+            deltas.push(DeltaLine {
+                label: "pay -> recv".into(),
+                from: format!("{:.0} {}", q.pay_amount, pay.as_key()),
+                to: format!("{:.0} {}", q.recv_amount, recv.as_key()),
+            });
+        }
+        Detail {
+            name: format!("{} -> {}", pay.as_key(), recv.as_key()),
+            description: "spot trade".into(),
+            level: 0,
+            costs: Vec::new(),
+            energy_draw: None,
+            heat: None,
+            duration_secs: None,
+            afford: None,
+            deltas,
+            requirements: Vec::new(),
+            unlocks: Vec::new(),
+            exclusive_warning: None,
+            ship: None,
+        }
+    }
+
+    fn describe_production(&self, planet: Coord, id: &str) -> Option<Detail> {
+        let step = self
+            .production_report()
+            .steps
+            .into_iter()
+            .find(|s| s.planet == planet && s.id == id)?;
+        let mut deltas: Vec<DeltaLine> = step
+            .outputs_per_hour
+            .iter()
+            .map(|(good, rate)| DeltaLine {
+                label: format!("{good} /h"),
+                from: format!("{rate:.1}"),
+                to: format!("{rate:.1}"),
+            })
+            .collect();
+        for (good, rate) in &step.inputs_per_hour {
+            deltas.push(DeltaLine {
+                label: format!("{good} in /h"),
+                from: format!("{rate:.1}"),
+                to: format!("{rate:.1}"),
+            });
+        }
+        Some(Detail {
+            name: step.id,
+            description: format!("{} at {planet}", step.limited_by.as_key()),
+            level: 0,
+            costs: Vec::new(),
+            energy_draw: None,
+            heat: None,
+            duration_secs: None,
+            afford: None,
+            deltas,
+            requirements: Vec::new(),
+            unlocks: Vec::new(),
+            exclusive_warning: None,
+            ship: None,
+        })
+    }
+
+    fn describe_faction(&self, id: &str) -> Option<Detail> {
+        let spec = self.config.diplomacy.get(id)?;
+        let standing = self.diplomacy.standing(id);
+        let tier = spec
+            .tier(standing)
+            .map(|t| t.name.clone())
+            .unwrap_or_else(|| "-".into());
+        Some(Detail {
+            name: spec.name.clone(),
+            description: format!("standing {standing:.0} ({tier})"),
+            level: 0,
+            costs: Vec::new(),
+            energy_draw: None,
+            heat: None,
+            duration_secs: None,
+            afford: None,
+            deltas: vec![DeltaLine {
+                label: "tribute".into(),
+                from: format!("{:.0}", spec.tribute_metal),
+                to: format!("{:+.0}", spec.tribute_delta),
+            }],
+            requirements: Vec::new(),
+            unlocks: Vec::new(),
+            exclusive_warning: None,
+            ship: None,
+        })
+    }
+
+    fn describe_coord(&self, coord: Coord) -> Detail {
+        let kind = self
+            .planet_kind(coord)
+            .map(|k| k.as_key().to_string())
+            .unwrap_or_else(|| "empty".into());
+        let size = self.planet_size(coord).unwrap_or(0);
+        Detail {
+            name: coord.to_string(),
+            description: format!("{kind} size {size}"),
+            level: 0,
+            costs: Vec::new(),
+            energy_draw: None,
+            heat: None,
+            duration_secs: None,
+            afford: None,
+            deltas: Vec::new(),
+            requirements: Vec::new(),
+            unlocks: Vec::new(),
+            exclusive_warning: None,
+            ship: None,
+        }
+    }
+}
+
+fn stockpile_at(state: &GameState, planet: Coord) -> Resources {
+    state
+        .resources_at(planet)
+        .copied()
+        .unwrap_or(state.resources)
+}
+
+fn material_lines(state: &GameState, cost: Resources) -> Vec<MaterialLine> {
+    material_from_stock(state.resources, cost)
+}
+
+fn material_lines_at(state: &GameState, planet: Coord, cost: Resources) -> Vec<MaterialLine> {
+    material_from_stock(stockpile_at(state, planet), cost)
+}
+
+fn material_from_stock(stockpile: Resources, cost: Resources) -> Vec<MaterialLine> {
+    ResourceKind::ALL
+        .iter()
+        .copied()
+        .map(|kind| {
+            let need = cost.get(kind);
+            let stock = stockpile.get(kind);
+            MaterialLine {
+                id: kind.as_key(),
+                stock,
+                cost: need,
+                missing: (need - stock).max(0.0),
+            }
+        })
+        .collect()
+}
+
+fn afford_eta(state: &GameState, cost: Resources) -> AffordEta {
+    afford_from(
+        state.resources,
+        |kind| state.production_per_hour(kind),
+        cost,
+    )
+}
+
+fn afford_eta_at(state: &GameState, planet: Coord, cost: Resources) -> AffordEta {
+    afford_from(
+        stockpile_at(state, planet),
+        |kind| state.production_at(planet, kind),
+        cost,
+    )
+}
+
+fn afford_from(
+    stockpile: Resources,
+    rate_of: impl Fn(ResourceKind) -> f64,
+    cost: Resources,
+) -> AffordEta {
+    if stockpile.can_afford(cost) {
+        return AffordEta::Now;
+    }
+    let mut wait = 0.0_f64;
+    for kind in ResourceKind::ALL {
+        let need = cost.get(kind);
+        let got = stockpile.get(kind);
+        if got + 1e-9 >= need {
+            continue;
+        }
+        let rate = rate_of(kind);
+        if rate <= 1e-12 {
+            return AffordEta::Never;
+        }
+        wait = wait.max((need - got) / rate * 3600.0);
+    }
+    AffordEta::In(wait.ceil().max(1.0) as u64)
+}
+
+fn exclusive_warning(state: &GameState, spec: &crate::TechSpec) -> Option<String> {
+    let group = spec.exclusive_group.as_deref()?;
+    let others: Vec<String> = state
+        .config
+        .techs
+        .iter()
+        .filter(|other| other.exclusive_group.as_deref() == Some(group) && other.id != spec.id)
+        .map(|other| other.name.clone())
+        .collect();
+    if others.is_empty() {
+        return None;
+    }
+    Some(format!("locks {}: {}", group, others.join(", ")))
+}
+
+fn unlocks_from_tech(state: &GameState, id: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for spec in state.config.techs.iter() {
+        if spec.prereq_techs.iter().any(|pre| pre.id == id) {
+            out.push(spec.name.clone());
+        }
+    }
+    for kind in ShipKind::ALL {
+        if state
+            .config
+            .ships
+            .get(kind)
+            .prereq_techs
+            .iter()
+            .any(|pre| pre.id == id)
+        {
+            out.push(kind.to_string());
+        }
+    }
+    out
+}
+
+fn unlocks_from_building(state: &GameState, kind: BuildingKind) -> Vec<String> {
+    let mut out = Vec::new();
+    for spec in state.config.techs.iter() {
+        if spec.prereq_buildings.iter().any(|pre| pre.building == kind) {
+            out.push(spec.name.clone());
+        }
+    }
+    for other in BuildingKind::ALL {
+        if self_prereq(state, other, kind) {
+            out.push(other.to_string());
+        }
+    }
+    out
+}
+
+fn self_prereq(state: &GameState, building: BuildingKind, want: BuildingKind) -> bool {
+    state
+        .config
+        .buildings
+        .get(building)
+        .prerequisites
+        .iter()
+        .any(|&(req, _)| req == want)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::BalanceConfig;
+
+    fn quiet() -> BalanceConfig {
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.enabled = false;
+        cfg.market.enabled = false;
+        cfg
+    }
+
+    #[test]
+    fn time_until_affordable_is_never_when_income_is_zero() {
+        let mut cfg = quiet();
+        cfg.starting_buildings.metal_mine = 0;
+        cfg.starting_buildings.crystal_mine = 0;
+        cfg.starting_buildings.deuterium_synthesizer = 0;
+        cfg.starting_buildings.solar_plant = 0;
+        cfg.starting_resources.metal = 0.0;
+        cfg.starting_resources.crystal = 0.0;
+        cfg.starting_resources.deuterium = 0.0;
+        let state = GameState::with_config(0, cfg);
+        let detail = state
+            .describe(DetailSubject::Tech("energy".into()), None)
+            .unwrap();
+        assert_eq!(detail.afford, Some(AffordEta::Never));
+    }
+
+    #[test]
+    fn exclusive_branch_warning_lists_the_locked_siblings() {
+        let state = GameState::with_config(0, quiet());
+        let detail = state
+            .describe(DetailSubject::Tech("orbital_harvest".into()), None)
+            .unwrap();
+        let warning = detail.exclusive_warning.expect("exclusive group");
+        assert!(warning.contains("locks"), "{warning}");
+        assert!(warning.contains("Deep-core mining"), "{warning}");
+        assert!(!warning.contains("Surface"), "{warning}");
+        assert!(!warning.contains("trade_focus"), "{warning}");
+    }
+
+    #[test]
+    fn ship_travel_matches_dispatch_flight_maths() {
+        let state = GameState::with_config(0, quiet());
+        let dest = Coord {
+            galaxy: 1,
+            system: 2,
+            position: 4,
+        };
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::SmallCargo, 1);
+        let expected = state.flight_from(state.home, dest, ships, 100).unwrap();
+        let detail = state
+            .describe(DetailSubject::Ship(ShipKind::SmallCargo), Some(dest))
+            .unwrap();
+        let travel = detail.ship.expect("ship block");
+        assert_eq!(travel.outbound_secs, Some(expected.0));
+        assert!((travel.fuel_cost.unwrap() - expected.1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn building_detail_lists_stock_vs_cost() {
+        let state = GameState::with_config(0, quiet());
+        let detail = state
+            .describe(
+                DetailSubject::Building {
+                    kind: BuildingKind::MetalMine,
+                    planet: state.home,
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(detail.name, "metal mine");
+        assert_eq!(detail.costs.len(), 3);
+        assert!(
+            detail
+                .costs
+                .iter()
+                .any(|row| row.id == "metal" && row.cost > 0.0)
+        );
+        assert!(matches!(
+            detail.afford,
+            Some(AffordEta::Now | AffordEta::In(_))
+        ));
+    }
+
+    #[test]
+    fn building_detail_uses_the_selected_planet_level_and_stock() {
+        let mut state = GameState::with_config(0, quiet());
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 8,
+        };
+        state.colonies.push(crate::Colony {
+            coord: dest,
+            kind: crate::PlanetType::Rocky,
+            size: 120,
+            resources: Resources {
+                metal: 50.0,
+                crystal: 0.0,
+                deuterium: 0.0,
+            },
+            buildings: crate::Buildings {
+                metal_mine: 4,
+                ..crate::Buildings::default()
+            },
+            fleet: Fleet::default(),
+            defences: crate::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            rare: None,
+            goods: Default::default(),
+        });
+        let home = state
+            .describe(
+                DetailSubject::Building {
+                    kind: BuildingKind::MetalMine,
+                    planet: state.home,
+                },
+                None,
+            )
+            .unwrap();
+        let colony = state
+            .describe(
+                DetailSubject::Building {
+                    kind: BuildingKind::MetalMine,
+                    planet: dest,
+                },
+                None,
+            )
+            .unwrap();
+        assert_ne!(home.level, colony.level);
+        assert_eq!(colony.level, 4);
+        let metal = colony
+            .costs
+            .iter()
+            .find(|row| row.id == "metal")
+            .expect("metal");
+        assert!((metal.stock - 50.0).abs() < 1e-9, "{metal:?}");
+        assert_eq!(
+            colony.afford,
+            Some(afford_eta_at(
+                &state,
+                dest,
+                state.build_cost_on(dest, BuildingKind::MetalMine)
+            ))
+        );
+    }
+}

@@ -2,16 +2,17 @@
 //! Core owns the rules; this module only renders and turns keys into core commands.
 
 use crate::clip::copy_to_clipboard;
+use crate::detail_panel::{self, DOCK_MIN_WIDTH};
 use crate::keymap::{Binding, HelpContext, Keymap};
 use crate::notify::{self, Prefs as NotifyPrefs, Watch as NotifyWatch};
 use crate::portraits::{self, PortraitView, Protocol, Slot};
 use crate::title::AwaySummary;
 use hoshi_core::{
     AssignmentTarget, BuildingKind, CombatLog, CombatWinner, CommentaryCatalog, Coord, DefenceKind,
-    Fleet, GameState, HintScreen, HistoryKind, HistoryQuery, Jurisdiction, JurisdictionKind,
-    LawStatus, Permission, ResourceKind, Resources, RoleKind, ShipKind, SpyReport, StoryEvent,
-    TechBranch, TechNodeState, WonderError, advise, encode_galaxy_seed, polish_all_named,
-    rephrase_lines,
+    Detail, DetailSubject, Fleet, GameState, HintScreen, HistoryKind, HistoryQuery, Jurisdiction,
+    JurisdictionKind, LawStatus, Permission, ResourceKind, Resources, RoleKind, ShipKind,
+    SpyReport, StoryEvent, TechBranch, TechNodeState, WonderError, advise, encode_galaxy_seed,
+    polish_all_named, rephrase_lines,
 };
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
@@ -19,6 +20,7 @@ use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
+use std::cell::Cell;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     Overview,
@@ -127,6 +129,10 @@ pub struct App {
     cockpit: crate::cockpit::Cockpit,
     gauge_history: Vec<Resources>,
     pub high_contrast: bool,
+    detail_panel: bool,
+    detail_overlay: bool,
+    detail_dirty: bool,
+    last_width: Cell<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -190,6 +196,125 @@ impl App {
             cockpit: crate::cockpit::Cockpit::default(),
             gauge_history: Vec::new(),
             high_contrast: false,
+            detail_panel: true,
+            detail_overlay: false,
+            detail_dirty: false,
+            last_width: Cell::new(80),
+        }
+    }
+
+    pub fn take_detail_panel(&mut self) -> Option<bool> {
+        if self.detail_dirty {
+            self.detail_dirty = false;
+            Some(self.detail_panel)
+        } else {
+            None
+        }
+    }
+
+    fn toggle_detail(&mut self) {
+        if self.last_width.get() >= DOCK_MIN_WIDTH {
+            self.detail_panel = !self.detail_panel;
+            self.detail_dirty = true;
+            self.detail_overlay = false;
+        } else {
+            self.detail_overlay = !self.detail_overlay;
+        }
+    }
+
+    fn shows_docked_detail(&self) -> bool {
+        self.detail_panel
+            && self.last_width.get() >= DOCK_MIN_WIDTH
+            && self.current_detail().is_some()
+    }
+
+    fn shows_detail_overlay(&self) -> bool {
+        self.detail_overlay
+            && self.last_width.get() < DOCK_MIN_WIDTH
+            && self.current_detail().is_some()
+    }
+
+    fn current_detail(&self) -> Option<Detail> {
+        let subject = self.detail_subject()?;
+        self.state.describe(subject, Some(self.map_cursor()))
+    }
+
+    fn detail_subject(&self) -> Option<DetailSubject> {
+        match self.screen {
+            Screen::Planet => {
+                BuildingKind::ALL
+                    .get(self.selected)
+                    .copied()
+                    .map(|kind| DetailSubject::Building {
+                        kind,
+                        planet: self.selected_coord(),
+                    })
+            }
+            Screen::Overview => self.tech_id_at(self.selected).map(DetailSubject::Tech),
+            Screen::Shipyard => {
+                if self.selected < ShipKind::ALL.len() {
+                    ShipKind::ALL
+                        .get(self.selected)
+                        .copied()
+                        .map(DetailSubject::Ship)
+                } else {
+                    DefenceKind::ALL
+                        .get(self.selected - ShipKind::ALL.len())
+                        .copied()
+                        .map(DetailSubject::Defence)
+                }
+            }
+            Screen::Wonder => self
+                .state
+                .config
+                .wonders
+                .get(self.selected)
+                .map(|spec| DetailSubject::Wonder(spec.id.clone())),
+            Screen::Laws => {
+                let templates: Vec<&str> = self
+                    .state
+                    .config
+                    .laws
+                    .iter()
+                    .map(|spec| spec.id.as_str())
+                    .collect();
+                if self.selected < templates.len() {
+                    Some(DetailSubject::Law(templates[self.selected].to_string()))
+                } else {
+                    self.state
+                        .laws
+                        .laws
+                        .get(self.selected - templates.len())
+                        .map(|law| DetailSubject::Law(law.template_id.clone()))
+                }
+            }
+            Screen::Market => TRADE_PAIRS
+                .get(self.selected)
+                .map(|&(pay, recv)| DetailSubject::Trade { pay, recv }),
+            Screen::Production => {
+                let steps: Vec<_> = self
+                    .state
+                    .production_report()
+                    .steps
+                    .into_iter()
+                    .filter(|step| step.planet == self.selected_coord())
+                    .collect();
+                steps
+                    .get(self.selected)
+                    .map(|step| DetailSubject::Production {
+                        planet: step.planet,
+                        id: step.id.clone(),
+                    })
+            }
+            Screen::Diplomacy => self
+                .state
+                .config
+                .diplomacy
+                .iter()
+                .nth(self.selected)
+                .map(|spec| DetailSubject::Faction(spec.id.clone())),
+            Screen::Map => Some(DetailSubject::Coord(self.map_cursor())),
+            _ => None,
         }
     }
 
@@ -203,6 +328,7 @@ impl App {
 
     pub fn apply_cockpit(&mut self, user: &crate::config::UserConfig) {
         self.high_contrast = user.high_contrast;
+        self.detail_panel = user.detail_panel;
         if let Some(layout) = crate::cockpit::CockpitLayout::from_key(&user.cockpit_layout) {
             self.cockpit.layout = layout;
         }
@@ -524,7 +650,11 @@ impl App {
             Some(Binding::SendProbe) if self.screen == Screen::Reports && !self.opened_report => {
                 self.send_probe(now_unix);
             }
+            Some(Binding::Detail) => self.toggle_detail(),
             Some(Binding::Confirm) => self.activate(now_unix),
+            Some(Binding::Cancel) if self.detail_overlay => {
+                self.detail_overlay = false;
+            }
             Some(Binding::Cancel) => self.cancel(now_unix),
             Some(Binding::CopySeed) => {
                 let seed = encode_galaxy_seed(self.state.galaxy_seed);
@@ -688,6 +818,7 @@ impl App {
 
     pub fn draw(&self, frame: &mut Frame<'_>) {
         if self.screen == Screen::Cockpit {
+            self.last_width.set(frame.area().width);
             self.draw_cockpit(frame);
             self.draw_overlays(frame);
             return;
@@ -764,9 +895,25 @@ impl App {
         ])
         .split(content);
 
+        self.last_width.set(frame.area().width);
         frame.render_widget(Paragraph::new(header), chunks[0]);
         let list_h = chunks[1].height as usize;
-        frame.render_widget(Paragraph::new(self.list_lines(list_h)), chunks[1]);
+        if self.shows_docked_detail() {
+            let cols = Layout::horizontal([
+                Constraint::Min(24),
+                Constraint::Length(detail_column_width(chunks[1].width)),
+            ])
+            .split(chunks[1]);
+            frame.render_widget(Paragraph::new(self.list_lines(list_h)), cols[0]);
+            let card = Block::bordered().title(" detail ");
+            let inner = card.inner(cols[1]);
+            frame.render_widget(card, cols[1]);
+            if let Some(detail) = self.current_detail() {
+                frame.render_widget(Paragraph::new(detail_panel::paragraph(&detail)), inner);
+            }
+        } else {
+            frame.render_widget(Paragraph::new(self.list_lines(list_h)), chunks[1]);
+        }
         frame.render_widget(Paragraph::new(footer), chunks[2]);
         if let Some(area) = portrait {
             let art = Layout::vertical([
@@ -849,6 +996,11 @@ impl App {
         if self.advisor_open {
             self.draw_advisor(frame);
         }
+        if self.shows_detail_overlay()
+            && let Some(detail) = self.current_detail()
+        {
+            render_overlay(frame, " detail ", detail_panel::paragraph(&detail));
+        }
         if self.help_open {
             self.draw_help(frame);
         }
@@ -875,6 +1027,7 @@ impl App {
             return Ok(());
         }
         if self.help_open
+            || self.shows_detail_overlay()
             || self.activity_open
             || self.advisor_open
             || (self.away.is_some() && !self.away_hidden)
@@ -1721,37 +1874,52 @@ impl App {
         }
         rows.push(Line::from(format!("{}{activity}{advisor}", match self.screen {
             Screen::Overview => format!(
-                "{tab} screens  {planets}  {}/{} branch  {select}  {confirm} research  {} replay  {cancel}  {} copy seed  {quit}  {help}",
+                "{tab} screens  {planets}  {}/{} branch  {select}  {confirm} research  {} replay  {cancel}  {} copy seed  {} detail  {quit}  {help}",
                 k.primary(Binding::CursorLeft),
                 k.primary(Binding::CursorRight),
                 k.primary(Binding::Replay),
-                k.primary(Binding::CopySeed)
+                k.primary(Binding::CopySeed),
+                k.primary(Binding::Detail)
             ),
             Screen::Planet => format!(
-                "{tab} screens  {planets}  {select}  {confirm} build  {cancel} queue  {quit}  {help}"
+                "{tab} screens  {planets}  {select}  {confirm} build  {cancel} queue  {} detail  {quit}  {help}",
+                k.primary(Binding::Detail)
             ),
             Screen::Shipyard => format!(
-                "{tab} screens  {planets}  {select}  {confirm} queue  {cancel} queue  {quit}  {help}"
+                "{tab} screens  {planets}  {select}  {confirm} queue  {cancel} queue  {} detail  {quit}  {help}",
+                k.primary(Binding::Detail)
             ),
             Screen::Wonder => format!(
-                "{tab} screens  {planets}  {select}  {confirm} start/contribute  {quit}  {help}"
+                "{tab} screens  {planets}  {select}  {confirm} start/contribute  {} detail  {quit}  {help}",
+                k.primary(Binding::Detail)
             ),
             Screen::Prestige => {
                 format!("{tab} screens  {select}  {confirm} buy/reset  {cancel}  {quit}  {help}")
             }
-            Screen::Achievements | Screen::Daily | Screen::Goals | Screen::Production => {
+            Screen::Achievements | Screen::Daily | Screen::Goals => {
                 format!("{tab} screens  {planets}  {select}  {quit}  {help}")
             }
+            Screen::Production => format!(
+                "{tab} screens  {planets}  {select}  {} detail  {quit}  {help}",
+                k.primary(Binding::Detail)
+            ),
             Screen::Market => format!(
-                "{tab} screens  {select}  {}/{} amount  {confirm} trade  {quit}  {help}",
+                "{tab} screens  {select}  {}/{} amount  {confirm} trade  {} detail  {quit}  {help}",
                 k.primary(Binding::Increase),
-                k.primary(Binding::Decrease)
+                k.primary(Binding::Decrease),
+                k.primary(Binding::Detail)
             ),
             Screen::Diplomacy => {
-                format!("{tab} screens  {select}  {confirm} tribute  {quit}  {help}")
+                format!(
+                    "{tab} screens  {select}  {confirm} tribute  {} detail  {quit}  {help}",
+                    k.primary(Binding::Detail)
+                )
             }
             Screen::Laws => {
-                format!("{tab} screens  {select}  {confirm} propose/approve/repeal  {quit}  {help}")
+                format!(
+                    "{tab} screens  {select}  {confirm} propose/approve/repeal  {} detail  {quit}  {help}",
+                    k.primary(Binding::Detail)
+                )
             }
             Screen::Reports => format!(
                 "{tab} screens  {select}  {confirm} report  {} send probe  {quit}  {help}",
@@ -1769,11 +1937,12 @@ impl App {
                 format!("{tab} screens  {select}  schedule  {quit}  {help}")
             }
             Screen::Map => format!(
-                "{tab} screens  {}{}{}{} cursor  {confirm} dispatch  {quit}  {help}",
+                "{tab} screens  {}{}{}{} cursor  {confirm} dispatch  {} detail  {quit}  {help}",
                 k.primary(Binding::CursorLeft),
                 k.primary(Binding::SelectNext),
                 k.primary(Binding::SelectPrev),
-                k.primary(Binding::CursorRight)
+                k.primary(Binding::CursorRight),
+                k.primary(Binding::Detail)
             ),
             Screen::Cockpit => format!(
                 "{tab} screens  {} layout  {}/{} panel  {select}  {confirm} drill  {cancel} back  {} cockpit  {quit}  {help}",
@@ -3327,6 +3496,13 @@ fn push_away_section(lines: &mut Vec<Line<'static>>, title: &str, items: &[Strin
     for item in items.iter().take(3) {
         lines.push(Line::from(item.clone()));
     }
+}
+
+fn detail_column_width(total: u16) -> u16 {
+    total
+        .saturating_sub(24)
+        .clamp(28, 48)
+        .min(total.saturating_sub(10))
 }
 
 fn render_overlay(frame: &mut Frame<'_>, title: impl Into<String>, lines: Vec<Line<'static>>) {
@@ -5192,5 +5368,157 @@ mod tests {
             (got - expected).abs() < 1e-6,
             "{id} standing {got} != {expected}"
         );
+    }
+
+    fn detail_app() -> App {
+        let mut app = App::new(GameState::new(1_000));
+        app.portraits.enabled = false;
+        app.show_tutorial = false;
+        app
+    }
+
+    fn assert_detail_on(app: &App, width: u16, height: u16, needles: &[&str]) {
+        let text = render_text(app, width, height);
+        for needle in needles {
+            assert!(
+                text.contains(needle),
+                "{width}x{height} missing {needle}:\n{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn detail_panel_docks_on_wide_list_screens() {
+        let mut app = detail_app();
+        app.screen = Screen::Planet;
+        assert_detail_on(
+            &app,
+            160,
+            48,
+            &["detail", "metal mine", "cost", "metal", "energy draw"],
+        );
+        assert_detail_on(&app, 120, 40, &["detail", "metal mine", "affordable"]);
+        app.screen = Screen::Overview;
+        app.selected = app
+            .overview_techs()
+            .iter()
+            .position(|spec| spec.id == "energy")
+            .unwrap();
+        assert_detail_on(&app, 160, 48, &["detail", "Energy Technology", "requires"]);
+        assert_detail_on(&app, 120, 40, &["Energy Technology"]);
+        app.screen = Screen::Shipyard;
+        app.selected = 0;
+        assert_detail_on(&app, 160, 48, &["detail", "speed", "fuel"]);
+        assert_detail_on(&app, 120, 40, &["speed"]);
+        app.screen = Screen::Laws;
+        app.selected = 0;
+        let laws = render_text(&app, 160, 48);
+        assert!(laws.contains("detail"), "{laws}");
+        app.screen = Screen::Map;
+        let map = render_text(&app, 160, 48);
+        assert!(map.contains("detail"), "{map}");
+        assert!(map.contains("1:1:1") || map.contains("size"), "{map}");
+        let map_mid = render_text(&app, 120, 40);
+        assert!(map_mid.contains("detail"), "{map_mid}");
+    }
+
+    #[test]
+    fn detail_overlay_opens_at_80x24() {
+        let mut app = detail_app();
+        app.screen = Screen::Planet;
+        let hidden = render_text(&app, 80, 24);
+        assert!(!hidden.contains("energy draw"), "{hidden}");
+        app.handle_key(KeyCode::Char('d'), 1_000);
+        let text = render_text(&app, 80, 24);
+        assert!(text.contains("detail"), "{text}");
+        assert!(text.contains("metal mine"), "{text}");
+        app.handle_key(KeyCode::Char('d'), 1_000);
+        let closed = render_text(&app, 80, 24);
+        assert!(!closed.contains("energy draw"), "{closed}");
+    }
+
+    #[test]
+    fn detail_time_until_affordable_shows_never_at_zero_income() {
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.enabled = false;
+        cfg.market.enabled = false;
+        cfg.starting_buildings.metal_mine = 0;
+        cfg.starting_buildings.crystal_mine = 0;
+        cfg.starting_buildings.deuterium_synthesizer = 0;
+        cfg.starting_buildings.solar_plant = 0;
+        cfg.starting_resources.metal = 0.0;
+        cfg.starting_resources.crystal = 0.0;
+        cfg.starting_resources.deuterium = 0.0;
+        let mut app = App::new(GameState::with_config(0, cfg));
+        app.portraits.enabled = false;
+        app.show_tutorial = false;
+        app.screen = Screen::Overview;
+        app.selected = app
+            .overview_techs()
+            .iter()
+            .position(|spec| spec.id == "energy")
+            .unwrap();
+        let text = render_text(&app, 160, 48);
+        assert!(text.contains("never at current income"), "{text}");
+    }
+
+    #[test]
+    fn detail_exclusive_warning_lists_locked_siblings() {
+        let mut app = detail_app();
+        app.selected = app
+            .overview_techs()
+            .iter()
+            .position(|spec| spec.id == "orbital_harvest")
+            .unwrap();
+        let text = render_text(&app, 160, 48);
+        assert!(text.contains("locks"), "{text}");
+        assert!(text.contains("Deep-core mining"), "{text}");
+    }
+
+    #[test]
+    fn detail_ship_travel_matches_dispatch_maths() {
+        let mut app = detail_app();
+        app.screen = Screen::Shipyard;
+        app.selected = 0;
+        app.map_galaxy = 1;
+        app.map_system = 2;
+        app.map_position = 4;
+        let dest = Coord {
+            galaxy: 1,
+            system: 2,
+            position: 4,
+        };
+        let travel = app
+            .state
+            .describe(DetailSubject::Ship(ShipKind::SmallCargo), Some(dest))
+            .unwrap()
+            .ship
+            .expect("ship travel");
+        let secs = travel.outbound_secs.expect("outbound");
+        let fuel = travel.fuel_cost.expect("fuel");
+        let text = render_text(&app, 160, 48);
+        assert!(text.contains(&format!("travel {secs}s")), "{text}");
+        let fuel_bit = format!("fuel {fuel:.1}");
+        assert!(text.contains(&fuel_bit), "missing {fuel_bit} in\n{text}");
+    }
+
+    #[test]
+    fn detail_toggle_persists_and_help_lists_the_key() {
+        let mut app = detail_app();
+        let _ = render_text(&app, 160, 48);
+        assert!(app.take_detail_panel().is_none());
+        app.handle_key(KeyCode::Char('d'), 1_000);
+        assert_eq!(app.take_detail_panel(), Some(false));
+        app.handle_key(KeyCode::Char('?'), 1_000);
+        let help = render_text(&app, 160, 48);
+        assert!(help.contains("toggle detail panel"), "{help}");
+        let user = crate::config::UserConfig {
+            detail_panel: false,
+            ..Default::default()
+        };
+        app.apply_cockpit(&user);
+        app.screen = Screen::Planet;
+        let hidden = render_text(&app, 160, 48);
+        assert!(!hidden.contains("energy draw"), "{hidden}");
     }
 }
