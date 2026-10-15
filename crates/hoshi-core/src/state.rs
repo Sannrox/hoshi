@@ -272,6 +272,8 @@ pub struct GameState {
     pub season: Option<crate::SeasonRun>,
     /// Playable species overlay for this galaxy.
     pub species: Option<crate::SpeciesRun>,
+    /// NPC rival empires. Empty and disabled unless the galaxy opted in.
+    pub rivals: crate::RivalBoard,
     pub config: BalanceConfig,
 }
 
@@ -370,6 +372,7 @@ impl GameState {
             allied_since: None,
             season: None,
             species: None,
+            rivals: crate::RivalBoard::default(),
             config,
         };
         state.seed_pirate_home(now_unix);
@@ -468,6 +471,7 @@ impl GameState {
                 .and_then(|run| run.flagship.as_ref())
                 .and_then(|ship| ship.arrives_at)
                 .filter(|&t| t > self.last_tick_unix);
+            let rivals_at = self.next_rivals_at();
             let Some(done_at) = min_time(
                 min_time(
                     min_time(
@@ -500,7 +504,10 @@ impl GameState {
                         staff_at,
                         min_time(
                             planned_at,
-                            min_time(board_at, min_time(flagship_at, self.next_victory_at())),
+                            min_time(
+                                board_at,
+                                min_time(flagship_at, min_time(self.next_victory_at(), rivals_at)),
+                            ),
                         ),
                     ),
                 ),
@@ -628,6 +635,9 @@ impl GameState {
             }
             if diplomacy_at == Some(done_at) {
                 self.tick_diplomacy(done_at);
+            }
+            if rivals_at == Some(done_at) {
+                self.tick_rivals(done_at);
             }
             self.resolve_story(done_at);
             self.evaluate_achievements(done_at);
@@ -2907,6 +2917,7 @@ impl GameState {
         let prestige = self.prestige.clone();
         let achievements = self.achievements.clone();
         let season = self.season.clone();
+        let rival_settings = self.rivals.settings();
         let deterministic = self.deterministic;
         let next_seed = self
             .galaxy_seed
@@ -2943,6 +2954,9 @@ impl GameState {
             }
         }
         next.seed_pirate_home(now);
+        if rival_settings.enabled {
+            let _ = next.spawn_rivals(&crate::RivalCatalog::default(), rival_settings);
+        }
         next.resources = next.config.starting_resources;
         next.apply_prestige_start();
         next.daily = DailyBoard::default();
@@ -4112,7 +4126,7 @@ impl GameState {
             .sum()
     }
 
-    fn player_combat_stats(&self) -> [ShipStats; crate::SHIP_KINDS] {
+    pub(crate) fn player_combat_stats(&self) -> [ShipStats; crate::SHIP_KINDS] {
         let mut out = [ShipStats {
             attack: 0.0,
             shield: 0.0,

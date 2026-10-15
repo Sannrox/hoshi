@@ -70,6 +70,7 @@ enum NewField {
     Seed,
     Difficulty,
     Species,
+    Rivals,
 }
 
 impl NewField {
@@ -78,16 +79,18 @@ impl NewField {
             NewField::Name => NewField::Seed,
             NewField::Seed => NewField::Difficulty,
             NewField::Difficulty => NewField::Species,
-            NewField::Species => NewField::Name,
+            NewField::Species => NewField::Rivals,
+            NewField::Rivals => NewField::Name,
         }
     }
 
     fn prev(self) -> Self {
         match self {
-            NewField::Name => NewField::Species,
+            NewField::Name => NewField::Rivals,
             NewField::Seed => NewField::Name,
             NewField::Difficulty => NewField::Seed,
             NewField::Species => NewField::Difficulty,
+            NewField::Rivals => NewField::Species,
         }
     }
 }
@@ -173,6 +176,7 @@ pub struct Title {
     new_difficulty: Difficulty,
     new_field: NewField,
     new_species: usize,
+    new_rivals: bool,
     species_catalog: SpeciesCatalog,
     confirm_delete: Option<String>,
     rename_from: Option<String>,
@@ -223,6 +227,7 @@ impl Title {
             new_difficulty: Difficulty::Normal,
             new_field: NewField::Name,
             new_species: 0,
+            new_rivals: false,
             species_catalog: SpeciesCatalog::default(),
             confirm_delete: None,
             rename_from: None,
@@ -248,6 +253,7 @@ impl Title {
             advisor_probe: None,
             advisor_probe_status: String::new(),
         };
+        title.new_rivals = title.config.rivals;
         title.refresh_slots();
         title
     }
@@ -615,7 +621,10 @@ impl Title {
                 return TitleAction::None;
             }
             Some(Binding::Confirm) => {
-                if self.new_field == NewField::Difficulty || self.new_field == NewField::Species {
+                if self.new_field == NewField::Difficulty
+                    || self.new_field == NewField::Species
+                    || self.new_field == NewField::Rivals
+                {
                     return self.create_new();
                 }
                 self.new_field = self.new_field.next();
@@ -627,6 +636,10 @@ impl Title {
             }
             Some(Binding::Toggle) if self.new_field == NewField::Species => {
                 self.cycle_species();
+                return TitleAction::None;
+            }
+            Some(Binding::Toggle) if self.new_field == NewField::Rivals => {
+                self.new_rivals = !self.new_rivals;
                 return TitleAction::None;
             }
             _ => {}
@@ -648,7 +661,7 @@ impl Title {
                     NewField::Seed => {
                         self.new_seed.pop();
                     }
-                    NewField::Difficulty | NewField::Species => {}
+                    NewField::Difficulty | NewField::Species | NewField::Rivals => {}
                 }
                 TitleAction::None
             }
@@ -666,7 +679,7 @@ impl Title {
                             self.new_seed.push(c);
                         }
                     }
-                    NewField::Difficulty | NewField::Species => {}
+                    NewField::Difficulty | NewField::Species | NewField::Rivals => {}
                 }
                 TitleAction::None
             }
@@ -1523,6 +1536,11 @@ impl Title {
                     &spec.name,
                     self.new_field == NewField::Species,
                 ));
+                lines.push(field_line(
+                    "rivals",
+                    if self.new_rivals { "on" } else { "off" },
+                    self.new_field == NewField::Rivals,
+                ));
                 lines.push(Line::from(format!(
                     "{}  lean {}  +{}  -{}",
                     spec.blurb,
@@ -1536,7 +1554,7 @@ impl Title {
                     lines.push(Line::from(summary));
                 }
                 lines.push(Line::from(format!(
-                    "{} on difficulty or species creates the slot. {} cycles species. {} back. {} help.",
+                    "{} on difficulty, species or rivals creates the slot. {} cycles species or rivals. {} back. {} help.",
                     self.config.keys.primary(Binding::Confirm),
                     self.config.keys.primary(Binding::Toggle),
                     self.config.keys.primary(Binding::Cancel),
@@ -1819,6 +1837,7 @@ impl Title {
             prestige: self.career.prestige.clone(),
             season_id: self.season_id.clone(),
             species_id: self.selected_species().id.clone(),
+            rivals: self.new_rivals,
         }
     }
 }
@@ -1831,6 +1850,7 @@ pub struct NewGameSpec {
     pub prestige: Prestige,
     pub season_id: Option<String>,
     pub species_id: String,
+    pub rivals: bool,
 }
 
 pub fn parse_seed(text: &str) -> Result<Option<u64>, String> {

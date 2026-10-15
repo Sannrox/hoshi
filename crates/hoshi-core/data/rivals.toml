@@ -1,0 +1,39 @@
+# NPC rival empires. Off until a galaxy opts in (config.toml or `hoshi new --rivals`).
+# Weights are utilities: the AI picks the highest-scoring action that `propose` accepts.
+# No models. Decisions mix the galaxy seed, rival id and the act timestamp.
+
+enabled = false
+tick_secs = 3600
+aggression = 1.0
+efficiency = 1.0
+starting_bonus = 0.0
+
+[[personality]]
+id = "trader"
+name = "Greedy Trader"
+blurb = "Sells surplus and upgrades mines so the book stays busy."
+build = 0.35
+research = 0.15
+trade = 0.40
+raid = 0.05
+ship = 0.05
+
+[[personality]]
+id = "turtle"
+name = "Paranoid Turtle"
+blurb = "Stacks storage, solar and labs; rarely leaves home."
+build = 0.50
+research = 0.30
+trade = 0.05
+raid = 0.00
+ship = 0.15
+
+[[personality]]
+id = "raider"
+name = "Raider"
+blurb = "Builds a yard, then throws fighters at the player's parked fleet."
+build = 0.20
+research = 0.10
+trade = 0.05
+raid = 0.45
+ship = 0.20

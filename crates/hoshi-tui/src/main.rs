@@ -13,9 +13,9 @@ mod title;
 
 use app::{Action, App};
 use hoshi_core::{
-    BackendKind, BalanceConfig, Clock, GameState, Prestige, SaveError, SeasonCatalog,
-    SpeciesCatalog, SystemClock, default_save_dir, encode_galaxy_seed, inspect_save, lock_save,
-    open_storage, parse_galaxy_seed, resolve_save_path, simulate_greedy,
+    BackendKind, BalanceConfig, Clock, GameState, Prestige, RivalCatalog, RivalSettings, SaveError,
+    SeasonCatalog, SpeciesCatalog, SystemClock, default_save_dir, encode_galaxy_seed, inspect_save,
+    lock_save, open_storage, parse_galaxy_seed, resolve_save_path, simulate_greedy,
 };
 use portraits::{PortraitView, Protocol, detect_protocol};
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
@@ -240,6 +240,11 @@ fn run_new_game(args: &[String]) -> Result<(), LaunchError> {
     let mut save = None;
     let mut balance_path = None;
     let mut species_id = "humans".to_string();
+    let mut rivals = false;
+    let mut rival_aggression: Option<f64> = None;
+    let mut rival_efficiency: Option<f64> = None;
+    let mut rival_bonus: Option<f64> = None;
+    let mut rival_personalities: Vec<String> = Vec::new();
     let mut i = 2;
     while i < args.len() {
         let a = args[i].as_str();
@@ -268,6 +273,67 @@ fn run_new_game(args: &[String]) -> Result<(), LaunchError> {
                 exit: cli::EXIT_INVALID,
             })?;
             species_id = v.clone();
+            i += 2;
+            continue;
+        }
+        if a == "--rivals" {
+            rivals = true;
+            i += 1;
+            continue;
+        }
+        if let Some(v) = a.strip_prefix("--rival-aggression=") {
+            rival_aggression = Some(parse_rival_f64(v, "--rival-aggression")?);
+            i += 1;
+            continue;
+        }
+        if a == "--rival-aggression" {
+            let v = args.get(i + 1).ok_or_else(|| LaunchError {
+                message: "--rival-aggression needs a value".into(),
+                exit: cli::EXIT_INVALID,
+            })?;
+            rival_aggression = Some(parse_rival_f64(v, "--rival-aggression")?);
+            i += 2;
+            continue;
+        }
+        if let Some(v) = a.strip_prefix("--rival-efficiency=") {
+            rival_efficiency = Some(parse_rival_f64(v, "--rival-efficiency")?);
+            i += 1;
+            continue;
+        }
+        if a == "--rival-efficiency" {
+            let v = args.get(i + 1).ok_or_else(|| LaunchError {
+                message: "--rival-efficiency needs a value".into(),
+                exit: cli::EXIT_INVALID,
+            })?;
+            rival_efficiency = Some(parse_rival_f64(v, "--rival-efficiency")?);
+            i += 2;
+            continue;
+        }
+        if let Some(v) = a.strip_prefix("--rival-bonus=") {
+            rival_bonus = Some(parse_rival_f64(v, "--rival-bonus")?);
+            i += 1;
+            continue;
+        }
+        if a == "--rival-bonus" {
+            let v = args.get(i + 1).ok_or_else(|| LaunchError {
+                message: "--rival-bonus needs a value".into(),
+                exit: cli::EXIT_INVALID,
+            })?;
+            rival_bonus = Some(parse_rival_f64(v, "--rival-bonus")?);
+            i += 2;
+            continue;
+        }
+        if let Some(v) = a.strip_prefix("--rival-personality=") {
+            rival_personalities.push(v.to_string());
+            i += 1;
+            continue;
+        }
+        if a == "--rival-personality" {
+            let v = args.get(i + 1).ok_or_else(|| LaunchError {
+                message: "--rival-personality needs a value".into(),
+                exit: cli::EXIT_INVALID,
+            })?;
+            rival_personalities.push(v.clone());
             i += 2;
             continue;
         }
@@ -322,7 +388,7 @@ fn run_new_game(args: &[String]) -> Result<(), LaunchError> {
         })?;
     let now = SystemClock.now_unix();
     let catalog = SpeciesCatalog::default();
-    let state = GameState::new_with_species(
+    let mut state = GameState::new_with_species(
         now,
         &catalog,
         &species_id,
@@ -334,11 +400,44 @@ fn run_new_game(args: &[String]) -> Result<(), LaunchError> {
         message: e.to_string(),
         exit: cli::EXIT_INVALID,
     })?;
+    if rivals {
+        let mut settings = RivalSettings::on();
+        if let Some(v) = rival_aggression {
+            settings.aggression = v;
+        }
+        if let Some(v) = rival_efficiency {
+            settings.efficiency = v;
+        }
+        if let Some(v) = rival_bonus {
+            settings.starting_bonus = v;
+        }
+        settings.personalities = rival_personalities;
+        state
+            .spawn_rivals(&RivalCatalog::default(), settings)
+            .map_err(|e| LaunchError {
+                message: e.to_string(),
+                exit: cli::EXIT_INVALID,
+            })?;
+    }
     let _lock = lock_save(&path)?;
     let mut store = open_storage(&path)?;
     store.save(&state)?;
     println!("{}", encode_galaxy_seed(seed));
     Ok(())
+}
+
+fn parse_rival_f64(v: &str, flag: &str) -> Result<f64, LaunchError> {
+    let n: f64 = v.parse().map_err(|_| LaunchError {
+        message: format!("{flag} needs a number"),
+        exit: cli::EXIT_INVALID,
+    })?;
+    if !n.is_finite() || !(0.0..=10.0).contains(&n) {
+        return Err(LaunchError {
+            message: format!("{flag} must be a finite number in 0..=10"),
+            exit: cli::EXIT_INVALID,
+        });
+    }
+    Ok(n)
 }
 
 fn parse_new_seed(v: &str) -> Result<u64, LaunchError> {
@@ -691,6 +790,14 @@ fn play_path(
                 exit: cli::EXIT_INVALID,
             })?
         };
+        if spec.rivals {
+            state
+                .spawn_rivals(&RivalCatalog::default(), RivalSettings::on())
+                .map_err(|e| LaunchError {
+                    message: e.to_string(),
+                    exit: cli::EXIT_INVALID,
+                })?;
+        }
         let share = state.season.as_ref().is_none_or(|run| run.prestige);
         if spec.season_id.is_some()
             && share

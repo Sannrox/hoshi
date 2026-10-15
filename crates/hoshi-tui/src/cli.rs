@@ -226,6 +226,7 @@ enum Command {
         dest: Coord,
     },
     FlagshipAnchor,
+    Rivals,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1043,6 +1044,12 @@ fn apply(state: &mut GameState, now: u64, command: &Command) -> Result<Value, Cl
                 .map_err(|e| CliError::Refused(e.to_string()))?;
             Ok(ok_state(state, "flagship relocated"))
         }
+        Command::Rivals => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            Ok(ok_state(state, "rivals"))
+        }
         Command::FlagshipAnchor => {
             if !state.deterministic {
                 state.catch_up(now);
@@ -1432,6 +1439,28 @@ fn state_value(state: &GameState, actor: Actor) -> Value {
         }),
         None => Value::Null,
     };
+    value["rivals"] = json!({
+        "enabled": state.rivals.enabled,
+        "empires": state.rival_intel().into_iter().map(|row| json!({
+            "id": row.id,
+            "personality": row.personality,
+            "name": row.name,
+            "home": row.home.to_string(),
+            "last_action": row.last_action,
+            "resources": row.resources.map(|r| json!({
+                "metal": r.metal,
+                "crystal": r.crystal,
+                "deuterium": r.deuterium,
+            })),
+            "fleet": row.fleet.map(fleet_counts),
+            "buildings": row.buildings.map(|b| json!({
+                "metal_mine": b.metal_mine,
+                "crystal_mine": b.crystal_mine,
+                "solar_plant": b.solar_plant,
+                "shipyard": b.shipyard,
+            })),
+        })).collect::<Vec<_>>(),
+    });
     value["season"] = match &state.season {
         Some(run) => json!({
             "id": run.ruleset_id,
@@ -1637,6 +1666,10 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
             }
             Some(other) => Err(CliError::Invalid(format!("unknown goals command {other}"))),
         },
+        "rivals" => {
+            expect_end(args, 1)?;
+            Ok(Command::Rivals)
+        }
         "species" => match args.get(1).map(String::as_str) {
             None => {
                 expect_end(args, 1)?;
