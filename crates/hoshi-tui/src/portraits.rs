@@ -251,7 +251,17 @@ fn rgb_blob(name: &str) -> Option<&'static [u8]> {
 }
 
 fn resolved_name(slot: Slot, mood: Mood) -> String {
+    resolved_name_prefixed(slot, mood, None)
+}
+
+fn resolved_name_prefixed(slot: Slot, mood: Mood, prefix: Option<&str>) -> String {
     let wanted = asset_name(slot, mood);
+    if let Some(prefix) = prefix.filter(|p| !p.is_empty()) {
+        let keyed = format!("{prefix}-{wanted}");
+        if ascii_blob(&keyed).is_some() {
+            return keyed;
+        }
+    }
     if ascii_blob(&wanted).is_some() {
         wanted
     } else {
@@ -259,8 +269,32 @@ fn resolved_name(slot: Slot, mood: Mood) -> String {
     }
 }
 
+#[cfg(test)]
 pub fn ascii_lines(slot: Slot, mood: Mood) -> Vec<Line<'static>> {
-    let name = resolved_name(slot, mood);
+    ascii_lines_for(slot, mood, None)
+}
+
+fn pixel(rgb: &[u8], x: usize, y: usize) -> (u8, u8, u8) {
+    let i = (y * PIXEL_SIZE as usize + x) * 3;
+    (rgb[i], rgb[i + 1], rgb[i + 2])
+}
+
+pub fn portrait_lines_for(
+    view: PortraitView,
+    slot: Slot,
+    mood: Mood,
+    prefix: Option<&str>,
+) -> Vec<Line<'static>> {
+    if view.enabled
+        && let Some(lines) = half_block_lines_for(slot, mood, prefix)
+    {
+        return lines;
+    }
+    ascii_lines_for(slot, mood, prefix)
+}
+
+fn ascii_lines_for(slot: Slot, mood: Mood, prefix: Option<&str>) -> Vec<Line<'static>> {
+    let name = resolved_name_prefixed(slot, mood, prefix);
     let text = ascii_blob(&name).unwrap_or("????????\n????????\n????????\n????????\n");
     text.lines()
         .take(ASCII_ROWS)
@@ -274,9 +308,12 @@ pub fn ascii_lines(slot: Slot, mood: Mood) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// Half-block cells from the RGB grid. `None` when images are disabled or the blob is missing.
-pub fn half_block_lines(slot: Slot, mood: Mood) -> Option<Vec<Line<'static>>> {
-    let name = resolved_name(slot, mood);
+fn half_block_lines_for(
+    slot: Slot,
+    mood: Mood,
+    prefix: Option<&str>,
+) -> Option<Vec<Line<'static>>> {
+    let name = resolved_name_prefixed(slot, mood, prefix);
     let rgb = rgb_blob(&name)?;
     if rgb.len() != (PIXEL_SIZE * PIXEL_SIZE * 3) as usize {
         return None;
@@ -297,20 +334,6 @@ pub fn half_block_lines(slot: Slot, mood: Mood) -> Option<Vec<Line<'static>>> {
         lines.push(Line::from(spans));
     }
     Some(lines)
-}
-
-fn pixel(rgb: &[u8], x: usize, y: usize) -> (u8, u8, u8) {
-    let i = (y * PIXEL_SIZE as usize + x) * 3;
-    (rgb[i], rgb[i + 1], rgb[i + 2])
-}
-
-pub fn portrait_lines(view: PortraitView, slot: Slot, mood: Mood) -> Vec<Line<'static>> {
-    if view.enabled
-        && let Some(lines) = half_block_lines(slot, mood)
-    {
-        return lines;
-    }
-    ascii_lines(slot, mood)
 }
 
 pub fn graphics_payload(slot: Slot, mood: Mood) -> Option<String> {
@@ -477,13 +500,14 @@ mod tests {
 
     #[test]
     fn disabled_images_do_not_need_rgb() {
-        let lines = portrait_lines(
+        let lines = portrait_lines_for(
             PortraitView {
                 enabled: false,
                 protocol: Protocol::None,
             },
             Slot::Commander,
             Mood::Neutral,
+            None,
         );
         let joined = lines
             .iter()

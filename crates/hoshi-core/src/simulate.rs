@@ -743,20 +743,58 @@ fn secs_until_afford(state: &GameState, kind: BuildingKind) -> Option<u64> {
 
 /// Casual 14-day opener, then a focused finish for each galaxy victory path.
 pub fn simulate_victory_paths(config: BalanceConfig) -> Vec<VictorySimRow> {
+    simulate_victory_paths_for(config, None)
+}
+
+/// Same paths as [`simulate_victory_paths`], once per bundled species.
+pub fn simulate_species_victory_paths(config: BalanceConfig) -> Vec<(String, Vec<VictorySimRow>)> {
+    let catalog = crate::SpeciesCatalog::default();
+    catalog
+        .iter()
+        .map(|spec| {
+            (
+                spec.id.clone(),
+                simulate_victory_paths_for(config.clone(), Some(spec)),
+            )
+        })
+        .collect()
+}
+
+fn simulate_victory_paths_for(
+    config: BalanceConfig,
+    species: Option<&crate::SpeciesSpec>,
+) -> Vec<VictorySimRow> {
     let min = config.victory.casual_min_secs;
     let max = config.victory.casual_max_secs;
     vec![
-        finish_wonder(config.clone(), min, max),
-        finish_diplomacy(config.clone(), min, max),
-        finish_conquest(config, min, max),
+        finish_wonder(config.clone(), min, max, species),
+        finish_diplomacy(config.clone(), min, max, species),
+        finish_conquest(config, min, max, species),
     ]
 }
 
-fn developed(mut config: BalanceConfig, until: u64) -> GameState {
+fn developed(
+    mut config: BalanceConfig,
+    until: u64,
+    species: Option<&crate::SpeciesSpec>,
+) -> GameState {
     config.raid = crate::RaidConfig::inactive();
     config.market.enabled = false;
     config.activity.enabled = false;
+    if let Some(spec) = species {
+        config = crate::SpeciesCatalog::default()
+            .overlay(&spec.id, config)
+            .expect("bundled species overlay")
+            .0;
+    }
     let mut state = GameState::with_config(0, config);
+    if let Some(spec) = species {
+        for (faction, delta) in &spec.standing {
+            let next = state.diplomacy.standing(faction) + *delta;
+            state.diplomacy.set_standing(faction, next);
+        }
+        state.species = Some(spec.run());
+    }
     let mut steps = 0_u32;
     while state.last_tick_unix < until && steps < 200_000 {
         steps += 1;
@@ -785,9 +823,14 @@ fn developed(mut config: BalanceConfig, until: u64) -> GameState {
     state
 }
 
-fn finish_wonder(config: BalanceConfig, min: u64, max: u64) -> VictorySimRow {
+fn finish_wonder(
+    config: BalanceConfig,
+    min: u64,
+    max: u64,
+    species: Option<&crate::SpeciesSpec>,
+) -> VictorySimRow {
     let id = config.victory.wonder_id.clone();
-    let mut state = developed(config, min);
+    let mut state = developed(config, min, species);
     state.tech_levels.insert("energy".into(), 8);
     state.resources.metal += 100_000.0;
     state.resources.crystal += 100_000.0;
@@ -815,11 +858,16 @@ fn finish_wonder(config: BalanceConfig, min: u64, max: u64) -> VictorySimRow {
     }
 }
 
-fn finish_diplomacy(mut config: BalanceConfig, min: u64, max: u64) -> VictorySimRow {
+fn finish_diplomacy(
+    mut config: BalanceConfig,
+    min: u64,
+    max: u64,
+    species: Option<&crate::SpeciesSpec>,
+) -> VictorySimRow {
     config.diplomacy.decay = 0.0;
     let standing = config.diplomacy.max_standing;
     let hold = config.victory.hold_secs;
-    let mut state = developed(config, min);
+    let mut state = developed(config, min, species);
     let ids: Vec<String> = state
         .config
         .diplomacy
@@ -840,8 +888,13 @@ fn finish_diplomacy(mut config: BalanceConfig, min: u64, max: u64) -> VictorySim
     }
 }
 
-fn finish_conquest(config: BalanceConfig, min: u64, max: u64) -> VictorySimRow {
-    let mut state = developed(config, min);
+fn finish_conquest(
+    config: BalanceConfig,
+    min: u64,
+    max: u64,
+    species: Option<&crate::SpeciesSpec>,
+) -> VictorySimRow {
+    let mut state = developed(config, min, species);
     if let Some(home) = state.pirate_homeworld() {
         state.outposts.retain(|outpost| outpost.coord != home);
         state.colonies.push(Colony {
@@ -1001,6 +1054,41 @@ mod tests {
                 "{} at {elapsed}s outside {min}..={max}",
                 row.path
             );
+        }
+    }
+
+    #[test]
+    fn every_species_lands_in_the_casual_band_without_a_runaway_lead() {
+        let config = BalanceConfig::default();
+        let min = config.victory.casual_min_secs;
+        let max = config.victory.casual_max_secs;
+        let sets = simulate_species_victory_paths(config);
+        assert_eq!(sets.len(), 5);
+        let mut by_path: BTreeMap<&str, Vec<u64>> = BTreeMap::new();
+        for (id, rows) in &sets {
+            assert_eq!(rows.len(), 3, "{id}");
+            for row in rows {
+                let elapsed = row
+                    .elapsed_secs
+                    .unwrap_or_else(|| panic!("{id} {}", row.path));
+                assert!(
+                    elapsed >= min && elapsed <= max,
+                    "{id} {} at {elapsed}s outside {min}..={max}",
+                    row.path
+                );
+                by_path.entry(row.path.as_str()).or_default().push(elapsed);
+            }
+        }
+        for (path, mut times) in by_path {
+            times.sort_unstable();
+            let median = times[times.len() / 2];
+            let floor = median.saturating_sub(median / 4);
+            for elapsed in times {
+                assert!(
+                    elapsed >= floor,
+                    "{path} {elapsed}s is more than 25% faster than median {median}"
+                );
+            }
         }
     }
 }

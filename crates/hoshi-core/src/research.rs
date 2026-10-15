@@ -244,6 +244,24 @@ impl TechTree {
             .find(|spec| spec.branch == branch && spec.keystone)
     }
 
+    /// Remove nodes, then insert replacements. Re-validates keystones and exclusive groups.
+    pub fn apply_overrides(
+        &mut self,
+        remove: &[String],
+        add: Vec<TechSpec>,
+    ) -> Result<(), TechTreeError> {
+        for id in remove {
+            self.techs.remove(id);
+        }
+        for spec in add {
+            if self.techs.contains_key(&spec.id) {
+                return Err(TechTreeError::DuplicateId(spec.id));
+            }
+            self.techs.insert(spec.id.clone(), spec);
+        }
+        self.validate()
+    }
+
     fn validate(&self) -> Result<(), TechTreeError> {
         for spec in self.techs.values() {
             for pre in &spec.prereq_techs {

@@ -883,6 +883,19 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             );
             """
         )
+    elif version == 34:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS season (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                ruleset_id TEXT NOT NULL,
+                window_start INTEGER NOT NULL,
+                window_end INTEGER NOT NULL,
+                seed INTEGER NOT NULL,
+                prestige INTEGER NOT NULL
+            );
+            """
+        )
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"

@@ -13,9 +13,9 @@ mod title;
 
 use app::{Action, App};
 use hoshi_core::{
-    BackendKind, BalanceConfig, Clock, GameState, SaveError, SeasonCatalog, SystemClock,
-    default_save_dir, encode_galaxy_seed, inspect_save, lock_save, open_storage, parse_galaxy_seed,
-    resolve_save_path, simulate_greedy,
+    BackendKind, BalanceConfig, Clock, GameState, Prestige, SaveError, SeasonCatalog,
+    SpeciesCatalog, SystemClock, default_save_dir, encode_galaxy_seed, inspect_save, lock_save,
+    open_storage, parse_galaxy_seed, resolve_save_path, simulate_greedy,
 };
 use portraits::{PortraitView, Protocol, detect_protocol};
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
@@ -239,6 +239,7 @@ fn run_new_game(args: &[String]) -> Result<(), LaunchError> {
     let mut seed = None;
     let mut save = None;
     let mut balance_path = None;
+    let mut species_id = "humans".to_string();
     let mut i = 2;
     while i < args.len() {
         let a = args[i].as_str();
@@ -253,6 +254,20 @@ fn run_new_game(args: &[String]) -> Result<(), LaunchError> {
                 exit: cli::EXIT_INVALID,
             })?;
             seed = Some(parse_new_seed(v)?);
+            i += 2;
+            continue;
+        }
+        if let Some(v) = a.strip_prefix("--species=") {
+            species_id = v.to_string();
+            i += 1;
+            continue;
+        }
+        if a == "--species" {
+            let v = args.get(i + 1).ok_or_else(|| LaunchError {
+                message: "--species needs a value".into(),
+                exit: cli::EXIT_INVALID,
+            })?;
+            species_id = v.clone();
             i += 2;
             continue;
         }
@@ -306,7 +321,19 @@ fn run_new_game(args: &[String]) -> Result<(), LaunchError> {
             exit: cli::EXIT_INTERNAL,
         })?;
     let now = SystemClock.now_unix();
-    let state = GameState::new_live_galaxy(now, balance, seed);
+    let catalog = SpeciesCatalog::default();
+    let state = GameState::new_with_species(
+        now,
+        &catalog,
+        &species_id,
+        balance,
+        seed,
+        Prestige::new(now),
+    )
+    .map_err(|e| LaunchError {
+        message: e.to_string(),
+        exit: cli::EXIT_INVALID,
+    })?;
     let _lock = lock_save(&path)?;
     let mut store = open_storage(&path)?;
     store.save(&state)?;
@@ -650,13 +677,27 @@ fn play_path(
             })?
         } else {
             let seed = spec.seed.unwrap_or(now.wrapping_mul(0x9E37_79B9_7F4A_7C15));
-            GameState::new_live_galaxy(now, config, seed)
+            let catalog = SpeciesCatalog::default();
+            GameState::new_with_species(
+                now,
+                &catalog,
+                &spec.species_id,
+                config,
+                seed,
+                spec.prestige.clone(),
+            )
+            .map_err(|e| LaunchError {
+                message: e.to_string(),
+                exit: cli::EXIT_INVALID,
+            })?
         };
         let share = state.season.as_ref().is_none_or(|run| run.prestige);
-        if share
+        if spec.season_id.is_some()
+            && share
             && (spec.prestige.lifetime > 0
                 || !spec.prestige.owned.is_empty()
-                || !spec.prestige.runs.is_empty())
+                || !spec.prestige.runs.is_empty()
+                || !spec.prestige.unlocked_species.is_empty())
         {
             state.inherit_prestige(spec.prestige);
         }

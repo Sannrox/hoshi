@@ -270,6 +270,8 @@ pub struct GameState {
     pub allied_since: Option<u64>,
     /// Present on seasonal saves. Main career prestige ignores this unless opted in.
     pub season: Option<crate::SeasonRun>,
+    /// Playable species overlay for this galaxy.
+    pub species: Option<crate::SpeciesRun>,
     pub config: BalanceConfig,
 }
 
@@ -367,6 +369,7 @@ impl GameState {
             victory: None,
             allied_since: None,
             season: None,
+            species: None,
             config,
         };
         state.seed_pirate_home(now_unix);
@@ -459,6 +462,12 @@ impl GameState {
             let staff_at = self.next_staff_at();
             let planned_at = self.next_planned_at();
             let board_at = self.next_board_at();
+            let flagship_at = self
+                .species
+                .as_ref()
+                .and_then(|run| run.flagship.as_ref())
+                .and_then(|ship| ship.arrives_at)
+                .filter(|&t| t > self.last_tick_unix);
             let Some(done_at) = min_time(
                 min_time(
                     min_time(
@@ -489,7 +498,10 @@ impl GameState {
                     logistics_at,
                     min_time(
                         staff_at,
-                        min_time(planned_at, min_time(board_at, self.next_victory_at())),
+                        min_time(
+                            planned_at,
+                            min_time(board_at, min_time(flagship_at, self.next_victory_at())),
+                        ),
                     ),
                 ),
             ) else {
@@ -1176,6 +1188,11 @@ impl GameState {
             .map_err(|err| BuildError::PermissionDenied(err.to_string()))?;
         let now = self.last_tick_unix;
         let cap = self.build_queue_cap();
+        let construction = self
+            .species
+            .as_ref()
+            .map(|run| run.construction)
+            .unwrap_or(1.0);
         if coord == self.home {
             let buildings = self.buildings;
             let robotics = buildings.robotics_factory;
@@ -1190,6 +1207,7 @@ impl GameState {
                     cap,
                 },
                 &self.config,
+                construction,
             )?;
         } else {
             let idx = self
@@ -1211,6 +1229,7 @@ impl GameState {
                     cap,
                 },
                 &self.config,
+                construction,
             )?;
         }
         self.charge_delegation(actor, crate::Permission::QueueBuild, spend);
@@ -1223,6 +1242,7 @@ impl GameState {
         now: u64,
         target: BuildTarget<'_>,
         config: &BalanceConfig,
+        construction: f64,
     ) -> Result<(), BuildError> {
         if target.queue.len() >= target.cap {
             return Err(BuildError::QueueFull { cap: target.cap });
@@ -1255,7 +1275,7 @@ impl GameState {
             completes_at: None,
         });
         if target.queue.len() == 1 {
-            start_queue_head(target.queue, target.robotics, config, now);
+            start_queue_head(target.queue, target.robotics, config, now, construction);
         }
         Ok(())
     }
@@ -1623,10 +1643,15 @@ impl GameState {
     pub fn ship_cost(&self, kind: ShipKind, count: u32) -> Resources {
         let unit = self.config.ships.get(kind).unit_cost();
         let n = f64::from(count);
+        let mult = self
+            .species
+            .as_ref()
+            .map(|run| run.ship_cost)
+            .unwrap_or(1.0);
         Resources {
-            metal: unit.metal * n,
-            crystal: unit.crystal * n,
-            deuterium: unit.deuterium * n,
+            metal: unit.metal * n * mult,
+            crystal: unit.crystal * n * mult,
+            deuterium: unit.deuterium * n * mult,
         }
     }
 
@@ -2728,9 +2753,15 @@ impl GameState {
 
     /// Build queue length including purchased extra slots.
     pub fn build_queue_cap(&self) -> usize {
+        let extra = self
+            .species
+            .as_ref()
+            .map(|run| run.queue_slots)
+            .unwrap_or(0);
         self.config
             .max_build_queue
             .saturating_add(self.prestige.queue_slots(&self.config.prestige) as usize)
+            .saturating_add(extra as usize)
     }
 
     fn apply_prestige_start(&mut self) {
@@ -2902,6 +2933,15 @@ impl GameState {
         next.victory = None;
         next.allied_since = None;
         next.season = season;
+        next.species = self.species.clone();
+        if let Some(run) = next.species.as_mut() {
+            run.brew_until = None;
+            if let Some(ship) = run.flagship.as_mut() {
+                ship.coord = crate::Coord::HOME;
+                ship.arrives_at = None;
+                ship.anchored = false;
+            }
+        }
         next.seed_pirate_home(now);
         next.resources = next.config.starting_resources;
         next.apply_prestige_start();
@@ -2963,9 +3003,21 @@ impl GameState {
             + self.wonder_modifier(kind)
             + self.prestige_output(kind)
             + self.diplomacy_modifier(kind)
+            + self.species_modifier(kind, from)
             + self
                 .laws
                 .modifier_range(kind, &self.config.laws, from, to, self.home)
+    }
+
+    fn species_modifier(&self, kind: ModifierKind, from: u64) -> f64 {
+        let Some(run) = self.species.as_ref() else {
+            return 0.0;
+        };
+        match kind {
+            ModifierKind::Espionage => (run.espionage - 1.0).max(0.0),
+            ModifierKind::MetalOutput if run.brew_until.is_some_and(|until| until > from) => 0.2,
+            _ => 0.0,
+        }
     }
 
     fn diplomacy_modifier(&self, kind: ModifierKind) -> f64 {
@@ -3111,31 +3163,49 @@ impl GameState {
     }
 
     fn duration_secs(&self, kind: BuildingKind, from_level: u32) -> u64 {
-        duration_with_robotics(
+        let base = duration_with_robotics(
             kind,
             from_level,
             self.buildings.robotics_factory,
             &self.config,
-        )
+        );
+        let mult = self
+            .species
+            .as_ref()
+            .map(|run| run.construction)
+            .unwrap_or(1.0);
+        ((base as f64) * mult).ceil().max(1.0) as u64
     }
 
     fn start_head(&mut self, now_unix: u64) {
         let robotics = self.buildings.robotics_factory;
+        let construction = self
+            .species
+            .as_ref()
+            .map(|run| run.construction)
+            .unwrap_or(1.0);
         start_queue_head(
             &mut self.build_queue,
             robotics,
             &self.config,
             now_unix.max(self.last_tick_unix),
+            construction,
         );
     }
 
     fn start_colony_head(&mut self, index: usize, now_unix: u64) {
         let robotics = self.colonies[index].buildings.robotics_factory;
+        let construction = self
+            .species
+            .as_ref()
+            .map(|run| run.construction)
+            .unwrap_or(1.0);
         start_queue_head(
             &mut self.colonies[index].build_queue,
             robotics,
             &self.config,
             now_unix.max(self.last_tick_unix),
+            construction,
         );
     }
 
@@ -5027,6 +5097,7 @@ impl GameState {
             }
         }
         self.collect_law_tax(hours, from, now_unix);
+        self.tick_flagship(now_unix);
         self.last_tick_unix = now_unix;
         self.sync_daily(now_unix);
     }
@@ -5501,11 +5572,20 @@ impl GameState {
     /// Scales mine output when energy is short. Always in `[0, 1]`.
     pub fn energy_factor(&self) -> f64 {
         let consumed = self.energy_consumed();
-        if consumed <= 0.0 {
+        let produced = self.energy_produced();
+        let base = if consumed <= 0.0 {
             1.0
         } else {
-            (self.energy_produced() / consumed).clamp(0.0, 1.0)
+            (produced / consumed).clamp(0.0, 1.0)
+        };
+        let Some(run) = self.species.as_ref() else {
+            return base;
+        };
+        let mut factor = base.powf(run.energy_curve.max(0.05));
+        if run.energy_surplus > 0.0 && consumed > 0.0 && produced > consumed {
+            factor *= 1.0 + run.energy_surplus * (produced / consumed - 1.0).min(2.0);
         }
+        factor
     }
 
     pub fn production_per_hour(&self, kind: ResourceKind) -> f64 {
@@ -5606,6 +5686,11 @@ impl GameState {
     }
 
     fn compose_research_speed(&self, activity: f64) -> f64 {
+        let species = self
+            .species
+            .as_ref()
+            .map(|run| 1.0 / run.research.max(0.05))
+            .unwrap_or(1.0);
         activity.max(1.0)
             * (1.0 + self.prestige.research_bonus(&self.config.prestige)).max(1.0)
             * (1.0
@@ -5616,6 +5701,7 @@ impl GameState {
                     self.home,
                 ))
             .max(0.1)
+            * species
     }
 
     fn rescale_research(&mut self, at: u64, old_speed: f64, new_speed: f64) {
@@ -5890,14 +5976,21 @@ fn duration_with_robotics(
     secs.ceil().max(1.0) as u64
 }
 
-fn start_queue_head(queue: &mut [BuildJob], robotics: u32, config: &BalanceConfig, now: u64) {
+fn start_queue_head(
+    queue: &mut [BuildJob],
+    robotics: u32,
+    config: &BalanceConfig,
+    now: u64,
+    construction: f64,
+) {
     let Some(job) = queue.first() else {
         return;
     };
     if job.completes_at.is_some() {
         return;
     }
-    let duration = duration_with_robotics(job.building, job.from_level, robotics, config);
+    let base = duration_with_robotics(job.building, job.from_level, robotics, config);
+    let duration = ((base as f64) * construction.max(0.05)).ceil().max(1.0) as u64;
     let job = &mut queue[0];
     job.started_at = Some(now);
     job.completes_at = Some(now.saturating_add(duration));

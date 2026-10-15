@@ -1,0 +1,195 @@
+# Playable species. Overlay bundled balance and the research tree.
+
+version = 1
+
+[[species]]
+id = "humans"
+name = "Humans"
+blurb = "Balanced traders. Full tree, a light diplomacy bonus, and the easiest start."
+available = true
+unlock_cost = 0
+victory_lean = "diplomacy"
+portrait = "humans"
+strengths = "trade and diplomacy"
+weaknesses = "no specialised edge"
+construction = 1.0
+research = 1.0
+ship_cost = 1.0
+expedition = 1.0
+espionage = 1.0
+queue_slots = 0
+energy_curve = 1.0
+energy_surplus = 0.0
+transmute_rate = 0.0
+brew_metal = 0.0
+brew_secs = 0
+flagship = false
+standing = { traders = 4.0, pirates = 2.0, ancients = 2.0 }
+
+[[species]]
+id = "kryth"
+name = "Kryth"
+blurb = "Hive builders. Fast yards and cheap hulls, slow labs, and a swarm doctrine."
+available = false
+unlock_cost = 2
+victory_lean = "conquest"
+portrait = "kryth"
+strengths = "construction and cheap ships"
+weaknesses = "research and diplomacy"
+construction = 0.75
+research = 1.25
+ship_cost = 0.7
+expedition = 1.0
+espionage = 1.0
+queue_slots = 1
+energy_curve = 1.0
+energy_surplus = 0.0
+transmute_rate = 0.0
+brew_metal = 0.0
+brew_secs = 0
+flagship = false
+standing = { traders = -8.0, pirates = 6.0, ancients = 0.0 }
+tree_remove = ["shield_doctrine"]
+
+[[species.tech]]
+id = "swarm_doctrine"
+name = "Swarm doctrine"
+branch = "military"
+tier = 2
+exclusive_group = "defense_focus"
+max_level = 1
+metal = 400.0
+crystal = 200.0
+deuterium = 0.0
+cost_growth = 1.0
+base_seconds = 180.0
+time_growth = 1.0
+prereq_buildings = [{ building = "research_lab", level = 2 }]
+prereq_techs = [{ id = "armour", level = 1 }]
+modifiers = [{ kind = "weapon_damage", per_level = 0.12 }]
+
+[[species]]
+id = "aurelians"
+name = "Aurelians"
+blurb = "Alchemists. Transmute stockpiles, brew a short output buff, and lean toward wonders."
+available = false
+unlock_cost = 2
+victory_lean = "wonder"
+portrait = "aurelians"
+strengths = "transmutation and industry"
+weaknesses = "combat doctrine"
+construction = 1.0
+research = 1.0
+ship_cost = 1.0
+expedition = 1.0
+espionage = 1.0
+queue_slots = 0
+energy_curve = 1.0
+energy_surplus = 0.0
+transmute_rate = 0.8
+brew_metal = 200.0
+brew_secs = 600
+flagship = false
+standing = { traders = 0.0, pirates = 0.0, ancients = 8.0 }
+tree_remove = ["orbital_harvest"]
+
+[[species.tech]]
+id = "alchemy_flow"
+name = "Alchemy flow"
+branch = "industry"
+tier = 2
+exclusive_group = "mining_method"
+max_level = 1
+metal = 200.0
+crystal = 400.0
+deuterium = 0.0
+cost_growth = 1.0
+base_seconds = 180.0
+time_growth = 1.0
+prereq_buildings = [{ building = "research_lab", level = 1 }]
+prereq_techs = [{ id = "energy", level = 1 }]
+modifiers = [{ kind = "crystal_output", per_level = 0.08 }]
+
+[[species]]
+id = "void_wanderers"
+name = "Void Wanderers"
+blurb = "Nomads. A flagship city flies on fleet timers and later anchors a colony."
+available = false
+unlock_cost = 3
+victory_lean = "diplomacy"
+portrait = "void_wanderers"
+strengths = "expeditions and espionage"
+weaknesses = "no anchored home at start"
+construction = 1.0
+research = 1.0
+ship_cost = 1.0
+expedition = 1.4
+espionage = 2.0
+queue_slots = 0
+energy_curve = 1.0
+energy_surplus = 0.0
+transmute_rate = 0.0
+brew_metal = 0.0
+brew_secs = 0
+flagship = true
+standing = { traders = -4.0, pirates = -4.0, ancients = -4.0 }
+tree_remove = ["smuggler_network"]
+
+[[species.tech]]
+id = "void_charts"
+name = "Void charts"
+branch = "society"
+tier = 2
+exclusive_group = "trade_focus"
+max_level = 1
+metal = 200.0
+crystal = 200.0
+deuterium = 200.0
+cost_growth = 1.0
+base_seconds = 180.0
+time_growth = 1.0
+prereq_buildings = [{ building = "research_lab", level = 1 }]
+prereq_techs = []
+modifiers = [{ kind = "espionage", per_level = 2.0 }, { kind = "expedition_slots", per_level = 1.0 }]
+
+[[species]]
+id = "synths"
+name = "Synths"
+blurb = "Machines. Output tracks energy surplus, automation speeds queues, and ancients bristle."
+available = false
+unlock_cost = 3
+victory_lean = "conquest"
+portrait = "synths"
+strengths = "energy and automation"
+weaknesses = "energy shortages"
+construction = 0.9
+research = 1.0
+ship_cost = 1.0
+expedition = 1.0
+espionage = 1.0
+queue_slots = 1
+energy_curve = 1.5
+energy_surplus = 0.15
+transmute_rate = 0.0
+brew_metal = 0.0
+brew_secs = 0
+flagship = false
+standing = { traders = 6.0, pirates = 0.0, ancients = -10.0 }
+tree_remove = ["deep_core"]
+
+[[species.tech]]
+id = "automation_grid"
+name = "Automation grid"
+branch = "industry"
+tier = 2
+exclusive_group = "mining_method"
+max_level = 1
+metal = 400.0
+crystal = 200.0
+deuterium = 0.0
+cost_growth = 1.0
+base_seconds = 180.0
+time_growth = 1.0
+prereq_buildings = [{ building = "research_lab", level = 1 }]
+prereq_techs = [{ id = "energy", level = 1 }]
+modifiers = [{ kind = "energy_output", per_level = 0.1 }, { kind = "logistics", per_level = 1.0 }]

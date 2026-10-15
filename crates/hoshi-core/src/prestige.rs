@@ -1,7 +1,7 @@
 //! Prestige currency, purchased bonuses and per-run statistics.
 //! Meta progress lives here so a reset can wipe the run without wiping the empire's history.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 /// One purchasable bonus. Counts stack; effects add.
@@ -144,6 +144,7 @@ pub struct Prestige {
     pub currency: u32,
     pub lifetime: u32,
     pub owned: BTreeMap<String, u32>,
+    pub unlocked_species: BTreeSet<String>,
     pub runs: Vec<RunStats>,
     pub current: RunStats,
 }
@@ -160,6 +161,7 @@ impl Prestige {
             currency: 0,
             lifetime: 0,
             owned: BTreeMap::new(),
+            unlocked_species: BTreeSet::new(),
             runs: Vec::new(),
             current: RunStats::new(1, now_unix),
         }
