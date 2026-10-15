@@ -326,6 +326,8 @@ impl GameState {
             }
             ship.coord
         };
+        self.check_frontier_flight(from, dest)
+            .map_err(|e| SpeciesError::Invalid(e.to_string()))?;
         let dist = distance(from, dest, &self.config.flight);
         let secs = flight_secs(dist, 10.0, 100);
         let ship = self
@@ -352,10 +354,10 @@ impl GameState {
     pub fn anchor_flagship(&mut self, now: u64) -> Result<(), SpeciesError> {
         self.catch_up(now);
         let coord = {
-            let Some(run) = self.species.as_mut() else {
+            let Some(run) = self.species.as_ref() else {
                 return Err(SpeciesError::Unavailable("no species"));
             };
-            let Some(ship) = run.flagship.as_mut() else {
+            let Some(ship) = run.flagship.as_ref() else {
                 return Err(SpeciesError::Unavailable("no flagship"));
             };
             if ship.anchored {
@@ -364,9 +366,22 @@ impl GameState {
             if ship.arrives_at.is_some() {
                 return Err(SpeciesError::Unavailable("flagship is in flight"));
             }
-            ship.anchored = true;
             ship.coord
         };
+        if coord.galaxy == self.config.frontier.galaxy && !self.frontier_coord_visible(coord) {
+            return Err(SpeciesError::Invalid(format!(
+                "frontier sector at {coord} is still locked"
+            )));
+        }
+        {
+            let Some(run) = self.species.as_mut() else {
+                return Err(SpeciesError::Unavailable("no species"));
+            };
+            let Some(ship) = run.flagship.as_mut() else {
+                return Err(SpeciesError::Unavailable("no flagship"));
+            };
+            ship.anchored = true;
+        }
         if coord != Coord::HOME && !self.colonies.iter().any(|c| c.coord == coord) {
             let (kind, size) =
                 crate::planets::planet_profile(self.galaxy_seed, coord, self.generator_version);
@@ -703,6 +718,62 @@ mod tests {
                 .unwrap()
                 .anchored
         );
+        assert!(state.colonies.iter().any(|c| c.coord == dest));
+    }
+
+    #[test]
+    fn void_flagship_cannot_enter_the_frontier_without_the_drive() {
+        let cat = SpeciesCatalog::default();
+        let mut prestige = Prestige::new(0);
+        prestige.unlocked_species.insert("void_wanderers".into());
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.enabled = false;
+        cfg.market.enabled = false;
+        let mut state =
+            GameState::new_with_species(1_000, &cat, "void_wanderers", cfg, 1, prestige).unwrap();
+        let dest = Coord {
+            galaxy: 2,
+            system: 1,
+            position: 1,
+        };
+        let err = state.relocate_flagship(dest, 1_000).unwrap_err();
+        assert!(
+            err.to_string().contains("frontier") || err.to_string().contains("drive"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn void_flagship_can_anchor_after_the_drive_is_gone() {
+        let cat = SpeciesCatalog::default();
+        let mut prestige = Prestige::new(0);
+        prestige.unlocked_species.insert("void_wanderers".into());
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.enabled = false;
+        cfg.market.enabled = false;
+        let mut state =
+            GameState::new_with_species(1_000, &cat, "void_wanderers", cfg, 1, prestige).unwrap();
+        state.completed_wonders.push("dyson_ring".into());
+        state.evaluate_frontier(1_000);
+        let dest = state.frontier.worlds[0].coord;
+        state
+            .tech_levels
+            .insert(state.config.frontier.flight_drive_id.clone(), 1);
+        state.relocate_flagship(dest, 1_000).unwrap();
+        let eta = state
+            .species
+            .as_ref()
+            .unwrap()
+            .flagship
+            .as_ref()
+            .unwrap()
+            .arrives_at
+            .unwrap();
+        state.catch_up(eta);
+        state
+            .tech_levels
+            .remove(&state.config.frontier.flight_drive_id.clone());
+        state.anchor_flagship(eta).unwrap();
         assert!(state.colonies.iter().any(|c| c.coord == dest));
     }
 

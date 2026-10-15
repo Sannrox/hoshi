@@ -276,6 +276,8 @@ pub struct GameState {
     pub rivals: crate::RivalBoard,
     /// Industrial goal ladder progress for this galaxy.
     pub ladder: crate::LadderBoard,
+    /// Frontier galaxy unlock, seen bridge ids, and generated worlds.
+    pub frontier: crate::FrontierBoard,
     pub config: BalanceConfig,
 }
 
@@ -376,9 +378,11 @@ impl GameState {
             species: None,
             rivals: crate::RivalBoard::default(),
             ladder: crate::LadderBoard::default(),
+            frontier: crate::FrontierBoard::default(),
             config,
         };
         state.seed_pirate_home(now_unix);
+        state.seed_frontier();
         state.install_starter_staff(now_unix);
         state.apply_prestige_start();
         state.sync_daily(now_unix);
@@ -403,6 +407,7 @@ impl GameState {
             version,
         );
         state.seed_pirate_home(now_unix);
+        state.seed_frontier();
         state.daily = DailyBoard::default();
         state.sync_daily(now_unix);
         state
@@ -528,6 +533,7 @@ impl GameState {
                 self.evaluate_achievements(now_unix);
                 self.maybe_declare_victory(now_unix);
                 self.evaluate_ladder(now_unix);
+                self.evaluate_frontier(now_unix);
                 self.note_logistics_stalls(now_unix);
                 return;
             };
@@ -539,6 +545,7 @@ impl GameState {
                 self.evaluate_achievements(now_unix);
                 self.maybe_declare_victory(now_unix);
                 self.evaluate_ladder(now_unix);
+                self.evaluate_frontier(now_unix);
                 self.note_logistics_stalls(now_unix);
                 return;
             }
@@ -654,6 +661,7 @@ impl GameState {
             self.evaluate_achievements(done_at);
             self.maybe_declare_victory(done_at);
             self.evaluate_ladder(done_at);
+            self.evaluate_frontier(done_at);
             self.note_logistics_stalls(done_at);
         }
     }
@@ -1729,6 +1737,7 @@ impl GameState {
         if !(10..=100).contains(&speed_percent) {
             return Err(FleetError::SpeedPercent { got: speed_percent });
         }
+        self.check_frontier_flight(origin, dest)?;
         let dist = distance(origin, dest, &self.config.flight);
         let mut slowest = f64::MAX;
         let mut units_fuel = 0.0;
@@ -2537,6 +2546,7 @@ impl GameState {
     fn colony_production_per_hour(&self, colony: &Colony, kind: ResourceKind) -> f64 {
         let bonus = self.config.planet_types.get(colony.kind);
         let rare = self.rare_bonus_for(colony);
+        let frontier = self.frontier_production_bonus(colony.coord);
         let energy_t = self.tech_modifier(ModifierKind::EnergyOutput);
         let produced = self
             .config
@@ -2560,9 +2570,9 @@ impl GameState {
                     buildings: colony.buildings,
                     planet: colony.kind,
                     coord: colony.coord,
-                    extra_metal: rare.metal,
-                    extra_crystal: rare.crystal,
-                    extra_deut: rare.deuterium,
+                    extra_metal: rare.metal + frontier,
+                    extra_crystal: rare.crystal + frontier,
+                    extra_deut: rare.deuterium + frontier,
                     energy_factor: factor,
                     boost,
                     resources: &colony.resources,
@@ -2577,21 +2587,21 @@ impl GameState {
                     .metal_mine
                     .production_per_hour(colony.buildings.metal_mine),
                 ModifierKind::MetalOutput,
-                bonus.metal + rare.metal,
+                bonus.metal + rare.metal + frontier,
             ),
             ResourceKind::Crystal => (
                 self.config
                     .crystal_mine
                     .production_per_hour(colony.buildings.crystal_mine),
                 ModifierKind::CrystalOutput,
-                bonus.crystal + rare.crystal,
+                bonus.crystal + rare.crystal + frontier,
             ),
             ResourceKind::Deuterium => (
                 self.config
                     .deuterium_synthesizer
                     .production_per_hour(colony.buildings.deuterium_synthesizer),
                 ModifierKind::DeuteriumOutput,
-                bonus.deuterium + rare.deuterium,
+                bonus.deuterium + rare.deuterium + frontier,
             ),
         };
         raw * (1.0 + self.tech_modifier(output) + planet_bonus) * factor * boost * staff
@@ -2958,6 +2968,7 @@ impl GameState {
             &[Coord::HOME],
             next.generator_version,
         );
+        next.seed_frontier();
         next.victory = None;
         next.allied_since = None;
         next.season = season;
@@ -3478,7 +3489,12 @@ impl GameState {
         }
         let mut ships = self.missions.remove(index).ships;
         ships.saturating_sub(ShipKind::ColonyShip, 1);
-        let (kind, size) = planet_profile(self.galaxy_seed, dest, self.generator_version);
+        let (kind, size, rare) = if let Some(world) = self.frontier.world_at(dest).cloned() {
+            (world.kind, world.size, world.rare)
+        } else {
+            let (kind, size) = planet_profile(self.galaxy_seed, dest, self.generator_version);
+            (kind, size, None)
+        };
         self.colonies.push(Colony {
             coord: dest,
             kind,
@@ -3488,7 +3504,7 @@ impl GameState {
             fleet: ships,
             defences: crate::DefenceGrid::default(),
             build_queue: Vec::new(),
-            rare: None,
+            rare,
             goods: BTreeMap::new(),
         });
         true
@@ -3701,6 +3717,7 @@ impl GameState {
         self.evaluate_achievements(done_at);
         self.maybe_declare_victory(done_at);
         self.evaluate_ladder(done_at);
+        self.evaluate_frontier(done_at);
         true
     }
 
@@ -4264,18 +4281,7 @@ impl GameState {
                 .map(|c| c.goods.clone())
                 .unwrap_or_default()
         };
-        let extra = if coord == self.home {
-            (0.0, 0.0, 0.0)
-        } else {
-            self.colonies
-                .iter()
-                .find(|c| c.coord == coord)
-                .map(|c| {
-                    let rare = self.rare_bonus_for(c);
-                    (rare.metal, rare.crystal, rare.deuterium)
-                })
-                .unwrap_or((0.0, 0.0, 0.0))
-        };
+        let extra = self.site_extra(coord);
         let now = self.last_tick_unix;
         let throttle = self.chain_throttle_at(coord);
         if throttle <= 0.0 {
@@ -4760,6 +4766,7 @@ impl GameState {
         self.sync_raid_schedule_after_standing(at);
         self.maybe_declare_victory(at);
         self.evaluate_ladder(at);
+        self.evaluate_frontier(at);
     }
 
     fn clamp_standing(&self, value: f64) -> f64 {
@@ -4864,6 +4871,7 @@ impl GameState {
         self.sync_raid_schedule_after_standing(at);
         self.maybe_declare_victory(at);
         self.evaluate_ladder(at);
+        self.evaluate_frontier(at);
     }
 
     pub(crate) fn sync_raid_schedule_after_standing(&mut self, at: u64) {
@@ -5217,9 +5225,9 @@ impl GameState {
                     colony.coord,
                     colony.kind,
                     colony.buildings,
-                    rare.metal,
-                    rare.crystal,
-                    rare.deuterium,
+                    rare.metal + self.frontier_production_bonus(colony.coord),
+                    rare.crystal + self.frontier_production_bonus(colony.coord),
+                    rare.deuterium + self.frontier_production_bonus(colony.coord),
                     factor,
                     self.config
                         .metal_storage
@@ -6182,6 +6190,7 @@ mod tests {
             orbits: crate::OrbitConfig::default(),
             victory: crate::VictoryConfig::inactive(),
             ladder: crate::LadderConfig::default(),
+            frontier: crate::FrontierConfig::default(),
         }
     }
 
@@ -7512,8 +7521,8 @@ modifiers = []
 
     fn far_dest() -> Coord {
         Coord {
-            galaxy: 2,
-            system: 1,
+            galaxy: 1,
+            system: 200,
             position: 1,
         }
     }

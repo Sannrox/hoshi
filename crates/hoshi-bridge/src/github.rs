@@ -1,4 +1,4 @@
-//! GitHub merged-PR and finished-workflow events via `gh api` or a local webhook.
+//! GitHub merged-PR, finished-workflow, published-release, and closed-epic events via `gh api` or a local webhook.
 //!
 //! No tokens are stored. The default fetch uses the user's existing `gh` login.
 //! Live network tests are ignored.
@@ -171,6 +171,20 @@ impl GithubPoller {
                 now_unix,
                 events_from_runs_json,
             )?;
+            self.fill_pages(
+                &mut scratch,
+                repo,
+                &format!("repos/{repo}/releases?per_page={PAGE_SIZE}"),
+                now_unix,
+                events_from_releases_json,
+            )?;
+            self.fill_pages(
+                &mut scratch,
+                repo,
+                &format!("repos/{repo}/issues?state=closed&labels=epic&per_page={PAGE_SIZE}"),
+                now_unix,
+                events_from_epics_json,
+            )?;
         }
         save_seen(&self.seen_path, &scratch.seen)?;
         save_etags(&self.etag_path, &scratch.etags)?;
@@ -311,6 +325,118 @@ pub fn events_from_runs_json(
     Ok(events)
 }
 
+pub fn events_from_releases_json(
+    repo: &str,
+    body: &str,
+    ts: u64,
+) -> Result<Vec<ActivityEvent>, String> {
+    let value: Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
+    let list = value
+        .as_array()
+        .ok_or_else(|| "releases json is not an array".to_string())?;
+    let mut events = Vec::new();
+    for item in list {
+        if item.get("draft").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
+        if item.get("published_at").and_then(Value::as_str).is_none() {
+            continue;
+        }
+        let id = item
+            .get("tag_name")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .or_else(|| item.get("id").map(|v| v.to_string()));
+        let Some(id) = id else {
+            continue;
+        };
+        events.push(ActivityEvent {
+            kind: ActivityKind::ReleasePublished,
+            source: "github".into(),
+            ts,
+            payload: serde_json::json!({
+                "repo": repo,
+                "id": id,
+                "name": item.get("name"),
+                "published_at": item.get("published_at"),
+            }),
+        });
+    }
+    Ok(events)
+}
+
+fn epic_label(item: &Value) -> bool {
+    item.get("labels")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|label| {
+            label
+                .get("name")
+                .and_then(Value::as_str)
+                .or_else(|| label.as_str())
+                == Some("epic")
+        })
+}
+
+fn epic_sub_issues_done(item: &Value) -> bool {
+    let Some(summary) = item.get("sub_issues_summary") else {
+        return false;
+    };
+    let total = summary.get("total").and_then(Value::as_u64).unwrap_or(0);
+    let completed = summary
+        .get("completed")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    total == 0 || completed >= total
+}
+
+pub fn events_from_epics_json(
+    repo: &str,
+    body: &str,
+    ts: u64,
+) -> Result<Vec<ActivityEvent>, String> {
+    let value: Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
+    let list = value
+        .as_array()
+        .ok_or_else(|| "issues json is not an array".to_string())?;
+    let mut events = Vec::new();
+    for item in list {
+        if item.get("pull_request").is_some() {
+            continue;
+        }
+        if item.get("state").and_then(Value::as_str) != Some("closed") {
+            continue;
+        }
+        if !epic_label(item) {
+            continue;
+        }
+        if !epic_sub_issues_done(item) {
+            continue;
+        }
+        let id = item
+            .get("number")
+            .map(|v| v.to_string())
+            .or_else(|| item.get("id").map(|v| v.to_string()));
+        let Some(id) = id else {
+            continue;
+        };
+        events.push(ActivityEvent {
+            kind: ActivityKind::EpicClosed,
+            source: "github".into(),
+            ts,
+            payload: serde_json::json!({
+                "repo": repo,
+                "id": id,
+                "title": item.get("title"),
+                "label": "epic",
+            }),
+        });
+    }
+    Ok(events)
+}
+
 pub fn events_from_webhook(
     headers: &str,
     body: &str,
@@ -334,6 +460,20 @@ pub fn events_from_webhook(
             let run = value.get("workflow_run").cloned().unwrap_or(Value::Null);
             let wrapped = serde_json::json!({ "workflow_runs": [run] });
             events_from_runs_json(repo, &wrapped.to_string(), ts)
+        }
+        "release" => {
+            if value.get("action").and_then(Value::as_str) != Some("published") {
+                return Ok(Vec::new());
+            }
+            let rel = value.get("release").cloned().unwrap_or(Value::Null);
+            events_from_releases_json(repo, &Value::Array(vec![rel]).to_string(), ts)
+        }
+        "issues" => {
+            if value.get("action").and_then(Value::as_str) != Some("closed") {
+                return Ok(Vec::new());
+            }
+            let issue = value.get("issue").cloned().unwrap_or(Value::Null);
+            events_from_epics_json(repo, &Value::Array(vec![issue]).to_string(), ts)
         }
         _ => Ok(Vec::new()),
     }
@@ -612,6 +752,60 @@ mod tests {
         let events = events_from_webhook(headers, body, 4).unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, ActivityKind::PrMerged);
+    }
+
+    #[test]
+    fn published_releases_become_events_and_drafts_are_skipped() {
+        let body = r#"[
+            {"id":1,"tag_name":"v1.2.0","draft":false,"published_at":"2026-01-01T00:00:00Z","name":"1.2.0"},
+            {"id":2,"tag_name":"v1.3.0-rc","draft":true,"published_at":"2026-01-02T00:00:00Z"}
+        ]"#;
+        let events = events_from_releases_json("acme/game", body, 9).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, ActivityKind::ReleasePublished);
+        assert_eq!(events[0].payload["id"], "v1.2.0");
+    }
+
+    #[test]
+    fn closed_epics_need_the_label_and_finished_sub_issues() {
+        let body = r#"[
+            {"id":10,"number":96,"state":"closed","title":"ladder","labels":[{"name":"epic"}],"sub_issues_summary":{"total":2,"completed":2}},
+            {"id":11,"number":97,"state":"closed","title":"open kids","labels":[{"name":"epic"}],"sub_issues_summary":{"total":2,"completed":1}},
+            {"id":12,"number":98,"state":"closed","title":"plain","labels":[{"name":"bug"}]},
+            {"id":13,"number":99,"state":"closed","title":"no summary","labels":[{"name":"epic"}]}
+        ]"#;
+        let events = events_from_epics_json("acme/game", body, 9).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, ActivityKind::EpicClosed);
+        assert_eq!(events[0].payload["id"], "96");
+    }
+
+    #[test]
+    fn webhook_release_published_matches_the_list_parser() {
+        let headers = "X-GitHub-Event: release\r\n";
+        let body = r#"{"action":"published","repository":{"full_name":"acme/game"},"release":{"id":1,"tag_name":"v1.2.0","draft":false,"published_at":"2026-01-01T00:00:00Z"}}"#;
+        let events = events_from_webhook(headers, body, 4).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, ActivityKind::ReleasePublished);
+        assert_eq!(events[0].payload["id"], "v1.2.0");
+    }
+
+    #[test]
+    fn webhook_epic_closed_matches_the_list_parser() {
+        let headers = "X-GitHub-Event: issues\r\n";
+        let body = r#"{"action":"closed","repository":{"full_name":"acme/game"},"issue":{"id":10,"number":96,"state":"closed","title":"ladder","labels":[{"name":"epic"}],"sub_issues_summary":{"total":0,"completed":0}}}"#;
+        let events = events_from_webhook(headers, body, 4).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, ActivityKind::EpicClosed);
+        assert_eq!(events[0].payload["id"], "96");
+    }
+
+    #[test]
+    fn webhook_epic_without_sub_issue_summary_is_skipped() {
+        let headers = "X-GitHub-Event: issues\r\n";
+        let body = r#"{"action":"closed","repository":{"full_name":"acme/game"},"issue":{"id":10,"number":96,"state":"closed","title":"ladder","labels":[{"name":"epic"}]}}"#;
+        let events = events_from_webhook(headers, body, 4).unwrap();
+        assert!(events.is_empty());
     }
 
     #[test]

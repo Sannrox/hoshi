@@ -207,11 +207,12 @@ impl GameState {
         }
     }
 
-    fn site_extra(&self, coord: Coord) -> (f64, f64, f64) {
+    pub(crate) fn site_extra(&self, coord: Coord) -> (f64, f64, f64) {
         if coord == self.home {
             return (0.0, 0.0, 0.0);
         }
-        self.colonies
+        let rare = self
+            .colonies
             .iter()
             .find(|c| c.coord == coord)
             .and_then(|c| c.rare.as_ref())
@@ -223,7 +224,9 @@ impl GameState {
                     .find(|row| row.id == *id)
                     .map(|row| (row.metal, row.crystal, row.deuterium))
             })
-            .unwrap_or((0.0, 0.0, 0.0))
+            .unwrap_or((0.0, 0.0, 0.0));
+        let bonus = self.frontier_production_bonus(coord);
+        (rare.0 + bonus, rare.1 + bonus, rare.2 + bonus)
     }
 
     fn site_energy_produced(

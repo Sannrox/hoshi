@@ -97,6 +97,7 @@ pub struct App {
     opened_report: bool,
     map_system: u16,
     map_position: u16,
+    map_galaxy: u16,
     dispatch: Option<DispatchForm>,
     tree_branch: TechBranch,
     replay: Option<ReplayView>,
@@ -159,6 +160,7 @@ impl App {
             opened_report: false,
             map_system: Coord::HOME.system,
             map_position: Coord::HOME.position,
+            map_galaxy: Coord::HOME.galaxy,
             dispatch: None,
             tree_branch: TechBranch::Industry,
             replay: None,
@@ -528,6 +530,9 @@ impl App {
                 let seed = encode_galaxy_seed(self.state.galaxy_seed);
                 copy_to_clipboard(&seed);
                 self.status = format!("copied {seed}");
+            }
+            Some(Binding::Toggle) if self.screen == Screen::Map && self.dispatch.is_none() => {
+                self.cycle_map_galaxy();
             }
             _ => {}
         }
@@ -1232,10 +1237,25 @@ impl App {
 
     fn map_cursor(&self) -> Coord {
         Coord {
-            galaxy: self.state.home.galaxy,
+            galaxy: self.map_galaxy,
             system: self.map_system,
             position: self.map_position,
         }
+    }
+
+    fn cycle_map_galaxy(&mut self) {
+        let home = self.state.home.galaxy;
+        let frontier = self.state.config.frontier.galaxy;
+        if self.state.frontier.revealed == 0 || frontier == home {
+            self.map_galaxy = home;
+            return;
+        }
+        self.map_galaxy = if self.map_galaxy == home {
+            frontier
+        } else {
+            home
+        };
+        self.status = format!("map galaxy {}", self.map_galaxy);
     }
 
     fn nudge_map_system(&mut self, delta: i32) {
@@ -2677,7 +2697,7 @@ impl App {
     fn map_lines(&self, height: usize) -> Vec<Line<'static>> {
         let cursor = self.map_cursor();
         let mut rows = vec![Line::from(format!(
-            "Map  galaxy {}  cursor {cursor}  hjkl move  enter dispatch",
+            "Map  galaxy {}  cursor {cursor}  hjkl move  enter dispatch  space other galaxy",
             cursor.galaxy
         ))];
         let owned = self.state.owned_coords();
@@ -2698,6 +2718,13 @@ impl App {
                     'C'
                 } else if self.state.outposts.iter().any(|o| o.coord == coord) {
                     'P'
+                } else if self
+                    .state
+                    .frontier
+                    .visible_worlds()
+                    .any(|w| w.coord == coord)
+                {
+                    'F'
                 } else if self.state.missions.iter().any(|m| m.dest == coord) {
                     'f'
                 } else {
@@ -2716,6 +2743,32 @@ impl App {
                     labels.push(format!("colony {coord}"));
                 } else if let Some(out) = self.state.outposts.iter().find(|o| o.coord == coord) {
                     labels.push(format!("pirate {coord} {}", out.kind.as_key()));
+                } else if let Some(world) = self
+                    .state
+                    .frontier
+                    .visible_worlds()
+                    .find(|w| w.coord == coord)
+                {
+                    let bonus = world
+                        .rare
+                        .as_deref()
+                        .and_then(|id| {
+                            self.state
+                                .config
+                                .outposts
+                                .rare
+                                .iter()
+                                .find(|row| row.id == id)
+                                .map(|row| row.summary())
+                        })
+                        .unwrap_or_else(|| {
+                            format!(
+                                "prod +{:.0}% fields +{}",
+                                self.state.config.frontier.production_bonus * 100.0,
+                                self.state.config.frontier.fields_bonus
+                            )
+                        });
+                    labels.push(format!("frontier {coord} {} {bonus}", world.kind.as_key()));
                 }
                 if self.state.moon_at(coord).is_some() {
                     labels.push("moon".into());
@@ -4685,6 +4738,35 @@ mod tests {
         let text = render_text(&app, 100, 32);
         assert!(text.contains("#23"), "{text}");
         assert!(!text.contains("#0 vehicle 0"), "{text}");
+    }
+
+    #[test]
+    fn map_shows_frontier_bonuses_before_colonizing() {
+        let mut state = GameState::new(1_000);
+        let drive = state.config.frontier.drive_id.clone();
+        let astro = state.config.frontier.astro_id.clone();
+        state.tech_levels.insert(drive, 1);
+        state.tech_levels.insert(astro, 1);
+        state.catch_up(1_001);
+        let world = state
+            .frontier
+            .visible_worlds()
+            .next()
+            .expect("revealed world")
+            .clone();
+        let mut app = App::new(state);
+        open_map(&mut app, 1_000);
+        app.handle_key(KeyCode::Char(' '), 1_000);
+        app.map_system = world.coord.system;
+        app.map_position = world.coord.position;
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("galaxy 2"), "{text}");
+        assert!(text.contains("frontier"), "{text}");
+        assert!(text.contains(&world.coord.to_string()), "{text}");
+        assert!(
+            text.contains("prod +") || text.contains("fields +") || world.rare.is_some(),
+            "{text}"
+        );
     }
 
     #[test]
