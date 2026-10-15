@@ -5,9 +5,9 @@ use crate::config::UserConfig;
 use crate::keymap::{Binding, HelpContext, Keymap};
 use hoshi_core::{
     AchievementConfig, BalanceConfig, CareerGlance, Prestige, PrestigeConfig, PrestigeError,
-    SaveError, SaveGlance, SeasonCatalog, advisor_endpoint_allowed, encode_galaxy_seed,
-    inspect_career, inspect_save, lock_save, open_storage, parse_galaxy_seed, preview_galaxy,
-    probe_model_endpoint, save_is_locked, season_slot_name,
+    SaveError, SaveGlance, SeasonCatalog, SpeciesCatalog, SpeciesSpec, advisor_endpoint_allowed,
+    encode_galaxy_seed, inspect_career, inspect_save, lock_save, open_storage, parse_galaxy_seed,
+    preview_galaxy, probe_model_endpoint, save_is_locked, season_slot_name,
 };
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
@@ -69,6 +69,27 @@ enum NewField {
     Name,
     Seed,
     Difficulty,
+    Species,
+}
+
+impl NewField {
+    fn next(self) -> Self {
+        match self {
+            NewField::Name => NewField::Seed,
+            NewField::Seed => NewField::Difficulty,
+            NewField::Difficulty => NewField::Species,
+            NewField::Species => NewField::Name,
+        }
+    }
+
+    fn prev(self) -> Self {
+        match self {
+            NewField::Name => NewField::Species,
+            NewField::Seed => NewField::Name,
+            NewField::Difficulty => NewField::Seed,
+            NewField::Species => NewField::Difficulty,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,6 +172,8 @@ pub struct Title {
     new_seed: String,
     new_difficulty: Difficulty,
     new_field: NewField,
+    new_species: usize,
+    species_catalog: SpeciesCatalog,
     confirm_delete: Option<String>,
     rename_from: Option<String>,
     rename_to: String,
@@ -199,6 +222,8 @@ impl Title {
             new_seed: String::new(),
             new_difficulty: Difficulty::Normal,
             new_field: NewField::Name,
+            new_species: 0,
+            species_catalog: SpeciesCatalog::default(),
             confirm_delete: None,
             rename_from: None,
             rename_to: String::new(),
@@ -586,45 +611,33 @@ impl Title {
                 return TitleAction::None;
             }
             Some(Binding::NextScreen) => {
-                self.new_field = match self.new_field {
-                    NewField::Name => NewField::Seed,
-                    NewField::Seed => NewField::Difficulty,
-                    NewField::Difficulty => NewField::Name,
-                };
+                self.new_field = self.new_field.next();
                 return TitleAction::None;
             }
             Some(Binding::Confirm) => {
-                if self.new_field == NewField::Difficulty {
+                if self.new_field == NewField::Difficulty || self.new_field == NewField::Species {
                     return self.create_new();
                 }
-                self.new_field = match self.new_field {
-                    NewField::Name => NewField::Seed,
-                    NewField::Seed => NewField::Difficulty,
-                    NewField::Difficulty => NewField::Difficulty,
-                };
+                self.new_field = self.new_field.next();
                 return TitleAction::None;
             }
             Some(Binding::Toggle) if self.new_field == NewField::Difficulty => {
                 self.new_difficulty = self.new_difficulty.cycle();
                 return TitleAction::None;
             }
+            Some(Binding::Toggle) if self.new_field == NewField::Species => {
+                self.cycle_species();
+                return TitleAction::None;
+            }
             _ => {}
         }
         match code {
             KeyCode::Down => {
-                self.new_field = match self.new_field {
-                    NewField::Name => NewField::Seed,
-                    NewField::Seed => NewField::Difficulty,
-                    NewField::Difficulty => NewField::Name,
-                };
+                self.new_field = self.new_field.next();
                 TitleAction::None
             }
             KeyCode::Up => {
-                self.new_field = match self.new_field {
-                    NewField::Name => NewField::Difficulty,
-                    NewField::Seed => NewField::Name,
-                    NewField::Difficulty => NewField::Seed,
-                };
+                self.new_field = self.new_field.prev();
                 TitleAction::None
             }
             KeyCode::Backspace => {
@@ -635,7 +648,7 @@ impl Title {
                     NewField::Seed => {
                         self.new_seed.pop();
                     }
-                    NewField::Difficulty => {}
+                    NewField::Difficulty | NewField::Species => {}
                 }
                 TitleAction::None
             }
@@ -653,7 +666,7 @@ impl Title {
                             self.new_seed.push(c);
                         }
                     }
-                    NewField::Difficulty => {}
+                    NewField::Difficulty | NewField::Species => {}
                 }
                 TitleAction::None
             }
@@ -689,6 +702,43 @@ impl Title {
         self.play_path = Some(path);
         self.season_id = None;
         TitleAction::Play(0)
+    }
+
+    fn unlocked_specs(&self) -> Vec<&SpeciesSpec> {
+        self.species_catalog
+            .iter()
+            .filter(|spec| {
+                self.species_catalog
+                    .is_unlocked(&spec.id, &self.career.prestige)
+            })
+            .collect()
+    }
+
+    fn selected_species(&self) -> &SpeciesSpec {
+        let specs = self.unlocked_specs();
+        specs
+            .get(self.new_species)
+            .copied()
+            .or_else(|| specs.first().copied())
+            .unwrap_or_else(|| {
+                self.species_catalog
+                    .get("humans")
+                    .expect("humans are bundled")
+            })
+    }
+
+    fn cycle_species(&mut self) {
+        let n = self.unlocked_specs().len().max(1);
+        self.new_species = (self.new_species + 1) % n;
+    }
+
+    fn locked_species(&self) -> Vec<&SpeciesSpec> {
+        self.species_catalog
+            .iter()
+            .filter(|spec| {
+                !spec.available && !self.career.prestige.unlocked_species.contains(&spec.id)
+            })
+            .collect()
     }
 
     fn handle_season(&mut self, code: KeyCode) -> TitleAction {
@@ -955,7 +1005,12 @@ impl Title {
     }
 
     fn handle_prestige(&mut self, code: KeyCode) -> TitleAction {
-        let items = self.prestige_cfg.bonuses.len().max(1);
+        let items = self
+            .prestige_cfg
+            .bonuses
+            .len()
+            .saturating_add(self.locked_species().len())
+            .max(1);
         match self.config.keys.lookup(HelpContext::TitlePrestige, code) {
             Some(Binding::Cancel) => {
                 if self.prestige_confirm {
@@ -983,14 +1038,23 @@ impl Title {
             }
             Some(Binding::Confirm) => {
                 if self.prestige_confirm {
-                    self.buy_selected_bonus();
+                    self.buy_selected_prestige();
                     self.prestige_confirm = false;
                 } else {
                     self.prestige_confirm = true;
+                    let n_bonus = self.prestige_cfg.bonuses.len();
                     if let Some(spec) = self.prestige_cfg.bonuses.get(self.prestige_selected) {
                         self.status = format!(
                             "buy {} for {}? enter again to confirm",
                             spec.name, spec.cost
+                        );
+                    } else if let Some(spec) = self
+                        .locked_species()
+                        .get(self.prestige_selected.saturating_sub(n_bonus))
+                    {
+                        self.status = format!(
+                            "unlock {} for {}? enter again to confirm",
+                            spec.name, spec.unlock_cost
                         );
                     }
                 }
@@ -998,6 +1062,23 @@ impl Title {
             _ => {}
         }
         TitleAction::None
+    }
+
+    fn buy_selected_prestige(&mut self) {
+        let n_bonus = self.prestige_cfg.bonuses.len();
+        if self.prestige_selected < n_bonus {
+            self.buy_selected_bonus();
+            return;
+        }
+        let Some(spec) = self
+            .locked_species()
+            .get(self.prestige_selected - n_bonus)
+            .cloned()
+            .cloned()
+        else {
+            return;
+        };
+        self.unlock_selected_species(&spec);
     }
 
     fn buy_selected_bonus(&mut self) {
@@ -1033,6 +1114,38 @@ impl Title {
             Ok(()) => {
                 self.refresh_slots();
                 self.status = format!("bought {}", spec.name);
+            }
+            Err(msg) => self.status = msg,
+        }
+    }
+
+    fn unlock_selected_species(&mut self, spec: &SpeciesSpec) {
+        let Some(path) = self.prestige_source.clone() else {
+            self.status = "no save to store prestige".into();
+            return;
+        };
+        if save_is_locked(&path) {
+            self.status = "save is locked".into();
+            return;
+        }
+        let id = spec.id.clone();
+        let name = spec.name.clone();
+        let result = (|| -> Result<(), String> {
+            let _lock = lock_save(&path).map_err(|e| e.to_string())?;
+            let mut store = open_storage(&path).map_err(|e| e.to_string())?;
+            let mut state = store
+                .load(self.balance.clone())
+                .map_err(|e| e.to_string())?;
+            state
+                .unlock_species(&self.species_catalog, &id)
+                .map_err(|e| e.to_string())?;
+            store.save(&state).map_err(|e| e.to_string())?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                self.refresh_slots();
+                self.status = format!("unlocked {name}");
             }
             Err(msg) => self.status = msg,
         }
@@ -1388,7 +1501,8 @@ impl Title {
                 }
             }
             Page::New => {
-                lines.push(Line::from("New game  Humans"));
+                let spec = self.selected_species();
+                lines.push(Line::from(format!("New game  {}", spec.name)));
                 lines.push(field_line(
                     "name",
                     &self.new_name,
@@ -1404,14 +1518,27 @@ impl Title {
                     self.new_difficulty.as_label(),
                     self.new_field == NewField::Difficulty,
                 ));
+                lines.push(field_line(
+                    "species",
+                    &spec.name,
+                    self.new_field == NewField::Species,
+                ));
+                lines.push(Line::from(format!(
+                    "{}  lean {}  +{}  -{}",
+                    spec.blurb,
+                    spec.victory_lean.as_key(),
+                    spec.strengths,
+                    spec.weaknesses
+                )));
                 lines.push(Line::from(self.seed_preview_line()));
                 let summary = self.prestige_summary();
                 if !summary.is_empty() {
                     lines.push(Line::from(summary));
                 }
                 lines.push(Line::from(format!(
-                    "{} on difficulty creates the slot. {} back. {} help.",
+                    "{} on difficulty or species creates the slot. {} cycles species. {} back. {} help.",
                     self.config.keys.primary(Binding::Confirm),
+                    self.config.keys.primary(Binding::Toggle),
                     self.config.keys.primary(Binding::Cancel),
                     self.config.keys.primary(Binding::Help)
                 )));
@@ -1629,6 +1756,18 @@ impl Title {
                         spec.name, spec.cost
                     )));
                 }
+                let n_bonus = self.prestige_cfg.bonuses.len();
+                for (i, spec) in self.locked_species().iter().enumerate() {
+                    let mark = if n_bonus + i == self.prestige_selected {
+                        ">"
+                    } else {
+                        " "
+                    };
+                    lines.push(Line::from(format!(
+                        "{mark} unlock {}  cost {}",
+                        spec.name, spec.unlock_cost
+                    )));
+                }
             }
             Page::Credits => {
                 lines.push(Line::from(
@@ -1679,6 +1818,7 @@ impl Title {
             difficulty: self.new_difficulty.as_label().to_string(),
             prestige: self.career.prestige.clone(),
             season_id: self.season_id.clone(),
+            species_id: self.selected_species().id.clone(),
         }
     }
 }
@@ -1690,6 +1830,7 @@ pub struct NewGameSpec {
     pub difficulty: String,
     pub prestige: Prestige,
     pub season_id: Option<String>,
+    pub species_id: String,
 }
 
 pub fn parse_seed(text: &str) -> Result<Option<u64>, String> {

@@ -36,6 +36,7 @@ mod save;
 mod season;
 mod ships;
 mod simulate;
+mod species;
 mod state;
 mod storage;
 mod story;
@@ -169,8 +170,10 @@ pub use ships::{
 };
 pub use simulate::{
     DaySnapshot, HeavyIndustryReport, PrestigeSimRow, SimReport, VictorySimRow,
-    heavy_industry_check, simulate_greedy, simulate_victory_paths, tactics_no_combo_dominates,
+    heavy_industry_check, simulate_greedy, simulate_species_victory_paths, simulate_victory_paths,
+    tactics_no_combo_dominates,
 };
+pub use species::{Flagship, SpeciesCatalog, SpeciesError, SpeciesRun, SpeciesSpec};
 pub use state::{GameEvent, GameState, LogisticsGlance, ResourceKind, Resources};
 #[cfg(feature = "chisei")]
 pub use storage::ChiseiStorage;

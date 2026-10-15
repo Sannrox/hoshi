@@ -5,8 +5,8 @@ use hoshi_core::{
     ClassifiedKind, Clock, Coord, Customer, DefenceKind, FakeClock, Fleet, GameState, HistoryKind,
     HistoryQuery, Intent, Jurisdiction, JurisdictionKind, MoonFacility, OrderSide, Payload,
     Permission, PlanRequest, ResourceKind, RoleKind, RoundAction, SCHEMA_VERSION as SAVE_SCHEMA,
-    SaveError, ShipKind, SpyReport, SystemClock, TransferKind, advise, inspect_save, lock_save,
-    open_storage, resolve_save_path, save_is_locked,
+    SaveError, ShipKind, SpeciesCatalog, SpyReport, SystemClock, TransferKind, advise,
+    inspect_save, lock_save, open_storage, resolve_save_path, save_is_locked,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -212,6 +212,20 @@ enum Command {
         region: Option<Coord>,
         export: Option<PathBuf>,
     },
+    Species,
+    SpeciesUnlock {
+        id: String,
+    },
+    Transmute {
+        from: ResourceKind,
+        to: ResourceKind,
+        amount: String,
+    },
+    Brew,
+    FlagshipRelocate {
+        dest: Coord,
+    },
+    FlagshipAnchor,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -993,6 +1007,51 @@ fn apply(state: &mut GameState, now: u64, command: &Command) -> Result<Value, Cl
             }
             apply_market_history(state, *region, export.as_deref())
         }
+        Command::Species => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            Ok(ok_state(state, "species"))
+        }
+        Command::SpeciesUnlock { id } => {
+            state
+                .unlock_species(&SpeciesCatalog::default(), id)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, "unlocked species"))
+        }
+        Command::Transmute { from, to, amount } => {
+            let amount: f64 = amount
+                .parse()
+                .map_err(|_| CliError::Invalid("invalid amount".into()))?;
+            state
+                .transmute(*from, *to, amount)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, "transmuted"))
+        }
+        Command::Brew => {
+            state
+                .brew_buff(now)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, "brewed"))
+        }
+        Command::FlagshipRelocate { dest } => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            state
+                .relocate_flagship(*dest, now)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, "flagship relocated"))
+        }
+        Command::FlagshipAnchor => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            state
+                .anchor_flagship(now)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, "flagship anchored"))
+        }
         Command::StaffRevoke { id, permission } => {
             state
                 .revoke_delegation(*id, *permission, now)
@@ -1306,6 +1365,7 @@ fn state_value(state: &GameState, actor: Actor) -> Value {
             "score": state.prestige_score(),
             "eligible": state.can_prestige(),
             "owned": state.prestige.owned,
+            "unlocked_species": state.prestige.unlocked_species.iter().cloned().collect::<Vec<_>>(),
         },
         "achievements": state.achievements.iter().map(|(id, at)| {
             json!({"id": id, "unlocked_at": at})
@@ -1359,6 +1419,19 @@ fn state_value(state: &GameState, actor: Actor) -> Value {
         })).collect::<Vec<_>>(),
     });
     value["victory"] = victory_json(state);
+    value["species"] = match &state.species {
+        Some(run) => json!({
+            "id": run.id,
+            "name": run.name,
+            "brew_until": run.brew_until,
+            "flagship": run.flagship.as_ref().map(|ship| json!({
+                "coord": ship.coord.to_string(),
+                "arrives_at": ship.arrives_at,
+                "anchored": ship.anchored,
+            })),
+        }),
+        None => Value::Null,
+    };
     value["season"] = match &state.season {
         Some(run) => json!({
             "id": run.ruleset_id,
@@ -1563,6 +1636,48 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
                 Ok(Command::GoalsKeep)
             }
             Some(other) => Err(CliError::Invalid(format!("unknown goals command {other}"))),
+        },
+        "species" => match args.get(1).map(String::as_str) {
+            None => {
+                expect_end(args, 1)?;
+                Ok(Command::Species)
+            }
+            Some("unlock") => {
+                let id = nth(args, 2, "species unlock <id>")?.to_string();
+                expect_end(args, 3)?;
+                Ok(Command::SpeciesUnlock { id })
+            }
+            Some(other) => Err(CliError::Invalid(format!(
+                "unknown species command {other}"
+            ))),
+        },
+        "transmute" => {
+            let from = ResourceKind::from_key(nth(args, 1, "transmute <from> <to> <amount>")?)
+                .ok_or_else(|| CliError::Invalid("unknown resource".into()))?;
+            let to = ResourceKind::from_key(nth(args, 2, "transmute <from> <to> <amount>")?)
+                .ok_or_else(|| CliError::Invalid("unknown resource".into()))?;
+            let amount = nth(args, 3, "transmute <from> <to> <amount>")?.to_string();
+            expect_end(args, 4)?;
+            Ok(Command::Transmute { from, to, amount })
+        }
+        "brew" => {
+            expect_end(args, 1)?;
+            Ok(Command::Brew)
+        }
+        "flagship" => match args.get(1).map(String::as_str) {
+            Some("relocate") => {
+                let dest = parse_coord(nth(args, 2, "flagship relocate <coord>")?)?;
+                expect_end(args, 3)?;
+                Ok(Command::FlagshipRelocate { dest })
+            }
+            Some("anchor") => {
+                expect_end(args, 2)?;
+                Ok(Command::FlagshipAnchor)
+            }
+            Some(other) => Err(CliError::Invalid(format!(
+                "unknown flagship command {other}"
+            ))),
+            None => Err(CliError::Invalid("flagship relocate <coord>|anchor".into())),
         },
         "prestige" => match args.get(1).map(String::as_str) {
             None => {

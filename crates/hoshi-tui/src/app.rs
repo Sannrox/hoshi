@@ -676,7 +676,12 @@ impl App {
             let slot = self.current_portrait_slot();
             let mood = portraits::mood_for(slot, &self.state.events);
             frame.render_widget(
-                Paragraph::new(portraits::portrait_lines(self.portraits, slot, mood)),
+                Paragraph::new(portraits::portrait_lines_for(
+                    self.portraits,
+                    slot,
+                    mood,
+                    self.state.species.as_ref().map(|run| run.portrait.as_str()),
+                )),
                 art[0],
             );
         }
@@ -1467,6 +1472,9 @@ impl App {
                 s.generator_version
             )),
         ];
+        if let Some(run) = s.species.as_ref() {
+            lines.insert(lines.len() - 1, Line::from(format!("Species {}", run.name)));
+        }
         lines.extend(self.planet_glance_lines());
         if let Some(event) = s.events.last() {
             for piece in event.text.split(". ") {

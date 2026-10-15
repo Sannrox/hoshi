@@ -265,7 +265,8 @@
     "lifetime": 0,
     "owned": {},
     "run": 1,
-    "score": 4
+    "score": 4,
+    "unlocked_species": []
   },
   "raid": {
     "lands_in_secs": 7200
@@ -313,9 +314,10 @@
     "deuterium": 0.0,
     "metal": 517.4583984375
   },
-  "save_schema": 34,
+  "save_schema": 35,
   "schema_version": 1,
   "season": null,
+  "species": null,
   "spy_reports": [],
   "tactics": {
     "admiral": {

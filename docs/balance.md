@@ -114,6 +114,10 @@ comparison). `troop_strength` is the landing power of one troop transport.
 
 Rule sets live in `crates/hoshi-core/data/seasons.toml`, not in `balance.toml`. `epoch_unix` and `duration_secs` define UTC windows from the injected clock. Each `[[season]]` row may toggle known systems (`raid`, `market`, `activity`, `victory`, `moons`), scale expedition finds with `reward_mult`, and override raid timing. Unknown system keys fail load. Seasonal saves store the rule-set id and window so load re-applies the overlay. Prestige stays isolated unless `prestige = true`.
 
+## Species
+
+Playable empires live in `crates/hoshi-core/data/species.toml`. Each `[[species]]` row may scale construction, research, ship cost, expedition finds and espionage, add build-queue slots, and replace exclusive-group techs (`tree_remove` plus `[[species.tech]]`). `standing` offsets apply at new-game. Unique knobs: Aurelian `transmute_rate` and `brew_metal` / `brew_secs`; Void Wanderer `flagship`; Synth `energy_curve` / `energy_surplus`. Humans are `available`; other ids spend `unlock_cost` prestige and persist on `Prestige.unlocked_species`. Overlay validation rejects unknown factions, broken exclusive groups, and a catalog without five rows. `hoshi simulate` checks every species against every victory path inside the casual band, none more than 25% faster than the median.
+
 ## Prestige
 
 `[prestige]` is the late-game reset. Score is building levels plus research levels plus `colony_weight` per colony plus `wonder_weight` per completed wonder. Reset is allowed after a galaxy victory, with a completed wonder, or when score reaches `min_score`. Currency earned is `score / points_per_currency`, at least 1. `[[prestige.bonuses]]` rows are permanent purchases: extra starting resources, production and research speed, extra build-queue slots. They live in the save apart from the run. `hoshi simulate` reports three runs with 0, 1 and 2 mine-focus bonuses so later runs produce more without skipping construction time.

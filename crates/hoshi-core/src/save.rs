@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 34;
+pub const SCHEMA_VERSION: u32 = 35;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -201,7 +201,9 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM market_shipments;
          DELETE FROM market_board_meta;
          DELETE FROM victory;
-         DELETE FROM season;",
+         DELETE FROM season;
+         DELETE FROM species_run;
+         DELETE FROM prestige_species;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -636,6 +638,29 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 run.seed as i64,
                 i64::from(run.prestige),
             ],
+        )?;
+    }
+    if let Some(run) = &state.species {
+        let flag = run.flagship.as_ref();
+        tx.execute(
+            "INSERT INTO species_run (
+                id, species_id, brew_until, flag_g, flag_s, flag_p, flag_arrives, flag_anchored
+             ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                run.id,
+                run.brew_until.map(|t| t as i64),
+                flag.map(|ship| ship.coord.galaxy as i64),
+                flag.map(|ship| ship.coord.system as i64),
+                flag.map(|ship| ship.coord.position as i64),
+                flag.and_then(|ship| ship.arrives_at.map(|t| t as i64)),
+                flag.map(|ship| i64::from(ship.anchored)),
+            ],
+        )?;
+    }
+    for id in &state.prestige.unlocked_species {
+        tx.execute(
+            "INSERT INTO prestige_species (species_id) VALUES (?1)",
+            params![id],
         )?;
     }
     for (id, count) in &state.prestige.owned {
@@ -1407,6 +1432,65 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
                 _ => "invalid season overlay",
             }))?;
     }
+    if table_exists(conn, "species_run")
+        && let Some((id, brew, fg, fs, fp, arrives, anchored)) = conn
+            .query_row(
+                "SELECT species_id, brew_until, flag_g, flag_s, flag_p, flag_arrives, flag_anchored
+                 FROM species_run WHERE id = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<i64>>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                        row.get::<_, Option<i64>>(3)?,
+                        row.get::<_, Option<i64>>(4)?,
+                        row.get::<_, Option<i64>>(5)?,
+                        row.get::<_, Option<i64>>(6)?,
+                    ))
+                },
+            )
+            .optional()?
+    {
+        let flagship = match (fg, fs, fp) {
+            (Some(g), Some(s), Some(p)) => Some(crate::Flagship {
+                coord: Coord {
+                    galaxy: u16_coord(g)?,
+                    system: u16_coord(s)?,
+                    position: u16_coord(p)?,
+                },
+                arrives_at: unix_ts_opt(arrives)?,
+                anchored: anchored.unwrap_or(0) != 0,
+            }),
+            _ => None,
+        };
+        state.species = Some(crate::SpeciesRun {
+            id,
+            name: String::new(),
+            portrait: String::new(),
+            construction: 1.0,
+            research: 1.0,
+            ship_cost: 1.0,
+            expedition: 1.0,
+            espionage: 1.0,
+            queue_slots: 0,
+            energy_curve: 1.0,
+            energy_surplus: 0.0,
+            transmute_rate: 0.0,
+            brew_metal: 0.0,
+            brew_secs: 0,
+            brew_until: unix_ts_opt(brew)?,
+            flagship,
+        });
+        state
+            .apply_loaded_species(&crate::SpeciesCatalog::default())
+            .map_err(|e| {
+                SaveError::Corrupt(match e {
+                    crate::SpeciesError::Unknown(_) => "unknown species",
+                    _ => "invalid species overlay",
+                })
+            })?;
+    }
 
     Ok(state)
 }
@@ -2132,6 +2216,8 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "market_board_meta" => "SELECT COUNT(*) FROM market_board_meta",
         "victory" => "SELECT COUNT(*) FROM victory",
         "season" => "SELECT COUNT(*) FROM season",
+        "species_run" => "SELECT COUNT(*) FROM species_run",
+        "prestige_species" => "SELECT COUNT(*) FROM prestige_species",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -2209,7 +2295,9 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "market_shipments")?
         + count_rows(conn, "market_board_meta")?
         + count_rows(conn, "victory")?
-        + count_rows(conn, "season")?)
+        + count_rows(conn, "season")?
+        + count_rows(conn, "species_run")?
+        + count_rows(conn, "prestige_species")?)
 }
 
 fn migrate(conn: &Connection) -> Result<(), SaveError> {
@@ -2321,6 +2409,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 34 {
         migrate_v34(conn)?;
+    }
+    if found < 35 {
+        migrate_v35(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -3287,6 +3378,27 @@ fn migrate_v34(conn: &Connection) -> Result<(), SaveError> {
             window_end INTEGER NOT NULL,
             seed INTEGER NOT NULL,
             prestige INTEGER NOT NULL
+        );
+        ",
+    )?;
+    Ok(())
+}
+
+fn migrate_v35(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS species_run (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            species_id TEXT NOT NULL,
+            brew_until INTEGER,
+            flag_g INTEGER,
+            flag_s INTEGER,
+            flag_p INTEGER,
+            flag_arrives INTEGER,
+            flag_anchored INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS prestige_species (
+            species_id TEXT PRIMARY KEY
         );
         ",
     )?;
@@ -5662,6 +5774,7 @@ fn read_prestige(conn: &Connection, fallback_started: u64) -> Result<Prestige, S
         currency: u32_field(currency, "prestige currency")?,
         lifetime: u32_field(lifetime, "prestige lifetime")?,
         owned: std::collections::BTreeMap::new(),
+        unlocked_species: std::collections::BTreeSet::new(),
         runs: Vec::new(),
         current: RunStats::new(u32_field(run_index, "prestige run")?, unix_ts(started_at)?),
     };
@@ -5674,6 +5787,13 @@ fn read_prestige(conn: &Connection, fallback_started: u64) -> Result<Prestige, S
         prestige
             .owned
             .insert(id, u32_field(count, "prestige owned")?);
+    }
+    if table_exists(conn, "prestige_species") {
+        let mut stmt = conn.prepare("SELECT species_id FROM prestige_species")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        for row in rows {
+            prestige.unlocked_species.insert(row?);
+        }
     }
     let mut stmt = conn.prepare(
         "SELECT run_index, started_at, ended_at, score, prestige_earned,
@@ -7020,6 +7140,45 @@ mod tests {
         assert_eq!(loaded.season, Some(run));
         assert!(!loaded.config.market.enabled);
         assert_eq!(count_rows(&conn, "season").unwrap(), 1);
+    }
+
+    #[test]
+    fn migrate_v35_round_trips_species_and_unlocks() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v35(&conn).unwrap();
+        migrate_v35(&conn).unwrap();
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.enabled = false;
+        cfg.market.enabled = false;
+        let cat = crate::SpeciesCatalog::default();
+        let mut prestige = Prestige::new(1_000);
+        prestige.unlocked_species.insert("aurelians".into());
+        prestige.unlocked_species.insert("kryth".into());
+        let mut state =
+            crate::GameState::new_with_species(1_000, &cat, "aurelians", cfg, 7, prestige).unwrap();
+        state.deterministic = true;
+        state
+            .transmute(
+                crate::ResourceKind::Metal,
+                crate::ResourceKind::Crystal,
+                10.0,
+            )
+            .unwrap();
+        state.brew_buff(1_000).unwrap();
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(
+            loaded.species.as_ref().map(|run| run.id.as_str()),
+            Some("aurelians")
+        );
+        assert_eq!(
+            loaded.species.as_ref().and_then(|run| run.brew_until),
+            state.species.as_ref().and_then(|run| run.brew_until)
+        );
+        assert!(loaded.prestige.unlocked_species.contains("aurelians"));
+        assert!(loaded.prestige.unlocked_species.contains("kryth"));
+        assert_eq!(count_rows(&conn, "species_run").unwrap(), 1);
+        assert_eq!(count_rows(&conn, "prestige_species").unwrap(), 2);
     }
 
     #[test]
