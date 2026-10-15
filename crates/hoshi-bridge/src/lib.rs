@@ -32,6 +32,10 @@ pub enum ActivityKind {
     PrMerged,
     #[serde(rename = "workflow_finished")]
     WorkflowFinished,
+    #[serde(rename = "release_published")]
+    ReleasePublished,
+    #[serde(rename = "epic_closed")]
+    EpicClosed,
 }
 
 impl ActivityKind {
@@ -43,6 +47,8 @@ impl ActivityKind {
             ActivityKind::AgentFailed => "agent_failed",
             ActivityKind::PrMerged => "pr_merged",
             ActivityKind::WorkflowFinished => "workflow_finished",
+            ActivityKind::ReleasePublished => "release_published",
+            ActivityKind::EpicClosed => "epic_closed",
         }
     }
 
@@ -54,6 +60,8 @@ impl ActivityKind {
             "agent_failed" => ActivityKind::AgentFailed,
             "pr_merged" => ActivityKind::PrMerged,
             "workflow_finished" => ActivityKind::WorkflowFinished,
+            "release_published" => ActivityKind::ReleasePublished,
+            "epic_closed" => ActivityKind::EpicClosed,
             _ => return None,
         })
     }
@@ -747,6 +755,22 @@ mod tests {
         assert_eq!(events[3].kind, ActivityKind::AgentFailed);
         assert_eq!(events[0].source, "shell");
         assert_eq!(events[0].payload["agent"], "local");
+    }
+
+    #[test]
+    fn frontier_release_and_epic_events_parse() {
+        let text = include_str!("../tests/fixtures/frontier.jsonl");
+        let mut events = Vec::new();
+        for line in text.lines() {
+            if let Some(event) = parse_line(line, DEFAULT_MAX_LINE_BYTES).unwrap() {
+                events.push(event);
+            }
+        }
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].kind, ActivityKind::ReleasePublished);
+        assert_eq!(events[0].payload["id"], "v1.2.0");
+        assert_eq!(events[1].kind, ActivityKind::EpicClosed);
+        assert_eq!(events[1].payload["id"], "96");
     }
 
     #[test]

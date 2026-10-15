@@ -214,6 +214,14 @@ pub enum FleetError {
         cap: u32,
     },
     DestFull,
+    FrontierLocked {
+        dest: Coord,
+    },
+    NeedDrive {
+        id: String,
+        required: u32,
+        actual: u32,
+    },
 }
 
 impl fmt::Display for FleetError {
@@ -272,6 +280,17 @@ impl fmt::Display for FleetError {
                 write!(f, "colony cap reached ({used}/{cap})")
             }
             FleetError::DestFull => write!(f, "destination storage is full"),
+            FleetError::FrontierLocked { dest } => {
+                write!(f, "frontier sector at {dest} is still locked")
+            }
+            FleetError::NeedDrive {
+                id,
+                required,
+                actual,
+            } => write!(
+                f,
+                "need {id} {required} to reach the frontier (have {actual})"
+            ),
         }
     }
 }

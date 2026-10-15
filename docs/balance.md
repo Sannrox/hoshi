@@ -106,6 +106,10 @@ comparison). `troop_strength` is the landing power of one troop transport.
 
 `[moons]` is debris-to-moon formation around an owned planet. Hull lost in a fight adds `debris_per_hull` to that coord. Once debris passes `form_threshold`, each extra point rolls `form_chance_per_debris` (capped) against a seeded RNG; the same seed repeats the same moon. A moon is an orbital facility of its parent, not a new map slot. `phalanx_range_systems` is the sensor radius in systems; `jump_cooldown_secs` is the gate cooldown. Jump is instant between two moons that both have a jump gate, and is refused if the destination has none. Costs are `phalanx_*` and `gate_*`. Set `enabled = false` to skip formation.
 
+## Frontier galaxy
+
+`[frontier]` is a second galaxy with richer worlds. `galaxy` must be `>= 2`. Research (`drive_id` + `astro_id` at the listed levels) opens `research_sectors`; completing any wonder opens `wonder_sectors`. Those two must cover `sectors`. Flights into that galaxy need `flight_drive_id`. Worlds roll a higher `rare_chance`, extra `fields_bonus`, and `production_bonus` on mines. Bridge `release_published` / `epic_closed` events add `release_sectors` / `epic_sectors` early, capped by `bridge_sector_cap`, and never exceed the catalog. `hoshi simulate` (when days cover the casual floor) reports the research unlock against `casual_max_secs`.
+
 ## Goal ladder
 
 Tiers live in `crates/hoshi-core/data/goals.toml`. Each `[[tier]]` row names goods per hour (and optional energy supply or repeating routes) that must be running at once. Completing a tier grants a small stockpile reward and unlocks the next; `hold_secs` delays completion while the rates are held. Wonder stages may set `require_tier` so a megaproject cannot be paid from a lump sum. `hoshi simulate` (when days cover the casual floor) reports each tier against `casual_max_secs`.

@@ -16,6 +16,7 @@ mod diplomacy;
 mod espionage;
 mod expedition;
 mod fleets;
+mod frontier;
 mod galaxy;
 mod governance;
 mod history;
@@ -100,6 +101,10 @@ pub use expedition::{
 pub use fleets::{
     Coord, FleetError, FlightConfig, Mission, MissionPhase, TradeRoute, distance, flight_secs,
     fuel_cost,
+};
+pub use frontier::{
+    FrontierBoard, FrontierConfig, FrontierError, FrontierGlance, FrontierSignal, FrontierWorld,
+    generate_frontier,
 };
 pub use galaxy::{
     GALAXY_GENERATOR_VERSION, GalaxyPreview, encode_galaxy_seed, parse_galaxy_seed, preview_galaxy,

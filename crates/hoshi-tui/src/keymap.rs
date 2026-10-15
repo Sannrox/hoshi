@@ -348,6 +348,7 @@ impl HelpContext {
                 Binding::Quit,
                 Binding::NextScreen,
                 Binding::Cockpit,
+                Binding::Toggle,
                 Binding::SelectNext,
                 Binding::SelectPrev,
                 Binding::CursorLeft,

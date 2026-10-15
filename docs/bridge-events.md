@@ -19,14 +19,14 @@ Each line is one JSON object:
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `type` | yes | `agent_started`, `agent_waiting_for_input`, `agent_finished`, `agent_failed` |
+| `type` | yes | `agent_started`, `agent_waiting_for_input`, `agent_finished`, `agent_failed`, `release_published`, `epic_closed` |
 | `source` | yes | Who posted (for example `shell` or a hook name) |
 | `ts` | yes | Unix timestamp in seconds |
 | `payload` | no | JSON object. Never executed; never used as a filesystem path |
 
 Unknown `type` values are ignored. Malformed lines are rejected and skipped. Lines longer than 8192 bytes are rejected.
 
-GitHub merged pull requests and finished workflow runs use `pr_merged` and `workflow_finished` with `source` `github`. They enter the same stream. The reader polls `gh api` for each `github_repo` line (ETag / 304) and follows full pages (`per_page=30`, then `page=2` …) until a short page or ten pages, whichever comes first. New events land on page 1; the ten-page cap is a burst window, not a full-history backfill. It can bind `webhook_bind` for HTTP POST on a loopback address only; a bind failure stays in status and the rest of the bridge still opens. Dedup ids live in `github-seen.json` next to the save. No token is stored. Polling is off when the bridge is off or no repos are listed. If `github_repo` lines are set, webhook events for other repos are dropped.
+GitHub merged pull requests, finished workflow runs, published releases, and closed `epic` issues use `pr_merged`, `workflow_finished`, `release_published`, and `epic_closed` with `source` `github`. They enter the same stream. The reader polls `gh api` for each `github_repo` line (ETag / 304) and follows full pages (`per_page=30`, then `page=2` …) until a short page or ten pages, whichever comes first. New events land on page 1; the ten-page cap is a burst window, not a full-history backfill. It can bind `webhook_bind` for HTTP POST on a loopback address only; a bind failure stays in status and the rest of the bridge still opens. Dedup ids live in `github-seen.json` next to the save. No token is stored. Polling is off when the bridge is off or no repos are listed. If `github_repo` lines are set, webhook events for other repos are dropped.
 
 ## Shell
 
@@ -64,5 +64,7 @@ When the TUI is built with `--features bridge` and the feed is enabled, accepted
 | `workflow_finished` otherwise | Raid via `GameState::trigger_raid` |
 | `agent_finished` with `duration_secs` (or `elapsed`) at or above the threshold | Temporary research speed boost |
 | `agent_waiting_for_input` with `waiting_secs` at or above the threshold | Raid |
+| `release_published` | Reveal one frontier sector early (`payload.id` is counted once, including across restarts). Capped; never opens a sector the research/wonder path cannot. |
+| `epic_closed` | Same as a published release, using `payload.id` (issue number or slug). |
 
-Each mapping is individually disableable and has a cooldown and a daily cap. `agent_started` and `agent_failed` do not grant effects.
+Each mapping is individually disableable and has a cooldown and a daily cap. `agent_started` and `agent_failed` do not grant effects. Frontier reveals ignore cooldowns and use the save's seen-id table instead. With GitHub polling enabled, published releases and closed issues labeled `epic` are written as those event types when `sub_issues_summary` shows every child closed (or none). Webhooks without that summary are skipped so an unfinished epic cannot reveal a sector; `payload.id` is the tag or issue number.

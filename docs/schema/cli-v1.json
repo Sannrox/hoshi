@@ -73,6 +73,10 @@
       "type": "object",
       "description": "Industrial goal ladder: current completed tier, next goal progress from sustained rates, and completed ids."
     },
+    "frontier": {
+      "type": "object",
+      "description": "Frontier galaxy unlock: revealed sector count, research/wonder/bridge flags, and visible worlds with bonuses."
+    },
     "season": {
       "type": ["object", "null"],
       "description": "Seasonal galaxy overlay when this save is a seasonal run: rule-set id, window, seed and whether prestige is shared."

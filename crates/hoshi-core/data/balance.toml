@@ -30,6 +30,27 @@ homeworld_min_system = 40
 homeworld_defence_mult = 3.0
 homeworld_garrison_mult = 3.0
 
+[frontier]
+# Separate galaxy. Sectors open from research (impulse drive + astrophysics) or a wonder.
+# Bridge release/epic events only speed up sectors the normal path also opens.
+galaxy = 2
+sectors = 4
+planets_per_sector = 3
+production_bonus = 0.25
+fields_bonus = 8
+rare_chance = 0.55
+drive_id = "impulse_drive"
+drive_level = 1
+astro_id = "astrophysics"
+astro_level = 1
+flight_drive_id = "impulse_drive"
+flight_drive_level = 1
+research_sectors = 2
+wonder_sectors = 2
+release_sectors = 1
+epic_sectors = 1
+bridge_sector_cap = 2
+
 [metal_mine]
 base_per_hour = 30.0
 growth = 1.5

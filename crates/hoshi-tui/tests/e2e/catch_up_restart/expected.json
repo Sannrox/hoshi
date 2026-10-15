@@ -147,6 +147,15 @@
     "small_cargo": 0,
     "troop_transport": 0
   },
+  "frontier": {
+    "bridge_sectors": 0,
+    "galaxy": 2,
+    "research_open": false,
+    "revealed": 0,
+    "sectors": 4,
+    "wonder_open": false,
+    "worlds": []
+  },
   "incidents": [],
   "ladder": {
     "completed": [],
@@ -330,7 +339,7 @@
     "empires": [],
     "enabled": false
   },
-  "save_schema": 37,
+  "save_schema": 38,
   "schema_version": 1,
   "season": null,
   "species": null,

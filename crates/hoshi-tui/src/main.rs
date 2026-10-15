@@ -936,9 +936,21 @@ fn apply_bridge_events(app: &mut App, batch: hoshi_bridge::ReadBatch, now_unix: 
     let mut events = batch.events;
     events.sort_by_key(|e| e.ts);
     for event in events {
+        let mut applied = false;
         if let Some(pulse) = pulse_from_event(&event)
             && app.state.apply_activity(pulse, now_unix) == hoshi_core::ActivityApply::Applied
         {
+            applied = true;
+        }
+        if let Some((signal, id)) = frontier_from_event(&event)
+            && app
+                .state
+                .apply_frontier_bridge(signal, &id, event.ts, now_unix)
+                == hoshi_core::ActivityApply::Applied
+        {
+            applied = true;
+        }
+        if applied {
             let effect = app
                 .state
                 .events
@@ -973,7 +985,36 @@ fn pulse_from_event(event: &hoshi_bridge::ActivityEvent) -> Option<hoshi_core::A
             ts: event.ts,
             waiting_secs: payload_secs(event, &["waiting_secs", "duration_secs", "elapsed"]),
         }),
-        ActivityKind::AgentStarted | ActivityKind::AgentFailed => None,
+        ActivityKind::AgentStarted
+        | ActivityKind::AgentFailed
+        | ActivityKind::ReleasePublished
+        | ActivityKind::EpicClosed => None,
+    }
+}
+
+#[cfg(feature = "bridge")]
+fn frontier_from_event(
+    event: &hoshi_bridge::ActivityEvent,
+) -> Option<(hoshi_core::FrontierSignal, String)> {
+    use hoshi_bridge::ActivityKind;
+    let id = match event.payload.get("id") {
+        Some(serde_json::Value::String(s)) if !s.is_empty() => s.clone(),
+        Some(serde_json::Value::Number(n)) => n.to_string(),
+        _ => return None,
+    };
+    let id = match event
+        .payload
+        .get("repo")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        Some(repo) => format!("{repo}:{id}"),
+        None => id,
+    };
+    match event.kind {
+        ActivityKind::ReleasePublished => Some((hoshi_core::FrontierSignal::ReleasePublished, id)),
+        ActivityKind::EpicClosed => Some((hoshi_core::FrontierSignal::EpicClosed, id)),
+        _ => None,
     }
 }
 
@@ -1141,5 +1182,44 @@ mod tests {
                 success: true,
             })
         );
+    }
+
+    #[test]
+    #[cfg(feature = "bridge")]
+    fn frontier_events_keep_repo_in_the_seen_id() {
+        let with_repo = hoshi_bridge::parse_line(
+            r#"{"type":"release_published","source":"github","ts":9,"payload":{"id":"v1.0.0","repo":"acme/one"}}"#,
+            8192,
+        )
+        .unwrap()
+        .unwrap();
+        let other_repo = hoshi_bridge::parse_line(
+            r#"{"type":"release_published","source":"github","ts":9,"payload":{"id":"v1.0.0","repo":"acme/two"}}"#,
+            8192,
+        )
+        .unwrap()
+        .unwrap();
+        let local = hoshi_bridge::parse_line(
+            r#"{"type":"release_published","source":"github","ts":9,"payload":{"id":"v1.0.0"}}"#,
+            8192,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            frontier_from_event(&with_repo).unwrap().1,
+            "acme/one:v1.0.0"
+        );
+        assert_eq!(
+            frontier_from_event(&other_repo).unwrap().1,
+            "acme/two:v1.0.0"
+        );
+        assert_eq!(frontier_from_event(&local).unwrap().1, "v1.0.0");
+        let empty = hoshi_bridge::parse_line(
+            r#"{"type":"release_published","source":"github","ts":9,"payload":{"id":"","repo":"acme/one"}}"#,
+            8192,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(frontier_from_event(&empty).is_none());
     }
 }

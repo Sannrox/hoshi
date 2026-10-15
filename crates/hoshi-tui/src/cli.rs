@@ -227,6 +227,7 @@ enum Command {
     },
     FlagshipAnchor,
     Rivals,
+    Frontier,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1044,6 +1045,12 @@ fn apply(state: &mut GameState, now: u64, command: &Command) -> Result<Value, Cl
                 .map_err(|e| CliError::Refused(e.to_string()))?;
             Ok(ok_state(state, "flagship relocated"))
         }
+        Command::Frontier => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            Ok(frontier_value(state))
+        }
         Command::Rivals => {
             if !state.deterministic {
                 state.catch_up(now);
@@ -1107,6 +1114,33 @@ fn path_json(path: &hoshi_core::PathProgress) -> Value {
         "next": path.next_step,
         "ratio": path.ratio,
     })
+}
+
+fn frontier_json(state: &GameState) -> Value {
+    let glance = state.frontier_glance();
+    json!({
+        "galaxy": glance.galaxy,
+        "sectors": glance.sectors,
+        "revealed": glance.revealed,
+        "research_open": glance.research_open,
+        "wonder_open": glance.wonder_open,
+        "bridge_sectors": glance.bridge_sectors,
+        "worlds": glance.worlds.iter().map(|world| json!({
+            "coord": world.coord.to_string(),
+            "sector": world.sector,
+            "kind": world.kind.as_key(),
+            "size": world.size,
+            "rare": world.rare,
+            "production_bonus": state.config.frontier.production_bonus,
+            "fields_bonus": state.config.frontier.fields_bonus,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn frontier_value(state: &GameState) -> Value {
+    let mut value = state_value(state, Actor::Player);
+    value["message"] = json!("frontier");
+    value
 }
 
 fn ladder_json(state: &GameState) -> Value {
@@ -1446,6 +1480,7 @@ fn state_value(state: &GameState, actor: Actor) -> Value {
     });
     value["victory"] = victory_json(state);
     value["ladder"] = ladder_json(state);
+    value["frontier"] = frontier_json(state);
     value["species"] = match &state.species {
         Some(run) => json!({
             "id": run.id,
@@ -1689,6 +1724,10 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
         "rivals" => {
             expect_end(args, 1)?;
             Ok(Command::Rivals)
+        }
+        "frontier" => {
+            expect_end(args, 1)?;
+            Ok(Command::Frontier)
         }
         "species" => match args.get(1).map(String::as_str) {
             None => {
@@ -3364,6 +3403,9 @@ mod tests {
         assert_eq!(value["leaders"].as_array().unwrap().len(), 2);
         assert!(value["ladder"]["next"].is_object());
         assert_eq!(value["ladder"]["next"]["id"], "water_propellant");
+        assert_eq!(value["frontier"]["galaxy"], 2);
+        assert_eq!(value["frontier"]["revealed"], 0);
+        assert!(value["frontier"]["worlds"].as_array().unwrap().is_empty());
         let _ = std::fs::remove_file(&save);
     }
 

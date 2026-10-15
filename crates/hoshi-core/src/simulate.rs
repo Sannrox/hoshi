@@ -53,6 +53,7 @@ pub struct SimReport {
     pub victory_min_secs: u64,
     pub victory_max_secs: u64,
     pub ladder_tiers: Vec<LadderSimRow>,
+    pub frontier_unlock_secs: Option<u64>,
 }
 
 /// One casual-play victory path and when it landed.
@@ -108,6 +109,14 @@ impl SimReport {
             && self.keystones_ok()
             && self.tactics_ok
             && self.ladder_ok()
+            && self.frontier_ok()
+    }
+
+    pub fn frontier_ok(&self) -> bool {
+        match self.frontier_unlock_secs {
+            Some(secs) => secs <= self.victory_max_secs.max(1),
+            None => u64::from(self.days).saturating_mul(86_400) < self.victory_min_secs.max(1),
+        }
     }
 
     pub fn ladder_ok(&self) -> bool {
@@ -185,6 +194,16 @@ impl SimReport {
             "- tactics: no combo dominates ({})\n",
             mark(self.tactics_ok)
         ));
+        if self.frontier_unlock_secs.is_some() || self.victory_max_secs > 0 {
+            let elapsed = match self.frontier_unlock_secs {
+                Some(secs) => format!("{secs}s"),
+                None => "never".into(),
+            };
+            out.push_str(&format!(
+                "- frontier unlock: {elapsed} ({})\n",
+                mark(self.frontier_ok())
+            ));
+        }
         if !self.ladder_tiers.is_empty() {
             out.push_str("\n## Goal ladder\n\n");
             out.push_str("| tier | elapsed | band |\n");
@@ -308,6 +327,11 @@ pub fn simulate_greedy(config: BalanceConfig, days: u32) -> SimReport {
         Vec::new()
     };
     let ladder_tiers = simulate_ladder_tiers(config.clone(), days);
+    let frontier_unlock_secs = if u64::from(days).saturating_mul(86_400) >= victory_min_secs {
+        simulate_frontier_unlock(config.clone())
+    } else {
+        None
+    };
     let prestige_runs = vec![
         prestige_row(&quiet, 1, 0),
         prestige_row(&run_once(config.clone(), days, false, 1), 2, 1),
@@ -335,6 +359,7 @@ pub fn simulate_greedy(config: BalanceConfig, days: u32) -> SimReport {
         victory_min_secs,
         victory_max_secs,
         ladder_tiers,
+        frontier_unlock_secs,
     }
 }
 
@@ -655,6 +680,274 @@ fn requires_tech(state: &GameState, from: &str, want: &str) -> bool {
         }
     }
     false
+}
+
+fn simulate_frontier_unlock(mut config: BalanceConfig) -> Option<u64> {
+    if config.frontier.sectors == 0 {
+        return None;
+    }
+    let max = config.victory.casual_max_secs.max(1);
+    config.raid = crate::RaidConfig::inactive();
+    config.market.enabled = false;
+    let mut state = GameState::with_config(0, config);
+    let mut steps = 0_u32;
+    while state.last_tick_unix < max && steps < 100_000 {
+        steps += 1;
+        fill_frontier_queue(&mut state);
+        try_research_toward_frontier(&mut state);
+        let completion = state
+            .build_queue
+            .first()
+            .and_then(|job| job.completes_at)
+            .unwrap_or(u64::MAX);
+        let research_at = state
+            .research
+            .as_ref()
+            .map(|job| job.completes_at)
+            .unwrap_or(u64::MAX);
+        let afford = frontier_next_afford_at(&state).unwrap_or(u64::MAX);
+        let mut jump = completion.min(research_at).min(afford).min(max);
+        if jump <= state.last_tick_unix {
+            jump = state.last_tick_unix.saturating_add(1).min(max);
+        }
+        state.catch_up(jump);
+        if state.frontier.revealed > 0 {
+            return Some(state.last_tick_unix);
+        }
+        if state.build_queue.is_empty() && state.research.is_none() && jump >= max {
+            break;
+        }
+    }
+    None
+}
+
+fn fill_frontier_queue(state: &mut GameState) {
+    let cap = state.build_queue_cap();
+    while state.build_queue.len() < cap {
+        let order = frontier_building_order(state);
+        let mut enqueued = false;
+        for kind in order {
+            match state.enqueue_build(kind, state.last_tick_unix) {
+                Ok(()) => {
+                    enqueued = true;
+                    break;
+                }
+                Err(BuildError::QueueFull { .. }) => return,
+                Err(BuildError::InsufficientResources { .. })
+                | Err(BuildError::MissingPrerequisite { .. })
+                | Err(BuildError::EmptySlot { .. })
+                | Err(BuildError::UnknownPlanet)
+                | Err(BuildError::NeedLogistics)
+                | Err(BuildError::PermissionDenied(_)) => {}
+            }
+        }
+        if !enqueued {
+            break;
+        }
+    }
+}
+
+fn frontier_building_order(state: &GameState) -> Vec<BuildingKind> {
+    let mut order = Vec::new();
+    let need_lab = frontier_needed_lab(state);
+    if !energy_ok_after(state, BuildingKind::ResearchLab)
+        || !energy_ok_after(state, BuildingKind::DeuteriumSynthesizer)
+    {
+        order.push(BuildingKind::SolarPlant);
+    }
+    if !heat_ok_after(state, BuildingKind::MetalMine) {
+        order.push(BuildingKind::Radiator);
+    }
+    if !pollution_ok_after(state, BuildingKind::MetalMine) {
+        order.push(BuildingKind::Scrubber);
+    }
+    if projected_buildings(state).research_lab < need_lab {
+        order.push(BuildingKind::ResearchLab);
+    }
+    if projected_buildings(state).deuterium_synthesizer < 4 {
+        order.push(BuildingKind::DeuteriumSynthesizer);
+    }
+    if frontier_needs_storage(state, ResourceKind::Crystal) {
+        order.push(BuildingKind::CrystalStorage);
+    }
+    if frontier_needs_storage(state, ResourceKind::Deuterium) {
+        order.push(BuildingKind::DeuteriumStorage);
+    }
+    if frontier_needs_storage(state, ResourceKind::Metal) {
+        order.push(BuildingKind::MetalStorage);
+    }
+    order.extend([
+        BuildingKind::CrystalMine,
+        BuildingKind::DeuteriumSynthesizer,
+        BuildingKind::MetalMine,
+        BuildingKind::RoboticsFactory,
+        BuildingKind::CrystalStorage,
+        BuildingKind::DeuteriumStorage,
+        BuildingKind::MetalStorage,
+        BuildingKind::SolarPlant,
+        BuildingKind::ResearchLab,
+    ]);
+    order
+}
+
+fn frontier_needs_storage(state: &GameState, kind: ResourceKind) -> bool {
+    let cap = state.storage_cap(kind);
+    for (id, want) in frontier_tech_need(state) {
+        let have = state.tech_level(&id);
+        if have >= want {
+            continue;
+        }
+        let Some(spec) = state.config.techs.get(&id) else {
+            continue;
+        };
+        if spec.cost(have).get(kind) > cap + 1e-9 {
+            return true;
+        }
+    }
+    false
+}
+
+fn frontier_needed_lab(state: &GameState) -> u32 {
+    let mut need = 1_u32;
+    for (id, want) in frontier_tech_need(state) {
+        if state.tech_level(&id) >= want {
+            continue;
+        }
+        let Some(spec) = state.config.techs.get(&id) else {
+            continue;
+        };
+        for pre in &spec.prereq_buildings {
+            if pre.building == BuildingKind::ResearchLab {
+                need = need.max(pre.level);
+            }
+        }
+    }
+    need
+}
+
+fn frontier_tech_need(state: &GameState) -> BTreeMap<String, u32> {
+    let cfg = &state.config.frontier;
+    let mut need: BTreeMap<String, u32> = BTreeMap::new();
+    // Unlock is drive + astrophysics only. Flight drive is a later travel check.
+    let mut stack = vec![
+        (cfg.drive_id.clone(), cfg.drive_level.max(1)),
+        (cfg.astro_id.clone(), cfg.astro_level.max(1)),
+    ];
+    while let Some((id, level)) = stack.pop() {
+        let entry = need.entry(id.clone()).or_insert(0);
+        if *entry >= level {
+            continue;
+        }
+        *entry = level;
+        let Some(spec) = state.config.techs.get(&id) else {
+            continue;
+        };
+        for pre in &spec.prereq_techs {
+            stack.push((pre.id.clone(), pre.level.max(1)));
+        }
+    }
+    need
+}
+
+fn try_research_toward_frontier(state: &mut GameState) {
+    if state.research.is_some() || state.research_unlocks_frontier() {
+        return;
+    }
+    let need = frontier_tech_need(state);
+    let mut candidates: Vec<(u64, String)> = Vec::new();
+    for spec in state.config.techs.iter() {
+        if spec.branch == TechBranch::Ancient {
+            continue;
+        }
+        let want = need.get(&spec.id).copied().unwrap_or(0);
+        if want == 0 {
+            continue;
+        }
+        let have = state.tech_level(&spec.id);
+        if have >= want {
+            continue;
+        }
+        match state.tech_node_state(&spec.id) {
+            TechNodeState::Available | TechNodeState::Researched => {}
+            _ => continue,
+        }
+        let cost = spec.cost(have);
+        let weight = (cost.metal + cost.crystal + cost.deuterium) as u64;
+        candidates.push((weight, spec.id.clone()));
+    }
+    candidates.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    for (_, id) in candidates {
+        if state.start_research(&id, state.last_tick_unix).is_ok() {
+            return;
+        }
+    }
+}
+
+fn frontier_next_afford_at(state: &GameState) -> Option<u64> {
+    let now = state.last_tick_unix;
+    let mut best: Option<u64> = None;
+    for kind in frontier_building_order(state) {
+        if let Some(wait) = secs_until_afford(state, kind) {
+            let at = now.saturating_add(wait);
+            best = Some(best.map_or(at, |b| b.min(at)));
+        }
+    }
+    if let Some(wait) = secs_until_path_research(state) {
+        let at = now.saturating_add(wait);
+        best = Some(best.map_or(at, |b| b.min(at)));
+    }
+    best
+}
+
+fn secs_until_path_research(state: &GameState) -> Option<u64> {
+    if state.research.is_some() {
+        return None;
+    }
+    let need = frontier_tech_need(state);
+    let mut best: Option<u64> = None;
+    for spec in state.config.techs.iter() {
+        let want = need.get(&spec.id).copied().unwrap_or(0);
+        if want == 0 {
+            continue;
+        }
+        let have = state.tech_level(&spec.id);
+        if have >= want {
+            continue;
+        }
+        match state.tech_node_state(&spec.id) {
+            TechNodeState::Available | TechNodeState::Researched => {}
+            _ => continue,
+        }
+        let cost = spec.cost(have);
+        if let Some(wait) = secs_until_cost(state, cost) {
+            best = Some(best.map_or(wait, |b| b.min(wait)));
+        }
+    }
+    best
+}
+
+fn secs_until_cost(state: &GameState, cost: crate::Resources) -> Option<u64> {
+    let have = state.resources;
+    if have.can_afford(cost) {
+        return Some(0);
+    }
+    let mut wait = 0.0_f64;
+    for resource in ResourceKind::ALL {
+        let need = cost.get(resource);
+        let got = have.get(resource);
+        if got + 1e-9 >= need {
+            continue;
+        }
+        if need > state.storage_cap(resource) + 1e-9 {
+            return None;
+        }
+        let rate = state.production_per_hour(resource);
+        if rate <= 1e-12 {
+            return None;
+        }
+        wait = wait.max((need - got) / rate * 3600.0);
+    }
+    Some(wait.ceil().max(1.0) as u64)
 }
 
 fn boost_industry_for_ladder(state: &mut GameState) {
@@ -1170,6 +1463,19 @@ mod tests {
                 .join(", ")
         );
         assert_eq!(report.ladder_tiers.len(), 5);
+    }
+
+    #[test]
+    fn frontier_unlocks_inside_casual_band() {
+        let report = simulate_greedy(BalanceConfig::default(), 28);
+        assert!(
+            report.frontier_ok(),
+            "frontier unlock {:?}",
+            report.frontier_unlock_secs
+        );
+        assert!(report.frontier_unlock_secs.is_some());
+        let md = report.to_markdown();
+        assert!(md.contains("frontier unlock"), "{md}");
     }
 
     #[test]

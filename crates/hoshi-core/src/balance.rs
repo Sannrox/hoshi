@@ -352,6 +352,7 @@ pub struct BalanceConfig {
     pub orbits: crate::OrbitConfig,
     pub victory: crate::VictoryConfig,
     pub ladder: crate::LadderConfig,
+    pub frontier: crate::FrontierConfig,
 }
 
 impl BalanceConfig {
@@ -440,6 +441,8 @@ struct File {
     orbits: crate::orbits::FileOrbits,
     #[serde(default)]
     victory: FileVictory,
+    #[serde(default)]
+    frontier: crate::frontier::FileFrontier,
 }
 
 #[derive(Deserialize)]
@@ -1555,6 +1558,10 @@ impl File {
             },
             victory: self.victory.into_config(),
             ladder: crate::LadderConfig::default(),
+            frontier: self
+                .frontier
+                .into_config()
+                .map_err(|e| BalanceError::Invalid(e.to_string()))?,
         };
         let wonders = config.wonders.clone();
         config.achievements.drop_unknown_wonders(&wonders);
@@ -1733,6 +1740,9 @@ impl BalanceConfig {
         )?;
         self.chains.validate().map_err(BalanceError::Invalid)?;
         self.ladder
+            .validate()
+            .map_err(|e| BalanceError::Invalid(e.to_string()))?;
+        self.frontier
             .validate()
             .map_err(|e| BalanceError::Invalid(e.to_string()))?;
         let mut seen = std::collections::HashSet::new();

@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 37;
+pub const SCHEMA_VERSION: u32 = 38;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -213,7 +213,10 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM rivals;
          DELETE FROM rivals_meta;
          DELETE FROM ladder;
-         DELETE FROM ladder_hold;",
+         DELETE FROM ladder_hold;
+         DELETE FROM frontier_worlds;
+         DELETE FROM frontier_seen;
+         DELETE FROM frontier_meta;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -675,6 +678,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
     }
     insert_rivals(&tx, state)?;
     insert_ladder(&tx, state)?;
+    insert_frontier(&tx, state)?;
     for (id, count) in &state.prestige.owned {
         tx.execute(
             "INSERT INTO prestige_owned (bonus_id, count) VALUES (?1, ?2)",
@@ -784,6 +788,111 @@ fn read_goods(conn: &Connection, planet_id: i64) -> Result<BTreeMap<String, f64>
         goods.insert(good, amount);
     }
     Ok(goods)
+}
+
+fn insert_frontier(conn: &Connection, state: &GameState) -> Result<(), SaveError> {
+    conn.execute(
+        "INSERT INTO frontier_meta (id, revealed, research_open, wonder_open, bridge_sectors)
+         VALUES (1, ?1, ?2, ?3, ?4)",
+        params![
+            state.frontier.revealed as i64,
+            i64::from(state.frontier.research_open),
+            i64::from(state.frontier.wonder_open),
+            state.frontier.bridge_sectors as i64,
+        ],
+    )?;
+    for id in &state.frontier.seen {
+        conn.execute(
+            "INSERT INTO frontier_seen (event_id) VALUES (?1)",
+            params![id],
+        )?;
+    }
+    for world in &state.frontier.worlds {
+        conn.execute(
+            "INSERT INTO frontier_worlds (
+                galaxy, system, position, sector, kind, size, rare
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                world.coord.galaxy as i64,
+                world.coord.system as i64,
+                world.coord.position as i64,
+                world.sector as i64,
+                world.kind.as_key(),
+                world.size as i64,
+                world.rare.as_deref(),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn load_frontier(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
+    state.frontier = crate::FrontierBoard::default();
+    if table_exists(conn, "frontier_meta")
+        && let Some((revealed, research, wonder, bridge)) = conn
+            .query_row(
+                "SELECT revealed, research_open, wonder_open, bridge_sectors FROM frontier_meta WHERE id = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                },
+            )
+            .optional()?
+    {
+        state.frontier.revealed = revealed.max(0) as u32;
+        state.frontier.research_open = research != 0;
+        state.frontier.wonder_open = wonder != 0;
+        state.frontier.bridge_sectors = bridge.max(0) as u32;
+    }
+    if table_exists(conn, "frontier_seen") {
+        let mut stmt = conn.prepare("SELECT event_id FROM frontier_seen ORDER BY event_id")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        for row in rows {
+            state.frontier.seen.insert(row?);
+        }
+    }
+    if table_exists(conn, "frontier_worlds") {
+        let mut stmt = conn.prepare(
+            "SELECT galaxy, system, position, sector, kind, size, rare
+             FROM frontier_worlds ORDER BY sector, galaxy, system, position",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, Option<String>>(6)?,
+            ))
+        })?;
+        for row in rows {
+            let (g, s, p, sector, kind, size, rare) = row?;
+            let kind = crate::PlanetType::from_key(&kind)
+                .ok_or(SaveError::Corrupt("unknown frontier planet type"))?;
+            state.frontier.worlds.push(crate::FrontierWorld {
+                coord: Coord {
+                    galaxy: g as u16,
+                    system: s as u16,
+                    position: p as u16,
+                },
+                sector: sector.max(0) as u32,
+                kind,
+                size: size.max(0) as u8,
+                rare,
+            });
+        }
+    }
+    if state.frontier.worlds.is_empty() {
+        state.seed_frontier();
+    }
+    Ok(())
 }
 
 fn insert_ladder(conn: &Connection, state: &GameState) -> Result<(), SaveError> {
@@ -1933,6 +2042,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     }
     load_rivals(conn, &mut state)?;
     load_ladder(conn, &mut state)?;
+    load_frontier(conn, &mut state)?;
 
     Ok(state)
 }
@@ -2670,6 +2780,9 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "rival_ship_queue" => "SELECT COUNT(*) FROM rival_ship_queue",
         "ladder" => "SELECT COUNT(*) FROM ladder",
         "ladder_hold" => "SELECT COUNT(*) FROM ladder_hold",
+        "frontier_meta" => "SELECT COUNT(*) FROM frontier_meta",
+        "frontier_seen" => "SELECT COUNT(*) FROM frontier_seen",
+        "frontier_worlds" => "SELECT COUNT(*) FROM frontier_worlds",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -2759,7 +2872,10 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "rival_research")?
         + count_rows(conn, "rival_ship_queue")?
         + count_rows(conn, "ladder")?
-        + count_rows(conn, "ladder_hold")?)
+        + count_rows(conn, "ladder_hold")?
+        + count_rows(conn, "frontier_meta")?
+        + count_rows(conn, "frontier_seen")?
+        + count_rows(conn, "frontier_worlds")?)
 }
 
 fn migrate(conn: &Connection) -> Result<(), SaveError> {
@@ -2880,6 +2996,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 37 {
         migrate_v37(conn)?;
+    }
+    if found < 38 {
+        migrate_v38(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -3867,6 +3986,34 @@ fn migrate_v35(conn: &Connection) -> Result<(), SaveError> {
         );
         CREATE TABLE IF NOT EXISTS prestige_species (
             species_id TEXT PRIMARY KEY
+        );
+        ",
+    )?;
+    Ok(())
+}
+
+fn migrate_v38(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS frontier_meta (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            revealed INTEGER NOT NULL,
+            research_open INTEGER NOT NULL,
+            wonder_open INTEGER NOT NULL,
+            bridge_sectors INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS frontier_seen (
+            event_id TEXT PRIMARY KEY
+        );
+        CREATE TABLE IF NOT EXISTS frontier_worlds (
+            galaxy INTEGER NOT NULL,
+            system INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            sector INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            size INTEGER NOT NULL,
+            rare TEXT,
+            PRIMARY KEY (galaxy, system, position)
         );
         ",
     )?;
@@ -6633,8 +6780,8 @@ mod tests {
             .launch_fleet(
                 wing,
                 crate::Coord {
-                    galaxy: 2,
-                    system: 1,
+                    galaxy: 1,
+                    system: 2,
                     position: 1,
                 },
                 100,
@@ -7745,6 +7892,36 @@ mod tests {
         assert!(loaded.prestige.unlocked_species.contains("kryth"));
         assert_eq!(count_rows(&conn, "species_run").unwrap(), 1);
         assert_eq!(count_rows(&conn, "prestige_species").unwrap(), 2);
+    }
+
+    #[test]
+    fn migrate_v38_round_trips_frontier() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v38(&conn).unwrap();
+        migrate_v38(&conn).unwrap();
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.enabled = false;
+        cfg.market.enabled = false;
+        let mut state = GameState::with_seed(1_000, cfg, 9);
+        state.deterministic = true;
+        state.frontier.research_open = true;
+        state.frontier.revealed = 2;
+        state
+            .frontier
+            .seen
+            .insert("release_published:v1.0.0".into());
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.frontier.revealed, 2);
+        assert!(loaded.frontier.research_open);
+        assert!(loaded.frontier.seen.contains("release_published:v1.0.0"));
+        assert_eq!(loaded.frontier.worlds, state.frontier.worlds);
+        assert_eq!(count_rows(&conn, "frontier_meta").unwrap(), 1);
+        assert_eq!(count_rows(&conn, "frontier_seen").unwrap(), 1);
+        assert_eq!(
+            count_rows(&conn, "frontier_worlds").unwrap(),
+            state.frontier.worlds.len() as i64
+        );
     }
 
     #[test]
