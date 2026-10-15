@@ -38,6 +38,7 @@ pub enum Screen {
     Staff,
     Ops,
     Map,
+    Cockpit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,6 +123,9 @@ pub struct App {
     history_pane: HistoryPane,
     history_kind: Option<HistoryKind>,
     history_actor: Option<String>,
+    cockpit: crate::cockpit::Cockpit,
+    gauge_history: Vec<Resources>,
+    pub high_contrast: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,7 +185,31 @@ impl App {
             history_pane: HistoryPane::List,
             history_kind: None,
             history_actor: None,
+            cockpit: crate::cockpit::Cockpit::default(),
+            gauge_history: Vec::new(),
+            high_contrast: false,
         }
+    }
+
+    pub fn take_cockpit_layout(&mut self) -> Option<String> {
+        if self.cockpit.take_layout_dirty() {
+            Some(self.cockpit.layout.as_key().into())
+        } else {
+            None
+        }
+    }
+
+    pub fn apply_cockpit(&mut self, user: &crate::config::UserConfig) {
+        self.high_contrast = user.high_contrast;
+        if let Some(layout) = crate::cockpit::CockpitLayout::from_key(&user.cockpit_layout) {
+            self.cockpit.layout = layout;
+        }
+        self.cockpit.presets = crate::cockpit::Presets::parse(
+            &user.cockpit_overview,
+            &user.cockpit_economy,
+            &user.cockpit_war,
+        );
+        self.cockpit.high_contrast = user.high_contrast;
     }
 
     #[cfg(any(test, feature = "bridge"))]
@@ -276,6 +304,7 @@ impl App {
         self.state.interactive_tactics = true;
         self.state.catch_up(now_unix);
         self.record_production_sample();
+        crate::cockpit::record_gauge(&mut self.gauge_history, self.state.resources);
     }
 
     pub fn handle_key(&mut self, code: KeyCode, now_unix: u64) -> Action {
@@ -420,6 +449,13 @@ impl App {
             self.open_advisor();
             return Action::None;
         }
+        if self.dispatch.is_none() && self.keymap.matches(Binding::Cockpit, code) {
+            self.screen = Screen::Cockpit;
+            return Action::None;
+        }
+        if self.screen == Screen::Cockpit && self.dispatch.is_none() {
+            return self.handle_cockpit_key(code);
+        }
         match self.keymap.lookup(ctx, code) {
             Some(Binding::Quit) => return Action::Quit,
             Some(Binding::Replay) if self.screen == Screen::History => {
@@ -498,6 +534,56 @@ impl App {
         Action::None
     }
 
+    fn handle_cockpit_key(&mut self, code: KeyCode) -> Action {
+        let ctx = HelpContext::Cockpit;
+        let map = self.cockpit.focused_panel() == Some(crate::cockpit::Panel::Map);
+        let len = crate::cockpit::select_len(&self.state, &self.cockpit);
+        match self.keymap.lookup(ctx, code) {
+            Some(Binding::Quit) => return Action::Quit,
+            Some(Binding::NextScreen) => self.cycle_screen(),
+            Some(Binding::Toggle) => self.cockpit.cycle_layout(),
+            Some(Binding::CursorLeft) if map => self.nudge_map_position(-1),
+            Some(Binding::CursorRight) if map => self.nudge_map_position(1),
+            Some(Binding::SelectNext) if map => self.nudge_map_system(1),
+            Some(Binding::SelectPrev) if map => self.nudge_map_system(-1),
+            Some(Binding::CursorLeft) => self.cockpit.nudge_focus(-1),
+            Some(Binding::CursorRight) => self.cockpit.nudge_focus(1),
+            Some(Binding::SelectNext) => self.cockpit.nudge_select(1, len),
+            Some(Binding::SelectPrev) => self.cockpit.nudge_select(-1, len),
+            Some(Binding::Confirm) => self.cockpit_confirm(),
+            Some(Binding::Cancel) => {
+                let _ = self.cockpit.back();
+            }
+            Some(Binding::CopySeed) => {
+                let seed = encode_galaxy_seed(self.state.galaxy_seed);
+                copy_to_clipboard(&seed);
+                self.status = format!("copied {seed}");
+            }
+            _ => {}
+        }
+        Action::None
+    }
+
+    fn cockpit_confirm(&mut self) {
+        let alerts = crate::cockpit::alerts(&self.state);
+        let fleets = crate::cockpit::fleet_targets(&self.state);
+        let planets = crate::cockpit::planet_targets(&self.state);
+        self.cockpit.confirm(
+            &alerts,
+            &fleets,
+            &planets,
+            Coord {
+                galaxy: self.state.home.galaxy,
+                system: self.map_system,
+                position: self.map_position,
+            },
+        );
+        if let Some(crate::cockpit::Target::Planet(coord)) = self.cockpit.top() {
+            self.map_system = coord.system;
+            self.map_position = coord.position;
+        }
+    }
+
     fn cycle_screen(&mut self) {
         self.screen = match self.screen {
             Screen::Overview => Screen::Planet,
@@ -516,7 +602,8 @@ impl App {
             Screen::History => Screen::Staff,
             Screen::Staff => Screen::Ops,
             Screen::Ops => Screen::Map,
-            Screen::Map => Screen::Overview,
+            Screen::Map => Screen::Cockpit,
+            Screen::Cockpit => Screen::Overview,
         };
         self.selected = 0;
         self.status.clear();
@@ -567,6 +654,7 @@ impl App {
             Screen::Staff => HelpContext::Staff,
             Screen::Ops => HelpContext::Ops,
             Screen::Map => HelpContext::Map,
+            Screen::Cockpit => HelpContext::Cockpit,
         }
     }
 
@@ -594,6 +682,11 @@ impl App {
     }
 
     pub fn draw(&self, frame: &mut Frame<'_>) {
+        if self.screen == Screen::Cockpit {
+            self.draw_cockpit(frame);
+            self.draw_overlays(frame);
+            return;
+        }
         let title = match self.screen {
             Screen::Overview => {
                 " hoshi  [overview] planet yard wonder pres ach daily g prod market diplo laws rpt log stf ops map "
@@ -644,7 +737,10 @@ impl App {
                 " hoshi  overview planet yard wonder pres ach daily g prod market diplo laws rpt log stf [ops] map "
             }
             Screen::Map => {
-                " hoshi  overview planet yard wonder pres ach daily g prod market diplo laws rpt log stf ops [map] "
+                " hoshi  overview planet yard wonder pres ach daily g prod market diplo laws rpt log stf ops [map] ckp "
+            }
+            Screen::Cockpit => {
+                " hoshi  overview planet yard wonder pres ach daily g prod market diplo laws rpt log stf ops map [ckp] "
             }
         };
         let block = Block::bordered().title(title);
@@ -685,6 +781,42 @@ impl App {
                 art[0],
             );
         }
+        self.draw_overlays(frame);
+    }
+
+    fn draw_cockpit(&self, frame: &mut Frame<'_>) {
+        let title = " hoshi  overview planet yard wonder pres ach daily g prod market diplo laws rpt log stf ops map [ckp] ";
+        let block = Block::bordered().title(title);
+        let inner = block.inner(frame.area());
+        frame.render_widget(block, frame.area());
+        let footer = self.footer_lines(inner.width as usize);
+        self.cockpit_draw_inner(frame, inner, footer);
+    }
+
+    fn cockpit_draw_inner(
+        &self,
+        frame: &mut Frame<'_>,
+        area: ratatui::layout::Rect,
+        footer: Vec<Line<'static>>,
+    ) {
+        let mut cockpit = self.cockpit.clone();
+        cockpit.high_contrast = self.high_contrast;
+        crate::cockpit::draw(
+            frame,
+            area,
+            crate::cockpit::View {
+                state: &self.state,
+                cockpit: &cockpit,
+                map_system: self.map_system,
+                map_position: self.map_position,
+                gauges: &self.gauge_history,
+            },
+            footer,
+            self.cockpit.selected,
+        );
+    }
+
+    fn draw_overlays(&self, frame: &mut Frame<'_>) {
         if self.replay.is_some() {
             self.draw_replay(frame);
         } else if let Some(away) = &self.away
@@ -749,6 +881,7 @@ impl App {
             || self.pending_invasion.is_some()
             || self.replay.is_some()
             || (self.screen == Screen::History && self.history_pane != HistoryPane::List)
+            || self.screen == Screen::Cockpit
         {
             return portraits::erase_inline_graphics(out);
         }
@@ -1023,6 +1156,7 @@ impl App {
             Screen::History => self.toggle_history_lineage(),
             Screen::Staff => self.activate_staff(now_unix),
             Screen::Map => self.activate_map(now_unix),
+            Screen::Cockpit => self.cockpit_confirm(),
             Screen::Reports => {
                 if self
                     .selected_outpost()
@@ -1359,6 +1493,9 @@ impl App {
                 self.dispatch = None;
                 self.pending_invasion = None;
             }
+            Screen::Cockpit => {
+                let _ = self.cockpit.back();
+            }
             Screen::History => {
                 self.history_pane = HistoryPane::List;
             }
@@ -1408,6 +1545,7 @@ impl App {
                         .len()
             }
             Screen::Map => 0,
+            Screen::Cockpit => crate::cockpit::select_len(&self.state, &self.cockpit),
         }
     }
 
@@ -1617,6 +1755,13 @@ impl App {
                 k.primary(Binding::SelectPrev),
                 k.primary(Binding::CursorRight)
             ),
+            Screen::Cockpit => format!(
+                "{tab} screens  {} layout  {}/{} panel  {select}  {confirm} drill  {cancel} back  {} cockpit  {quit}  {help}",
+                k.primary(Binding::Toggle),
+                k.primary(Binding::CursorLeft),
+                k.primary(Binding::CursorRight),
+                k.primary(Binding::Cockpit)
+            ),
         })));
         rows
     }
@@ -1723,6 +1868,7 @@ impl App {
             Screen::Staff => self.staff_lines(height),
             Screen::Ops => self.ops_lines(height),
             Screen::Map => self.map_lines(height),
+            Screen::Cockpit => Vec::new(),
         }
     }
 
@@ -3288,25 +3434,7 @@ fn wrap_chunks(word: &str, width: usize) -> Vec<String> {
 }
 
 fn sparkline(values: &[f64], width: usize) -> String {
-    const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-    if values.is_empty() || width == 0 {
-        return String::new();
-    }
-    let slice = if values.len() > width {
-        &values[values.len() - width..]
-    } else {
-        values
-    };
-    let min = slice.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = slice.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let span = (max - min).max(1e-9);
-    slice
-        .iter()
-        .map(|&v| {
-            let t = ((v - min) / span * (BARS.len() - 1) as f64).round() as usize;
-            BARS[t.min(BARS.len() - 1)]
-        })
-        .collect()
+    crate::cockpit::sparkline(values, width)
 }
 
 #[cfg(test)]
@@ -3661,6 +3789,7 @@ mod tests {
         app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
+        app.handle_key(KeyCode::Tab, clock.now_unix());
         assert_eq!(app.screen, Screen::Overview);
         let energy = app
             .overview_techs()
@@ -3847,6 +3976,7 @@ mod tests {
         assert!(app.state.ship_queue.is_empty());
         assert_eq!(app.state.build_queue.len(), 1);
 
+        app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
@@ -4827,6 +4957,124 @@ mod tests {
         assert!(!text.contains("no events yet"), "{text}");
         app.handle_key(KeyCode::Char('2'), 1_000);
         assert!(app.state.story_pending.is_none());
+    }
+
+    #[test]
+    fn cockpit_renders_all_panels_at_three_sizes() {
+        let mut app = App::new(GameState::new(1_000));
+        app.handle_key(KeyCode::Char('c'), 1_000);
+        assert_eq!(app.screen, Screen::Cockpit);
+        let full = render_text(&app, 160, 48);
+        assert!(full.contains("[ckp]"), "{full}");
+        assert!(full.contains("alerts"), "{full}");
+        assert!(full.contains("map") || full.contains("[map]"), "{full}");
+        assert!(
+            full.contains("gauges") || full.contains("[gauges]"),
+            "{full}"
+        );
+        assert!(
+            full.contains("queues") || full.contains("[queues]"),
+            "{full}"
+        );
+        assert!(
+            full.contains("fleets") || full.contains("[fleets]"),
+            "{full}"
+        );
+        assert!(
+            full.contains("timeline") || full.contains("[timeline]"),
+            "{full}"
+        );
+        let compact = render_text(&app, 120, 40);
+        assert!(compact.contains("alerts"), "{compact}");
+        assert!(
+            compact.contains("gauges") || compact.contains("queues"),
+            "{compact}"
+        );
+        let tabbed = render_text(&app, 80, 24);
+        assert!(tabbed.contains("alerts"), "{tabbed}");
+        assert!(
+            tabbed.contains("MAP") || tabbed.contains("GAUGES"),
+            "{tabbed}"
+        );
+        let again = render_text(&app, 80, 24);
+        assert_eq!(tabbed, again);
+    }
+
+    #[test]
+    fn cockpit_layout_cycles_and_alerts_jump() {
+        let mut app = App::new(GameState::new(1_000));
+        app.handle_key(KeyCode::Char('c'), 1_000);
+        assert_eq!(app.cockpit.layout, crate::cockpit::CockpitLayout::Overview);
+        app.handle_key(KeyCode::Char(' '), 1_000);
+        assert_eq!(app.cockpit.layout, crate::cockpit::CockpitLayout::Economy);
+        let econ = render_text(&app, 160, 48);
+        assert!(econ.contains("gauges") || econ.contains("market"), "{econ}");
+        app.handle_key(KeyCode::Char(' '), 1_000);
+        assert_eq!(app.cockpit.layout, crate::cockpit::CockpitLayout::War);
+        app.handle_key(KeyCode::Enter, 1_000);
+        let detail = render_text(&app, 160, 48);
+        assert!(
+            detail.contains("detail") || detail.contains("planet"),
+            "{detail}"
+        );
+        app.handle_key(KeyCode::Char('x'), 1_000);
+        let after = render_text(&app, 160, 48);
+        assert!(after.contains("alerts"), "{after}");
+    }
+
+    #[test]
+    fn cockpit_help_lists_layout_and_drill_keys() {
+        let mut app = App::new(GameState::new(1_000));
+        app.handle_key(KeyCode::Char('c'), 1_000);
+        app.handle_key(KeyCode::Char('?'), 1_000);
+        let text = render_text(&app, 80, 24);
+        assert!(
+            text.contains("cockpit dashboard") || text.contains("toggle"),
+            "{text}"
+        );
+        assert!(text.contains("confirm") || text.contains("drill"), "{text}");
+    }
+
+    #[test]
+    fn cockpit_late_game_render_stays_under_budget() {
+        let mut state = GameState::new(1_000);
+        state.resources.metal = 80_000.0;
+        state.resources.crystal = 40_000.0;
+        state.buildings.metal_mine = 20;
+        for i in 0..8u16 {
+            state.colonies.push(hoshi_core::Colony {
+                coord: Coord {
+                    galaxy: 1,
+                    system: 2,
+                    position: i + 1,
+                },
+                kind: hoshi_core::PlanetType::Rocky,
+                size: 8,
+                resources: hoshi_core::Resources::ZERO,
+                buildings: hoshi_core::Buildings::default(),
+                fleet: Fleet::default(),
+                defences: hoshi_core::DefenceGrid::default(),
+                build_queue: Vec::new(),
+                rare: None,
+                goods: Default::default(),
+            });
+        }
+        for i in 0..32 {
+            state.events.push(hoshi_core::GameEvent {
+                at: 1_000 + i,
+                text: format!("event {i}"),
+            });
+        }
+        let mut app = App::new(state);
+        app.handle_key(KeyCode::Char('c'), 1_000);
+        let started = std::time::Instant::now();
+        let _ = render_text(&app, 160, 48);
+        let budget = if cfg!(debug_assertions) { 0.050 } else { 0.016 };
+        assert!(
+            started.elapsed().as_secs_f64() < budget,
+            "cockpit render took {:?}",
+            started.elapsed()
+        );
     }
 
     fn close_standing(app: &App, id: &str, expected: f64) {

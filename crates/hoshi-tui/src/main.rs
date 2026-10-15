@@ -4,6 +4,7 @@ mod app;
 mod arena;
 mod cli;
 mod clip;
+mod cockpit;
 mod config;
 mod demo;
 mod keymap;
@@ -827,7 +828,9 @@ fn play_path(
         let dir = path.parent().unwrap_or_else(|| Path::new("."));
         let _ = cfg.save(dir);
     }
+    let mut user = user.clone();
     let mut app = App::with_keymap(state, user.keys.clone());
+    app.apply_cockpit(&user);
     app.portraits = portraits;
     app.reduced_motion = user.reduced_motion;
     app.no_animation = user.no_animation;
@@ -906,6 +909,11 @@ fn play_path(
                 Ok(Event::Key(k)) if k.kind == KeyEventKind::Press => {
                     if app.handle_key(k.code, clock.now_unix()) == Action::Quit {
                         break Ok(());
+                    }
+                    if let Some(layout) = app.take_cockpit_layout() {
+                        user.cockpit_layout = layout;
+                        let dir = path.parent().unwrap_or_else(|| Path::new("."));
+                        let _ = user.save(dir);
                     }
                     write_notify(app.poll_notify());
                 }

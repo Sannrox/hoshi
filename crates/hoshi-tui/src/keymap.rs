@@ -27,6 +27,7 @@ pub enum Binding {
     CursorRight,
     Activity,
     Advisor,
+    Cockpit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +50,7 @@ pub enum HelpContext {
     Staff,
     Ops,
     Map,
+    Cockpit,
     Dispatch,
     Away,
     Replay,
@@ -105,6 +107,7 @@ impl Binding {
         Binding::CursorRight,
         Binding::Activity,
         Binding::Advisor,
+        Binding::Cockpit,
     ];
 
     pub fn config_key(self) -> &'static str {
@@ -132,6 +135,7 @@ impl Binding {
             Binding::CursorRight => "cursor_right",
             Binding::Activity => "activity",
             Binding::Advisor => "advisor",
+            Binding::Cockpit => "cockpit",
         }
     }
 
@@ -167,6 +171,7 @@ impl Binding {
             Binding::CursorRight => vec![KeyCode::Char('l'), KeyCode::Right],
             Binding::Activity => vec![KeyCode::Char('a')],
             Binding::Advisor => vec![KeyCode::Char('i')],
+            Binding::Cockpit => vec![KeyCode::Char('c')],
         }
     }
 }
@@ -192,6 +197,7 @@ impl HelpContext {
             HelpContext::Staff => "staff",
             HelpContext::Ops => "ops",
             HelpContext::Map => "map",
+            HelpContext::Cockpit => "cockpit",
             HelpContext::Dispatch => "dispatch",
             HelpContext::Away => "away",
             HelpContext::Replay => "replay",
@@ -219,6 +225,7 @@ impl HelpContext {
                 Binding::Help,
                 Binding::Quit,
                 Binding::NextScreen,
+                Binding::Cockpit,
                 Binding::PrevPlanet,
                 Binding::NextPlanet,
                 Binding::SelectNext,
@@ -235,6 +242,7 @@ impl HelpContext {
                 Binding::Help,
                 Binding::Quit,
                 Binding::NextScreen,
+                Binding::Cockpit,
                 Binding::PrevPlanet,
                 Binding::NextPlanet,
                 Binding::SelectNext,
@@ -247,6 +255,7 @@ impl HelpContext {
                 Binding::Help,
                 Binding::Quit,
                 Binding::NextScreen,
+                Binding::Cockpit,
                 Binding::SelectNext,
                 Binding::SelectPrev,
                 Binding::Confirm,
@@ -261,6 +270,7 @@ impl HelpContext {
                 Binding::Help,
                 Binding::Quit,
                 Binding::NextScreen,
+                Binding::Cockpit,
                 Binding::SelectNext,
                 Binding::SelectPrev,
                 Binding::CopySeed,
@@ -269,6 +279,7 @@ impl HelpContext {
                 Binding::Help,
                 Binding::Quit,
                 Binding::NextScreen,
+                Binding::Cockpit,
                 Binding::SelectNext,
                 Binding::SelectPrev,
                 Binding::Confirm,
@@ -280,6 +291,7 @@ impl HelpContext {
                 Binding::Help,
                 Binding::Quit,
                 Binding::NextScreen,
+                Binding::Cockpit,
                 Binding::SelectNext,
                 Binding::SelectPrev,
                 Binding::Confirm,
@@ -289,6 +301,7 @@ impl HelpContext {
                 Binding::Help,
                 Binding::Quit,
                 Binding::NextScreen,
+                Binding::Cockpit,
                 Binding::SelectNext,
                 Binding::SelectPrev,
                 Binding::Confirm,
@@ -299,6 +312,7 @@ impl HelpContext {
                 Binding::Help,
                 Binding::Quit,
                 Binding::NextScreen,
+                Binding::Cockpit,
                 Binding::SelectNext,
                 Binding::SelectPrev,
                 Binding::Confirm,
@@ -312,6 +326,7 @@ impl HelpContext {
                 Binding::Help,
                 Binding::Quit,
                 Binding::NextScreen,
+                Binding::Cockpit,
                 Binding::SelectNext,
                 Binding::SelectPrev,
                 Binding::Confirm,
@@ -323,6 +338,7 @@ impl HelpContext {
                 Binding::Help,
                 Binding::Quit,
                 Binding::NextScreen,
+                Binding::Cockpit,
                 Binding::SelectNext,
                 Binding::SelectPrev,
                 Binding::CopySeed,
@@ -331,6 +347,21 @@ impl HelpContext {
                 Binding::Help,
                 Binding::Quit,
                 Binding::NextScreen,
+                Binding::Cockpit,
+                Binding::SelectNext,
+                Binding::SelectPrev,
+                Binding::CursorLeft,
+                Binding::CursorRight,
+                Binding::Confirm,
+                Binding::Cancel,
+                Binding::CopySeed,
+            ],
+            HelpContext::Cockpit => &[
+                Binding::Help,
+                Binding::Quit,
+                Binding::NextScreen,
+                Binding::Cockpit,
+                Binding::Toggle,
                 Binding::SelectNext,
                 Binding::SelectPrev,
                 Binding::CursorLeft,
@@ -482,6 +513,7 @@ impl HelpContext {
             Binding::CursorRight => "cursor right / next branch",
             Binding::Activity => "activity log",
             Binding::Advisor => "advisor",
+            Binding::Cockpit => "cockpit dashboard",
         }
     }
 }
@@ -643,6 +675,7 @@ impl Keymap {
             HelpContext::Staff,
             HelpContext::Ops,
             HelpContext::Map,
+            HelpContext::Cockpit,
             HelpContext::Dispatch,
             HelpContext::Away,
             HelpContext::Replay,
@@ -730,6 +763,7 @@ impl Keymap {
             HelpContext::Staff,
             HelpContext::Ops,
             HelpContext::Map,
+            HelpContext::Cockpit,
             HelpContext::Dispatch,
             HelpContext::Away,
             HelpContext::Replay,
