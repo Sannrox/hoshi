@@ -1,0 +1,51 @@
+# Industrial goal ladder. Tiers complete from sustained production rates
+# (goods per hour and energy supply), never from a one-off stockpile.
+# hold_secs = 0 means the current rate is the evidence.
+
+hold_secs = 0
+
+[[tier]]
+id = "water_propellant"
+name = "Self-sufficient volatiles"
+blurb = "Keep water ice extraction and propellant refining running."
+goods = { water_ice = 0.2, propellant = 0.05 }
+reward_metal = 120.0
+reward_crystal = 40.0
+reward_deuterium = 0.0
+
+[[tier]]
+id = "steel_electronics"
+name = "Steel and electronics"
+blurb = "Sustain a steel mill and an electronics line."
+goods = { steel = 0.5, electronics = 0.05 }
+reward_metal = 200.0
+reward_crystal = 80.0
+reward_deuterium = 0.0
+
+[[tier]]
+id = "logistics"
+name = "Interplanetary logistics"
+blurb = "Sustain structural frames for a cargo network."
+goods = { frames = 0.5 }
+reward_metal = 240.0
+reward_crystal = 80.0
+reward_deuterium = 0.0
+
+[[tier]]
+id = "helium3_fusion"
+name = "Helium-3 fusion economy"
+blurb = "Extract helium-3 and refine fusion fuel."
+goods = { helium_3 = 0.05, fuel = 0.02 }
+reward_metal = 280.0
+reward_crystal = 100.0
+reward_deuterium = 0.0
+
+[[tier]]
+id = "wonder_supply"
+name = "Wonder supply chain"
+blurb = "Sustained structural frames and photovoltaic output for a Dyson ring segment."
+goods = { frames = 2.0 }
+energy = 80.0
+reward_metal = 400.0
+reward_crystal = 200.0
+reward_deuterium = 0.0

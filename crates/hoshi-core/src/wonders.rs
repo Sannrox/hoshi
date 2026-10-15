@@ -17,6 +17,8 @@ pub struct WonderSpec {
 pub struct WonderStage {
     pub cost: Resources,
     pub duration_secs: u64,
+    /// Ladder tier whose current rates must hold to pay this stage.
+    pub require_tier: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -55,6 +57,9 @@ pub enum WonderError {
     EmptyStages {
         id: String,
     },
+    NeedTier {
+        id: String,
+    },
 }
 
 impl fmt::Display for WonderError {
@@ -71,6 +76,9 @@ impl fmt::Display for WonderError {
             WonderError::UnknownPlanet => write!(f, "unknown planet"),
             WonderError::NothingToContribute => write!(f, "nothing to contribute"),
             WonderError::EmptyStages { id } => write!(f, "wonder {id} has no stages"),
+            WonderError::NeedTier { id } => {
+                write!(f, "need sustained output for ladder tier {id}")
+            }
         }
     }
 }

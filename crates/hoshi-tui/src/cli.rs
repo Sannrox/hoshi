@@ -1109,6 +1109,25 @@ fn path_json(path: &hoshi_core::PathProgress) -> Value {
     })
 }
 
+fn ladder_json(state: &GameState) -> Value {
+    let progress = state.ladder_progress();
+    json!({
+        "current": progress.current,
+        "completed": progress.completed.iter().map(|row| json!({
+            "id": row.id,
+            "at": row.at,
+        })).collect::<Vec<_>>(),
+        "next": progress.next.as_ref().map(|goal| json!({
+            "id": goal.id,
+            "name": goal.name,
+            "blurb": goal.blurb,
+            "ratio": goal.ratio,
+            "next_step": goal.next_step,
+            "ready": goal.ready,
+        })),
+    })
+}
+
 fn victory_json(state: &GameState) -> Value {
     let progress = state.victory_progress();
     json!({
@@ -1426,6 +1445,7 @@ fn state_value(state: &GameState, actor: Actor) -> Value {
         })).collect::<Vec<_>>(),
     });
     value["victory"] = victory_json(state);
+    value["ladder"] = ladder_json(state);
     value["species"] = match &state.species {
         Some(run) => json!({
             "id": run.id,
@@ -3342,6 +3362,8 @@ mod tests {
         assert!(value["moons"].is_array());
         assert!(value["leaders"].is_array());
         assert_eq!(value["leaders"].as_array().unwrap().len(), 2);
+        assert!(value["ladder"]["next"].is_object());
+        assert_eq!(value["ladder"]["next"]["id"], "water_propellant");
         let _ = std::fs::remove_file(&save);
     }
 

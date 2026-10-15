@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 36;
+pub const SCHEMA_VERSION: u32 = 37;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -211,7 +211,9 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM rival_queue;
          DELETE FROM rival_buildings;
          DELETE FROM rivals;
-         DELETE FROM rivals_meta;",
+         DELETE FROM rivals_meta;
+         DELETE FROM ladder;
+         DELETE FROM ladder_hold;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -672,6 +674,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
         )?;
     }
     insert_rivals(&tx, state)?;
+    insert_ladder(&tx, state)?;
     for (id, count) in &state.prestige.owned {
         tx.execute(
             "INSERT INTO prestige_owned (bonus_id, count) VALUES (?1, ?2)",
@@ -781,6 +784,60 @@ fn read_goods(conn: &Connection, planet_id: i64) -> Result<BTreeMap<String, f64>
         goods.insert(good, amount);
     }
     Ok(goods)
+}
+
+fn insert_ladder(conn: &Connection, state: &GameState) -> Result<(), SaveError> {
+    conn.execute(
+        "INSERT INTO ladder_hold (id, tier_id, since) VALUES (1, ?1, ?2)",
+        params![
+            state.ladder.hold_id.as_deref(),
+            state.ladder.hold_since.map(|t| t as i64),
+        ],
+    )?;
+    for row in &state.ladder.completed {
+        conn.execute(
+            "INSERT INTO ladder (tier_id, completed_at) VALUES (?1, ?2)",
+            params![row.id, row.at as i64],
+        )?;
+    }
+    Ok(())
+}
+
+fn load_ladder(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
+    if !table_exists(conn, "ladder_hold") {
+        return Ok(());
+    }
+    if let Some((id, since)) = conn
+        .query_row(
+            "SELECT tier_id, since FROM ladder_hold WHERE id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                ))
+            },
+        )
+        .optional()?
+    {
+        state.ladder.hold_id = id;
+        state.ladder.hold_since = unix_ts_opt(since)?;
+    }
+    if table_exists(conn, "ladder") {
+        let mut stmt = conn
+            .prepare("SELECT tier_id, completed_at FROM ladder ORDER BY completed_at, tier_id")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (id, at) = row?;
+            state.ladder.completed.push(crate::LadderCompletion {
+                id,
+                at: unix_ts(at)?,
+            });
+        }
+    }
+    Ok(())
 }
 
 fn insert_rivals(conn: &Connection, state: &GameState) -> Result<(), SaveError> {
@@ -1875,6 +1932,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             })?;
     }
     load_rivals(conn, &mut state)?;
+    load_ladder(conn, &mut state)?;
 
     Ok(state)
 }
@@ -2610,6 +2668,8 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "rival_techs" => "SELECT COUNT(*) FROM rival_techs",
         "rival_research" => "SELECT COUNT(*) FROM rival_research",
         "rival_ship_queue" => "SELECT COUNT(*) FROM rival_ship_queue",
+        "ladder" => "SELECT COUNT(*) FROM ladder",
+        "ladder_hold" => "SELECT COUNT(*) FROM ladder_hold",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -2697,7 +2757,9 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "rival_ships")?
         + count_rows(conn, "rival_techs")?
         + count_rows(conn, "rival_research")?
-        + count_rows(conn, "rival_ship_queue")?)
+        + count_rows(conn, "rival_ship_queue")?
+        + count_rows(conn, "ladder")?
+        + count_rows(conn, "ladder_hold")?)
 }
 
 fn migrate(conn: &Connection) -> Result<(), SaveError> {
@@ -2815,6 +2877,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 36 {
         migrate_v36(conn)?;
+    }
+    if found < 37 {
+        migrate_v37(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -3802,6 +3867,23 @@ fn migrate_v35(conn: &Connection) -> Result<(), SaveError> {
         );
         CREATE TABLE IF NOT EXISTS prestige_species (
             species_id TEXT PRIMARY KEY
+        );
+        ",
+    )?;
+    Ok(())
+}
+
+fn migrate_v37(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS ladder (
+            tier_id TEXT PRIMARY KEY,
+            completed_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS ladder_hold (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            tier_id TEXT,
+            since INTEGER
         );
         ",
     )?;
@@ -7663,6 +7745,31 @@ mod tests {
         assert!(loaded.prestige.unlocked_species.contains("kryth"));
         assert_eq!(count_rows(&conn, "species_run").unwrap(), 1);
         assert_eq!(count_rows(&conn, "prestige_species").unwrap(), 2);
+    }
+
+    #[test]
+    fn migrate_v37_round_trips_ladder() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v37(&conn).unwrap();
+        migrate_v37(&conn).unwrap();
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.enabled = false;
+        cfg.market.enabled = false;
+        let mut state = GameState::with_seed(1_000, cfg, 9);
+        state.deterministic = true;
+        state.ladder.completed.push(crate::LadderCompletion {
+            id: "water_propellant".into(),
+            at: 1_500,
+        });
+        state.ladder.hold_id = Some("steel_electronics".into());
+        state.ladder.hold_since = Some(1_800);
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.ladder.completed, state.ladder.completed);
+        assert_eq!(loaded.ladder.hold_id, state.ladder.hold_id);
+        assert_eq!(loaded.ladder.hold_since, state.ladder.hold_since);
+        assert_eq!(count_rows(&conn, "ladder").unwrap(), 1);
+        assert_eq!(count_rows(&conn, "ladder_hold").unwrap(), 1);
     }
 
     #[test]

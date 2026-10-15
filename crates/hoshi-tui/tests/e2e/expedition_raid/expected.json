@@ -112,6 +112,18 @@
     "troop_transport": 0
   },
   "incidents": [],
+  "ladder": {
+    "completed": [],
+    "current": null,
+    "next": {
+      "blurb": "Keep water ice extraction and propellant refining running.",
+      "id": "water_propellant",
+      "name": "Self-sufficient volatiles",
+      "next_step": "raise propellant to 0.05/h (have 0.00)",
+      "ratio": 0.0,
+      "ready": false
+    }
+  },
   "laws": [],
   "leaders": [
     {
@@ -270,7 +282,7 @@
     "empires": [],
     "enabled": false
   },
-  "save_schema": 36,
+  "save_schema": 37,
   "schema_version": 1,
   "season": null,
   "species": null,

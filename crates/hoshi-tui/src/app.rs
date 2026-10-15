@@ -2442,8 +2442,21 @@ impl App {
     }
 
     fn goals_lines(&self, height: usize) -> Vec<Line<'static>> {
+        let ladder = self.state.ladder_progress();
         let progress = self.state.victory_progress();
         let mut rows = Vec::new();
+        let current = ladder.current.as_deref().unwrap_or("none");
+        rows.push(Line::from(format!("Ladder  {current}")));
+        if let Some(goal) = &ladder.next {
+            rows.push(Line::from(format!(
+                "Next  {}  {:.0}%  {}",
+                goal.name,
+                goal.ratio * 100.0,
+                goal.next_step
+            )));
+        } else {
+            rows.push(Line::from("Next  ladder complete"));
+        }
         if let Some(record) = &self.state.victory {
             rows.push(Line::from(format!(
                 "Won via {}  +{} prestige",
@@ -4166,6 +4179,15 @@ mod tests {
     fn wonder_screen_shows_remaining_and_eta_on_small_terminals() {
         let mut state = GameState::new(1_000);
         state.tech_levels.insert("energy".into(), 8);
+        state.buildings.metal_mine = 18;
+        state.buildings.crystal_mine = 16;
+        state.buildings.deuterium_synthesizer = 12;
+        state.buildings.solar_plant = 28;
+        state.buildings.radiator = 6;
+        state.buildings.scrubber = 3;
+        state.buildings.metal_storage = 10;
+        state.buildings.crystal_storage = 10;
+        state.buildings.deuterium_storage = 10;
         state.resources.metal = 1_000.0;
         state.resources.crystal = 500.0;
         state.resources.deuterium = 2_000.0;
@@ -4274,6 +4296,11 @@ mod tests {
         assert!(text.contains("Wonder"), "{text}");
         assert!(text.contains("Diplomacy"), "{text}");
         assert!(text.contains("Pirate homeworld"), "{text}");
+        assert!(text.contains("Ladder"), "{text}");
+        assert!(
+            text.contains("Self-sufficient volatiles") || text.contains("Next"),
+            "{text}"
+        );
     }
 
     #[test]

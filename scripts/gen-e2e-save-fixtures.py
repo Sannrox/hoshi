@@ -914,6 +914,84 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             );
             """
         )
+    elif version == 36:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS rivals_meta (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                enabled INTEGER NOT NULL,
+                tick_secs INTEGER NOT NULL,
+                aggression REAL NOT NULL,
+                efficiency REAL NOT NULL,
+                starting_bonus REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS rivals (
+                rival_id TEXT PRIMARY KEY,
+                personality TEXT NOT NULL,
+                galaxy INTEGER NOT NULL,
+                system INTEGER NOT NULL,
+                position INTEGER NOT NULL,
+                metal REAL NOT NULL,
+                crystal REAL NOT NULL,
+                deuterium REAL NOT NULL,
+                last_tick INTEGER NOT NULL,
+                next_act_at INTEGER NOT NULL,
+                last_action TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS rival_buildings (
+                rival_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                level INTEGER NOT NULL,
+                PRIMARY KEY (rival_id, kind)
+            );
+            CREATE TABLE IF NOT EXISTS rival_queue (
+                rival_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                from_level INTEGER NOT NULL,
+                paid_metal REAL NOT NULL,
+                paid_crystal REAL NOT NULL,
+                paid_deuterium REAL NOT NULL,
+                started_at INTEGER,
+                completes_at INTEGER,
+                PRIMARY KEY (rival_id, position)
+            );
+            CREATE TABLE IF NOT EXISTS rival_ships (
+                rival_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                count INTEGER NOT NULL,
+                PRIMARY KEY (rival_id, kind)
+            );
+            CREATE TABLE IF NOT EXISTS rival_techs (
+                rival_id TEXT NOT NULL,
+                tech_id TEXT NOT NULL,
+                level INTEGER NOT NULL,
+                PRIMARY KEY (rival_id, tech_id)
+            );
+            CREATE TABLE IF NOT EXISTS rival_research (
+                rival_id TEXT PRIMARY KEY,
+                tech TEXT NOT NULL,
+                from_level INTEGER NOT NULL,
+                paid_metal REAL NOT NULL,
+                paid_crystal REAL NOT NULL,
+                paid_deuterium REAL NOT NULL,
+                started_at INTEGER NOT NULL,
+                completes_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS rival_ship_queue (
+                rival_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                remaining INTEGER NOT NULL,
+                paid_metal REAL NOT NULL,
+                paid_crystal REAL NOT NULL,
+                paid_deuterium REAL NOT NULL,
+                started_at INTEGER,
+                completes_at INTEGER,
+                PRIMARY KEY (rival_id, position)
+            );
+            """
+        )
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"
