@@ -20,6 +20,7 @@ mod galaxy;
 mod governance;
 mod history;
 mod intent;
+mod ladder;
 mod laws;
 mod leaders;
 mod market;
@@ -113,6 +114,10 @@ pub use history::{
     HistoryQuery,
 };
 pub use intent::{Intent, IntentError, Proposal, apply, propose};
+pub use ladder::{
+    LadderBoard, LadderCompletion, LadderConfig, LadderError, LadderGoalProgress, LadderProgress,
+    LadderTier,
+};
 pub use laws::{
     CLOCK as LAW_CLOCK, Jurisdiction, JurisdictionKind, Law, LawAction, LawActionKind, LawApproval,
     LawConfig, LawEffectKind, LawError, LawMetric, LawMetrics, LawSample, LawState, LawStatus,
@@ -173,7 +178,7 @@ pub use ships::{
     ShipStats,
 };
 pub use simulate::{
-    DaySnapshot, HeavyIndustryReport, PrestigeSimRow, SimReport, VictorySimRow,
+    DaySnapshot, HeavyIndustryReport, LadderSimRow, PrestigeSimRow, SimReport, VictorySimRow,
     heavy_industry_check, simulate_greedy, simulate_species_victory_paths, simulate_victory_paths,
     simulate_victory_paths_with_rivals, tactics_no_combo_dominates,
 };

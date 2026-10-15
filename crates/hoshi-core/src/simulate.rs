@@ -52,12 +52,20 @@ pub struct SimReport {
     pub victory_paths: Vec<VictorySimRow>,
     pub victory_min_secs: u64,
     pub victory_max_secs: u64,
+    pub ladder_tiers: Vec<LadderSimRow>,
 }
 
 /// One casual-play victory path and when it landed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VictorySimRow {
     pub path: String,
+    pub elapsed_secs: Option<u64>,
+}
+
+/// When a ladder tier first held its sustained rates in the greedy run.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LadderSimRow {
+    pub id: String,
     pub elapsed_secs: Option<u64>,
 }
 
@@ -99,6 +107,17 @@ impl SimReport {
             && self.bridge_ok()
             && self.keystones_ok()
             && self.tactics_ok
+            && self.ladder_ok()
+    }
+
+    pub fn ladder_ok(&self) -> bool {
+        if self.ladder_tiers.is_empty() {
+            return true;
+        }
+        let max = self.victory_max_secs.max(1);
+        self.ladder_tiers
+            .iter()
+            .all(|row| row.elapsed_secs.is_some_and(|secs| secs <= max))
     }
 
     pub fn to_markdown(&self) -> String {
@@ -166,6 +185,27 @@ impl SimReport {
             "- tactics: no combo dominates ({})\n",
             mark(self.tactics_ok)
         ));
+        if !self.ladder_tiers.is_empty() {
+            out.push_str("\n## Goal ladder\n\n");
+            out.push_str("| tier | elapsed | band |\n");
+            out.push_str("| --- | --- | --- |\n");
+            let max = self.victory_max_secs;
+            for row in &self.ladder_tiers {
+                let elapsed = match row.elapsed_secs {
+                    Some(secs) => format!("{secs}s"),
+                    None => "never".into(),
+                };
+                let band = match row.elapsed_secs {
+                    Some(secs) if secs <= max => "pass",
+                    _ => "fail",
+                };
+                out.push_str(&format!("| {} | {elapsed} | {band} |\n", row.id));
+            }
+            out.push_str(&format!(
+                "\nLadder within {max}s: {}\n",
+                mark(self.ladder_ok())
+            ));
+        }
         if !self.victory_paths.is_empty() {
             out.push_str("\n## Victory paths\n\n");
             out.push_str("Casual opener of 14 days, then a focused finish per path.\n\n");
@@ -267,6 +307,7 @@ pub fn simulate_greedy(config: BalanceConfig, days: u32) -> SimReport {
     } else {
         Vec::new()
     };
+    let ladder_tiers = simulate_ladder_tiers(config.clone(), days);
     let prestige_runs = vec![
         prestige_row(&quiet, 1, 0),
         prestige_row(&run_once(config.clone(), days, false, 1), 2, 1),
@@ -293,6 +334,7 @@ pub fn simulate_greedy(config: BalanceConfig, days: u32) -> SimReport {
         victory_paths,
         victory_min_secs,
         victory_max_secs,
+        ladder_tiers,
     }
 }
 
@@ -615,6 +657,79 @@ fn requires_tech(state: &GameState, from: &str, want: &str) -> bool {
     false
 }
 
+fn boost_industry_for_ladder(state: &mut GameState) {
+    state.buildings.metal_mine = state.buildings.metal_mine.max(18);
+    state.buildings.crystal_mine = state.buildings.crystal_mine.max(16);
+    state.buildings.deuterium_synthesizer = state.buildings.deuterium_synthesizer.max(12);
+    state.buildings.solar_plant = state.buildings.solar_plant.max(28);
+    state.buildings.radiator = state.buildings.radiator.max(6);
+    state.buildings.scrubber = state.buildings.scrubber.max(3);
+    state.buildings.metal_storage = state.buildings.metal_storage.max(8);
+    state.buildings.crystal_storage = state.buildings.crystal_storage.max(8);
+    state.buildings.deuterium_storage = state.buildings.deuterium_storage.max(8);
+}
+
+fn simulate_ladder_tiers(mut config: BalanceConfig, days: u32) -> Vec<LadderSimRow> {
+    let ids: Vec<String> = config.ladder.tiers.iter().map(|t| t.id.clone()).collect();
+    if ids.is_empty() {
+        return Vec::new();
+    }
+    let max = config
+        .victory
+        .casual_max_secs
+        .max(u64::from(days.saturating_mul(86_400)));
+    config.raid = crate::RaidConfig::inactive();
+    let mut state = GameState::with_config(0, config);
+    let mut reached: std::collections::BTreeMap<String, Option<u64>> =
+        ids.iter().map(|id| (id.clone(), None)).collect();
+    let mut next_day = 86_400_u64;
+    let mut steps = 0_u32;
+    while state.last_tick_unix < max && steps < 100_000 {
+        steps += 1;
+        fill_queue(&mut state);
+        let completion = state
+            .build_queue
+            .first()
+            .and_then(|job| job.completes_at)
+            .unwrap_or(u64::MAX);
+        let afford = next_afford_at(&state).unwrap_or(u64::MAX);
+        let mut jump = completion.min(afford).min(next_day).min(max);
+        if jump <= state.last_tick_unix {
+            jump = state.last_tick_unix.saturating_add(1).min(max);
+        }
+        state.catch_up(jump);
+        for id in &ids {
+            if reached.get(id).and_then(|t| *t).is_none()
+                && state.ladder.completed.iter().any(|row| row.id == *id)
+            {
+                let at = state
+                    .ladder
+                    .completed
+                    .iter()
+                    .find(|row| row.id == *id)
+                    .map(|row| row.at)
+                    .unwrap_or(state.last_tick_unix);
+                reached.insert(id.clone(), Some(at));
+            }
+        }
+        if reached.values().all(|t| t.is_some()) {
+            break;
+        }
+        while state.last_tick_unix >= next_day {
+            next_day = next_day.saturating_add(86_400);
+        }
+        if state.build_queue.is_empty() && jump >= max {
+            break;
+        }
+    }
+    ids.into_iter()
+        .map(|id| LadderSimRow {
+            elapsed_secs: reached.get(&id).copied().flatten(),
+            id,
+        })
+        .collect()
+}
+
 fn fill_queue(state: &mut GameState) {
     let cap = state.build_queue_cap();
     while state.build_queue.len() < cap {
@@ -847,10 +962,17 @@ fn finish_wonder(
     let id = config.victory.wonder_id.clone();
     let mut state = developed(config, min, species, rivals);
     state.tech_levels.insert("energy".into(), 8);
+    boost_industry_for_ladder(&mut state);
+    state.evaluate_ladder(state.last_tick_unix);
     state.resources.metal += 100_000.0;
     state.resources.crystal += 100_000.0;
     state.resources.deuterium += 50_000.0;
-    let _ = state.start_wonder(&id, state.last_tick_unix);
+    if state.start_wonder(&id, state.last_tick_unix).is_err() {
+        return VictorySimRow {
+            path: "wonder".into(),
+            elapsed_secs: None,
+        };
+    }
     let mut steps = 0_u32;
     while state.victory.is_none() && state.last_tick_unix < max && steps < 50_000 {
         steps += 1;
@@ -1032,6 +1154,22 @@ mod tests {
         );
         let md = report.to_markdown();
         assert!(md.contains("## Heavy industry"), "{md}");
+    }
+
+    #[test]
+    fn ladder_fits_galaxy_pacing() {
+        let report = simulate_greedy(BalanceConfig::default(), 28);
+        assert!(
+            report.ladder_ok(),
+            "{}",
+            report
+                .ladder_tiers
+                .iter()
+                .map(|row| format!("{} {:?}", row.id, row.elapsed_secs))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        assert_eq!(report.ladder_tiers.len(), 5);
     }
 
     #[test]

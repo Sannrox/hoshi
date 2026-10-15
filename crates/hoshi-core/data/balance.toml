@@ -460,8 +460,8 @@ id = "dyson_ring"
 name = "Dyson ring"
 prereq_techs = [{ id = "energy", level = 8 }]
 stages = [
-  { metal = 20000.0, crystal = 10000.0, deuterium = 2000.0, duration_secs = 86400 },
-  { metal = 40000.0, crystal = 20000.0, deuterium = 4000.0, duration_secs = 172800 },
+  { metal = 20000.0, crystal = 10000.0, deuterium = 2000.0, duration_secs = 86400, require_tier = "wonder_supply" },
+  { metal = 40000.0, crystal = 20000.0, deuterium = 4000.0, duration_secs = 172800, require_tier = "wonder_supply" },
 ]
 modifiers = [{ kind = "energy_output", value = 0.25 }]
 
@@ -470,8 +470,8 @@ id = "stellar_gate"
 name = "Stellar gate"
 prereq_techs = [{ id = "hyperspace_drive", level = 4 }]
 stages = [
-  { metal = 15000.0, crystal = 15000.0, deuterium = 8000.0, duration_secs = 86400 },
-  { metal = 30000.0, crystal = 30000.0, deuterium = 16000.0, duration_secs = 172800 },
+  { metal = 15000.0, crystal = 15000.0, deuterium = 8000.0, duration_secs = 86400, require_tier = "logistics" },
+  { metal = 30000.0, crystal = 30000.0, deuterium = 16000.0, duration_secs = 172800, require_tier = "logistics" },
 ]
 modifiers = [{ kind = "drive_speed", value = 0.20 }]
 
@@ -480,7 +480,7 @@ id = "observatory"
 name = "Deep-space observatory"
 prereq_techs = [{ id = "espionage", level = 4 }]
 stages = [
-  { metal = 8000.0, crystal = 16000.0, deuterium = 2000.0, duration_secs = 86400 },
+  { metal = 8000.0, crystal = 16000.0, deuterium = 2000.0, duration_secs = 86400, require_tier = "steel_electronics" },
 ]
 modifiers = [{ kind = "espionage", value = 2.0 }]
 

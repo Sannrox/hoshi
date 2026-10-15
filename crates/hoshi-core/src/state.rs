@@ -274,6 +274,8 @@ pub struct GameState {
     pub species: Option<crate::SpeciesRun>,
     /// NPC rival empires. Empty and disabled unless the galaxy opted in.
     pub rivals: crate::RivalBoard,
+    /// Industrial goal ladder progress for this galaxy.
+    pub ladder: crate::LadderBoard,
     pub config: BalanceConfig,
 }
 
@@ -373,6 +375,7 @@ impl GameState {
             season: None,
             species: None,
             rivals: crate::RivalBoard::default(),
+            ladder: crate::LadderBoard::default(),
             config,
         };
         state.seed_pirate_home(now_unix);
@@ -506,7 +509,13 @@ impl GameState {
                             planned_at,
                             min_time(
                                 board_at,
-                                min_time(flagship_at, min_time(self.next_victory_at(), rivals_at)),
+                                min_time(
+                                    flagship_at,
+                                    min_time(
+                                        self.next_victory_at(),
+                                        min_time(self.next_ladder_at(), rivals_at),
+                                    ),
+                                ),
                             ),
                         ),
                     ),
@@ -518,6 +527,7 @@ impl GameState {
                 self.resolve_story(now_unix);
                 self.evaluate_achievements(now_unix);
                 self.maybe_declare_victory(now_unix);
+                self.evaluate_ladder(now_unix);
                 self.note_logistics_stalls(now_unix);
                 return;
             };
@@ -528,6 +538,7 @@ impl GameState {
                 self.resolve_story(now_unix);
                 self.evaluate_achievements(now_unix);
                 self.maybe_declare_victory(now_unix);
+                self.evaluate_ladder(now_unix);
                 self.note_logistics_stalls(now_unix);
                 return;
             }
@@ -642,6 +653,7 @@ impl GameState {
             self.resolve_story(done_at);
             self.evaluate_achievements(done_at);
             self.maybe_declare_victory(done_at);
+            self.evaluate_ladder(done_at);
             self.note_logistics_stalls(done_at);
         }
     }
@@ -2410,6 +2422,10 @@ impl GameState {
                 });
             }
         }
+        let stage0 = spec.stage(0).ok_or_else(|| WonderError::EmptyStages {
+            id: spec.id.clone(),
+        })?;
+        self.wonder_tier_ok(stage0)?;
         self.wonder = Some(WonderJob {
             id: spec.id.clone(),
             stage: 0,
@@ -2440,6 +2456,7 @@ impl GameState {
         let stage = spec
             .stage(stage_idx)
             .ok_or_else(|| WonderError::EmptyStages { id: job_id.clone() })?;
+        self.wonder_tier_ok(stage)?;
         let cost = stage.cost;
         let duration = stage.duration_secs;
         let remaining = Resources {
@@ -3683,6 +3700,7 @@ impl GameState {
         });
         self.evaluate_achievements(done_at);
         self.maybe_declare_victory(done_at);
+        self.evaluate_ladder(done_at);
         true
     }
 
@@ -4741,6 +4759,7 @@ impl GameState {
         self.last_diplomacy_at = at;
         self.sync_raid_schedule_after_standing(at);
         self.maybe_declare_victory(at);
+        self.evaluate_ladder(at);
     }
 
     fn clamp_standing(&self, value: f64) -> f64 {
@@ -4844,6 +4863,7 @@ impl GameState {
         }
         self.sync_raid_schedule_after_standing(at);
         self.maybe_declare_victory(at);
+        self.evaluate_ladder(at);
     }
 
     pub(crate) fn sync_raid_schedule_after_standing(&mut self, at: u64) {
@@ -6161,6 +6181,7 @@ mod tests {
             },
             orbits: crate::OrbitConfig::default(),
             victory: crate::VictoryConfig::inactive(),
+            ladder: crate::LadderConfig::default(),
         }
     }
 
@@ -8731,6 +8752,7 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
                         deuterium: 10.0,
                     },
                     duration_secs: 10,
+                    require_tier: None,
                 },
                 crate::WonderStage {
                     cost: Resources {
@@ -8739,6 +8761,7 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
                         deuterium: 20.0,
                     },
                     duration_secs: 20,
+                    require_tier: None,
                 },
             ],
             modifiers: vec![crate::WonderModifier {

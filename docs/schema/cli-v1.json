@@ -69,6 +69,10 @@
       "type": "object",
       "description": "Galaxy victory progress: pirate homeworld, the three paths, and the recorded win if any."
     },
+    "ladder": {
+      "type": "object",
+      "description": "Industrial goal ladder: current completed tier, next goal progress from sustained rates, and completed ids."
+    },
     "season": {
       "type": ["object", "null"],
       "description": "Seasonal galaxy overlay when this save is a seasonal run: rule-set id, window, seed and whether prestige is shared."

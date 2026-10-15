@@ -351,6 +351,7 @@ pub struct BalanceConfig {
     pub leaders: crate::LeaderConfig,
     pub orbits: crate::OrbitConfig,
     pub victory: crate::VictoryConfig,
+    pub ladder: crate::LadderConfig,
 }
 
 impl BalanceConfig {
@@ -1036,6 +1037,8 @@ struct FileWonderStage {
     crystal: f64,
     deuterium: f64,
     duration_secs: u64,
+    #[serde(default)]
+    require_tier: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1452,6 +1455,7 @@ impl File {
                                 deuterium: s.deuterium,
                             },
                             duration_secs: s.duration_secs,
+                            require_tier: s.require_tier,
                         })
                         .collect(),
                     modifiers: w
@@ -1550,6 +1554,7 @@ impl File {
                 order_ttl_secs: self.market.order_ttl_secs,
             },
             victory: self.victory.into_config(),
+            ladder: crate::LadderConfig::default(),
         };
         let wonders = config.wonders.clone();
         config.achievements.drop_unknown_wonders(&wonders);
@@ -1727,6 +1732,9 @@ impl BalanceConfig {
             self.starting_resources.deuterium,
         )?;
         self.chains.validate().map_err(BalanceError::Invalid)?;
+        self.ladder
+            .validate()
+            .map_err(|e| BalanceError::Invalid(e.to_string()))?;
         let mut seen = std::collections::HashSet::new();
         for spec in &self.wonders {
             if spec.id.is_empty() {
@@ -1763,6 +1771,14 @@ impl BalanceConfig {
                     &format!("wonder {} stage {i} deuterium", spec.id),
                     stage.cost.deuterium,
                 )?;
+                if let Some(id) = &stage.require_tier
+                    && self.ladder.get(id).is_none()
+                {
+                    return Err(BalanceError::Invalid(format!(
+                        "wonder {} stage {i} unknown ladder tier {id}",
+                        spec.id
+                    )));
+                }
                 if stage.cost.metal <= 0.0
                     && stage.cost.crystal <= 0.0
                     && stage.cost.deuterium <= 0.0
