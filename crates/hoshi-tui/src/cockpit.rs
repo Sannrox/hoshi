@@ -459,7 +459,12 @@ pub fn draw(
         );
         let inner = inset(chunks[1]);
         frame.render_widget(
-            Paragraph::new(detail_lines(view.state, target, inner.height as usize, high)),
+            Paragraph::new(detail_lines(
+                view.state,
+                target,
+                inner.height as usize,
+                high,
+            )),
             inner,
         );
         return;
@@ -548,20 +553,8 @@ fn render_panel(frame: &mut Frame<'_>, area: Rect, panel: Panel, focused: bool, 
         usize::MAX
     };
     let lines = match panel {
-        Panel::Map => map_lines(
-            view.state,
-            view.map_system,
-            view.map_position,
-            height,
-            high,
-        ),
-        Panel::Gauges => gauge_lines(
-            view.state,
-            view.gauges,
-            height,
-            inner.width as usize,
-            high,
-        ),
+        Panel::Map => map_lines(view.state, view.map_system, view.map_position, height, high),
+        Panel::Gauges => gauge_lines(view.state, view.gauges, height, inner.width as usize, high),
         Panel::Queues => queue_lines(view.state, height, selected, high),
         Panel::Fleets => fleet_lines(view.state, height, selected, high),
         Panel::Timeline => timeline_lines(view.state, height, high),
