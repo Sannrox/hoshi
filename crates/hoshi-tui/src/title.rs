@@ -1965,6 +1965,7 @@ fn screens_for(binding: Binding) -> String {
         HelpContext::Staff,
         HelpContext::Ops,
         HelpContext::Map,
+        HelpContext::Cockpit,
         HelpContext::Dispatch,
         HelpContext::Away,
         HelpContext::Replay,
