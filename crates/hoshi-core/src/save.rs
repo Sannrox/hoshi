@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 35;
+pub const SCHEMA_VERSION: u32 = 36;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -203,7 +203,15 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM victory;
          DELETE FROM season;
          DELETE FROM species_run;
-         DELETE FROM prestige_species;",
+         DELETE FROM prestige_species;
+         DELETE FROM rival_ship_queue;
+         DELETE FROM rival_research;
+         DELETE FROM rival_techs;
+         DELETE FROM rival_ships;
+         DELETE FROM rival_queue;
+         DELETE FROM rival_buildings;
+         DELETE FROM rivals;
+         DELETE FROM rivals_meta;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -663,6 +671,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
             params![id],
         )?;
     }
+    insert_rivals(&tx, state)?;
     for (id, count) in &state.prestige.owned {
         tx.execute(
             "INSERT INTO prestige_owned (bonus_id, count) VALUES (?1, ?2)",
@@ -772,6 +781,380 @@ fn read_goods(conn: &Connection, planet_id: i64) -> Result<BTreeMap<String, f64>
         goods.insert(good, amount);
     }
     Ok(goods)
+}
+
+fn insert_rivals(conn: &Connection, state: &GameState) -> Result<(), SaveError> {
+    if !state.rivals.enabled && state.rivals.empires.is_empty() {
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT INTO rivals_meta (
+            id, enabled, tick_secs, aggression, efficiency, starting_bonus
+         ) VALUES (1, ?1, ?2, ?3, ?4, ?5)",
+        params![
+            i64::from(state.rivals.enabled),
+            state.rivals.tick_secs as i64,
+            state.rivals.aggression,
+            state.rivals.efficiency,
+            state.rivals.starting_bonus,
+        ],
+    )?;
+    for empire in &state.rivals.empires {
+        conn.execute(
+            "INSERT INTO rivals (
+                rival_id, personality, galaxy, system, position,
+                metal, crystal, deuterium, last_tick, next_act_at, last_action
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                empire.id,
+                empire.personality,
+                empire.home.galaxy as i64,
+                empire.home.system as i64,
+                empire.home.position as i64,
+                empire.resources.metal,
+                empire.resources.crystal,
+                empire.resources.deuterium,
+                empire.last_tick as i64,
+                empire.next_act_at as i64,
+                empire.last_action,
+            ],
+        )?;
+        for kind in BuildingKind::ALL {
+            conn.execute(
+                "INSERT INTO rival_buildings (rival_id, kind, level) VALUES (?1, ?2, ?3)",
+                params![empire.id, kind.as_key(), empire.buildings.get(kind)],
+            )?;
+        }
+        for (i, job) in empire.build_queue.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO rival_queue (
+                    rival_id, position, kind, from_level,
+                    paid_metal, paid_crystal, paid_deuterium, started_at, completes_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    empire.id,
+                    i as i64,
+                    job.building.as_key(),
+                    job.from_level,
+                    job.paid.metal,
+                    job.paid.crystal,
+                    job.paid.deuterium,
+                    job.started_at.map(|t| t as i64),
+                    job.completes_at.map(|t| t as i64),
+                ],
+            )?;
+        }
+        for kind in ShipKind::ALL {
+            let n = empire.fleet.get(kind);
+            if n > 0 {
+                conn.execute(
+                    "INSERT INTO rival_ships (rival_id, kind, count) VALUES (?1, ?2, ?3)",
+                    params![empire.id, kind.as_key(), n],
+                )?;
+            }
+        }
+        for (id, level) in &empire.tech_levels {
+            conn.execute(
+                "INSERT INTO rival_techs (rival_id, tech_id, level) VALUES (?1, ?2, ?3)",
+                params![empire.id, id, *level as i64],
+            )?;
+        }
+        if let Some(job) = &empire.research {
+            conn.execute(
+                "INSERT INTO rival_research (
+                    rival_id, tech, from_level, paid_metal, paid_crystal, paid_deuterium,
+                    started_at, completes_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    empire.id,
+                    job.tech,
+                    job.from_level,
+                    job.paid.metal,
+                    job.paid.crystal,
+                    job.paid.deuterium,
+                    job.started_at as i64,
+                    job.completes_at as i64,
+                ],
+            )?;
+        }
+        for (i, job) in empire.ship_queue.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO rival_ship_queue (
+                    rival_id, position, kind, remaining,
+                    paid_metal, paid_crystal, paid_deuterium, started_at, completes_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    empire.id,
+                    i as i64,
+                    job.kind_key(),
+                    job.remaining,
+                    job.unit_paid.metal,
+                    job.unit_paid.crystal,
+                    job.unit_paid.deuterium,
+                    job.started_at.map(|t| t as i64),
+                    job.completes_at.map(|t| t as i64),
+                ],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn load_rivals(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
+    if !table_exists(conn, "rivals_meta") {
+        return Ok(());
+    }
+    let Some((enabled, tick, aggression, efficiency, bonus)) = conn
+        .query_row(
+            "SELECT enabled, tick_secs, aggression, efficiency, starting_bonus
+             FROM rivals_meta WHERE id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, f64>(2)?,
+                    row.get::<_, f64>(3)?,
+                    row.get::<_, f64>(4)?,
+                ))
+            },
+        )
+        .optional()?
+    else {
+        return Ok(());
+    };
+    let mut empires = Vec::new();
+    if table_exists(conn, "rivals") {
+        let mut stmt = conn.prepare(
+            "SELECT rival_id, personality, galaxy, system, position,
+                    metal, crystal, deuterium, last_tick, next_act_at, last_action
+             FROM rivals ORDER BY rowid",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, f64>(5)?,
+                row.get::<_, f64>(6)?,
+                row.get::<_, f64>(7)?,
+                row.get::<_, i64>(8)?,
+                row.get::<_, i64>(9)?,
+                row.get::<_, String>(10)?,
+            ))
+        })?;
+        let mut pending = Vec::new();
+        for row in rows {
+            pending.push(row?);
+        }
+        drop(stmt);
+        for (
+            id,
+            personality,
+            g,
+            s,
+            p,
+            metal,
+            crystal,
+            deuterium,
+            last_tick,
+            next_act,
+            last_action,
+        ) in pending
+        {
+            let mut buildings = Buildings::default();
+            if table_exists(conn, "rival_buildings") {
+                let mut stmt =
+                    conn.prepare("SELECT kind, level FROM rival_buildings WHERE rival_id = ?1")?;
+                let rows = stmt.query_map(params![id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
+                })?;
+                for row in rows {
+                    let (kind, level) = row?;
+                    let kind = BuildingKind::from_key(&kind)
+                        .ok_or(SaveError::Corrupt("unknown building"))?;
+                    buildings.set(kind, level);
+                }
+            }
+            let mut build_queue = Vec::new();
+            if table_exists(conn, "rival_queue") {
+                let mut stmt = conn.prepare(
+                    "SELECT kind, from_level, paid_metal, paid_crystal, paid_deuterium,
+                            started_at, completes_at
+                     FROM rival_queue WHERE rival_id = ?1 ORDER BY position",
+                )?;
+                let rows = stmt.query_map(params![id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, u32>(1)?,
+                        row.get::<_, f64>(2)?,
+                        row.get::<_, f64>(3)?,
+                        row.get::<_, f64>(4)?,
+                        row.get::<_, Option<i64>>(5)?,
+                        row.get::<_, Option<i64>>(6)?,
+                    ))
+                })?;
+                for row in rows {
+                    let (kind, from_level, metal, crystal, deuterium, started, completes) = row?;
+                    let building = BuildingKind::from_key(&kind)
+                        .ok_or(SaveError::Corrupt("unknown building"))?;
+                    build_queue.push(BuildJob {
+                        building,
+                        from_level,
+                        paid: Resources {
+                            metal,
+                            crystal,
+                            deuterium,
+                        },
+                        started_at: unix_ts_opt(started)?,
+                        completes_at: unix_ts_opt(completes)?,
+                    });
+                }
+            }
+            let mut fleet = Fleet::default();
+            if table_exists(conn, "rival_ships") {
+                let mut stmt =
+                    conn.prepare("SELECT kind, count FROM rival_ships WHERE rival_id = ?1")?;
+                let rows = stmt.query_map(params![id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
+                })?;
+                for row in rows {
+                    let (kind, count) = row?;
+                    let kind =
+                        ShipKind::from_key(&kind).ok_or(SaveError::Corrupt("unknown ship"))?;
+                    fleet.add(kind, count);
+                }
+            }
+            let mut tech_levels = BTreeMap::new();
+            if table_exists(conn, "rival_techs") {
+                let mut stmt =
+                    conn.prepare("SELECT tech_id, level FROM rival_techs WHERE rival_id = ?1")?;
+                let rows = stmt.query_map(params![id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                })?;
+                for row in rows {
+                    let (tech, level) = row?;
+                    tech_levels.insert(
+                        tech,
+                        u32::try_from(level).map_err(|_| SaveError::Corrupt("tech level"))?,
+                    );
+                }
+            }
+            let mut research = None;
+            if table_exists(conn, "rival_research") {
+                research = conn
+                    .query_row(
+                        "SELECT tech, from_level, paid_metal, paid_crystal, paid_deuterium,
+                                started_at, completes_at
+                         FROM rival_research WHERE rival_id = ?1",
+                        params![id],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, u32>(1)?,
+                                row.get::<_, f64>(2)?,
+                                row.get::<_, f64>(3)?,
+                                row.get::<_, f64>(4)?,
+                                row.get::<_, i64>(5)?,
+                                row.get::<_, i64>(6)?,
+                            ))
+                        },
+                    )
+                    .optional()?
+                    .map(
+                        |(tech, from_level, metal, crystal, deuterium, started, completes)| {
+                            Ok::<_, SaveError>(ResearchJob {
+                                tech,
+                                from_level,
+                                paid: Resources {
+                                    metal,
+                                    crystal,
+                                    deuterium,
+                                },
+                                started_at: unix_ts(started)?,
+                                completes_at: unix_ts(completes)?,
+                            })
+                        },
+                    )
+                    .transpose()?;
+            }
+            let mut ship_queue = Vec::new();
+            if table_exists(conn, "rival_ship_queue") {
+                let mut stmt = conn.prepare(
+                    "SELECT kind, remaining, paid_metal, paid_crystal, paid_deuterium,
+                            started_at, completes_at
+                     FROM rival_ship_queue WHERE rival_id = ?1 ORDER BY position",
+                )?;
+                let rows = stmt.query_map(params![id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, u32>(1)?,
+                        row.get::<_, f64>(2)?,
+                        row.get::<_, f64>(3)?,
+                        row.get::<_, f64>(4)?,
+                        row.get::<_, Option<i64>>(5)?,
+                        row.get::<_, Option<i64>>(6)?,
+                    ))
+                })?;
+                for row in rows {
+                    let (kind, remaining, metal, crystal, deuterium, started, completes) = row?;
+                    let (ship, defence) = if let Some(ship) = ShipKind::from_key(&kind) {
+                        (Some(ship), None)
+                    } else if let Some(defence) = DefenceKind::from_key(&kind) {
+                        (None, Some(defence))
+                    } else {
+                        return Err(SaveError::Corrupt("unknown yard kind"));
+                    };
+                    ship_queue.push(ShipJob {
+                        ship,
+                        defence,
+                        remaining,
+                        unit_paid: Resources {
+                            metal,
+                            crystal,
+                            deuterium,
+                        },
+                        started_at: unix_ts_opt(started)?,
+                        completes_at: unix_ts_opt(completes)?,
+                    });
+                }
+            }
+            empires.push(crate::RivalEmpire {
+                id,
+                personality,
+                home: Coord {
+                    galaxy: u16_coord(g)?,
+                    system: u16_coord(s)?,
+                    position: u16_coord(p)?,
+                },
+                resources: Resources {
+                    metal,
+                    crystal,
+                    deuterium,
+                },
+                buildings,
+                build_queue,
+                fleet,
+                tech_levels,
+                research,
+                ship_queue,
+                last_tick: unix_ts(last_tick)?,
+                next_act_at: unix_ts(next_act)?,
+                last_action,
+            });
+        }
+    }
+    state.rivals = crate::RivalBoard {
+        enabled: enabled != 0,
+        tick_secs: unix_ts(tick)?,
+        aggression,
+        efficiency,
+        starting_bonus: bonus,
+        empires,
+    };
+    Ok(())
 }
 
 fn insert_build_queue(
@@ -1491,6 +1874,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
                 })
             })?;
     }
+    load_rivals(conn, &mut state)?;
 
     Ok(state)
 }
@@ -2218,6 +2602,14 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "season" => "SELECT COUNT(*) FROM season",
         "species_run" => "SELECT COUNT(*) FROM species_run",
         "prestige_species" => "SELECT COUNT(*) FROM prestige_species",
+        "rivals_meta" => "SELECT COUNT(*) FROM rivals_meta",
+        "rivals" => "SELECT COUNT(*) FROM rivals",
+        "rival_buildings" => "SELECT COUNT(*) FROM rival_buildings",
+        "rival_queue" => "SELECT COUNT(*) FROM rival_queue",
+        "rival_ships" => "SELECT COUNT(*) FROM rival_ships",
+        "rival_techs" => "SELECT COUNT(*) FROM rival_techs",
+        "rival_research" => "SELECT COUNT(*) FROM rival_research",
+        "rival_ship_queue" => "SELECT COUNT(*) FROM rival_ship_queue",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -2297,7 +2689,15 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "victory")?
         + count_rows(conn, "season")?
         + count_rows(conn, "species_run")?
-        + count_rows(conn, "prestige_species")?)
+        + count_rows(conn, "prestige_species")?
+        + count_rows(conn, "rivals_meta")?
+        + count_rows(conn, "rivals")?
+        + count_rows(conn, "rival_buildings")?
+        + count_rows(conn, "rival_queue")?
+        + count_rows(conn, "rival_ships")?
+        + count_rows(conn, "rival_techs")?
+        + count_rows(conn, "rival_research")?
+        + count_rows(conn, "rival_ship_queue")?)
 }
 
 fn migrate(conn: &Connection) -> Result<(), SaveError> {
@@ -2412,6 +2812,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 35 {
         migrate_v35(conn)?;
+    }
+    if found < 36 {
+        migrate_v36(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -3399,6 +3802,87 @@ fn migrate_v35(conn: &Connection) -> Result<(), SaveError> {
         );
         CREATE TABLE IF NOT EXISTS prestige_species (
             species_id TEXT PRIMARY KEY
+        );
+        ",
+    )?;
+    Ok(())
+}
+
+fn migrate_v36(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS rivals_meta (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            enabled INTEGER NOT NULL,
+            tick_secs INTEGER NOT NULL,
+            aggression REAL NOT NULL,
+            efficiency REAL NOT NULL,
+            starting_bonus REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS rivals (
+            rival_id TEXT PRIMARY KEY,
+            personality TEXT NOT NULL,
+            galaxy INTEGER NOT NULL,
+            system INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            metal REAL NOT NULL,
+            crystal REAL NOT NULL,
+            deuterium REAL NOT NULL,
+            last_tick INTEGER NOT NULL,
+            next_act_at INTEGER NOT NULL,
+            last_action TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS rival_buildings (
+            rival_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            level INTEGER NOT NULL,
+            PRIMARY KEY (rival_id, kind)
+        );
+        CREATE TABLE IF NOT EXISTS rival_queue (
+            rival_id TEXT NOT NULL,
+            position INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            from_level INTEGER NOT NULL,
+            paid_metal REAL NOT NULL,
+            paid_crystal REAL NOT NULL,
+            paid_deuterium REAL NOT NULL,
+            started_at INTEGER,
+            completes_at INTEGER,
+            PRIMARY KEY (rival_id, position)
+        );
+        CREATE TABLE IF NOT EXISTS rival_ships (
+            rival_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            count INTEGER NOT NULL,
+            PRIMARY KEY (rival_id, kind)
+        );
+        CREATE TABLE IF NOT EXISTS rival_techs (
+            rival_id TEXT NOT NULL,
+            tech_id TEXT NOT NULL,
+            level INTEGER NOT NULL,
+            PRIMARY KEY (rival_id, tech_id)
+        );
+        CREATE TABLE IF NOT EXISTS rival_research (
+            rival_id TEXT PRIMARY KEY,
+            tech TEXT NOT NULL,
+            from_level INTEGER NOT NULL,
+            paid_metal REAL NOT NULL,
+            paid_crystal REAL NOT NULL,
+            paid_deuterium REAL NOT NULL,
+            started_at INTEGER NOT NULL,
+            completes_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS rival_ship_queue (
+            rival_id TEXT NOT NULL,
+            position INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            remaining INTEGER NOT NULL,
+            paid_metal REAL NOT NULL,
+            paid_crystal REAL NOT NULL,
+            paid_deuterium REAL NOT NULL,
+            started_at INTEGER,
+            completes_at INTEGER,
+            PRIMARY KEY (rival_id, position)
         );
         ",
     )?;
@@ -7179,6 +7663,50 @@ mod tests {
         assert!(loaded.prestige.unlocked_species.contains("kryth"));
         assert_eq!(count_rows(&conn, "species_run").unwrap(), 1);
         assert_eq!(count_rows(&conn, "prestige_species").unwrap(), 2);
+    }
+
+    #[test]
+    fn migrate_v36_round_trips_rivals() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v36(&conn).unwrap();
+        migrate_v36(&conn).unwrap();
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.enabled = false;
+        cfg.market.enabled = false;
+        let mut state = GameState::with_seed(1_000, cfg, 9);
+        state.deterministic = true;
+        let mut settings = crate::RivalSettings::on();
+        settings.tick_secs = 60;
+        settings.starting_bonus = 0.25;
+        state
+            .spawn_rivals(&crate::RivalCatalog::default(), settings)
+            .unwrap();
+        state.catch_up(1_060);
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert!(loaded.rivals.enabled);
+        assert_eq!(loaded.rivals.empires.len(), 3);
+        assert_eq!(loaded.rivals.starting_bonus, 0.25);
+        assert_eq!(
+            loaded
+                .rivals
+                .empires
+                .iter()
+                .map(|e| e.id.as_str())
+                .collect::<Vec<_>>(),
+            state
+                .rivals
+                .empires
+                .iter()
+                .map(|e| e.id.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            loaded.rivals.empires[0].resources.metal,
+            state.rivals.empires[0].resources.metal
+        );
+        assert_eq!(count_rows(&conn, "rivals_meta").unwrap(), 1);
+        assert_eq!(count_rows(&conn, "rivals").unwrap(), 3);
     }
 
     #[test]

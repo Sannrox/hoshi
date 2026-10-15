@@ -32,6 +32,7 @@ mod planning;
 mod prestige;
 mod production;
 mod research;
+mod rivals;
 mod save;
 mod season;
 mod ships;
@@ -154,6 +155,9 @@ pub use research::{
     BuildingPrereq, ModifierKind, PrereqGap, ResearchError, ResearchJob, TechBranch, TechModifier,
     TechNodeState, TechPrereq, TechSpec, TechTree, TechTreeError,
 };
+pub use rivals::{
+    RivalBoard, RivalCatalog, RivalEmpire, RivalError, RivalIntel, RivalPersonality, RivalSettings,
+};
 pub use save::{
     CareerGlance, SCHEMA_VERSION, SaveError, SaveGlance, SaveLock, default_save_dir,
     default_save_path, inspect_career, inspect_save, load_or_new, load_or_new_with_seed,
@@ -171,7 +175,7 @@ pub use ships::{
 pub use simulate::{
     DaySnapshot, HeavyIndustryReport, PrestigeSimRow, SimReport, VictorySimRow,
     heavy_industry_check, simulate_greedy, simulate_species_victory_paths, simulate_victory_paths,
-    tactics_no_combo_dominates,
+    simulate_victory_paths_with_rivals, tactics_no_combo_dominates,
 };
 pub use species::{Flagship, SpeciesCatalog, SpeciesError, SpeciesRun, SpeciesSpec};
 pub use state::{GameEvent, GameState, LogisticsGlance, ResourceKind, Resources};

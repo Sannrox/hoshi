@@ -13,6 +13,7 @@ pub struct UserConfig {
     pub bridge: bool,
     pub ai_advisor: bool,
     pub arena: bool,
+    pub rivals: bool,
     pub demo: bool,
     pub governance: bool,
     pub chisei: bool,
@@ -45,6 +46,7 @@ impl Default for UserConfig {
             bridge: false,
             ai_advisor: false,
             arena: false,
+            rivals: false,
             demo: false,
             governance: false,
             chisei: false,
@@ -98,6 +100,7 @@ impl UserConfig {
                 "bridge" => cfg.bridge = value == "true",
                 "ai_advisor" => cfg.ai_advisor = value == "true",
                 "arena" => cfg.arena = value == "true",
+                "rivals" => cfg.rivals = value == "true",
                 "demo" => cfg.demo = value == "true",
                 "governance" => cfg.governance = value == "true",
                 "chisei" => cfg.chisei = value == "true",
@@ -166,13 +169,14 @@ impl UserConfig {
             _ => String::new(),
         };
         let text = format!(
-            "reduced_motion = {}\nno_animation = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\narena = {}\ndemo = {}\ngovernance = {}\nchisei = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}\ntutorial = {}\nreset_tutorial = {}\nnotify = {}\nnotify_build = {}\nnotify_raid = {}\nnotify_fleet = {}\ncommentary = {}\ncommentary_model_url = \"{}\"\nadvisor_model_url = \"{}\"\nadvisor_model_name = \"{}\"\nadvisor_allow_lan = {}\n{quiet}{}\n",
+            "reduced_motion = {}\nno_animation = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\narena = {}\nrivals = {}\ndemo = {}\ngovernance = {}\nchisei = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}\ntutorial = {}\nreset_tutorial = {}\nnotify = {}\nnotify_build = {}\nnotify_raid = {}\nnotify_fleet = {}\ncommentary = {}\ncommentary_model_url = \"{}\"\nadvisor_model_url = \"{}\"\nadvisor_model_name = \"{}\"\nadvisor_allow_lan = {}\n{quiet}{}\n",
             self.reduced_motion,
             self.no_animation,
             self.high_contrast,
             self.bridge,
             self.ai_advisor,
             self.arena,
+            self.rivals,
             self.demo,
             self.governance,
             self.chisei,
@@ -235,6 +239,7 @@ mod tests {
         assert!(!loaded.bridge);
         assert!(!loaded.ai_advisor);
         assert!(!loaded.arena);
+        assert!(!loaded.rivals);
         assert!(!loaded.demo);
         assert!(!loaded.governance);
         assert!(!loaded.chisei);
@@ -259,6 +264,7 @@ mod tests {
         cfg.advisor_model_name = "local".into();
         cfg.advisor_allow_lan = true;
         cfg.arena = true;
+        cfg.rivals = true;
         cfg.demo = true;
         cfg.governance = true;
         cfg.chisei = true;
@@ -268,6 +274,7 @@ mod tests {
         assert_eq!(again.last_slot.as_deref(), Some("alpha"));
         assert!(!again.bridge);
         assert!(again.arena);
+        assert!(again.rivals);
         assert!(again.demo);
         assert!(again.governance);
         assert!(again.chisei);

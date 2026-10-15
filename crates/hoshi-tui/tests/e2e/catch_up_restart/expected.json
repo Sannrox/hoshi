@@ -314,7 +314,11 @@
     "deuterium": 0.0,
     "metal": 517.4583984375
   },
-  "save_schema": 35,
+  "rivals": {
+    "empires": [],
+    "enabled": false
+  },
+  "save_schema": 36,
   "schema_version": 1,
   "season": null,
   "species": null,

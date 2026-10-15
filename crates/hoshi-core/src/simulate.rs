@@ -743,7 +743,12 @@ fn secs_until_afford(state: &GameState, kind: BuildingKind) -> Option<u64> {
 
 /// Casual 14-day opener, then a focused finish for each galaxy victory path.
 pub fn simulate_victory_paths(config: BalanceConfig) -> Vec<VictorySimRow> {
-    simulate_victory_paths_for(config, None)
+    simulate_victory_paths_for(config, None, false)
+}
+
+/// Same paths with three NPC rivals ticking on a daily cadence.
+pub fn simulate_victory_paths_with_rivals(config: BalanceConfig) -> Vec<VictorySimRow> {
+    simulate_victory_paths_for(config, None, true)
 }
 
 /// Same paths as [`simulate_victory_paths`], once per bundled species.
@@ -754,7 +759,7 @@ pub fn simulate_species_victory_paths(config: BalanceConfig) -> Vec<(String, Vec
         .map(|spec| {
             (
                 spec.id.clone(),
-                simulate_victory_paths_for(config.clone(), Some(spec)),
+                simulate_victory_paths_for(config.clone(), Some(spec), false),
             )
         })
         .collect()
@@ -763,13 +768,14 @@ pub fn simulate_species_victory_paths(config: BalanceConfig) -> Vec<(String, Vec
 fn simulate_victory_paths_for(
     config: BalanceConfig,
     species: Option<&crate::SpeciesSpec>,
+    rivals: bool,
 ) -> Vec<VictorySimRow> {
     let min = config.victory.casual_min_secs;
     let max = config.victory.casual_max_secs;
     vec![
-        finish_wonder(config.clone(), min, max, species),
-        finish_diplomacy(config.clone(), min, max, species),
-        finish_conquest(config, min, max, species),
+        finish_wonder(config.clone(), min, max, species, rivals),
+        finish_diplomacy(config.clone(), min, max, species, rivals),
+        finish_conquest(config, min, max, species, rivals),
     ]
 }
 
@@ -777,6 +783,7 @@ fn developed(
     mut config: BalanceConfig,
     until: u64,
     species: Option<&crate::SpeciesSpec>,
+    rivals: bool,
 ) -> GameState {
     config.raid = crate::RaidConfig::inactive();
     config.market.enabled = false;
@@ -794,6 +801,13 @@ fn developed(
             state.diplomacy.set_standing(faction, next);
         }
         state.species = Some(spec.run());
+    }
+    if rivals {
+        let mut settings = crate::RivalSettings::on();
+        settings.tick_secs = 86_400;
+        state
+            .spawn_rivals(&crate::RivalCatalog::default(), settings)
+            .expect("bundled rival catalog");
     }
     let mut steps = 0_u32;
     while state.last_tick_unix < until && steps < 200_000 {
@@ -828,9 +842,10 @@ fn finish_wonder(
     min: u64,
     max: u64,
     species: Option<&crate::SpeciesSpec>,
+    rivals: bool,
 ) -> VictorySimRow {
     let id = config.victory.wonder_id.clone();
-    let mut state = developed(config, min, species);
+    let mut state = developed(config, min, species, rivals);
     state.tech_levels.insert("energy".into(), 8);
     state.resources.metal += 100_000.0;
     state.resources.crystal += 100_000.0;
@@ -863,11 +878,12 @@ fn finish_diplomacy(
     min: u64,
     max: u64,
     species: Option<&crate::SpeciesSpec>,
+    rivals: bool,
 ) -> VictorySimRow {
     config.diplomacy.decay = 0.0;
     let standing = config.diplomacy.max_standing;
     let hold = config.victory.hold_secs;
-    let mut state = developed(config, min, species);
+    let mut state = developed(config, min, species, rivals);
     let ids: Vec<String> = state
         .config
         .diplomacy
@@ -893,8 +909,9 @@ fn finish_conquest(
     min: u64,
     max: u64,
     species: Option<&crate::SpeciesSpec>,
+    rivals: bool,
 ) -> VictorySimRow {
-    let mut state = developed(config, min, species);
+    let mut state = developed(config, min, species, rivals);
     if let Some(home) = state.pirate_homeworld() {
         state.outposts.retain(|outpost| outpost.coord != home);
         state.colonies.push(Colony {
@@ -1089,6 +1106,23 @@ mod tests {
                     "{path} {elapsed}s is more than 25% faster than median {median}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn rivals_leave_each_victory_path_beatable() {
+        let config = BalanceConfig::default();
+        let min = config.victory.casual_min_secs;
+        let max = config.victory.casual_max_secs;
+        let rows = simulate_victory_paths_with_rivals(config);
+        assert_eq!(rows.len(), 3);
+        for row in &rows {
+            let elapsed = row.elapsed_secs.expect(&row.path);
+            assert!(
+                elapsed >= min && elapsed <= max,
+                "{} at {elapsed}s outside {min}..={max}",
+                row.path
+            );
         }
     }
 }

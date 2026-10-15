@@ -77,6 +77,10 @@
       "type": ["object", "null"],
       "description": "Playable species overlay when this save chose an empire: id, name, brew timer and optional flagship."
     },
+    "rivals": {
+      "type": "object",
+      "description": "NPC rival empires for this galaxy: enabled flag and an intel list gated by espionage (id, personality, home, last action, optional stockpile/fleet/buildings)."
+    },
     "tutorial": {
       "type": "object",
       "description": "Onboarding hint progress: whether the tutorial is enabled, skipped, and which hint is pending."

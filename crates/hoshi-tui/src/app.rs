@@ -2634,6 +2634,23 @@ impl App {
                 ))
             })
             .collect();
+        if self.state.rivals.enabled {
+            rows.push(Line::from("Rivals:"));
+            for row in self.state.rival_intel() {
+                let stock = match row.resources {
+                    Some(r) => format!("  {:.0}M {:.0}C {:.0}D", r.metal, r.crystal, r.deuterium),
+                    None => String::new(),
+                };
+                let fleet = match row.fleet {
+                    Some(f) => format!("  fleet {}", f.get(ShipKind::LightFighter)),
+                    None => String::new(),
+                };
+                rows.push(Line::from(format!(
+                    "  {} {} {} last {}{stock}{fleet}",
+                    row.name, row.home, row.personality, row.last_action
+                )));
+            }
+        }
         append_windowed(&mut rows, &entries, self.selected, height)
     }
 
