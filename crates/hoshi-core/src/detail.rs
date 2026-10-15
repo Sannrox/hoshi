@@ -298,7 +298,10 @@ impl GameState {
 
     fn describe_wonder(&self, id: &str) -> Option<Detail> {
         let spec = self.config.wonders.iter().find(|s| s.id == id)?;
-        let stage = spec.stages.first()?;
+        let done = self.completed_wonders.iter().any(|done| done == id);
+        let job = self.wonder.as_ref().filter(|job| job.id == id);
+        let stage_idx = job.map(|job| job.stage).unwrap_or(0);
+        let stage = spec.stages.get(stage_idx).or_else(|| spec.stages.first())?;
         let requirements = spec
             .prereq_techs
             .iter()
@@ -310,15 +313,32 @@ impl GameState {
                 }
             })
             .collect();
+        let (costs, duration, afford) = if done {
+            (Vec::new(), None, None)
+        } else {
+            (
+                material_lines(self, stage.cost),
+                Some(stage.duration_secs),
+                Some(afford_eta(self, stage.cost)),
+            )
+        };
         Some(Detail {
             name: spec.name.clone(),
-            description: format!("{} stages", spec.stages.len()),
-            level: u32::from(self.completed_wonders.iter().any(|done| done == id)),
-            costs: material_lines(self, stage.cost),
+            description: if done {
+                "complete".into()
+            } else {
+                format!("stage {} / {}", stage_idx + 1, spec.stages.len())
+            },
+            level: if done {
+                spec.stages.len() as u32
+            } else {
+                stage_idx as u32
+            },
+            costs,
             energy_draw: None,
             heat: None,
-            duration_secs: Some(stage.duration_secs),
-            afford: Some(afford_eta(self, stage.cost)),
+            duration_secs: duration,
+            afford,
             deltas: Vec::new(),
             requirements,
             unlocks: Vec::new(),
@@ -755,5 +775,42 @@ mod tests {
                 state.build_cost_on(dest, BuildingKind::MetalMine)
             ))
         );
+    }
+
+    #[test]
+    fn wonder_detail_uses_the_active_stage_and_hides_cost_when_done() {
+        let mut state = GameState::with_config(0, quiet());
+        state.wonder = Some(crate::WonderJob {
+            id: "dyson_ring".into(),
+            stage: 1,
+            contributed: Resources::ZERO,
+            completes_at: None,
+        });
+        let active = state
+            .describe(DetailSubject::Wonder("dyson_ring".into()), None)
+            .unwrap();
+        assert!(
+            active.description.contains("stage 2"),
+            "{}",
+            active.description
+        );
+        let metal = active
+            .costs
+            .iter()
+            .find(|row| row.id == "metal")
+            .expect("metal");
+        assert!((metal.cost - 40000.0).abs() < 1e-6, "{metal:?}");
+        state.wonder = None;
+        state.completed_wonders.push("dyson_ring".into());
+        let done = state
+            .describe(DetailSubject::Wonder("dyson_ring".into()), None)
+            .unwrap();
+        assert_eq!(done.description, "complete");
+        assert!(
+            done.costs.iter().all(|row| row.cost == 0.0),
+            "{:?}",
+            done.costs
+        );
+        assert_eq!(done.afford, None);
     }
 }
