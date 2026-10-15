@@ -115,24 +115,22 @@ impl GameState {
         let spec = self.config.buildings.get(kind);
         let cost = self.build_cost_on(planet, kind);
         let duration = self.build_time_secs_on(planet, kind);
-        let mut next_state = self.clone();
-        if planet == next_state.home {
-            next_state.buildings.increment(kind);
-        } else if let Some(colony) = next_state
-            .colonies
-            .iter_mut()
-            .find(|colony| colony.coord == planet)
-        {
-            colony.buildings.increment(kind);
+        let queued: Vec<BuildingKind> = queue.iter().map(|job| job.building).collect();
+        let mut projected = self.clone();
+        for queued_kind in queued {
+            apply_building_at(&mut projected, planet, queued_kind);
         }
+        let mut next_state = projected.clone();
+        apply_building_at(&mut next_state, planet, kind);
+        let projected_buildings = *projected.buildings_at(planet).unwrap_or(&buildings);
         let next_buildings = *next_state.buildings_at(planet).unwrap_or(&buildings);
-        let energy_now = self.config.energy_draw(&buildings);
+        let energy_now = self.config.energy_draw(&projected_buildings);
         let energy_next = next_state.config.energy_draw(&next_buildings);
         let mut deltas = Vec::new();
         for kind_res in ResourceKind::ALL {
             deltas.push(DeltaLine {
                 label: format!("{} /h", kind_res.as_key()),
-                from: format!("{:.1}", self.production_at(planet, kind_res)),
+                from: format!("{:.1}", projected.production_at(planet, kind_res)),
                 to: format!("{:.1}", next_state.production_at(planet, kind_res)),
             });
         }
@@ -142,7 +140,7 @@ impl GameState {
             to: format!("{energy_next:.0}"),
         });
         if let (Some(waste_now), Some(waste_next)) =
-            (self.waste_at(planet), next_state.waste_at(planet))
+            (projected.waste_at(planet), next_state.waste_at(planet))
         {
             deltas.push(DeltaLine {
                 label: "heat load".into(),
@@ -154,7 +152,7 @@ impl GameState {
             .prerequisites
             .iter()
             .map(|&(building, required)| {
-                let actual = buildings.get(building);
+                let actual = projected_buildings.get(building);
                 RequirementLine {
                     text: format!("{building} {required} (have {actual})"),
                     met: actual >= required,
@@ -493,6 +491,18 @@ impl GameState {
     }
 }
 
+fn apply_building_at(state: &mut GameState, planet: Coord, kind: BuildingKind) {
+    if planet == state.home {
+        state.buildings.increment(kind);
+    } else if let Some(colony) = state
+        .colonies
+        .iter_mut()
+        .find(|colony| colony.coord == planet)
+    {
+        colony.buildings.increment(kind);
+    }
+}
+
 fn stockpile_at(state: &GameState, planet: Coord) -> Resources {
     state
         .resources_at(planet)
@@ -812,5 +822,48 @@ mod tests {
             done.costs
         );
         assert_eq!(done.afford, None);
+    }
+
+    #[test]
+    fn building_deltas_match_the_queued_next_level() {
+        let mut state = GameState::with_config(0, quiet());
+        state.buildings.metal_mine = 1;
+        state.build_queue.push(crate::BuildJob {
+            building: BuildingKind::MetalMine,
+            from_level: 1,
+            paid: Resources::ZERO,
+            started_at: None,
+            completes_at: None,
+        });
+        let detail = state
+            .describe(
+                DetailSubject::Building {
+                    kind: BuildingKind::MetalMine,
+                    planet: state.home,
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(detail.level, 2);
+        let mut after_queue = state.clone();
+        after_queue.buildings.metal_mine = 2;
+        after_queue.build_queue.clear();
+        let mut after_next = after_queue.clone();
+        after_next.buildings.increment(BuildingKind::MetalMine);
+        let want = format!(
+            "{:.1}",
+            after_queue.production_at(state.home, ResourceKind::Metal)
+        );
+        let got = detail
+            .deltas
+            .iter()
+            .find(|row| row.label == "metal /h")
+            .expect("metal /h");
+        assert_eq!(got.from, want);
+        let want_to = format!(
+            "{:.1}",
+            after_next.production_at(state.home, ResourceKind::Metal)
+        );
+        assert_eq!(got.to, want_to);
     }
 }
