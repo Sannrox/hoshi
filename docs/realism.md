@@ -179,6 +179,7 @@ silent extra departure; they extend this list.
 | Propellant mass is paid from deuterium; it does not fill cargo volume | Tanks are part of the vehicle; cargo is payload. |
 | Inter-system and galaxy hops sit on summed AU radii around the same star | Keeps one μ and one Hohmann formula; ordering of hop size stays. |
 | Frontier galaxy uses the same `[flight].galaxy_unit` distance as a one-galaxy hop | Inter-galaxy flights stay on the existing clock; richer worlds are a generation overlay, not a second physics table. |
+| Automation control energy is a flat draw per unlocked route or enabled rule | Models computers and radios without a second power grid; routes still pay transit time. |
 | NPC hub and home books start with a finite guild warehouse | Depth for PlaceOrder without minting player stockpiles; the warehouse does not restock from nothing. |
 | Regional shipments bill fuel and transit from a cargo-capacity flight but leave the parked fleet in place | They model contracted haulers rather than a second fleet object. Catch-up stays event-driven. |
 | Construction stockpiles named metal / crystal / deuterium | Three columns keep the TUI and save small; chains already have real material names underneath. |

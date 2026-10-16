@@ -197,6 +197,9 @@ pub struct GameState {
     pub next_mission_id: u64,
     pub routes: Vec<TradeRoute>,
     pub next_route_id: u64,
+    pub automation_rules: Vec<crate::AutomationRule>,
+    pub next_automation_id: u64,
+    pub next_automation_at: Option<u64>,
     pub next_raid_at: Option<u64>,
     pub events: Vec<GameEvent>,
     pub activity: ActivityTracker,
@@ -316,6 +319,9 @@ impl GameState {
             next_mission_id: 0,
             routes: Vec::new(),
             next_route_id: 0,
+            automation_rules: Vec::new(),
+            next_automation_id: 0,
+            next_automation_at: None,
             next_raid_at: if config.raid.enabled {
                 Some(now_unix.saturating_add(config.raid.first_delay_secs))
             } else {
@@ -425,6 +431,14 @@ impl GameState {
     /// Completions that fall in the gap are applied in timestamp order and
     /// production is recomputed from each completion instant. A backward clock
     /// is a no-op.
+    fn next_automation_event(&self) -> Option<u64> {
+        if self.automation_rules.iter().any(|r| r.enabled) {
+            self.next_automation_at
+        } else {
+            None
+        }
+    }
+
     pub fn catch_up(&mut self, now_unix: u64) {
         if now_unix <= self.last_tick_unix {
             return;
@@ -518,7 +532,10 @@ impl GameState {
                                     flagship_at,
                                     min_time(
                                         self.next_victory_at(),
-                                        min_time(self.next_ladder_at(), rivals_at),
+                                        min_time(
+                                            self.next_ladder_at(),
+                                            min_time(rivals_at, self.next_automation_event()),
+                                        ),
                                     ),
                                 ),
                             ),
@@ -528,6 +545,7 @@ impl GameState {
             ) else {
                 self.produce_until(now_unix);
                 self.apply_laws_at(now_unix);
+                self.apply_automation_at(now_unix);
                 self.tick_staff(now_unix);
                 self.resolve_story(now_unix);
                 self.evaluate_achievements(now_unix);
@@ -540,6 +558,7 @@ impl GameState {
             if done_at > now_unix {
                 self.produce_until(now_unix);
                 self.apply_laws_at(now_unix);
+                self.apply_automation_at(now_unix);
                 self.tick_staff(now_unix);
                 self.resolve_story(now_unix);
                 self.evaluate_achievements(now_unix);
@@ -551,6 +570,7 @@ impl GameState {
             }
             self.produce_until(done_at);
             self.apply_laws_at(done_at);
+            self.apply_automation_at(done_at);
             self.tick_staff(done_at);
             if home_build_at == Some(done_at) {
                 let job = self.build_queue.remove(0);
@@ -1949,7 +1969,7 @@ impl GameState {
             .sum()
     }
 
-    fn cargo_mass(cargo: Resources) -> f64 {
+    pub(crate) fn cargo_mass(cargo: Resources) -> f64 {
         cargo.metal + cargo.crystal + cargo.deuterium
     }
 
@@ -2230,11 +2250,12 @@ impl GameState {
             };
             let route = self.routes[index].clone();
             self.routes[index].next_at = done_at.saturating_add(route.interval_secs.max(1));
+            let cargo = self.adapt_route_cargo(&route);
             match self.launch_transport(
                 route.origin,
                 route.dest,
                 route.ships,
-                route.cargo,
+                cargo,
                 route.speed_percent,
                 done_at,
             ) {
@@ -4400,7 +4421,7 @@ impl GameState {
             * self.prod_boost_mult().max(0.0)
     }
 
-    fn storage_cap_at(&self, coord: Coord, kind: ResourceKind) -> f64 {
+    pub(crate) fn storage_cap_at(&self, coord: Coord, kind: ResourceKind) -> f64 {
         let Some(buildings) = self.buildings_at(coord) else {
             return 0.0;
         };
@@ -4486,7 +4507,7 @@ impl GameState {
         }
     }
 
-    fn note_stall(&mut self, at: u64, line: String) {
+    pub(crate) fn note_stall(&mut self, at: u64, line: String) {
         if self.logistics.stalls.iter().any(|s| s == &line) {
             return;
         }
@@ -5355,7 +5376,7 @@ impl GameState {
     }
 
     pub fn energy_consumed(&self) -> f64 {
-        self.config.energy_draw(&self.buildings)
+        self.config.energy_draw(&self.buildings) + self.automation_control_energy()
     }
 
     pub fn waste_home(&self) -> crate::WasteReport {
@@ -5584,6 +5605,7 @@ impl GameState {
         self.laws.approve(id, now)?;
         self.push_event(now, format!("approved law #{id}"));
         self.apply_laws_at(now);
+        self.apply_automation_at(now);
         Ok(())
     }
 

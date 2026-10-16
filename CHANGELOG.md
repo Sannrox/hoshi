@@ -8,7 +8,9 @@
 
 ### Added
 
-- Release and install: the playable crate is named `hoshi` (`cargo install --git … --locked hoshi`). Version tags `vX.Y.Z` publish GitHub Release binaries for Linux (x86_64, aarch64), macOS (Intel and Apple Silicon) and Windows with `SHA256SUMS`, and the Homebrew tap formula is regenerated from the same tag. Release notes copy the changelog and state the save schema (v38; older saves migrate).
+- Automation as research progression: adaptive trade routes, multi-planet queues, then rule-based logistics (`keep metal on the capital`). Rules are data, conflict-checked, and evaluated on catch-up; control systems draw energy. The Automation screen dry-runs rules; `hoshi automation` adds, toggles and previews them. Save schema v39. See `crates/hoshi-core/data/automation.toml`.
+
+- Release and install: the playable crate is named `hoshi` (`cargo install --git … --locked hoshi`). Version tags `vX.Y.Z` publish GitHub Release binaries for Linux (x86_64, aarch64), macOS (Intel and Apple Silicon) and Windows with `SHA256SUMS`, and the Homebrew tap formula is regenerated from the same tag. Release notes copy the changelog and state the save schema (v39; older saves migrate).
 
 - Self-play balance checks: `hoshi --self-play self-play --matrix pr|nightly` runs every species through the wonder, diplomacy and conquest strategies, prints win shares, time-to-victory and resource curves, and fails when a path drifts outside the casual band or one species pulls more than 25% ahead of the median. Off until `self_play = true` or `--self-play`. Pull requests run seed 1; the scheduled job runs the nightly seed list. Replay a flagged seed with `--seed N`. Sample path bots live in `examples/bots/`.
 

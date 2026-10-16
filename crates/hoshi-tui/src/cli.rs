@@ -26,6 +26,20 @@ pub struct CliOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+enum AutomationActionSpec {
+    QueueBuild {
+        planet: Coord,
+        building: BuildingKind,
+    },
+    Transfer {
+        from: Coord,
+        to: Coord,
+        resource: ResourceKind,
+        amount: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Command {
     State {
         actor: Actor,
@@ -72,6 +86,21 @@ enum Command {
     PrestigeReset,
     Goals,
     GoalsKeep,
+    Automation,
+    AutomationDryRun,
+    AutomationToggle {
+        id: u64,
+    },
+    AutomationRemove {
+        id: u64,
+    },
+    AutomationAdd {
+        cond: String,
+        planet: Coord,
+        resource: ResourceKind,
+        amount: String,
+        action: AutomationActionSpec,
+    },
     LawPropose {
         template: String,
         param: Option<String>,
@@ -694,6 +723,43 @@ fn apply(
                 .map_err(|e| CliError::Refused(e.to_string()))?;
             Ok(ok_state(state, "kept playing"))
         }
+        Command::Automation | Command::AutomationDryRun => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            Ok(automation_value(state))
+        }
+        Command::AutomationToggle { id } => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            let on = state
+                .toggle_automation_rule(*id)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, if on { "rule on" } else { "rule off" }))
+        }
+        Command::AutomationRemove { id } => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            state
+                .remove_automation_rule(*id)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, "rule removed"))
+        }
+        Command::AutomationAdd {
+            cond,
+            planet,
+            resource,
+            amount,
+            action,
+        } => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            let id = add_automation_from_cli(state, cond, *planet, *resource, amount, action)?;
+            Ok(ok_state(state, &format!("rule #{id}")))
+        }
         Command::LawPropose {
             template,
             param,
@@ -1304,6 +1370,137 @@ fn victory_json(state: &GameState) -> Value {
     })
 }
 
+fn automation_value(state: &hoshi_core::GameState) -> serde_json::Value {
+    let catalog = state.automation_catalog();
+    let tiers: Vec<serde_json::Value> = catalog
+        .tier
+        .iter()
+        .map(|tier| {
+            json!({
+                "id": tier.id,
+                "name": tier.name,
+                "research": tier.research,
+                "unlocked": state.automation_tier_unlocked(&tier.id),
+            })
+        })
+        .collect();
+    let preview = state.preview_automation();
+    let rules: Vec<serde_json::Value> = state
+        .automation_rules
+        .iter()
+        .map(|rule| {
+            let pre = preview.iter().find(|p| p.rule_id == rule.id);
+            json!({
+                "id": rule.id,
+                "enabled": rule.enabled,
+                "condition": rule.condition.describe(),
+                "action": rule.action.describe(),
+                "would_fire": pre.map(|p| p.would_fire).unwrap_or(false),
+                "detail": pre.map(|p| p.detail.clone()).unwrap_or_default(),
+            })
+        })
+        .collect();
+    json!({
+        "ok": true,
+        "schema_version": SCHEMA_VERSION,
+        "tiers": tiers,
+        "rules": rules,
+        "control_energy": state.automation_control_energy(),
+    })
+}
+
+fn add_automation_from_cli(
+    state: &mut GameState,
+    cond: &str,
+    planet: Coord,
+    resource: ResourceKind,
+    amount: &str,
+    action: &AutomationActionSpec,
+) -> Result<u64, CliError> {
+    let kind =
+        hoshi_core::RuleConditionKind::parse(cond).map_err(|e| CliError::Invalid(e.to_string()))?;
+    let amount = parse_amount(amount)?;
+    let condition = hoshi_core::RuleCondition {
+        kind,
+        planet,
+        resource,
+        amount,
+    };
+    let action = match action {
+        AutomationActionSpec::QueueBuild { planet, building } => {
+            hoshi_core::RuleAction::QueueBuild {
+                planet: *planet,
+                building: *building,
+            }
+        }
+        AutomationActionSpec::Transfer {
+            from,
+            to,
+            resource,
+            amount,
+        } => hoshi_core::RuleAction::Transfer {
+            from: *from,
+            to: *to,
+            resource: *resource,
+            amount: parse_amount(amount)?,
+        },
+    };
+    state
+        .add_automation_rule(condition, action)
+        .map_err(|e| CliError::Refused(e.to_string()))
+}
+
+fn parse_automation_add(args: &[String]) -> Result<Command, CliError> {
+    let usage = "automation add <stock_below|stock_above> <planet> <resource> <amount> queue_build <planet> <building> | transfer <from> <to> <resource> <amount>";
+    let cond = nth(args, 2, usage)?.to_string();
+    hoshi_core::RuleConditionKind::parse(&cond).map_err(|e| CliError::Invalid(e.to_string()))?;
+    let planet = parse_coord(nth(args, 3, usage)?)?;
+    let resource = ResourceKind::from_key(nth(args, 4, usage)?)
+        .ok_or_else(|| CliError::Invalid("unknown resource".into()))?;
+    let amount = nth(args, 5, usage)?.to_string();
+    match nth(args, 6, usage)? {
+        "queue_build" => {
+            let dest = parse_coord(nth(args, 7, usage)?)?;
+            let building = BuildingKind::from_key(nth(args, 8, usage)?)
+                .ok_or_else(|| CliError::Invalid("unknown building".into()))?;
+            expect_end(args, 9)?;
+            Ok(Command::AutomationAdd {
+                cond,
+                planet,
+                resource,
+                amount,
+                action: AutomationActionSpec::QueueBuild {
+                    planet: dest,
+                    building,
+                },
+            })
+        }
+        "transfer" => {
+            let from = parse_coord(nth(args, 7, usage)?)?;
+            let to = parse_coord(nth(args, 8, usage)?)?;
+            let act_resource = ResourceKind::from_key(nth(args, 9, usage)?)
+                .ok_or_else(|| CliError::Invalid("unknown resource".into()))?;
+            let act_amount = nth(args, 10, usage)?.to_string();
+            expect_end(args, 11)?;
+            Ok(Command::AutomationAdd {
+                cond,
+                planet,
+                resource,
+                amount,
+                action: AutomationActionSpec::Transfer {
+                    from,
+                    to,
+                    resource: act_resource,
+                    amount: act_amount,
+                },
+            })
+        }
+        other => Err(CliError::Invalid(format!(
+            "unknown automation action {other}"
+        ))),
+    }
+}
+
 fn goals_value(state: &GameState) -> Value {
     let mut value = state_value(state, Actor::Player);
     value["message"] = json!("goals");
@@ -1893,6 +2090,30 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
                 ships,
             })
         }
+        "automation" => match args.get(1).map(String::as_str) {
+            None => {
+                expect_end(args, 1)?;
+                Ok(Command::Automation)
+            }
+            Some("dry-run") => {
+                expect_end(args, 2)?;
+                Ok(Command::AutomationDryRun)
+            }
+            Some("toggle") => {
+                let id = parse_law_id(nth(args, 2, "automation toggle <id>")?)?;
+                expect_end(args, 3)?;
+                Ok(Command::AutomationToggle { id })
+            }
+            Some("remove") => {
+                let id = parse_law_id(nth(args, 2, "automation remove <id>")?)?;
+                expect_end(args, 3)?;
+                Ok(Command::AutomationRemove { id })
+            }
+            Some("add") => parse_automation_add(args),
+            Some(other) => Err(CliError::Invalid(format!(
+                "unknown automation command {other}"
+            ))),
+        },
         "goals" => match args.get(1).map(String::as_str) {
             None => {
                 expect_end(args, 1)?;
@@ -3703,6 +3924,25 @@ mod tests {
         assert_eq!(opts.command, Command::Tick { advance: 180 });
         let opts = parse_cli(&args(&["goals"])).unwrap();
         assert_eq!(opts.command, Command::Goals);
+        let opts = parse_cli(&args(&[
+            "automation",
+            "add",
+            "stock_below",
+            "home",
+            "metal",
+            "2000",
+            "queue_build",
+            "home",
+            "metal_mine",
+        ]))
+        .unwrap();
+        match opts.command {
+            Command::AutomationAdd { cond, action, .. } => {
+                assert_eq!(cond, "stock_below");
+                assert!(matches!(action, AutomationActionSpec::QueueBuild { .. }));
+            }
+            other => panic!("{other:?}"),
+        }
         let opts = parse_cli(&args(&["goals", "keep"])).unwrap();
         assert_eq!(opts.command, Command::GoalsKeep);
         let opts = parse_cli(&args(&[
