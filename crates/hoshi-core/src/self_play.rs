@@ -295,4 +295,13 @@ mod tests {
         let b = run_self_play(config, &[7]);
         assert_eq!(a, b);
     }
+
+    #[test]
+    fn seed_zero_replays_the_same_report() {
+        let config = BalanceConfig::default();
+        let a = run_self_play(config.clone(), &[0]);
+        let b = run_self_play(config, &[0]);
+        assert_eq!(a, b);
+        assert!(a.cells.iter().all(|cell| cell.seed == 0));
+    }
 }

@@ -1151,12 +1151,12 @@ fn secs_until_afford(state: &GameState, kind: BuildingKind) -> Option<u64> {
 
 /// Casual 14-day opener, then a focused finish for each galaxy victory path.
 pub fn simulate_victory_paths(config: BalanceConfig) -> Vec<VictorySimRow> {
-    simulate_victory_paths_for(config, None, false, 0)
+    simulate_victory_paths_for(config, None, false, None)
 }
 
 /// Same paths with three NPC rivals ticking on a daily cadence.
 pub fn simulate_victory_paths_with_rivals(config: BalanceConfig) -> Vec<VictorySimRow> {
-    simulate_victory_paths_for(config, None, true, 0)
+    simulate_victory_paths_for(config, None, true, None)
 }
 
 /// Same paths as [`simulate_victory_paths`], once per bundled species.
@@ -1167,7 +1167,7 @@ pub fn simulate_species_victory_paths(config: BalanceConfig) -> Vec<(String, Vec
         .map(|spec| {
             (
                 spec.id.clone(),
-                simulate_victory_paths_for(config.clone(), Some(spec), false, 0),
+                simulate_victory_paths_for(config.clone(), Some(spec), false, None),
             )
         })
         .collect()
@@ -1181,7 +1181,7 @@ pub fn simulate_victory_paths_for_seed(
 ) -> Vec<VictorySimRow> {
     let catalog = crate::SpeciesCatalog::default();
     let spec = species_id.and_then(|id| catalog.get(id));
-    simulate_victory_paths_for(config, spec, false, seed)
+    simulate_victory_paths_for(config, spec, false, Some(seed))
 }
 
 /// Greedy mine curve for one species and seed. Used by the self-play report.
@@ -1204,11 +1204,7 @@ pub fn greedy_curve(
     }
     let start = 0_u64;
     let end = u64::from(days) * 86_400;
-    let mut state = if seed == 0 {
-        GameState::with_config(start, config)
-    } else {
-        GameState::with_seed(start, config, seed)
-    };
+    let mut state = GameState::with_seed(start, config, seed);
     if let Some(row) = spec {
         for (faction, delta) in &row.standing {
             let next = state.diplomacy.standing(faction) + *delta;
@@ -1251,7 +1247,7 @@ fn simulate_victory_paths_for(
     config: BalanceConfig,
     species: Option<&crate::SpeciesSpec>,
     rivals: bool,
-    seed: u64,
+    seed: Option<u64>,
 ) -> Vec<VictorySimRow> {
     let min = config.victory.casual_min_secs;
     let max = config.victory.casual_max_secs;
@@ -1267,7 +1263,7 @@ fn developed(
     until: u64,
     species: Option<&crate::SpeciesSpec>,
     rivals: bool,
-    seed: u64,
+    seed: Option<u64>,
 ) -> GameState {
     config.raid = crate::RaidConfig::inactive();
     config.market.enabled = false;
@@ -1278,10 +1274,9 @@ fn developed(
             .expect("bundled species overlay")
             .0;
     }
-    let mut state = if seed == 0 {
-        GameState::with_config(0, config)
-    } else {
-        GameState::with_seed(0, config, seed)
+    let mut state = match seed {
+        Some(seed) => GameState::with_seed(0, config, seed),
+        None => GameState::with_config(0, config),
     };
     if let Some(spec) = species {
         for (faction, delta) in &spec.standing {
@@ -1331,7 +1326,7 @@ fn finish_wonder(
     max: u64,
     species: Option<&crate::SpeciesSpec>,
     rivals: bool,
-    seed: u64,
+    seed: Option<u64>,
 ) -> VictorySimRow {
     let id = config.victory.wonder_id.clone();
     let mut state = developed(config, min, species, rivals, seed);
@@ -1375,7 +1370,7 @@ fn finish_diplomacy(
     max: u64,
     species: Option<&crate::SpeciesSpec>,
     rivals: bool,
-    seed: u64,
+    seed: Option<u64>,
 ) -> VictorySimRow {
     config.diplomacy.decay = 0.0;
     let standing = config.diplomacy.max_standing;
@@ -1407,7 +1402,7 @@ fn finish_conquest(
     max: u64,
     species: Option<&crate::SpeciesSpec>,
     rivals: bool,
-    seed: u64,
+    seed: Option<u64>,
 ) -> VictorySimRow {
     let mut state = developed(config, min, species, rivals, seed);
     if let Some(home) = state.pirate_homeworld() {
