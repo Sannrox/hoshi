@@ -1,12 +1,13 @@
 //! Scriptable JSON commands. Same core actions as the TUI; no extra powers.
 
 use hoshi_core::{
-    Actor, AssignmentTarget, BackendKind, BalanceConfig, BuildingKind, Classification,
-    ClassifiedKind, Clock, Coord, Customer, DefenceKind, FakeClock, Fleet, GameState, HistoryKind,
-    HistoryQuery, Intent, Jurisdiction, JurisdictionKind, MoonFacility, OrderSide, Payload,
-    Permission, PlanRequest, ResourceKind, RoleKind, RoundAction, SCHEMA_VERSION as SAVE_SCHEMA,
-    SaveError, ShipKind, SpeciesCatalog, SpyReport, SystemClock, TransferKind, advise,
-    inspect_save, lock_save, open_storage, resolve_save_path, save_is_locked,
+    Actor, AssignmentTarget, BackendKind, BalanceConfig, Blueprint, BlueprintCatalog, BuildingKind,
+    Classification, ClassifiedKind, Clock, Coord, Customer, DefenceKind, FakeClock, Fleet,
+    GameState, HistoryKind, HistoryQuery, Intent, Jurisdiction, JurisdictionKind, MoonFacility,
+    OrderSide, Payload, Permission, PlanRequest, ResourceKind, RoleKind, RoundAction,
+    SCHEMA_VERSION as SAVE_SCHEMA, SaveError, ShipKind, SpeciesCatalog, SpyReport, SystemClock,
+    TransferKind, advise, blueprint_dir, inspect_save, lock_save, open_storage, resolve_save_path,
+    save_is_locked,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -228,6 +229,24 @@ enum Command {
     FlagshipAnchor,
     Rivals,
     Frontier,
+    BlueprintList,
+    BlueprintShow {
+        name: String,
+    },
+    BlueprintCapture {
+        planet: Coord,
+        name: String,
+    },
+    BlueprintApply {
+        planet: Coord,
+        name: String,
+    },
+    BlueprintExport {
+        name: String,
+    },
+    BlueprintImport {
+        path: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -383,7 +402,7 @@ fn run_cli_inner(args: &[String]) -> Result<Value, CliError> {
     }
     .map_err(|e| CliError::Internal(e.to_string()))?;
     let now = now_for(&state);
-    let value = apply(&mut state, now, &opts.command)?;
+    let value = apply(&mut state, now, &opts.command, &save)?;
     store
         .save(&state)
         .map_err(|e| CliError::Internal(e.to_string()))?;
@@ -486,7 +505,12 @@ fn governed(state: &mut GameState, intent: Intent, now: u64) -> Result<(), CliEr
     hoshi_core::apply(state, &proposal, now).map_err(|e| CliError::Refused(e.to_string()))
 }
 
-fn apply(state: &mut GameState, now: u64, command: &Command) -> Result<Value, CliError> {
+fn apply(
+    state: &mut GameState,
+    now: u64,
+    command: &Command,
+    save: &Path,
+) -> Result<Value, CliError> {
     match command {
         Command::State { actor } => {
             if !state.deterministic {
@@ -1051,6 +1075,89 @@ fn apply(state: &mut GameState, now: u64, command: &Command) -> Result<Value, Cl
             }
             Ok(frontier_value(state))
         }
+        Command::BlueprintList => {
+            let catalog = BlueprintCatalog::open(blueprint_dir(save));
+            let names = catalog
+                .list()
+                .map_err(|e| CliError::Internal(e.to_string()))?;
+            Ok(json!({
+                "schema_version": SCHEMA_VERSION,
+                "ok": true,
+                "message": "blueprint",
+                "blueprints": names,
+            }))
+        }
+        Command::BlueprintShow { name } => {
+            let catalog = BlueprintCatalog::open(blueprint_dir(save));
+            let bp = catalog
+                .load(name)
+                .map_err(|e| CliError::Invalid(e.to_string()))?;
+            Ok(blueprint_value(&bp, "blueprint"))
+        }
+        Command::BlueprintCapture { planet, name } => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            let bp = state
+                .capture_blueprint(*planet, name)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            BlueprintCatalog::open(blueprint_dir(save))
+                .save(&bp)
+                .map_err(|e| CliError::Internal(e.to_string()))?;
+            Ok(blueprint_value(&bp, "blueprint captured"))
+        }
+        Command::BlueprintApply { planet, name } => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            let catalog = BlueprintCatalog::open(blueprint_dir(save));
+            let bp = catalog
+                .load(name)
+                .map_err(|e| CliError::Invalid(e.to_string()))?;
+            let preview = state
+                .preview_blueprint(*planet, &bp)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            let applied = state
+                .apply_blueprint(*planet, &bp, now)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(json!({
+                "schema_version": SCHEMA_VERSION,
+                "ok": true,
+                "message": "blueprint applied",
+                "name": bp.name,
+                "planet": planet.to_string(),
+                "planet_type": bp.planet_type.map(|k| k.as_key()),
+                "queued": applied.queued.iter().map(|s| json!({
+                    "building": s.building.as_key(),
+                    "from_level": s.from_level,
+                })).collect::<Vec<_>>(),
+                "mismatches": applied.mismatches.iter().map(|m| json!({
+                    "building": m.building.as_key(),
+                    "reason": m.reason,
+                })).collect::<Vec<_>>(),
+                "type_mismatch": applied.type_mismatch,
+                "skipped": applied.skipped,
+                "planned": preview.steps.len(),
+            }))
+        }
+        Command::BlueprintExport { name } => {
+            let catalog = BlueprintCatalog::open(blueprint_dir(save));
+            let bp = catalog
+                .load(name)
+                .map_err(|e| CliError::Invalid(e.to_string()))?;
+            let mut value = blueprint_value(&bp, "blueprint export");
+            value["text"] = json!(bp.to_toml());
+            Ok(value)
+        }
+        Command::BlueprintImport { path } => {
+            let text =
+                std::fs::read_to_string(path).map_err(|e| CliError::Invalid(e.to_string()))?;
+            let bp = Blueprint::from_toml(&text).map_err(|e| CliError::Invalid(e.to_string()))?;
+            BlueprintCatalog::open(blueprint_dir(save))
+                .save(&bp)
+                .map_err(|e| CliError::Internal(e.to_string()))?;
+            Ok(blueprint_value(&bp, "blueprint imported"))
+        }
         Command::Rivals => {
             if !state.deterministic {
                 state.catch_up(now);
@@ -1186,6 +1293,22 @@ fn goals_value(state: &GameState) -> Value {
     let mut value = state_value(state, Actor::Player);
     value["message"] = json!("goals");
     value
+}
+
+fn blueprint_value(blueprint: &Blueprint, message: &str) -> Value {
+    json!({
+        "schema_version": SCHEMA_VERSION,
+        "ok": true,
+        "message": message,
+        "name": blueprint.name,
+        "planet_type": blueprint.planet_type.map(|k| k.as_key()),
+        "buildings": blueprint
+            .buildings
+            .iter()
+            .map(|(kind, level)| json!({ "id": kind.as_key(), "level": level }))
+            .collect::<Vec<_>>(),
+        "text": blueprint.to_toml(),
+    })
 }
 
 fn ok_state(state: &GameState, message: &str) -> Value {
@@ -1566,6 +1689,45 @@ fn fleet_counts(fleet: Fleet) -> Value {
     Value::Object(map)
 }
 
+fn parse_blueprint_command(args: &[String]) -> Result<Command, CliError> {
+    match args.get(1).map(String::as_str) {
+        None | Some("list") => {
+            expect_end(args, if args.get(1).is_some() { 2 } else { 1 })?;
+            Ok(Command::BlueprintList)
+        }
+        Some("show") => {
+            let name = nth(args, 2, "blueprint show <name>")?.to_string();
+            expect_end(args, 3)?;
+            Ok(Command::BlueprintShow { name })
+        }
+        Some("capture") => {
+            let planet = parse_coord(nth(args, 2, "blueprint capture <planet> <name>")?)?;
+            let name = nth(args, 3, "blueprint capture <planet> <name>")?.to_string();
+            expect_end(args, 4)?;
+            Ok(Command::BlueprintCapture { planet, name })
+        }
+        Some("apply") => {
+            let name = nth(args, 2, "blueprint apply <name> <planet>")?.to_string();
+            let planet = parse_coord(nth(args, 3, "blueprint apply <name> <planet>")?)?;
+            expect_end(args, 4)?;
+            Ok(Command::BlueprintApply { planet, name })
+        }
+        Some("export") => {
+            let name = nth(args, 2, "blueprint export <name>")?.to_string();
+            expect_end(args, 3)?;
+            Ok(Command::BlueprintExport { name })
+        }
+        Some("import") => {
+            let path = PathBuf::from(nth(args, 2, "blueprint import <path>")?);
+            expect_end(args, 3)?;
+            Ok(Command::BlueprintImport { path })
+        }
+        Some(other) => Err(CliError::Invalid(format!(
+            "unknown blueprint command {other}"
+        ))),
+    }
+}
+
 fn parse_cli(args: &[String]) -> Result<CliOpts, CliError> {
     let mut save = None;
     let mut seed = None;
@@ -1729,6 +1891,7 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
             expect_end(args, 1)?;
             Ok(Command::Frontier)
         }
+        "blueprint" => parse_blueprint_command(args),
         "species" => match args.get(1).map(String::as_str) {
             None => {
                 expect_end(args, 1)?;
@@ -4169,5 +4332,38 @@ mod tests {
         let value: Value = serde_json::from_str(&out.json).unwrap();
         assert_eq!(value["message"], "governance demo");
         assert_eq!(value["scenarios"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn blueprint_capture_export_import_and_apply_round_trip() {
+        let save = unique_save("blueprint");
+        let (captured, exit) = run_on(&save, &["--seed=1", "blueprint", "capture", "home", "core"]);
+        assert_eq!(exit, EXIT_OK, "{captured}");
+        assert_eq!(captured["name"], "core");
+        assert_eq!(captured["planet_type"], "rocky");
+        let (listed, exit) = run_on(&save, &["blueprint", "list"]);
+        assert_eq!(exit, EXIT_OK, "{listed}");
+        assert_eq!(listed["blueprints"][0], "core");
+        let (exported, exit) = run_on(&save, &["blueprint", "export", "core"]);
+        assert_eq!(exit, EXIT_OK, "{exported}");
+        assert!(
+            exported["text"]
+                .as_str()
+                .unwrap()
+                .contains("name = \"core\""),
+            "{exported}"
+        );
+        let (applied, exit) = run_on(&save, &["blueprint", "apply", "core", "home"]);
+        assert_eq!(exit, EXIT_OK, "{applied}");
+        assert_eq!(applied["message"], "blueprint applied");
+        let dir = std::env::temp_dir().join(format!("hoshi-bp-import-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("copy.toml");
+        std::fs::write(&path, exported["text"].as_str().unwrap()).unwrap();
+        let (imported, exit) = run_on(&save, &["blueprint", "import", &path.to_string_lossy()]);
+        assert_eq!(exit, EXIT_OK, "{imported}");
+        assert_eq!(imported["name"], "core");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&save);
     }
 }
