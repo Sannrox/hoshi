@@ -72,7 +72,8 @@ amd64 and arm64), plus `SHA256SUMS`. Ubuntu:
 curl -fsSL https://raw.githubusercontent.com/Sannrox/hoshi/main/scripts/install.sh | sh
 ```
 
-Homebrew:
+Alpha testers can take the nightly build of `main` with `HOSHI_CHANNEL=nightly`
+before `sh` ([docs/install.md](docs/install.md#nightly-builds)). Homebrew:
 
 ```sh
 brew tap Sannrox/tap

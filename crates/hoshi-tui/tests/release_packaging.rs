@@ -134,6 +134,33 @@ fn homebrew_formula_hashes_raw_binaries() {
     );
 }
 
+#[test]
+fn build_deb_rejects_versions_outside_release_and_nightly() {
+    let root = repo_root();
+    let dist = tempfile_dist();
+    let bin = dist.path().join("hoshi");
+    fs::write(&bin, b"stub").unwrap();
+    for version in [
+        "0.1.0",
+        "v0.1",
+        "v0.1.0-rc1",
+        "v0.1.0~nightly",
+        "v0.1.0~nightly.1.XYZ",
+    ] {
+        let output = Command::new("bash")
+            .arg(root.join("scripts/build-deb.sh"))
+            .arg(version)
+            .arg("amd64")
+            .arg(&bin)
+            .arg(dist.path())
+            .output()
+            .expect("build-deb.sh");
+        assert_eq!(output.status.code(), Some(2), "{version} accepted");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("usage:"), "{version}: {stderr}");
+    }
+}
+
 struct TempDir(PathBuf);
 
 impl TempDir {

@@ -51,6 +51,24 @@ Supported on Ubuntu 22.04 and newer. `sudo apt remove hoshi` uninstalls; the
 save in `~/.local/share/hoshi/` is kept. The release workflow builds the
 packages with `scripts/build-deb.sh` and installs the amd64 one as a smoke test.
 
+## Nightly builds
+
+For alpha testers, `.github/workflows/nightly.yml` builds `main` every night
+(03:17 UTC, skipped when `main` has not moved; run it by hand from the Actions
+tab). It replaces the `nightly` prerelease with Linux binaries, both `.deb`
+packages and `SHA256SUMS`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Sannrox/hoshi/main/scripts/install.sh | HOSHI_CHANNEL=nightly sh
+```
+
+Rerun the same command to update. `hoshi --version` prints the build, for
+example `hoshi 0.1.0 (nightly 202610160317 7cee3a2)`; include it in bug
+reports. The package version is `X.Y.Z~nightly.STAMP.SHA`, which sorts before
+the `X.Y.Z` release, so a later stable install replaces it. A nightly can
+migrate a save to a schema that an older stable release refuses to open; back
+up `~/.local/share/hoshi/` before switching channels.
+
 Release notes are the Unreleased (or matching version) changelog section plus a
 **Saves** paragraph: current `SCHEMA_VERSION`, older saves migrate in place,
 newer saves are refused.

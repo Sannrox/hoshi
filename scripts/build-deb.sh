@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Package a built hoshi binary as a Debian/Ubuntu .deb.
-# Usage: scripts/build-deb.sh vX.Y.Z amd64|arm64 BINARY OUT_DIR
+# Usage: scripts/build-deb.sh vX.Y.Z[~nightly.STAMP.SHA] amd64|arm64 BINARY OUT_DIR
 # Runs on the build host; the libc6 floor is the host's glibc version.
+# "~" sorts a nightly before the X.Y.Z release in dpkg version order.
 
 set -euo pipefail
 
@@ -9,9 +10,9 @@ TAG="${1:-}"
 ARCH="${2:-}"
 BIN="${3:-}"
 OUT="${4:-}"
-if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || [[ ! "${ARCH}" =~ ^(amd64|arm64)$ ]] \
-  || [ ! -f "${BIN}" ] || [ -z "${OUT}" ]; then
-  printf 'usage: %s vX.Y.Z amd64|arm64 BINARY OUT_DIR\n' "$0" >&2
+if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(~nightly\.[0-9]+\.[0-9a-f]+)?$ ]] \
+  || [[ ! "${ARCH}" =~ ^(amd64|arm64)$ ]] || [ ! -f "${BIN}" ] || [ -z "${OUT}" ]; then
+  printf 'usage: %s vX.Y.Z[~nightly.STAMP.SHA] amd64|arm64 BINARY OUT_DIR\n' "$0" >&2
   exit 2
 fi
 
@@ -44,4 +45,5 @@ Description: Idle space-strategy game for the terminal
  send them on expeditions. Meant to be played in a spare terminal pane.
 EOF
 
-dpkg-deb --build --root-owner-group "${PKG}" "${OUT}/hoshi_${VERSION}_${ARCH}.deb"
+# GitHub may rename release assets with "~"; the package version keeps it.
+dpkg-deb --build --root-owner-group "${PKG}" "${OUT}/hoshi_${VERSION//\~/-}_${ARCH}.deb"
