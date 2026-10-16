@@ -70,10 +70,6 @@ impl Hub {
         let i = c.to_digit(10)?.checked_sub(1)? as usize;
         Hub::ALL.get(i).copied()
     }
-
-    pub fn digit(self) -> usize {
-        Hub::ALL.iter().position(|h| *h == self).unwrap_or(0) + 1
-    }
 }
 
 pub fn label(screen: Screen) -> &'static str {
@@ -190,6 +186,5 @@ mod tests {
         assert_eq!(enter(Screen::Market, Hub::Trade), Screen::Finance);
         assert_eq!(enter(Screen::Finance, Hub::Trade), Screen::Kpis);
         assert_eq!(enter(Screen::Kpis, Hub::Trade), Screen::Market);
-        assert_eq!(Hub::Records.digit(), 6);
     }
 }

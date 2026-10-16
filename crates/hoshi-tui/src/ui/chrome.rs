@@ -88,10 +88,11 @@ impl Widget for Navbar<'_> {
     }
 }
 
-/// Bottom bar: a mode block, breadcrumb text and keycap hints.
+/// Bottom bar: uppercase breadcrumb, keycap hints that fit, and a right
+/// side that wins over the hints.
 pub struct StatusBar<'a> {
     pub theme: &'a Theme,
-    pub mode: String,
+    pub crumbs: Vec<String>,
     pub hints: Vec<(String, String)>,
     pub right: Option<Line<'static>>,
 }
@@ -100,13 +101,37 @@ impl Widget for StatusBar<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let t = self.theme;
         fill(buf, area, t.surface(Surface::Raised));
-        let mut spans = vec![
-            Span::styled(format!(" {} ", self.mode), t.button(true)),
-            Span::raw("  "),
-        ];
-        spans.extend(key_hints(t, &self.hints));
-        let right = self.right.unwrap_or_default();
-        put_split(buf, area, &Line::from(spans), &right);
+        let mut right = self.right.unwrap_or_default();
+        if right.width() > 0 {
+            right.spans.push(Span::raw(" "));
+        }
+        let room = (area.width as usize).saturating_sub(right.width() + 1);
+        let mut left = vec![Span::raw(" ")];
+        let last = self.crumbs.len().saturating_sub(1);
+        for (i, crumb) in self.crumbs.iter().enumerate() {
+            if i > 0 {
+                left.push(Span::styled(" › ", t.faint()));
+            }
+            let style = if i == last { t.muted() } else { t.label() };
+            left.push(Span::styled(crumb.to_uppercase(), style));
+        }
+        left.push(Span::raw("    "));
+        let mut used: usize = left.iter().map(|s| s.width()).sum();
+        for hint in &self.hints {
+            let spans = key_hints(t, std::slice::from_ref(hint));
+            let w: usize = spans.iter().map(|s| s.width()).sum::<usize>() + 2;
+            if used + w > room {
+                break;
+            }
+            used += w;
+            left.extend(spans);
+            left.push(Span::raw("  "));
+        }
+        put(buf, area, &Line::from(left));
+        let rw = right.width() as u16;
+        if rw > 0 && rw <= area.width {
+            buf.set_line(area.right() - rw, area.y, &right, rw);
+        }
     }
 }
 

@@ -8,7 +8,7 @@ use crate::keymap::{Binding, HelpContext, Keymap};
 use crate::notify::{self, Prefs as NotifyPrefs, Watch as NotifyWatch};
 use crate::portraits::{self, PortraitView, Protocol, Slot};
 use crate::title::AwaySummary;
-use crate::ui::chrome::{Dialog, Navbar, StatusBar, Tabs, Tile};
+use crate::ui::chrome::{Dialog, Navbar, StatusBar, Tabs};
 use crate::ui::panels::{Metric, MetricStrip};
 use crate::ui::table::{Column, DataTable};
 use crate::ui::{self, Depth, Intent, Surface, Theme};
@@ -856,9 +856,10 @@ impl App {
         self.last_width.set(area.width);
         let t = &self.theme;
         ui::chrome::fill(frame.buffer_mut(), area, t.surface(Surface::Base));
-        let [nav, metrics, body, status] = Layout::vertical([
+        let [nav, metrics, rule, body, status] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(MetricStrip::HEIGHT),
+            Constraint::Length(1),
             Constraint::Min(1),
             Constraint::Length(1),
         ])
@@ -876,15 +877,28 @@ impl App {
         frame.render_widget(
             MetricStrip {
                 theme: t,
-                metrics: self.metrics(),
+                metrics: self.metrics(area.width),
             },
             metrics,
         );
+        ui::chrome::put(
+            frame.buffer_mut(),
+            rule,
+            &Line::styled("─".repeat(rule.width as usize), t.line()),
+        );
+        let mut crumbs = Vec::new();
+        if area.width >= 100 {
+            crumbs.push("Bridge".to_string());
+            if hub != Hub::Bridge {
+                crumbs.push(hub.title().into());
+            }
+            crumbs.push(hubs::label(self.screen).into());
+        }
         frame.render_widget(
             StatusBar {
                 theme: t,
-                mode: hub.title().to_uppercase(),
-                hints: self.global_hints(area.width),
+                crumbs,
+                hints: self.status_hints(area.width),
                 right: Some(self.seed_line(area.width)),
             },
             status,
@@ -907,33 +921,37 @@ impl App {
         let t = &self.theme;
         let note = if !self.status.is_empty() {
             Some(Line::styled(self.status.clone(), t.intent(Intent::Warning)))
+        } else if self.screen == Screen::Planet {
+            Some(Line::styled(
+                "Costs in red exceed current stock.",
+                t.label(),
+            ))
         } else {
             self.state
                 .events
                 .last()
-                .map(|event| Line::styled(event.text.clone(), t.muted()))
+                .map(|event| Line::styled(event.text.clone(), t.label()))
         };
         let dialog = Dialog {
             theme: t,
             title: hub.title().into(),
-            subtitle: format!("{}  ·  Planet {}", hub.digit(), self.selected_coord()),
-            close_hint: "esc bridge".into(),
+            subtitle: self.window_subtitle(hub),
+            close_hint: "✕ esc".into(),
             footer_note: note,
             buttons: self.window_buttons(),
         };
         let inner = pad_x(dialog.inner(area), 1);
         frame.render_widget(dialog, area);
         let screens = hub.screens();
-        let glance = self.glance_lines(hub);
+        let callouts = self.window_callouts(hub);
         let footer = self.footer_lines(inner.width as usize);
-        let [tabs, glance_area, body, footer_area] = Layout::vertical([
-            Constraint::Length(Tabs::HEIGHT),
-            Constraint::Length(glance.len() as u16),
+        let [tabs, callout_area, body, footer_area] = Layout::vertical([
+            Constraint::Length(Tabs::HEIGHT + 1),
+            Constraint::Length(callouts.len() as u16),
             Constraint::Min(1),
             Constraint::Length(footer.len() as u16),
         ])
         .areas(inner);
-        let (list_area, portrait) = portraits::split_area(body);
         frame.render_widget(
             Tabs {
                 theme: t,
@@ -945,50 +963,129 @@ impl App {
             },
             tabs,
         );
-        frame.render_widget(Paragraph::new(glance).style(t.muted()), glance_area);
+        frame.render_widget(Paragraph::new(callouts), callout_area);
         if self.shows_docked_detail() {
-            let [list, card] = Layout::horizontal([
+            let [list, divider, card] = Layout::horizontal([
                 Constraint::Min(24),
-                Constraint::Length(detail_column_width(list_area.width)),
+                Constraint::Length(3),
+                Constraint::Length(detail_column_width(body.width)),
             ])
-            .areas(list_area);
+            .areas(body);
             self.draw_list(frame, list);
-            frame.render_widget(
-                Tile {
-                    theme: t,
-                    title: "detail".into(),
-                    right: None,
-                    focused: false,
-                },
-                card,
-            );
+            for y in divider.top()..divider.bottom() {
+                ui::chrome::put(
+                    frame.buffer_mut(),
+                    Rect::new(divider.x + 1, y, 1, 1),
+                    &Line::styled("│", t.line()),
+                );
+            }
             if let Some(detail) = self.current_detail() {
+                let (kind, extra) = self.inspector_context();
+                let levelled = matches!(
+                    self.detail_subject(),
+                    Some(
+                        DetailSubject::Building { .. }
+                            | DetailSubject::Tech(_)
+                            | DetailSubject::Wonder(_)
+                    )
+                );
                 frame.render_widget(
-                    Paragraph::new(detail_panel::inspector(&detail, t)).wrap(Wrap { trim: false }),
-                    pad_x(Tile::inner(card), 1),
+                    Paragraph::new(detail_panel::inspector(&detail, kind, levelled, extra, t))
+                        .wrap(Wrap { trim: false }),
+                    card,
                 );
             }
         } else {
+            let (list_area, portrait) = portraits::split_area(body);
             self.draw_list(frame, list_area);
+            if let Some(area) = portrait {
+                let art = Layout::vertical([
+                    Constraint::Length(portraits::ASCII_ROWS as u16),
+                    Constraint::Min(0),
+                ])
+                .split(area);
+                let slot = self.current_portrait_slot();
+                let mood = portraits::mood_for(slot, &self.state.events);
+                frame.render_widget(
+                    Paragraph::new(portraits::portrait_lines_for(
+                        self.portraits,
+                        slot,
+                        mood,
+                        self.state.species.as_ref().map(|run| run.portrait.as_str()),
+                    )),
+                    art[0],
+                );
+            }
         }
         frame.render_widget(Paragraph::new(footer).style(t.muted()), footer_area);
-        if let Some(area) = portrait {
-            let art = Layout::vertical([
-                Constraint::Length(portraits::ASCII_ROWS as u16),
-                Constraint::Min(0),
-            ])
-            .split(area);
-            let slot = self.current_portrait_slot();
-            let mood = portraits::mood_for(slot, &self.state.events);
-            frame.render_widget(
-                Paragraph::new(portraits::portrait_lines_for(
-                    self.portraits,
-                    slot,
-                    mood,
-                    self.state.species.as_ref().map(|run| run.portrait.as_str()),
-                )),
-                art[0],
-            );
+    }
+
+    fn window_subtitle(&self, hub: Hub) -> String {
+        let coord = self.selected_coord();
+        let place = if coord == self.state.home {
+            "Home"
+        } else {
+            "Colony"
+        };
+        match hub {
+            Hub::Colony => {
+                let kind = self
+                    .state
+                    .planet_kind(coord)
+                    .map(|k| k.as_key())
+                    .unwrap_or("unknown");
+                let work = if self.screen == Screen::Overview {
+                    match &self.state.research {
+                        Some(job) => format!(
+                            "research {} → lv{} {}",
+                            job.tech,
+                            job.from_level + 1,
+                            ui::spans::duration(
+                                job.completes_at.saturating_sub(self.state.last_tick_unix)
+                            )
+                        ),
+                        None => "research idle".into(),
+                    }
+                } else {
+                    let queue = self.state.queue_at(coord).map_or(0, <[_]>::len);
+                    format!("queue {queue}/{}", self.state.build_queue_cap())
+                };
+                format!("{place} {coord} · {kind} · {work}")
+            }
+            Hub::Fleet => format!(
+                "{place} {coord} · ship queue {}",
+                self.state.ship_queue.len()
+            ),
+            _ => format!("{place} {coord}"),
+        }
+    }
+
+    fn inspector_context(&self) -> (&'static str, Vec<(String, Line<'static>)>) {
+        let t = &self.theme;
+        match self.detail_subject() {
+            Some(DetailSubject::Building { planet, .. }) => {
+                let mut extra = vec![(
+                    "Planet".to_string(),
+                    Line::styled(planet.to_string(), t.intent(Intent::Primary)),
+                )];
+                let deposits = self.state.deposits_at(planet);
+                if let Some((id, richness)) = deposits.iter().next() {
+                    extra.push((
+                        "Deposit".into(),
+                        Line::styled(format!("{id} {richness:.2}"), t.text()),
+                    ));
+                }
+                ("building", extra)
+            }
+            Some(DetailSubject::Tech(_)) => ("tech", Vec::new()),
+            Some(DetailSubject::Ship(_)) => ("ship", Vec::new()),
+            Some(DetailSubject::Defence(_)) => ("defence", Vec::new()),
+            Some(DetailSubject::Wonder(_)) => ("wonder", Vec::new()),
+            Some(DetailSubject::Law(_)) => ("law", Vec::new()),
+            Some(DetailSubject::Trade { .. }) => ("trade", Vec::new()),
+            Some(DetailSubject::Production { .. }) => ("production", Vec::new()),
+            Some(DetailSubject::Faction(_)) => ("faction", Vec::new()),
+            Some(DetailSubject::Coord(_)) | None => ("location", Vec::new()),
         }
     }
 
@@ -1012,71 +1109,140 @@ impl App {
         spans
     }
 
-    fn metrics(&self) -> Vec<Metric> {
+    fn metrics(&self, width: u16) -> Vec<Metric> {
         let t = &self.theme;
         let s = &self.state;
+        let wide = width / 8 >= 14;
+        let rate_span = |rate: f64| {
+            let style = if rate < 0.0 {
+                t.intent(Intent::Danger)
+            } else if rate > 0.0 {
+                t.intent(Intent::Success)
+            } else {
+                t.label()
+            };
+            Span::styled(
+                format!(
+                    "{}{}/h",
+                    if rate > 0.0 { "+" } else { "" },
+                    ui::spans::compact(rate)
+                ),
+                style,
+            )
+        };
         let mut out: Vec<Metric> = ResourceKind::ALL
             .iter()
             .map(|&kind| {
                 let stock = s.resources.get(kind);
                 let cap = s.storage_cap(kind);
                 let rate = s.production_per_hour(kind);
-                let full = cap > 0.0 && stock / cap >= 0.95;
-                let value_style = if full {
+                let fill = if cap > 0.0 { stock / cap } else { 0.0 };
+                let intent = if fill >= 0.95 {
+                    Intent::Warning
+                } else {
+                    Intent::Primary
+                };
+                let value_style = if fill >= 0.95 {
                     t.intent(Intent::Warning)
                 } else {
                     t.strong()
                 };
-                let rate_style = if rate < 0.0 {
-                    t.intent(Intent::Danger)
-                } else if rate > 0.0 {
-                    t.intent(Intent::Success)
-                } else {
-                    t.label()
-                };
+                if !wide {
+                    return Metric {
+                        label: kind.abbr().into(),
+                        value: Line::styled(ui::spans::compact(stock), value_style),
+                        foot: Line::from(rate_span(rate)),
+                    };
+                }
+                let mut foot = ui::spans::bar(t, fill, 6, intent);
+                foot.push(Span::raw(" "));
+                foot.push(rate_span(rate));
                 Metric {
-                    label: kind.abbr().into(),
-                    value: Line::styled(ui::spans::compact(stock), value_style),
-                    foot: Line::styled(
-                        format!(
-                            "{}{}/h",
-                            if rate > 0.0 { "+" } else { "" },
-                            ui::spans::compact(rate)
-                        ),
-                        rate_style,
-                    ),
+                    label: kind.label().to_uppercase(),
+                    value: Line::from(vec![
+                        Span::styled(ui::spans::compact(stock), value_style),
+                        Span::styled(format!(" / {}", ui::spans::compact(cap)), t.label()),
+                    ]),
+                    foot: Line::from(foot),
                 }
             })
             .collect();
         let waste = s.waste_home();
         let balance = s.energy_balance();
-        out.push(Metric {
-            label: "Energy".into(),
-            value: Line::styled(
-                format!("{balance:+.0}"),
-                if balance < 0.0 {
-                    t.intent(Intent::Danger)
-                } else {
-                    t.strong()
-                },
-            ),
-            foot: Line::styled(
-                format!("heat {:.0}/{:.0}", waste.heat_load, waste.heat_sink),
-                if waste.overflowing() {
-                    t.intent(Intent::Danger)
-                } else {
-                    t.label()
-                },
-            ),
-        });
+        let energy_style = if balance < 0.0 {
+            t.intent(Intent::Danger)
+        } else {
+            t.strong()
+        };
+        let heat_style = if waste.overflowing() {
+            t.intent(Intent::Danger)
+        } else {
+            t.strong()
+        };
+        let heat_fill = if waste.heat_sink > 0.0 {
+            waste.heat_load / waste.heat_sink
+        } else {
+            0.0
+        };
+        if wide {
+            out.push(Metric {
+                label: "ENERGY".into(),
+                value: Line::from(vec![
+                    Span::styled(format!("{balance:+.0}"), energy_style),
+                    Span::styled(" balance", t.label()),
+                ]),
+                foot: Line::styled(
+                    format!(
+                        "{:.0} in {:.0} out",
+                        s.energy_produced(),
+                        s.energy_consumed()
+                    ),
+                    t.label(),
+                ),
+            });
+            let heat_intent = if waste.overflowing() {
+                Intent::Danger
+            } else if heat_fill >= 0.75 {
+                Intent::Warning
+            } else {
+                Intent::Primary
+            };
+            let mut foot = ui::spans::bar(t, heat_fill, 6, heat_intent);
+            foot.push(Span::styled(
+                format!(" {:.0}%", heat_fill * 100.0),
+                t.label(),
+            ));
+            out.push(Metric {
+                label: "HEAT".into(),
+                value: Line::from(vec![
+                    Span::styled(format!("{:.0}", waste.heat_load), heat_style),
+                    Span::styled(format!(" / {:.0}", waste.heat_sink), t.label()),
+                ]),
+                foot: Line::from(foot),
+            });
+        } else {
+            out.push(Metric {
+                label: "Energy".into(),
+                value: Line::styled(format!("{balance:+.0}"), energy_style),
+                foot: Line::styled(
+                    format!("heat {:.0}/{:.0}", waste.heat_load, waste.heat_sink),
+                    if waste.overflowing() {
+                        t.intent(Intent::Danger)
+                    } else {
+                        t.label()
+                    },
+                ),
+            });
+        }
         out
     }
 
-    fn global_hints(&self, width: u16) -> Vec<(String, String)> {
+    fn status_hints(&self, width: u16) -> Vec<(String, String)> {
         let k = &self.keymap;
-        let mut hints = vec![("1-6".to_string(), "hubs".to_string())];
-        if width >= 100 {
-            hints.push((k.primary(Binding::NextScreen), "next".into()));
+        let mut hints = self.context_hints();
+        hints.push(("1-6".to_string(), "hubs".to_string()));
+        if width >= 100 && self.screen != Screen::Cockpit {
+            hints.push((k.primary(Binding::NextScreen), "tabs".into()));
         }
         if self.screen != Screen::Cockpit {
             hints.push(("esc".into(), "bridge".into()));
@@ -1084,6 +1250,19 @@ impl App {
         hints.push((k.primary(Binding::Help), "help".into()));
         hints.push((k.primary(Binding::Quit), "quit".into()));
         hints
+    }
+
+    /// Per-screen keys as `(key, label)` pairs, split from `context_text`.
+    fn context_hints(&self) -> Vec<(String, String)> {
+        let cancel = self.keymap.primary(Binding::Cancel);
+        self.context_text()
+            .split("  ")
+            .filter_map(|part| match part.trim().split_once(' ') {
+                Some((key, label)) => Some((key.to_string(), label.to_string())),
+                None if part.trim() == cancel => Some((cancel.clone(), "cancel".into())),
+                None => None,
+            })
+            .collect()
     }
 
     fn window_buttons(&self) -> Vec<Span<'static>> {
@@ -1111,11 +1290,21 @@ impl App {
             | Screen::Ops => return Vec::new(),
         };
         let key = self.keymap.primary(Binding::Confirm);
-        vec![ui::spans::button(
+        let mut buttons = Vec::new();
+        if matches!(self.screen, Screen::Planet | Screen::Shipyard) {
+            let cancel = self.keymap.primary(Binding::Cancel);
+            buttons.push(ui::spans::button(
+                &self.theme,
+                &format!("{cancel} queue"),
+                false,
+            ));
+        }
+        buttons.push(ui::spans::button(
             &self.theme,
-            &format!("{key} {action}"),
+            &format!("{} {action}", if key == "enter" { "⏎" } else { &key }),
             true,
-        )]
+        ));
+        buttons
     }
 
     fn seed_line(&self, width: u16) -> Line<'static> {
@@ -1133,34 +1322,28 @@ impl App {
         }
     }
 
-    fn glance_lines(&self, hub: Hub) -> Vec<Line<'static>> {
-        let mut lines = match hub {
-            Hub::Colony => vec![
-                Line::from(self.build_status()),
-                Line::from(self.research_status()),
-                Line::from(self.wonder_status()),
-            ],
-            Hub::Fleet => vec![
-                Line::from(self.ship_status()),
-                Line::from(self.raid_status()),
-            ],
-            Hub::Records => vec![Line::from(self.prestige_status())],
-            Hub::Bridge | Hub::Trade | Hub::Empire => Vec::new(),
+    fn window_callouts(&self, hub: Hub) -> Vec<Line<'static>> {
+        let waste = self.state.waste_home();
+        let warn = self.state.config.waste.warn_ratio;
+        if hub != Hub::Colony
+            || self.screen == Screen::Planet
+            || !(waste.overflowing() || waste.warns(warn))
+        {
+            return Vec::new();
+        }
+        let intent = if waste.overflowing() {
+            Intent::Danger
+        } else {
+            Intent::Warning
         };
-        if hub == Hub::Colony {
-            let waste = self.state.waste_home();
-            if self.screen != Screen::Planet
-                && (waste.overflowing() || waste.warns(self.state.config.waste.warn_ratio))
-            {
-                lines.push(Line::from(waste_header_line(&self.state)));
-            }
-            if self.state.owned_coords().len() > 1 || !self.state.moons.is_empty() {
-                lines.extend(self.planet_glance_lines());
-            }
+        let mut lines = ui::panels::Callout {
+            theme: &self.theme,
+            intent,
+            title: Line::from(waste_header_line(&self.state)),
+            detail: None,
         }
-        if !lines.is_empty() {
-            lines.push(Line::default());
-        }
+        .lines();
+        lines.push(Line::default());
         lines
     }
 
@@ -2018,6 +2201,27 @@ impl App {
     }
 
     fn footer_lines(&self, width: usize) -> Vec<Line<'static>> {
+        let mut rows = Vec::new();
+        if self.show_tutorial
+            && let Some(hint) = self.state.pending_hint()
+        {
+            for line in wrap_text(&format!("Hint: {}", hint.title), width) {
+                rows.push(Line::from(line));
+            }
+            for line in wrap_text(&hint.body, width) {
+                rows.push(Line::from(line));
+            }
+            for line in wrap_text("x dismiss  g show me  s skip tutorial", width) {
+                rows.push(Line::from(line));
+            }
+        }
+        if let Some(bar) = self.bridge_bar() {
+            rows.push(bar);
+        }
+        rows
+    }
+
+    fn context_text(&self) -> String {
         let k = &self.keymap;
         let planets = format!(
             "{}/{} planet",
@@ -2041,116 +2245,97 @@ impl App {
         } else {
             String::new()
         };
-        let mut rows = Vec::new();
-        if self.show_tutorial
-            && let Some(hint) = self.state.pending_hint()
-        {
-            for line in wrap_text(&format!("Hint: {}", hint.title), width) {
-                rows.push(Line::from(line));
-            }
-            for line in wrap_text(&hint.body, width) {
-                rows.push(Line::from(line));
-            }
-            for line in wrap_text("x dismiss  g show me  s skip tutorial", width) {
-                rows.push(Line::from(line));
-            }
-        }
-        if let Some(bar) = self.bridge_bar() {
-            rows.push(bar);
-        }
-        rows.push(Line::from(format!("{}{activity}{advisor}", match self.screen {
-            Screen::Overview => format!(
-                "{planets}  {}/{} branch  {select}  {confirm} research  {} replay  {cancel}  {} copy seed  {} detail",
-                k.primary(Binding::CursorLeft),
-                k.primary(Binding::CursorRight),
-                k.primary(Binding::Replay),
-                k.primary(Binding::CopySeed),
-                k.primary(Binding::Detail)
-            ),
-            Screen::Planet => format!(
-                "{planets}  {select}  {confirm} build  {cancel} queue  {} detail",
-                k.primary(Binding::Detail)
-            ),
-            Screen::Shipyard => format!(
-                "{planets}  {select}  {confirm} queue  {cancel} queue  {} detail",
-                k.primary(Binding::Detail)
-            ),
-            Screen::Wonder => format!(
-                "{planets}  {select}  {confirm} start/contribute  {} detail",
-                k.primary(Binding::Detail)
-            ),
-            Screen::Prestige => {
-                format!("{select}  {confirm} buy/reset  {cancel}")
-            }
-            Screen::Achievements | Screen::Daily | Screen::Goals => {
-                format!("{planets}  {select}")
-            }
-            Screen::Production => format!(
-                "{planets}  {select}  {} detail",
-                k.primary(Binding::Detail)
-            ),
-            Screen::Market => format!(
-                "{select}  {}/{} amount  {confirm} trade  {} detail",
-                k.primary(Binding::Increase),
-                k.primary(Binding::Decrease),
-                k.primary(Binding::Detail)
-            ),
-            Screen::Diplomacy => {
-                format!(
-                    "{select}  {confirm} tribute  {} detail",
+        format!(
+            "{}{activity}{advisor}",
+            match self.screen {
+                Screen::Overview => format!(
+                    "{planets}  {}/{} branch  {select}  {confirm} research  {} replay  {cancel}  {} copy seed  {} detail",
+                    k.primary(Binding::CursorLeft),
+                    k.primary(Binding::CursorRight),
+                    k.primary(Binding::Replay),
+                    k.primary(Binding::CopySeed),
                     k.primary(Binding::Detail)
-                )
-            }
-            Screen::Laws => {
-                format!(
-                    "{select}  {confirm} propose/approve/repeal  {} detail",
+                ),
+                Screen::Planet => format!(
+                    "{planets}  {select}  {confirm} build  {cancel} queue  {} detail",
                     k.primary(Binding::Detail)
-                )
-            }
-            Screen::Reports => format!(
-                "{select}  {confirm} report  {} send probe",
-                k.primary(Binding::SendProbe)
-            ),
-            Screen::History => format!(
-                "{select}  {confirm} lineage  {} glance  +/- filter",
-                k.primary(Binding::Replay)
-            ),
-            Screen::Staff => format!(
-                "{select}  {confirm} assign/delegate  {cancel} revoke  {} recruit",
-                k.primary(Binding::Increase)
-            ),
-            Screen::Automation => {
-                format!(
-                    "{select}  {confirm} dry-run  {} toggle  {} add  {cancel} remove",
-                    k.primary(Binding::Toggle),
+                ),
+                Screen::Shipyard => format!(
+                    "{planets}  {select}  {confirm} queue  {cancel} queue  {} detail",
+                    k.primary(Binding::Detail)
+                ),
+                Screen::Wonder => format!(
+                    "{planets}  {select}  {confirm} start/contribute  {} detail",
+                    k.primary(Binding::Detail)
+                ),
+                Screen::Prestige => {
+                    format!("{select}  {confirm} buy/reset  {cancel}")
+                }
+                Screen::Achievements | Screen::Daily | Screen::Goals => {
+                    format!("{planets}  {select}")
+                }
+                Screen::Production =>
+                    format!("{planets}  {select}  {} detail", k.primary(Binding::Detail)),
+                Screen::Market => format!(
+                    "{select}  {}/{} amount  {confirm} trade  {} detail",
+                    k.primary(Binding::Increase),
+                    k.primary(Binding::Decrease),
+                    k.primary(Binding::Detail)
+                ),
+                Screen::Diplomacy => {
+                    format!(
+                        "{select}  {confirm} tribute  {} detail",
+                        k.primary(Binding::Detail)
+                    )
+                }
+                Screen::Laws => {
+                    format!(
+                        "{select}  {confirm} propose/approve/repeal  {} detail",
+                        k.primary(Binding::Detail)
+                    )
+                }
+                Screen::Reports => format!(
+                    "{select}  {confirm} report  {} send probe",
+                    k.primary(Binding::SendProbe)
+                ),
+                Screen::History => format!(
+                    "{select}  {confirm} lineage  {} glance  +/- filter",
+                    k.primary(Binding::Replay)
+                ),
+                Screen::Staff => format!(
+                    "{select}  {confirm} assign/delegate  {cancel} revoke  {} recruit",
                     k.primary(Binding::Increase)
-                )
+                ),
+                Screen::Automation => {
+                    format!(
+                        "{select}  {confirm} dry-run  {} toggle  {} add  {cancel} remove",
+                        k.primary(Binding::Toggle),
+                        k.primary(Binding::Increase)
+                    )
+                }
+                Screen::Finance => {
+                    format!("{select}  {confirm} approve")
+                }
+                Screen::Kpis => {
+                    format!("{select}  {confirm} events")
+                }
+                Screen::Ops => select,
+                Screen::Map => format!(
+                    "{}{}{}{} cursor  {confirm} dispatch  {} detail",
+                    k.primary(Binding::CursorLeft),
+                    k.primary(Binding::SelectNext),
+                    k.primary(Binding::SelectPrev),
+                    k.primary(Binding::CursorRight),
+                    k.primary(Binding::Detail)
+                ),
+                Screen::Cockpit => format!(
+                    "{} layout  {}/{} panel  {select}  {confirm} drill  {cancel} back",
+                    k.primary(Binding::Toggle),
+                    k.primary(Binding::CursorLeft),
+                    k.primary(Binding::CursorRight)
+                ),
             }
-            Screen::Finance => {
-                format!("{select}  {confirm} approve")
-            }
-            Screen::Kpis => {
-                format!("{select}  {confirm} events")
-            }
-            Screen::Ops => {
-                format!("{select}  schedule")
-            }
-            Screen::Map => format!(
-                "{}{}{}{} cursor  {confirm} dispatch  {} detail",
-                k.primary(Binding::CursorLeft),
-                k.primary(Binding::SelectNext),
-                k.primary(Binding::SelectPrev),
-                k.primary(Binding::CursorRight),
-                k.primary(Binding::Detail)
-            ),
-            Screen::Cockpit => format!(
-                "{} layout  {}/{} panel  {select}  {confirm} drill  {cancel} back",
-                k.primary(Binding::Toggle),
-                k.primary(Binding::CursorLeft),
-                k.primary(Binding::CursorRight)
-            ),
-        })));
-        rows
+        )
     }
 
     fn draw_help(&self, frame: &mut Frame<'_>) {
@@ -2391,34 +2576,43 @@ impl App {
                 } else {
                     t.text()
                 };
-                let status = match reason {
-                    Some(reason) => Line::styled(
-                        reason,
-                        t.intent(Intent::Warning).add_modifier(Modifier::DIM),
-                    ),
-                    None => Line::styled("ready", t.intent(Intent::Success)),
-                };
-                vec![
+                let cost = self.state.build_cost_on(coord, kind);
+                let mut row = vec![
                     Line::styled(kind.to_string(), base),
                     Line::styled(levels.get(kind).to_string(), base),
-                    Line::styled(cost_label(self.state.build_cost_on(coord, kind)), base),
-                    Line::styled(
-                        ui::spans::duration(self.state.build_time_secs_on(coord, kind)),
-                        base,
-                    ),
-                    status,
-                ]
+                ];
+                for res in ResourceKind::QUOTED {
+                    let amount = cost.get(res);
+                    row.push(if amount < 0.5 {
+                        Line::styled("—", t.faint())
+                    } else if amount > self.state.resources.get(res) {
+                        Line::styled(ui::spans::compact(amount), t.intent(Intent::Danger))
+                    } else {
+                        Line::styled(ui::spans::compact(amount), base)
+                    });
+                }
+                row.push(Line::styled(
+                    ui::spans::duration(self.state.build_time_secs_on(coord, kind)),
+                    base,
+                ));
+                row.push(Line::from(match reason {
+                    Some(reason) => {
+                        ui::spans::tag(t, &reason.to_uppercase(), Intent::Warning, true)
+                    }
+                    None => ui::spans::tag(t, "READY", Intent::Success, false),
+                }));
+                row
             })
             .collect();
+        let mut columns = vec![Column::left("building", 18), Column::right("lv", 2)];
+        for res in ResourceKind::QUOTED {
+            columns.push(Column::right(res.abbr(), 5));
+        }
+        columns.push(Column::right("time", 6));
+        columns.push(Column::fill("status"));
         DataTable {
             theme: t,
-            columns: vec![
-                Column::left("building", 22),
-                Column::right("lv", 3),
-                Column::left("cost", 18),
-                Column::right("time", 7),
-                Column::fill("status"),
-            ],
+            columns,
             rows,
             selected: Some(self.selected),
             striped: true,
@@ -2671,77 +2865,6 @@ impl App {
             return Some(missing_label(self.state.resources.missing(cost)));
         }
         None
-    }
-
-    fn build_status(&self) -> String {
-        match self.state.build_queue.first() {
-            Some(job) => {
-                let left = job
-                    .completes_at
-                    .unwrap_or(self.state.last_tick_unix)
-                    .saturating_sub(self.state.last_tick_unix);
-                format!(
-                    "Build: {} -> lv{}  {left}s  ({}/{} queued)",
-                    job.building,
-                    job.from_level + 1,
-                    self.state.build_queue.len(),
-                    self.state.config.max_build_queue
-                )
-            }
-            None => "Build: idle".to_string(),
-        }
-    }
-
-    fn research_status(&self) -> String {
-        match &self.state.research {
-            Some(job) => {
-                let left = job.completes_at.saturating_sub(self.state.last_tick_unix);
-                format!(
-                    "Research: {} -> lv{}  {left}s",
-                    job.tech,
-                    job.from_level + 1
-                )
-            }
-            None => "Research: idle".to_string(),
-        }
-    }
-
-    fn ship_status(&self) -> String {
-        match self.state.ship_queue.first() {
-            Some(job) => {
-                let left = job
-                    .completes_at
-                    .unwrap_or(self.state.last_tick_unix)
-                    .saturating_sub(self.state.last_tick_unix);
-                format!(
-                    "Ships      {}  {} x{}  {left}s  ({}/{} queued)",
-                    self.state.fleet.total(),
-                    job.label(),
-                    job.remaining,
-                    self.state.ship_queue.len(),
-                    self.state.config.max_ship_queue
-                )
-            }
-            None => format!(
-                "Ships      {}  idle  (0/{} queued)",
-                self.state.fleet.total(),
-                self.state.config.max_ship_queue
-            ),
-        }
-    }
-
-    fn raid_status(&self) -> String {
-        match self.state.raid_countdown_secs() {
-            Some(secs) => format!("Raid: {secs}s"),
-            None => "Raid: none".to_string(),
-        }
-    }
-
-    fn prestige_status(&self) -> String {
-        format!(
-            "Prestige: {} unspent  run {}",
-            self.state.prestige.currency, self.state.prestige.current.index
-        )
     }
 
     fn activate_prestige(&mut self, now_unix: u64) {
@@ -3893,57 +4016,6 @@ impl App {
         };
         render_overlay(frame, title, lines);
     }
-
-    fn wonder_status(&self) -> String {
-        match &self.state.wonder {
-            Some(job) => {
-                let spec = self.state.config.wonders.iter().find(|s| s.id == job.id);
-                let name = spec.map(|s| s.name.as_str()).unwrap_or(job.id.as_str());
-                let total = spec.map(|s| s.stages.len()).unwrap_or(0);
-                let eta = match self.state.wonder_eta_secs() {
-                    Some(secs) => format!("{secs}s"),
-                    None => "?".into(),
-                };
-                format!("Wonder: {name}  stage {}/{total}  {eta}", job.stage + 1)
-            }
-            None => "Wonder: idle".to_string(),
-        }
-    }
-
-    fn planet_glance_lines(&self) -> Vec<Line<'static>> {
-        let selected = self.selected_coord();
-        self.state
-            .owned_coords()
-            .into_iter()
-            .map(|coord| {
-                let mark = if coord == selected { '>' } else { ' ' };
-                let res = self
-                    .state
-                    .resources_at(coord)
-                    .copied()
-                    .unwrap_or(Resources::ZERO);
-                let active = match self.state.queue_at(coord).and_then(|q| q.first()) {
-                    Some(job) => {
-                        let left = job
-                            .completes_at
-                            .unwrap_or(self.state.last_tick_unix)
-                            .saturating_sub(self.state.last_tick_unix);
-                        format!("{} {left}s", job.building)
-                    }
-                    None => "idle".to_string(),
-                };
-                let moon = if self.state.moon_at(coord).is_some() {
-                    "  moon"
-                } else {
-                    ""
-                };
-                Line::from(format!(
-                    "{mark} {coord}  {}  {active}{moon}",
-                    stockpile_label(res)
-                ))
-            })
-            .collect()
-    }
 }
 
 fn waste_header_line(state: &GameState) -> String {
@@ -4012,10 +4084,11 @@ fn pad_x(area: Rect, n: u16) -> Rect {
 
 fn window_area(frame: Rect, body: Rect) -> Rect {
     if frame.width >= 120 && frame.height >= 40 {
+        let width = body.width.saturating_sub(16).min(150);
         Rect {
-            x: body.x + 4,
+            x: body.x + (body.width - width) / 2,
             y: body.y + 1,
-            width: body.width - 8,
+            width,
             height: body.height - 2,
         }
     } else {
@@ -4024,10 +4097,7 @@ fn window_area(frame: Rect, body: Rect) -> Rect {
 }
 
 fn detail_column_width(total: u16) -> u16 {
-    total
-        .saturating_sub(24)
-        .clamp(28, 48)
-        .min(total.saturating_sub(10))
+    (total * 7 / 20).clamp(30, 56).min(total.saturating_sub(10))
 }
 
 fn render_overlay(frame: &mut Frame<'_>, title: impl Into<String>, lines: Vec<Line<'static>>) {
@@ -4314,9 +4384,8 @@ mod tests {
             assert!(text.contains("Si"), "{w}x{h}: {text}");
             assert!(text.contains("REE"), "{w}x{h}: {text}");
             assert!(text.contains("Energy"), "{w}x{h}: {text}");
-            assert!(text.contains("Build:"), "{w}x{h}: {text}");
-            assert!(text.contains("Research:"), "{w}x{h}: {text}");
-            assert!(text.contains("Wonder:"), "{w}x{h}: {text}");
+            assert!(text.contains("Research"), "{w}x{h}: {text}");
+            assert!(text.contains("research idle"), "{w}x{h}: {text}");
             assert!(
                 !text.contains('\u{1b}'),
                 "{w}x{h} leaked an escape sequence: {text:?}"
@@ -4325,11 +4394,11 @@ mod tests {
         let mut app = app;
         app.open(Screen::Shipyard);
         let fleet = render_text(&app, 60, 20);
-        assert!(fleet.contains("Ships"), "{fleet}");
-        assert!(fleet.contains("Raid:"), "{fleet}");
+        assert!(fleet.contains("Fleet"), "{fleet}");
+        assert!(fleet.contains("RAID"), "{fleet}");
         app.open(Screen::Prestige);
         let records = render_text(&app, 60, 20);
-        assert!(records.contains("Prestige:"), "{records}");
+        assert!(records.contains("Legacy"), "{records}");
     }
 
     #[test]
@@ -4337,7 +4406,22 @@ mod tests {
         let app = App::new(GameState::new(1_000));
         for (w, h) in [(80, 24), (120, 40), (160, 48)] {
             let text = render_text(&app, w, h);
-            for needle in ["Fe", "Si", "REE", "H2O", "He3", "D", "Energy", "heat", "/h"] {
+            let needles: &[&str] = if w >= 112 {
+                &[
+                    "IRON",
+                    "SILICON",
+                    "RARE EARTHS",
+                    "WATER ICE",
+                    "HELIUM-3",
+                    "DEUTERIUM",
+                    "ENERGY",
+                    "HEAT",
+                    "/h",
+                ]
+            } else {
+                &["Fe", "Si", "REE", "H2O", "He3", "D", "Energy", "heat", "/h"]
+            };
+            for needle in needles {
                 assert!(text.contains(needle), "{w}x{h} missing {needle}: {text}");
             }
             for line in text.lines() {
@@ -4595,8 +4679,11 @@ mod tests {
             "research countdown should tick: {research_left} -> {research_left_later}"
         );
         let text = render_text(&app, 80, 24);
-        assert!(text.contains("Research: energy"), "{text}");
-        assert!(text.contains(&format!("{research_left_later}s")), "{text}");
+        assert!(text.contains("research energy"), "{text}");
+        assert!(
+            text.contains(&ui::spans::duration(research_left_later)),
+            "{text}"
+        );
     }
 
     #[test]
@@ -4626,7 +4713,7 @@ mod tests {
         terminal.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(terminal.backend());
         assert!(
-            text.contains("need D") || text.contains("need Fe"),
+            text.contains("NEED D") || text.contains("NEED FE"),
             "planet should show missing resources: {text}"
         );
         assert!(
@@ -4828,11 +4915,12 @@ mod tests {
         let mut app = App::new(state);
         let text = render_text(&app, 100, 32);
         assert!(text.contains("1:1:1"), "{text}");
-        assert!(text.contains("1:1:2"), "{text}");
-        assert!(text.contains("Fe 10000"), "{text}");
+        assert!(text.contains("10k"), "{text}");
 
         app.handle_key(KeyCode::Char(']'), 1_000);
         assert_eq!(app.selected_coord(), dest);
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("Colony 1:1:2"), "{text}");
         app.open(Screen::Planet);
         assert_eq!(app.screen, Screen::Planet);
         app.handle_key(KeyCode::Enter, 1_000);
@@ -5536,8 +5624,6 @@ mod tests {
         let mut state = GameState::new(1_000);
         state.moons.push(hoshi_core::Moon::new(Coord::HOME));
         let mut app = App::new(state);
-        let overview = render_text(&app, 100, 28);
-        assert!(overview.contains("moon"), "{overview}");
         app.open(Screen::Map);
         let map = render_text(&app, 100, 32);
         assert!(map.contains("moon"), "{map}");
@@ -5824,14 +5910,14 @@ mod tests {
         assert_eq!(app.screen, Screen::Cockpit);
         let full = render_text(&app, 160, 48);
         assert!(full.contains("Bridge / Dashboard"), "{full}");
-        assert!(full.contains("alerts"), "{full}");
-        for tile in ["MAP", "GAUGES", "QUEUES", "FLEETS", "TIMELINE"] {
+        assert!(full.contains("ALERTS"), "{full}");
+        for tile in ["STAR MAP", "UPCOMING", "QUEUES", "FLEETS", "TIMELINE"] {
             assert!(full.contains(tile), "missing {tile}: {full}");
         }
         let compact = render_text(&app, 120, 40);
-        assert!(compact.contains("alerts"), "{compact}");
+        assert!(compact.contains("ALERTS"), "{compact}");
         assert!(
-            compact.contains("GAUGES") || compact.contains("QUEUES"),
+            compact.contains("STAR MAP") && compact.contains("QUEUES"),
             "{compact}"
         );
         let tabbed = render_text(&app, 80, 24);
@@ -5863,7 +5949,7 @@ mod tests {
         );
         app.handle_key(KeyCode::Char('x'), 1_000);
         let after = render_text(&app, 160, 48);
-        assert!(after.contains("alerts"), "{after}");
+        assert!(after.contains("ALERTS"), "{after}");
     }
 
     #[test]
@@ -5954,31 +6040,32 @@ mod tests {
             &app,
             160,
             48,
-            &["DETAIL", "metal mine", "COST", "iron", "energy draw"],
+            &["LV 1 → 2", "metal mine", "COST", "iron", "energy draw"],
         );
-        assert_detail_on(&app, 120, 40, &["DETAIL", "metal mine", "affordable"]);
+        assert_detail_on(&app, 120, 40, &["LV 1 → 2", "metal mine", "READY"]);
         app.screen = Screen::Overview;
         app.selected = app
             .overview_techs()
             .iter()
             .position(|spec| spec.id == "energy")
             .unwrap();
-        assert_detail_on(&app, 160, 48, &["DETAIL", "Energy Technology", "REQUIRES"]);
+        assert_detail_on(&app, 160, 48, &["TECH", "Energy Technology", "REQUIRES"]);
         assert_detail_on(&app, 120, 40, &["Energy Technology"]);
         app.screen = Screen::Shipyard;
         app.selected = 0;
-        assert_detail_on(&app, 160, 48, &["DETAIL", "speed", "fuel"]);
+        assert_detail_on(&app, 160, 48, &["SHIP", "speed", "fuel"]);
         assert_detail_on(&app, 120, 40, &["speed"]);
         app.screen = Screen::Laws;
         app.selected = 0;
         let laws = render_text(&app, 160, 48);
-        assert!(laws.contains("DETAIL"), "{laws}");
+        assert!(laws.contains("LAW"), "{laws}");
         app.screen = Screen::Map;
         let map = render_text(&app, 160, 48);
-        assert!(map.contains("DETAIL"), "{map}");
+        assert!(map.contains("LOCATION"), "{map}");
         assert!(map.contains("1:1:1") || map.contains("size"), "{map}");
         let map_mid = render_text(&app, 120, 40);
-        assert!(map_mid.contains("DETAIL"), "{map_mid}");
+        assert!(map_mid.contains("LOCATION"), "{map_mid}");
+        assert!(!map_mid.contains("LV 0 → 1"), "{map_mid}");
     }
 
     #[test]
@@ -6018,7 +6105,7 @@ mod tests {
             .position(|spec| spec.id == "energy")
             .unwrap();
         let text = render_text(&app, 160, 48);
-        assert!(text.contains("never at current income"), "{text}");
+        assert!(text.contains("NEVER AT CURRENT INCOME"), "{text}");
     }
 
     #[test]
@@ -6111,7 +6198,7 @@ mod tests {
         app.handle_key(KeyCode::Char('1'), 1_000);
         assert_eq!(app.screen, Screen::Cockpit);
         let text = render_text(&app, 80, 24);
-        assert!(text.contains("BRIDGE"), "{text}");
+        assert!(text.contains("Bridge / Dashboard"), "{text}");
     }
 
     #[test]
@@ -6151,7 +6238,7 @@ mod tests {
             "{text}"
         );
         let small = render_text(&app, 80, 24);
-        assert!(small.contains("esc bridge"), "{small}");
+        assert!(small.contains("✕ esc"), "{small}");
     }
 
     #[test]
