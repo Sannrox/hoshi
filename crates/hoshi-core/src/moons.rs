@@ -46,11 +46,7 @@ impl fmt::Display for MoonError {
         match self {
             MoonError::NoMoon { at } => write!(f, "no moon at {at}"),
             MoonError::AlreadyBuilt => write!(f, "that facility is already built"),
-            MoonError::Insufficient { missing } => write!(
-                f,
-                "need M{:.0} C{:.0} D{:.0}",
-                missing.iron, missing.silicon, missing.deuterium
-            ),
+            MoonError::Insufficient { missing } => write!(f, "need {}", missing.brief()),
             MoonError::NoGate { at } => write!(f, "no jump gate at {at}"),
             MoonError::Cooling { ready_at } => write!(f, "jump ready at {ready_at}"),
             MoonError::EmptyFleet => write!(f, "no ships to jump"),

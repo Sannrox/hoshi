@@ -8,6 +8,8 @@
 
 ### Added
 
+- Event log, history and moon errors use Fe, Si, REE, H2O, He3 and D instead of M/C/D.
+
 - TUI cost rows, resource bar and help use Fe, Si, REE, H2O, He3 and D (full names in help) with energy and heat beside the stockpiles.
 
 - CLI JSON schema_version 2: `state` lists iron, silicon, rare earths, water ice, helium-3 and deuterium plus energy and heat. `metal` and `crystal` arguments error with the replacement id.
