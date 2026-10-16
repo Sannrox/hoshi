@@ -13,6 +13,7 @@ pub struct UserConfig {
     pub bridge: bool,
     pub ai_advisor: bool,
     pub arena: bool,
+    pub self_play: bool,
     pub rivals: bool,
     pub season: bool,
     pub demo: bool,
@@ -52,6 +53,7 @@ impl Default for UserConfig {
             bridge: false,
             ai_advisor: false,
             arena: false,
+            self_play: false,
             rivals: false,
             season: true,
             demo: false,
@@ -112,6 +114,7 @@ impl UserConfig {
                 "bridge" => cfg.bridge = value == "true",
                 "ai_advisor" => cfg.ai_advisor = value == "true",
                 "arena" => cfg.arena = value == "true",
+                "self_play" => cfg.self_play = value == "true",
                 "rivals" => cfg.rivals = value == "true",
                 "season" => cfg.season = value == "true",
                 "demo" => cfg.demo = value == "true",
@@ -191,13 +194,14 @@ impl UserConfig {
             _ => String::new(),
         };
         let text = format!(
-            "reduced_motion = {}\nno_animation = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\narena = {}\nrivals = {}\nseason = {}\ndemo = {}\ngovernance = {}\nchisei = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}\ntutorial = {}\nreset_tutorial = {}\nnotify = {}\nnotify_build = {}\nnotify_raid = {}\nnotify_fleet = {}\ncommentary = {}\ncommentary_model_url = \"{}\"\nadvisor_model_url = \"{}\"\nadvisor_model_name = \"{}\"\nadvisor_allow_lan = {}\ncockpit_layout = \"{}\"\ncockpit_overview = \"{}\"\ncockpit_economy = \"{}\"\ncockpit_war = \"{}\"\ndetail_panel = {}\n{quiet}{}\n",
+            "reduced_motion = {}\nno_animation = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\narena = {}\nself_play = {}\nrivals = {}\nseason = {}\ndemo = {}\ngovernance = {}\nchisei = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}\ntutorial = {}\nreset_tutorial = {}\nnotify = {}\nnotify_build = {}\nnotify_raid = {}\nnotify_fleet = {}\ncommentary = {}\ncommentary_model_url = \"{}\"\nadvisor_model_url = \"{}\"\nadvisor_model_name = \"{}\"\nadvisor_allow_lan = {}\ncockpit_layout = \"{}\"\ncockpit_overview = \"{}\"\ncockpit_economy = \"{}\"\ncockpit_war = \"{}\"\ndetail_panel = {}\n{quiet}{}\n",
             self.reduced_motion,
             self.no_animation,
             self.high_contrast,
             self.bridge,
             self.ai_advisor,
             self.arena,
+            self.self_play,
             self.rivals,
             self.season,
             self.demo,
@@ -267,6 +271,7 @@ mod tests {
         assert!(!loaded.bridge);
         assert!(!loaded.ai_advisor);
         assert!(!loaded.arena);
+        assert!(!loaded.self_play);
         assert!(!loaded.rivals);
         assert!(loaded.season);
         assert!(!loaded.demo);
@@ -295,6 +300,7 @@ mod tests {
         cfg.advisor_model_name = "local".into();
         cfg.advisor_allow_lan = true;
         cfg.arena = true;
+        cfg.self_play = true;
         cfg.rivals = true;
         cfg.season = false;
         cfg.demo = true;
@@ -309,6 +315,7 @@ mod tests {
         assert_eq!(again.last_slot.as_deref(), Some("alpha"));
         assert!(!again.bridge);
         assert!(again.arena);
+        assert!(again.self_play);
         assert!(again.rivals);
         assert!(!again.season);
         assert!(again.demo);

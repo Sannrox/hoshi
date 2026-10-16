@@ -155,6 +155,13 @@ enum Command {
         board: PathBuf,
         opt_in: bool,
     },
+    SelfPlay {
+        matrix: String,
+        seed: Option<u64>,
+        report: Option<PathBuf>,
+        opt_in: bool,
+        bots: bool,
+    },
     DemoGovernance {
         seed: Option<u64>,
         report: Option<PathBuf>,
@@ -270,6 +277,7 @@ struct CliOpts {
     seed: Option<u64>,
     balance: Option<PathBuf>,
     arena: bool,
+    self_play: bool,
     demo: bool,
     command: Command,
 }
@@ -329,6 +337,7 @@ pub fn is_cli_invocation(args: &[String]) -> bool {
             || a == "--advisor"
             || a == "--no-portraits"
             || a == "--arena"
+            || a == "--self-play"
             || a == "--demo"
         {
             i += 1;
@@ -372,6 +381,9 @@ fn run_cli_inner(args: &[String]) -> Result<Value, CliError> {
         Command::ArenaRun { .. } | Command::ArenaBoard { .. }
     ) {
         return run_arena_command(opts);
+    }
+    if matches!(opts.command, Command::SelfPlay { .. }) {
+        return run_self_play_command(opts);
     }
     if matches!(opts.command, Command::DemoGovernance { .. }) {
         return run_demo_command(opts);
@@ -788,6 +800,9 @@ fn apply(
         Command::ArenaRun { .. } | Command::ArenaBoard { .. } => {
             Err(CliError::Internal("arena is handled before apply".into()))
         }
+        Command::SelfPlay { .. } => Err(CliError::Internal(
+            "self-play is handled before apply".into(),
+        )),
         Command::DemoGovernance { .. } => {
             Err(CliError::Internal("demo is handled before apply".into()))
         }
@@ -1733,6 +1748,7 @@ fn parse_cli(args: &[String]) -> Result<CliOpts, CliError> {
     let mut seed = None;
     let mut balance = None;
     let mut arena = false;
+    let mut self_play = false;
     let mut demo = false;
     let mut rest = Vec::new();
     let mut i = 1;
@@ -1768,9 +1784,12 @@ fn parse_cli(args: &[String]) -> Result<CliOpts, CliError> {
             i += 2;
             continue;
         }
-        if a == "--json" || a == "--arena" || a == "--demo" {
+        if a == "--json" || a == "--arena" || a == "--self-play" || a == "--demo" {
             if a == "--arena" {
                 arena = true;
+            }
+            if a == "--self-play" {
+                self_play = true;
             }
             if a == "--demo" {
                 demo = true;
@@ -1787,6 +1806,7 @@ fn parse_cli(args: &[String]) -> Result<CliOpts, CliError> {
         seed,
         balance,
         arena,
+        self_play,
         demo,
         command,
     })
@@ -1818,6 +1838,7 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
         }
         "log" => parse_log_command(args),
         "arena" => parse_arena_command(args),
+        "self-play" => parse_self_play_command(args),
         "demo" => parse_demo_command(args),
         "build" => {
             let planet = parse_coord(nth(args, 1, "build <planet> <building>")?)?;
@@ -2298,6 +2319,198 @@ fn parse_arena_command(args: &[String]) -> Result<Command, CliError> {
         Some(other) => Err(CliError::Invalid(format!("unknown arena command {other}"))),
         None => Err(CliError::Invalid("arena needs run or board".into())),
     }
+}
+
+fn parse_self_play_command(args: &[String]) -> Result<Command, CliError> {
+    let mut matrix = "pr".to_string();
+    let mut seed = None;
+    let mut report = None;
+    let mut opt_in = false;
+    let mut bots = false;
+    let mut i = 1;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "--self-play" {
+            opt_in = true;
+            i += 1;
+            continue;
+        }
+        if a == "--bots" {
+            bots = true;
+            i += 1;
+            continue;
+        }
+        if let Some(v) = a.strip_prefix("--matrix=") {
+            matrix = v.to_string();
+            i += 1;
+            continue;
+        }
+        if a == "--matrix" {
+            matrix = nth(args, i + 1, "self-play --matrix pr|nightly")?.to_string();
+            i += 2;
+            continue;
+        }
+        if let Some(v) = a.strip_prefix("--seed=") {
+            seed = Some(parse_seed(v)?);
+            i += 1;
+            continue;
+        }
+        if a == "--seed" {
+            seed = Some(parse_seed(nth(args, i + 1, "self-play --seed <n>")?)?);
+            i += 2;
+            continue;
+        }
+        if let Some(path) = a.strip_prefix("--report=") {
+            report = Some(PathBuf::from(path));
+            i += 1;
+            continue;
+        }
+        if a == "--report" {
+            report = Some(PathBuf::from(nth(
+                args,
+                i + 1,
+                "self-play --report <path>",
+            )?));
+            i += 2;
+            continue;
+        }
+        return Err(CliError::Invalid(format!("unknown self-play flag {a}")));
+    }
+    if matrix != "pr" && matrix != "nightly" {
+        return Err(CliError::Invalid(
+            "self-play --matrix must be pr or nightly".into(),
+        ));
+    }
+    Ok(Command::SelfPlay {
+        matrix,
+        seed,
+        report,
+        opt_in,
+        bots,
+    })
+}
+
+fn run_self_play_command(opts: CliOpts) -> Result<Value, CliError> {
+    let save = resolve_save_path(
+        opts.save.as_deref(),
+        std::env::var_os("HOSHI_SAVE").as_deref(),
+    );
+    let cfg_dir = match save.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    let cfg = crate::config::UserConfig::load(cfg_dir);
+    let Command::SelfPlay {
+        matrix,
+        seed,
+        report,
+        opt_in,
+        bots,
+    } = opts.command
+    else {
+        return Err(CliError::Internal(
+            "self-play is handled before apply".into(),
+        ));
+    };
+    if !(opts.self_play || opt_in || cfg.self_play) {
+        return Err(CliError::Refused(
+            "self-play is off; set self_play = true in config.toml or pass --self-play".into(),
+        ));
+    }
+    let config = match opts.balance.as_deref() {
+        Some(path) => {
+            BalanceConfig::load_file(path).map_err(|e| CliError::Invalid(e.to_string()))?
+        }
+        None => match std::env::var_os("HOSHI_BALANCE") {
+            Some(path) => BalanceConfig::load_file(Path::new(&path))
+                .map_err(|e| CliError::Invalid(e.to_string()))?,
+            None => BalanceConfig::default(),
+        },
+    };
+    let seeds: Vec<u64> = if let Some(seed) = seed.or(opts.seed) {
+        vec![seed]
+    } else if matrix == "nightly" {
+        config.self_play.nightly_seeds.clone()
+    } else {
+        config.self_play.pr_seeds.clone()
+    };
+    let result = hoshi_core::run_self_play(config, &seeds);
+    let markdown = result.to_markdown();
+    if let Some(path) = report {
+        std::fs::write(&path, &markdown).map_err(|e| CliError::Internal(e.to_string()))?;
+    }
+    if bots {
+        run_self_play_bots(&seeds)?;
+    }
+    if !result.passed() {
+        return Err(CliError::Refused(markdown));
+    }
+    Ok(json!({
+        "schema_version": SCHEMA_VERSION,
+        "ok": true,
+        "message": "self-play",
+        "seeds": result.seeds,
+        "passed": true,
+        "markdown": markdown,
+    }))
+}
+
+fn run_self_play_bots(seeds: &[u64]) -> Result<(), CliError> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let bots: Vec<PathBuf> = hoshi_core::path_bot_relpaths()
+        .into_iter()
+        .map(|rel| root.join(rel))
+        .collect();
+    for bot in &bots {
+        if !bot.is_file() {
+            return Err(CliError::Invalid(format!(
+                "missing path bot {}",
+                bot.display()
+            )));
+        }
+    }
+    let seed = seeds.first().copied().unwrap_or(1);
+    let dir = std::env::temp_dir().join(format!(
+        "hoshi-self-play-bots-{}-{}",
+        std::process::id(),
+        seed
+    ));
+    std::fs::create_dir_all(&dir).map_err(|e| CliError::Internal(e.to_string()))?;
+    let board = dir.join("board.json");
+    let payload = crate::arena::run(&crate::arena::ArenaSpec {
+        seed,
+        days: 1,
+        actions: 8,
+        timeout: Duration::from_millis(2_000),
+        bots,
+        board,
+        chisei: false,
+    })
+    .map_err(CliError::Internal)?;
+    let _ = std::fs::remove_dir_all(&dir);
+    let failed: Vec<String> = payload
+        .get("bots")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|row| row.get("status").and_then(Value::as_str) != Some("ok"))
+        .map(|row| {
+            format!(
+                "{}:{}",
+                row.get("name").and_then(Value::as_str).unwrap_or("bot"),
+                row.get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("failed")
+            )
+        })
+        .collect();
+    if !failed.is_empty() {
+        return Err(CliError::Internal(format!(
+            "self-play bots failed: {}",
+            failed.join(", ")
+        )));
+    }
+    Ok(())
 }
 
 fn parse_positive_u32(text: &str, flag: &str) -> Result<u32, CliError> {
@@ -4039,6 +4252,40 @@ mod tests {
         );
         assert_eq!(exit, EXIT_OK, "{queued}");
         let _ = std::fs::remove_file(&save);
+    }
+
+    #[test]
+    fn self_play_is_off_until_flag_or_config() {
+        let off = run_cli(&args(&["self-play", "--matrix", "pr"]));
+        assert_eq!(off.exit, EXIT_REFUSED, "{}", off.json);
+        assert!(off.json.contains("self-play is off"), "{}", off.json);
+
+        let on = parse_cli(&args(&[
+            "--self-play",
+            "self-play",
+            "--matrix",
+            "pr",
+            "--seed",
+            "1",
+        ]))
+        .unwrap();
+        assert!(on.self_play);
+        assert_eq!(on.seed, Some(1));
+        match on.command {
+            Command::SelfPlay { matrix, bots, .. } => {
+                assert_eq!(matrix, "pr");
+                assert!(!bots);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn self_play_pr_matrix_passes_through_the_cli() {
+        let out = run_cli(&args(&["--self-play", "self-play", "--matrix", "pr"]));
+        assert_eq!(out.exit, EXIT_OK, "{}", out.json);
+        assert!(out.json.contains("self-play"), "{}", out.json);
+        assert!(out.json.contains("passed"), "{}", out.json);
     }
 
     #[test]

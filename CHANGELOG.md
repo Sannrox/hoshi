@@ -8,6 +8,8 @@
 
 ### Added
 
+- Self-play balance checks: `hoshi --self-play self-play --matrix pr|nightly` runs every species through the wonder, diplomacy and conquest strategies, prints win shares, time-to-victory and resource curves, and fails when a path drifts outside the casual band or one species pulls more than 25% ahead of the median. Off until `self_play = true` or `--self-play`. Pull requests run seed 1; the scheduled job runs the nightly seed list. Replay a flagged seed with `--seed N`. Sample path bots live in `examples/bots/`.
+
 - Title Season page shows the current UTC window rule set, remaining time and derived seed, starts a save kept apart from the main slots, and lists past results from stored unlocks. Seasonal saves are grouped under Seasons in Load game. The menu hides the page when seasons are off in config or before the catalog epoch.
 
 - Title New game rival settings: on/off, every personality from the data files, and a difficulty preset (aggression, efficiency, starting bonus). Rivals stay off until toggled; a galaxy with rivals on needs at least one personality. Load game shows the chosen roster.

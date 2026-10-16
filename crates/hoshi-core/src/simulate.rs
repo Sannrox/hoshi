@@ -1151,12 +1151,12 @@ fn secs_until_afford(state: &GameState, kind: BuildingKind) -> Option<u64> {
 
 /// Casual 14-day opener, then a focused finish for each galaxy victory path.
 pub fn simulate_victory_paths(config: BalanceConfig) -> Vec<VictorySimRow> {
-    simulate_victory_paths_for(config, None, false)
+    simulate_victory_paths_for(config, None, false, None)
 }
 
 /// Same paths with three NPC rivals ticking on a daily cadence.
 pub fn simulate_victory_paths_with_rivals(config: BalanceConfig) -> Vec<VictorySimRow> {
-    simulate_victory_paths_for(config, None, true)
+    simulate_victory_paths_for(config, None, true, None)
 }
 
 /// Same paths as [`simulate_victory_paths`], once per bundled species.
@@ -1167,23 +1167,94 @@ pub fn simulate_species_victory_paths(config: BalanceConfig) -> Vec<(String, Vec
         .map(|spec| {
             (
                 spec.id.clone(),
-                simulate_victory_paths_for(config.clone(), Some(spec), false),
+                simulate_victory_paths_for(config.clone(), Some(spec), false, None),
             )
         })
         .collect()
+}
+
+/// Victory strategies for one species id on a galaxy seed. `species_id` None is Humans defaults.
+pub fn simulate_victory_paths_for_seed(
+    config: BalanceConfig,
+    species_id: Option<&str>,
+    seed: u64,
+) -> Vec<VictorySimRow> {
+    let catalog = crate::SpeciesCatalog::default();
+    let spec = species_id.and_then(|id| catalog.get(id));
+    simulate_victory_paths_for(config, spec, false, Some(seed))
+}
+
+/// Greedy mine curve for one species and seed. Used by the self-play report.
+pub fn greedy_curve(
+    mut config: BalanceConfig,
+    species_id: Option<&str>,
+    seed: u64,
+    days: u32,
+) -> Vec<DaySnapshot> {
+    let days = days.max(1);
+    config.raid = crate::RaidConfig::inactive();
+    config.activity.enabled = false;
+    let catalog = crate::SpeciesCatalog::default();
+    let spec = species_id.and_then(|id| catalog.get(id));
+    if let Some(row) = spec {
+        config = catalog
+            .overlay(&row.id, config)
+            .expect("bundled species overlay")
+            .0;
+    }
+    let start = 0_u64;
+    let end = u64::from(days) * 86_400;
+    let mut state = GameState::with_seed(start, config, seed);
+    if let Some(row) = spec {
+        for (faction, delta) in &row.standing {
+            let next = state.diplomacy.standing(faction) + *delta;
+            state.diplomacy.set_standing(faction, next);
+        }
+        state.species = Some(row.run());
+    }
+    let mut days_log = Vec::new();
+    let mut next_day = 86_400_u64;
+    let mut steps = 0_u32;
+    while state.last_tick_unix < end && steps < 100_000 {
+        steps += 1;
+        fill_queue(&mut state);
+        let completion = state
+            .build_queue
+            .first()
+            .and_then(|job| job.completes_at)
+            .unwrap_or(u64::MAX);
+        let afford = next_afford_at(&state).unwrap_or(u64::MAX);
+        let mut jump = completion.min(afford).min(next_day).min(end);
+        if jump <= state.last_tick_unix {
+            jump = state.last_tick_unix.saturating_add(1).min(end);
+        }
+        state.catch_up(jump);
+        while state.last_tick_unix >= next_day && days_log.len() < days as usize {
+            days_log.push(snapshot(&state, days_log.len() as u32 + 1));
+            next_day = next_day.saturating_add(86_400);
+        }
+    }
+    if days_log.len() < days as usize {
+        state.catch_up(end);
+        while days_log.len() < days as usize {
+            days_log.push(snapshot(&state, days_log.len() as u32 + 1));
+        }
+    }
+    days_log
 }
 
 fn simulate_victory_paths_for(
     config: BalanceConfig,
     species: Option<&crate::SpeciesSpec>,
     rivals: bool,
+    seed: Option<u64>,
 ) -> Vec<VictorySimRow> {
     let min = config.victory.casual_min_secs;
     let max = config.victory.casual_max_secs;
     vec![
-        finish_wonder(config.clone(), min, max, species, rivals),
-        finish_diplomacy(config.clone(), min, max, species, rivals),
-        finish_conquest(config, min, max, species, rivals),
+        finish_wonder(config.clone(), min, max, species, rivals, seed),
+        finish_diplomacy(config.clone(), min, max, species, rivals, seed),
+        finish_conquest(config, min, max, species, rivals, seed),
     ]
 }
 
@@ -1192,6 +1263,7 @@ fn developed(
     until: u64,
     species: Option<&crate::SpeciesSpec>,
     rivals: bool,
+    seed: Option<u64>,
 ) -> GameState {
     config.raid = crate::RaidConfig::inactive();
     config.market.enabled = false;
@@ -1202,7 +1274,10 @@ fn developed(
             .expect("bundled species overlay")
             .0;
     }
-    let mut state = GameState::with_config(0, config);
+    let mut state = match seed {
+        Some(seed) => GameState::with_seed(0, config, seed),
+        None => GameState::with_config(0, config),
+    };
     if let Some(spec) = species {
         for (faction, delta) in &spec.standing {
             let next = state.diplomacy.standing(faction) + *delta;
@@ -1251,9 +1326,10 @@ fn finish_wonder(
     max: u64,
     species: Option<&crate::SpeciesSpec>,
     rivals: bool,
+    seed: Option<u64>,
 ) -> VictorySimRow {
     let id = config.victory.wonder_id.clone();
-    let mut state = developed(config, min, species, rivals);
+    let mut state = developed(config, min, species, rivals, seed);
     state.tech_levels.insert("energy".into(), 8);
     boost_industry_for_ladder(&mut state);
     state.evaluate_ladder(state.last_tick_unix);
@@ -1294,11 +1370,12 @@ fn finish_diplomacy(
     max: u64,
     species: Option<&crate::SpeciesSpec>,
     rivals: bool,
+    seed: Option<u64>,
 ) -> VictorySimRow {
     config.diplomacy.decay = 0.0;
     let standing = config.diplomacy.max_standing;
     let hold = config.victory.hold_secs;
-    let mut state = developed(config, min, species, rivals);
+    let mut state = developed(config, min, species, rivals, seed);
     let ids: Vec<String> = state
         .config
         .diplomacy
@@ -1325,8 +1402,9 @@ fn finish_conquest(
     max: u64,
     species: Option<&crate::SpeciesSpec>,
     rivals: bool,
+    seed: Option<u64>,
 ) -> VictorySimRow {
-    let mut state = developed(config, min, species, rivals);
+    let mut state = developed(config, min, species, rivals, seed);
     if let Some(home) = state.pirate_homeworld() {
         state.outposts.retain(|outpost| outpost.coord != home);
         state.colonies.push(Colony {

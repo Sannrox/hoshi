@@ -69,3 +69,22 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: bash scripts/validate-workflow-skills.sh
+
+  self-play:
+    name: Self-play
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+      - name: PR sample
+        if: github.event_name != 'schedule'
+        run: cargo run --locked -p hoshi-tui --bin hoshi -- --self-play self-play --matrix pr --bots
+      - name: Nightly matrix
+        if: github.event_name == 'schedule'
+        run: cargo run --locked -p hoshi-tui --bin hoshi -- --self-play self-play --matrix nightly --bots
+

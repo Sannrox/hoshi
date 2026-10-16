@@ -13,6 +13,16 @@ min_metal_mine_per_day = 1
 # metal(with max PR-merge pulses) / metal(activity off) must stay at or below this.
 max_bridge_metal_ratio = 8.0
 
+[self_play]
+# Opt-in CI / CLI matrix. Never runs during normal play.
+# Fail when a species or path is more than this fraction faster than the median.
+dominance_max = 0.25
+# Fail when one species takes more than this share of fastest finishes (nightly, ≥3 seeds).
+win_share_max = 0.55
+pr_seeds = [1]
+nightly_seeds = [1, 2, 3, 5, 8]
+curve_days = 3
+
 [victory]
 enabled = true
 wonder_id = "dyson_ring"

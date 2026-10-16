@@ -153,3 +153,18 @@ The run uses `GameState::catch_up` with a greedy miner (solar when energy would
 go short). Raids are off so the report isolates the economy. A second pass fires
 merged-PR pulses at the channel cooldown up to the daily cap. `--days` is 1–30,
 default 3. Failed targets exit 2.
+
+## Self-play
+
+`[self_play]` is the opt-in CI matrix. It never starts during normal play.
+
+`hoshi --self-play self-play --matrix pr` runs seed 1 for every bundled species
+through the wonder, diplomacy and conquest strategies. `--matrix nightly` uses
+the longer seed list. `--seed N` replays one flagged seed. `--bots` also runs
+the sample path bots in `examples/bots/` through the JSON CLI for one day.
+
+The job fails when a finish lands outside `[victory].casual_min_secs`..`casual_max_secs`,
+when a species or path is more than `dominance_max` faster than the median, or
+(nightly, three or more seeds) when one species takes more than `win_share_max`
+of the fastest finishes. Thresholds live in `balance.toml`.
+
