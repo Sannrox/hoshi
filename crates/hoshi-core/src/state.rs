@@ -255,6 +255,17 @@ impl ResourceKind {
         }
     }
 
+    pub fn abbr(self) -> &'static str {
+        match self {
+            ResourceKind::Iron => "Fe",
+            ResourceKind::Silicon => "Si",
+            ResourceKind::RareEarths => "REE",
+            ResourceKind::WaterIce => "H2O",
+            ResourceKind::Helium3 => "He3",
+            ResourceKind::Deuterium => "D",
+        }
+    }
+
     /// Storage building that holds this stockpile.
     pub fn storage_building(self) -> crate::buildings::BuildingKind {
         use crate::buildings::BuildingKind::*;

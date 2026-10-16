@@ -202,9 +202,6 @@ silent extra departure; they extend this list.
 These live values disagree with the rules above. They are follow-up work, not
 silent exceptions. Do not "fix" them in an unrelated PR.
 
-- Compact TUI abbreviations for six stockpiles at 80 columns
-  still read as unnamed substances. Chain goods (`iron_ore`, `silicon`,
-  `helium_3`, …) are the physical names.
 - `[solar_plant]` energy does not fall with distance from the star.
 - `[flight]` lengths and `ships.toml` `speed` values are unitless points
   (`speed = 5000`–`12500`), not metres per second or a documented scale.

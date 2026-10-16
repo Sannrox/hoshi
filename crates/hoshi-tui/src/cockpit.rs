@@ -372,11 +372,7 @@ pub fn alerts(state: &GameState) -> Vec<Alert> {
             });
         }
     }
-    for kind in [
-        ResourceKind::Iron,
-        ResourceKind::Silicon,
-        ResourceKind::Deuterium,
-    ] {
+    for kind in ResourceKind::ALL {
         let cap = state.storage_cap(kind);
         let stock = state.resources.get(kind);
         if cap > 0.0 && stock / cap >= 0.95 {
@@ -734,11 +730,7 @@ fn gauge_lines(
     let spark_w = width.saturating_sub(28).min(24);
     let use_spark = spark_w >= 8;
     let mut lines = Vec::new();
-    for kind in [
-        ResourceKind::Iron,
-        ResourceKind::Silicon,
-        ResourceKind::Deuterium,
-    ] {
+    for kind in ResourceKind::ALL {
         let stock = state.resources.get(kind);
         let cap = state.storage_cap(kind);
         let rate = state.production_per_hour(kind);
@@ -757,8 +749,8 @@ fn gauge_lines(
         };
         lines.push(Line::from(Span::styled(
             format!(
-                "{:<10} {:>8.0}/{:<8.0} {:+.0}/h {spark}",
-                kind.as_key(),
+                "{} {:>8.0}/{:<8.0} {:+.0}/h {spark}",
+                kind.abbr(),
                 stock,
                 cap,
                 rate
@@ -944,13 +936,13 @@ fn market_lines(state: &GameState, height: usize, _high: bool) -> Vec<Line<'stat
     let mut lines = Vec::new();
     let market = &state.market;
     lines.push(Line::from(format!(
-        "M {:.1}  C {:.1}  D {:.1}",
+        "Fe {:.1}  Si {:.1}  D {:.1}",
         market.price(ResourceKind::Iron),
         market.price(ResourceKind::Silicon),
         market.price(ResourceKind::Deuterium)
     )));
     lines.push(Line::from(format!(
-        "metal {}",
+        "Fe {}",
         sparkline(market.history(ResourceKind::Iron), 16)
     )));
     lines.truncate(height.max(1));
@@ -1103,11 +1095,9 @@ fn fleet_detail(
             mission.phase.as_key()
         )));
         lines.push(Line::from(format!(
-            "ships {}  cargo M{:.0} C{:.0} D{:.0}",
+            "ships {}  cargo {}",
             mission.ships.total(),
-            mission.cargo.iron,
-            mission.cargo.silicon,
-            mission.cargo.deuterium
+            cargo_label(mission.cargo)
         )));
         lines.push(Line::from(format!(
             "admiral {}",
@@ -1239,6 +1229,14 @@ pub fn select_len(state: &GameState, cockpit: &Cockpit) -> usize {
         Some(Panel::Map) => MAP_SYSTEM_MAX as usize,
         _ => alerts(state).len().max(1),
     }
+}
+
+fn cargo_label(stock: Resources) -> String {
+    ResourceKind::ALL
+        .iter()
+        .map(|&kind| format!("{} {:.0}", kind.abbr(), stock.get(kind)))
+        .collect::<Vec<_>>()
+        .join("  ")
 }
 
 #[cfg(test)]
