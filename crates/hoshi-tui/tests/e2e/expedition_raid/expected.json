@@ -120,6 +120,10 @@
     "wonder_open": false,
     "worlds": []
   },
+  "heat": {
+    "load": 21.599999999999998,
+    "sink": 80.0
+  },
   "incidents": [],
   "ladder": {
     "completed": [],
@@ -300,7 +304,7 @@
     "enabled": false
   },
   "save_schema": 40,
-  "schema_version": 1,
+  "schema_version": 2,
   "season": null,
   "species": null,
   "spy_reports": [],

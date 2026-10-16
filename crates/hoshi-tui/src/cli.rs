@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 pub const EXIT_OK: i32 = 0;
 pub const EXIT_INVALID: i32 = 2;
 pub const EXIT_REFUSED: i32 = 3;
@@ -1450,13 +1450,31 @@ fn add_automation_from_cli(
         .map_err(|e| CliError::Refused(e.to_string()))
 }
 
+fn parse_resource_id(raw: &str) -> Result<ResourceKind, CliError> {
+    match raw {
+        "metal" => Err(CliError::Invalid("metal is now iron".into())),
+        "crystal" => Err(CliError::Invalid("crystal is now silicon".into())),
+        other => ResourceKind::from_key(other)
+            .ok_or_else(|| CliError::Invalid(format!("unknown resource {other}"))),
+    }
+}
+
+fn renamed_resource_flag(flag: &str) -> Result<(), CliError> {
+    match flag {
+        "--metal" => Err(CliError::Invalid("metal is now iron; use --iron".into())),
+        "--crystal" => Err(CliError::Invalid(
+            "crystal is now silicon; use --silicon".into(),
+        )),
+        _ => Ok(()),
+    }
+}
+
 fn parse_automation_add(args: &[String]) -> Result<Command, CliError> {
     let usage = "automation add <stock_below|stock_above> <planet> <resource> <amount> queue_build <planet> <building> | transfer <from> <to> <resource> <amount>";
     let cond = nth(args, 2, usage)?.to_string();
     hoshi_core::RuleConditionKind::parse(&cond).map_err(|e| CliError::Invalid(e.to_string()))?;
     let planet = parse_coord(nth(args, 3, usage)?)?;
-    let resource = ResourceKind::from_key(nth(args, 4, usage)?)
-        .ok_or_else(|| CliError::Invalid("unknown resource".into()))?;
+    let resource = parse_resource_id(nth(args, 4, usage)?)?;
     let amount = nth(args, 5, usage)?.to_string();
     match nth(args, 6, usage)? {
         "queue_build" => {
@@ -1478,8 +1496,7 @@ fn parse_automation_add(args: &[String]) -> Result<Command, CliError> {
         "transfer" => {
             let from = parse_coord(nth(args, 7, usage)?)?;
             let to = parse_coord(nth(args, 8, usage)?)?;
-            let act_resource = ResourceKind::from_key(nth(args, 9, usage)?)
-                .ok_or_else(|| CliError::Invalid("unknown resource".into()))?;
+            let act_resource = parse_resource_id(nth(args, 9, usage)?)?;
             let act_amount = nth(args, 10, usage)?.to_string();
             expect_end(args, 11)?;
             Ok(Command::AutomationAdd {
@@ -1823,6 +1840,10 @@ fn state_value(state: &GameState, actor: Actor) -> Value {
             "marking": marking_value(state, ClassifiedKind::Plan, &m.id.to_string()),
         })).collect::<Vec<_>>(),
     });
+    value["heat"] = json!({
+        "load": waste.heat_load,
+        "sink": waste.heat_sink,
+    });
     value["victory"] = victory_json(state);
     value["ladder"] = ladder_json(state);
     value["frontier"] = frontier_json(state);
@@ -2151,10 +2172,8 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
             ))),
         },
         "transmute" => {
-            let from = ResourceKind::from_key(nth(args, 1, "transmute <from> <to> <amount>")?)
-                .ok_or_else(|| CliError::Invalid("unknown resource".into()))?;
-            let to = ResourceKind::from_key(nth(args, 2, "transmute <from> <to> <amount>")?)
-                .ok_or_else(|| CliError::Invalid("unknown resource".into()))?;
+            let from = parse_resource_id(nth(args, 1, "transmute <from> <to> <amount>")?)?;
+            let to = parse_resource_id(nth(args, 2, "transmute <from> <to> <amount>")?)?;
             let amount = nth(args, 3, "transmute <from> <to> <amount>")?.to_string();
             expect_end(args, 4)?;
             Ok(Command::Transmute { from, to, amount })
@@ -3228,13 +3247,14 @@ fn parse_mission_command(args: &[String]) -> Result<Command, CliError> {
                     i += 2;
                     continue;
                 }
-                if a == "--iron" || a == "--metal" {
-                    iron = nth(args, i + 1, "mission plan --metal <n>")?.to_string();
+                renamed_resource_flag(a)?;
+                if a == "--iron" {
+                    iron = nth(args, i + 1, "mission plan --iron <n>")?.to_string();
                     i += 2;
                     continue;
                 }
-                if a == "--silicon" || a == "--crystal" {
-                    silicon = nth(args, i + 1, "mission plan --crystal <n>")?.to_string();
+                if a == "--silicon" {
+                    silicon = nth(args, i + 1, "mission plan --silicon <n>")?.to_string();
                     i += 2;
                     continue;
                 }
@@ -3305,12 +3325,11 @@ fn parse_market_command(args: &[String]) -> Result<Command, CliError> {
                 "market order <region> buy|sell <good> <amount>",
             )?)
             .ok_or_else(|| CliError::Invalid("market order needs buy or sell".into()))?;
-            let good = ResourceKind::from_key(nth(
+            let good = parse_resource_id(nth(
                 args,
                 4,
                 "market order <region> buy|sell <good> <amount>",
-            )?)
-            .ok_or_else(|| CliError::Invalid("unknown market good".into()))?;
+            )?)?;
             let amount =
                 nth(args, 5, "market order <region> buy|sell <good> <amount>")?.to_string();
             let mut limit = None;
@@ -3377,13 +3396,14 @@ fn parse_market_command(args: &[String]) -> Result<Command, CliError> {
             let mut i = 4;
             while i < args.len() {
                 let a = args[i].as_str();
-                if a == "--iron" || a == "--metal" {
-                    iron = nth(args, i + 1, "market ship --metal <n>")?.to_string();
+                renamed_resource_flag(a)?;
+                if a == "--iron" {
+                    iron = nth(args, i + 1, "market ship --iron <n>")?.to_string();
                     i += 2;
                     continue;
                 }
-                if a == "--silicon" || a == "--crystal" {
-                    silicon = nth(args, i + 1, "market ship --crystal <n>")?.to_string();
+                if a == "--silicon" {
+                    silicon = nth(args, i + 1, "market ship --silicon <n>")?.to_string();
                     i += 2;
                     continue;
                 }
@@ -3926,7 +3946,7 @@ mod tests {
             "add",
             "stock_below",
             "home",
-            "metal",
+            "iron",
             "2000",
             "queue_build",
             "home",
@@ -3943,7 +3963,7 @@ mod tests {
         let opts = parse_cli(&args(&["goals", "keep"])).unwrap();
         assert_eq!(opts.command, Command::GoalsKeep);
         let opts = parse_cli(&args(&[
-            "market", "order", "home", "buy", "crystal", "10", "--limit", "2",
+            "market", "order", "home", "buy", "silicon", "10", "--limit", "2",
         ]))
         .unwrap();
         assert_eq!(
@@ -3999,7 +4019,7 @@ mod tests {
         let save = unique_save("visible");
         let (value, exit) = run_on(&save, &["--seed=9", "state", "--json"]);
         assert_eq!(exit, EXIT_OK);
-        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["schema_version"], 2);
         assert_eq!(value["ok"], true);
         assert_eq!(value["deterministic"], true);
         assert!(value.get("rng_seed").is_none());
@@ -4019,6 +4039,53 @@ mod tests {
         assert_eq!(value["frontier"]["galaxy"], 2);
         assert_eq!(value["frontier"]["revealed"], 0);
         assert!(value["frontier"]["worlds"].as_array().unwrap().is_empty());
+        let _ = std::fs::remove_file(&save);
+    }
+
+    #[test]
+    fn old_resource_ids_name_the_replacement() {
+        let out = parse_cli(&args(&["market", "order", "home", "buy", "metal", "10"]));
+        let err = match out {
+            Err(CliError::Invalid(msg)) => msg,
+            other => panic!("{other:?}"),
+        };
+        assert!(err.contains("iron"), "{err}");
+        let out = parse_cli(&args(&["market", "order", "home", "buy", "crystal", "10"]));
+        let err = match out {
+            Err(CliError::Invalid(msg)) => msg,
+            other => panic!("{other:?}"),
+        };
+        assert!(err.contains("silicon"), "{err}");
+        let out = parse_cli(&args(&[
+            "mission",
+            "plan",
+            "1:1:8",
+            "--vehicle",
+            "1",
+            "--metal",
+            "10",
+        ]));
+        let err = match out {
+            Err(CliError::Invalid(msg)) => msg,
+            other => panic!("{other:?}"),
+        };
+        assert!(err.contains("--iron"), "{err}");
+        let save = unique_save("materials");
+        let (value, exit) = run_on(&save, &["--seed=1", "state", "--json"]);
+        assert_eq!(exit, EXIT_OK);
+        for key in [
+            "iron",
+            "silicon",
+            "rare_earths",
+            "water_ice",
+            "helium_3",
+            "deuterium",
+        ] {
+            assert!(value["resources"].get(key).is_some(), "missing {key}");
+        }
+        assert!(value["energy"].get("produced").is_some());
+        assert!(value["heat"].get("load").is_some());
+        assert!(value["heat"].get("sink").is_some());
         let _ = std::fs::remove_file(&save);
     }
 

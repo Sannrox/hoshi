@@ -5,7 +5,7 @@
   "required": ["schema_version", "ok"],
   "additionalProperties": true,
   "properties": {
-    "schema_version": { "const": 1, "description": "CLI JSON schema version. Bump on breaking changes." },
+    "schema_version": { "const": 2, "description": "CLI JSON schema version. Bump on breaking changes." },
     "ok": { "type": "boolean" },
     "message": { "type": "string" },
     "now": { "type": "integer", "minimum": 0 },
@@ -24,7 +24,25 @@
       }
     },
     "rates": { "type": "object" },
-    "energy": { "type": "object" },
+    "energy": {
+      "type": "object",
+      "description": "Home energy produced, consumed and the resulting factor, alongside resources.",
+      "required": ["produced", "consumed", "factor"],
+      "properties": {
+        "produced": { "type": "number" },
+        "consumed": { "type": "number" },
+        "factor": { "type": "number" }
+      }
+    },
+    "heat": {
+      "type": "object",
+      "description": "Home heat load versus radiator sink, alongside resources.",
+      "required": ["load", "sink"],
+      "properties": {
+        "load": { "type": "number" },
+        "sink": { "type": "number" }
+      }
+    },
     "waste": {
       "type": "object",
       "description": "Instantaneous heat and pollution load versus sink, plus unrest and the warning flag."

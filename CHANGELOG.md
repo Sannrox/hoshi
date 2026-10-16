@@ -8,6 +8,8 @@
 
 ### Added
 
+- CLI JSON schema_version 2: `state` lists iron, silicon, rare earths, water ice, helium-3 and deuterium plus energy and heat. `metal` and `crystal` arguments error with the replacement id.
+
 - Market mids follow L1 extraction energy (iron 1, silicon 1.5, deuterium 6). `hoshi simulate` reports per-material stock and rates; energy binds before any single material in the default early game.
 
 - Construction stockpiles are iron, silicon, rare earths, water ice, helium-3 and deuterium fuel. Rocky worlds carry iron and rare earths, ice worlds water ice, gas giants helium-3. Old metal/crystal/deuterium saves migrate (schema v40): metal splits 95% iron / 5% rare earths; crystal becomes silicon; deuterium tankage stays fuel. See `docs/realism.md`.
