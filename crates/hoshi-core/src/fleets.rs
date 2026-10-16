@@ -262,7 +262,7 @@ impl fmt::Display for FleetError {
             FleetError::InsufficientCargo { missing } => write!(
                 f,
                 "not enough cargo (missing metal {:.0}, crystal {:.0}, deuterium {:.0})",
-                missing.metal, missing.crystal, missing.deuterium
+                missing.iron, missing.silicon, missing.deuterium
             ),
             FleetError::UnknownPlanet => write!(f, "unknown planet"),
             FleetError::NotOwned => write!(f, "destination is not an owned planet"),

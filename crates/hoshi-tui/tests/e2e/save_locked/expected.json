@@ -226,9 +226,12 @@
     "lands_in_secs": 3600
   },
   "rates": {
-    "crystal": 22.0,
     "deuterium": 0.0,
-    "metal": 33.0
+    "helium_3": 0.0,
+    "iron": 33.0,
+    "rare_earths": 2.4829039272702857,
+    "silicon": 22.0,
+    "water_ice": 0.0
   },
   "research": {
     "current": null,
@@ -266,15 +269,18 @@
     }
   },
   "resources": {
-    "crystal": 477.5,
     "deuterium": 0.0,
-    "metal": 410.0
+    "helium_3": 0.0,
+    "iron": 410.0,
+    "rare_earths": 0.0,
+    "silicon": 477.5,
+    "water_ice": 0.0
   },
   "rivals": {
     "empires": [],
     "enabled": false
   },
-  "save_schema": 39,
+  "save_schema": 40,
   "schema_version": 1,
   "season": null,
   "species": null,

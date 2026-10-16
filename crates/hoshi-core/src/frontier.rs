@@ -624,8 +624,8 @@ mod tests {
             .find(|c| c.coord == world.coord)
             .unwrap()
             .resources
-            .metal;
-        let home_metal = baseline.colonies[0].resources.metal;
+            .iron;
+        let home_metal = baseline.colonies[0].resources.iron;
         assert!(
             front_metal > home_metal + 1.0,
             "frontier {front_metal} vs home {home_metal}"

@@ -59,8 +59,8 @@ pub struct PendingStory {
 pub struct StoryChoice {
     pub id: String,
     pub label: String,
-    pub metal: f64,
-    pub crystal: f64,
+    pub iron: f64,
+    pub silicon: f64,
     pub deuterium: f64,
     pub ships: Vec<(ShipKind, i32)>,
     pub schedule_raid: bool,
@@ -176,10 +176,10 @@ struct FileEvent {
 struct FileChoice {
     id: String,
     label: String,
-    #[serde(default)]
-    metal: f64,
-    #[serde(default)]
-    crystal: f64,
+    #[serde(default, alias = "metal")]
+    iron: f64,
+    #[serde(default, alias = "crystal")]
+    silicon: f64,
     #[serde(default)]
     deuterium: f64,
     #[serde(default)]
@@ -227,8 +227,8 @@ impl FileEvent {
             choices.push(StoryChoice {
                 id: raw.id,
                 label: raw.label,
-                metal: raw.metal,
-                crystal: raw.crystal,
+                iron: raw.iron,
+                silicon: raw.silicon,
                 deuterium: raw.deuterium,
                 ships,
                 schedule_raid: raw.schedule_raid,

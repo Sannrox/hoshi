@@ -37,10 +37,14 @@ Use matter that can exist. Current chain goods already lean this way: iron
 ore, silicon, rare earths, water ice, helium-3, then steel, purified silicon,
 magnets, propellant, fuel, frames and electronics.
 
-Stockpiles that buildings and ships spend (`metal` / `crystal` / `deuterium`,
-also called frames, electronics and fuel) are construction columns. They
-should stay aliases of refined mass, not unnamed magic. Do not add a resource
-whose origin is unexplained.
+Stockpiles that buildings and ships spend are iron, silicon, rare earths,
+water ice, helium-3, and deuterium fuel. Chain goods (ore, steel, purified
+silicon) still sit in the per-planet map; the last construction step credits
+the matching stockpile. Do not add a resource whose origin is unexplained.
+
+Deuterium stays as fuel: it is already-enriched tankage. Natural D/H in water
+ice is about 156 ppm; the synthesizer recipes pay energy and heat for that
+enrichment. Migrated saves keep old deuterium as deuterium, not as ice.
 
 Plausible sources:
 
@@ -182,7 +186,7 @@ silent extra departure; they extend this list.
 | Automation control energy is a flat draw per unlocked route or enabled rule | Models computers and radios without a second power grid; routes still pay transit time. |
 | NPC hub and home books start with a finite guild warehouse | Depth for PlaceOrder without minting player stockpiles; the warehouse does not restock from nothing. |
 | Regional shipments bill fuel and transit from a cargo-capacity flight but leave the parked fleet in place | They model contracted haulers rather than a second fleet object. Catch-up stays event-driven. |
-| Construction stockpiles named metal / crystal / deuterium | Three columns keep the TUI and save small; chains already have real material names underneath. |
+| Construction stockpiles are iron / silicon / rare earths / water ice / helium-3 / deuterium | Names match deposits and chain goods; deuterium is enriched fuel, not a third mystery column. |
 | Solar output ignores orbital radius | Energy is already a cap; radius falloff is a follow-up, not a hidden extra. |
 | Round-based combat with rapid-fire tables | Seeded, short, offline-safe fights. Map new stats onto energy and mass rather than replacing the resolver. |
 | Formation, stance and role modifiers | Light tactics scale the existing resolver; Neutral is identity. Battles never wait for input. |
@@ -198,7 +202,7 @@ silent extra departure; they extend this list.
 These live values disagree with the rules above. They are follow-up work, not
 silent exceptions. Do not "fix" them in an unrelated PR.
 
-- `metal` / `crystal` / `deuterium` labels on planet bonuses and the market
+- Compact TUI abbreviations for six stockpiles at 80 columns
   still read as unnamed substances. Chain goods (`iron_ore`, `silicon`,
   `helium_3`, …) are the physical names.
 - `[solar_plant]` energy does not fall with distance from the star.

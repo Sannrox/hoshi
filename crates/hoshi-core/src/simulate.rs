@@ -18,7 +18,7 @@ pub struct PrestigeSimRow {
     pub bonuses: u32,
     pub first_upgrade_secs: Option<u64>,
     pub metal_mine_level: u32,
-    pub metal: f64,
+    pub iron: f64,
     pub metal_per_hour: f64,
 }
 
@@ -29,8 +29,8 @@ pub struct DaySnapshot {
     pub metal_mine: u32,
     pub crystal_mine: u32,
     pub solar_plant: u32,
-    pub metal: f64,
-    pub crystal: f64,
+    pub iron: f64,
+    pub silicon: f64,
     pub deuterium: f64,
 }
 
@@ -259,7 +259,7 @@ impl SimReport {
                 };
                 out.push_str(&format!(
                     "| {} | {} | {first} | {} | {:.0} | {:.0} |\n",
-                    row.run, row.bonuses, row.metal_mine_level, row.metal, row.metal_per_hour
+                    row.run, row.bonuses, row.metal_mine_level, row.iron, row.metal_per_hour
                 ));
             }
             out.push('\n');
@@ -297,8 +297,8 @@ impl SimReport {
                 row.metal_mine,
                 row.crystal_mine,
                 row.solar_plant,
-                row.metal,
-                row.crystal,
+                row.iron,
+                row.silicon,
                 row.deuterium
             ));
         }
@@ -337,8 +337,8 @@ pub fn simulate_greedy(config: BalanceConfig, days: u32) -> SimReport {
         prestige_row(&run_once(config.clone(), days, false, 1), 2, 1),
         prestige_row(&run_once(config, days, false, 2), 3, 2),
     ];
-    let ratio = if quiet.metal > 1e-9 {
-        busy.metal / quiet.metal
+    let ratio = if quiet.iron > 1e-9 {
+        busy.iron / quiet.iron
     } else {
         f64::INFINITY
     };
@@ -346,8 +346,8 @@ pub fn simulate_greedy(config: BalanceConfig, days: u32) -> SimReport {
         days,
         first_upgrade_secs: quiet.first_upgrade_secs,
         metal_mine_level: quiet.metal_mine,
-        metal_without_bridge: quiet.metal,
-        metal_with_bridge: busy.metal,
+        metal_without_bridge: quiet.iron,
+        metal_with_bridge: busy.iron,
         bridge_metal_ratio: ratio,
         days_log: quiet.days_log,
         pacing,
@@ -458,8 +458,8 @@ pub fn heavy_industry_check(config: &BalanceConfig) -> HeavyIndustryReport {
     HeavyIndustryReport {
         unrest_without: waste_raw.unrest_factor(config.waste.unrest_per_overflow),
         unrest_with: waste_ok.unrest_factor(config.waste.unrest_per_overflow),
-        metal_without: raw.production_per_hour(ResourceKind::Metal),
-        metal_with: mitigated.production_per_hour(ResourceKind::Metal),
+        metal_without: raw.production_per_hour(ResourceKind::Iron),
+        metal_with: mitigated.production_per_hour(ResourceKind::Iron),
         raid_without: waste_raw.raid_ships(config.waste.raid_signature_per_overflow),
         raid_with: waste_ok.raid_ships(config.waste.raid_signature_per_overflow),
     }
@@ -471,7 +471,7 @@ fn prestige_row(run: &Run, index: u32, bonuses: u32) -> PrestigeSimRow {
         bonuses,
         first_upgrade_secs: run.first_upgrade_secs,
         metal_mine_level: run.metal_mine,
-        metal: run.metal,
+        iron: run.iron,
         metal_per_hour: run.metal_per_hour,
     }
 }
@@ -479,7 +479,7 @@ fn prestige_row(run: &Run, index: u32, bonuses: u32) -> PrestigeSimRow {
 struct Run {
     first_upgrade_secs: Option<u64>,
     metal_mine: u32,
-    metal: f64,
+    iron: f64,
     metal_per_hour: f64,
     days_log: Vec<DaySnapshot>,
 }
@@ -494,8 +494,8 @@ fn run_once(mut config: BalanceConfig, days: u32, activity: bool, mine_focus: u3
         state.prestige.owned.insert("mine_focus".into(), mine_focus);
         state.resources = state.config.starting_resources;
         let (metal, crystal, deuterium) = state.prestige.starting_bonus(&state.config.prestige);
-        state.resources.metal += metal;
-        state.resources.crystal += crystal;
+        state.resources.iron += metal;
+        state.resources.silicon += crystal;
         state.resources.deuterium += deuterium;
     }
     let start_buildings = state.buildings;
@@ -550,8 +550,8 @@ fn run_once(mut config: BalanceConfig, days: u32, activity: bool, mine_focus: u3
     Run {
         first_upgrade_secs,
         metal_mine: state.buildings.metal_mine,
-        metal: state.resources.metal,
-        metal_per_hour: state.production_per_hour(ResourceKind::Metal),
+        iron: state.resources.iron,
+        metal_per_hour: state.production_per_hour(ResourceKind::Iron),
         days_log,
     }
 }
@@ -562,8 +562,8 @@ fn snapshot(state: &GameState, day: u32) -> DaySnapshot {
         metal_mine: state.buildings.metal_mine,
         crystal_mine: state.buildings.crystal_mine,
         solar_plant: state.buildings.solar_plant,
-        metal: state.resources.metal,
-        crystal: state.resources.crystal,
+        iron: state.resources.iron,
+        silicon: state.resources.silicon,
         deuterium: state.resources.deuterium,
     }
 }
@@ -571,8 +571,8 @@ fn snapshot(state: &GameState, day: u32) -> DaySnapshot {
 fn simulate_keystones(mut config: BalanceConfig, limit: u64) -> BTreeMap<String, Option<u64>> {
     config.raid = crate::RaidConfig::inactive();
     let mut state = GameState::with_config(0, config);
-    state.resources.metal = 50_000.0;
-    state.resources.crystal = 50_000.0;
+    state.resources.iron = 50_000.0;
+    state.resources.silicon = 50_000.0;
     state.resources.deuterium = 50_000.0;
     let mut reached: BTreeMap<String, Option<u64>> = TechBranch::PLAYABLE
         .iter()
@@ -630,7 +630,7 @@ fn try_research_toward_keystones(state: &mut GameState) {
             continue;
         }
         let cost = spec.cost(state.tech_level(&spec.id));
-        let weight = (cost.metal + cost.crystal + cost.deuterium) as u64;
+        let weight = (cost.iron + cost.silicon + cost.deuterium) as u64;
         let prefer = on_keystone_path(state, &spec.id);
         let rank = if prefer {
             weight
@@ -767,13 +767,13 @@ fn frontier_building_order(state: &GameState) -> Vec<BuildingKind> {
     if projected_buildings(state).deuterium_synthesizer < 4 {
         order.push(BuildingKind::DeuteriumSynthesizer);
     }
-    if frontier_needs_storage(state, ResourceKind::Crystal) {
+    if frontier_needs_storage(state, ResourceKind::Silicon) {
         order.push(BuildingKind::CrystalStorage);
     }
     if frontier_needs_storage(state, ResourceKind::Deuterium) {
         order.push(BuildingKind::DeuteriumStorage);
     }
-    if frontier_needs_storage(state, ResourceKind::Metal) {
+    if frontier_needs_storage(state, ResourceKind::Iron) {
         order.push(BuildingKind::MetalStorage);
     }
     order.extend([
@@ -872,7 +872,7 @@ fn try_research_toward_frontier(state: &mut GameState) {
             _ => continue,
         }
         let cost = spec.cost(have);
-        let weight = (cost.metal + cost.crystal + cost.deuterium) as u64;
+        let weight = (cost.iron + cost.silicon + cost.deuterium) as u64;
         candidates.push((weight, spec.id.clone()));
     }
     candidates.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
@@ -1333,8 +1333,8 @@ fn finish_wonder(
     state.tech_levels.insert("energy".into(), 8);
     boost_industry_for_ladder(&mut state);
     state.evaluate_ladder(state.last_tick_unix);
-    state.resources.metal += 100_000.0;
-    state.resources.crystal += 100_000.0;
+    state.resources.iron += 100_000.0;
+    state.resources.silicon += 100_000.0;
     state.resources.deuterium += 50_000.0;
     if state.start_wonder(&id, state.last_tick_unix).is_err() {
         return VictorySimRow {

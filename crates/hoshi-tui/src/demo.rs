@@ -378,8 +378,8 @@ fn setup_empire(seed: u64) -> GameState {
     cfg.raid.enabled = false;
     cfg.flight.base_fleet_slots = 4;
     let mut state = GameState::with_seed(0, cfg, seed);
-    state.resources.metal = 80_000.0;
-    state.resources.crystal = 40_000.0;
+    state.resources.iron = 80_000.0;
+    state.resources.silicon = 40_000.0;
     state.resources.deuterium = 10_000.0;
     state.tech_levels.insert("colonization".into(), 1);
     state

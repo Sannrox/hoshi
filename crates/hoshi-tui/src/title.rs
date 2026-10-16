@@ -158,8 +158,8 @@ impl SlotStatus {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct AwaySummary {
     pub elapsed_secs: u64,
-    pub metal: f64,
-    pub crystal: f64,
+    pub iron: f64,
+    pub silicon: f64,
     pub deuterium: f64,
     pub builds: u32,
     pub research: u32,
@@ -2418,15 +2418,15 @@ pub fn apply_difficulty(config: &mut hoshi_core::BalanceConfig, difficulty: &str
     if (scale - 1.0).abs() < f64::EPSILON {
         return;
     }
-    config.starting_resources.metal *= scale;
-    config.starting_resources.crystal *= scale;
+    config.starting_resources.iron *= scale;
+    config.starting_resources.silicon *= scale;
     config.starting_resources.deuterium *= scale;
 }
 
 pub struct AwaySnapshot {
     pub tick: u64,
-    pub metal: f64,
-    pub crystal: f64,
+    pub iron: f64,
+    pub silicon: f64,
     pub deuterium: f64,
     pub builds: u32,
     pub research: u32,
@@ -2439,8 +2439,8 @@ pub struct AwaySnapshot {
 pub fn snapshot_away(state: &hoshi_core::GameState) -> AwaySnapshot {
     AwaySnapshot {
         tick: state.last_tick_unix,
-        metal: state.resources.metal,
-        crystal: state.resources.crystal,
+        iron: state.resources.iron,
+        silicon: state.resources.silicon,
         deuterium: state.resources.deuterium,
         builds: building_levels(state),
         research: research_levels(state),
@@ -2466,8 +2466,8 @@ pub fn summarize_away(before: &AwaySnapshot, after: &hoshi_core::GameState) -> A
     let raids = new_events.iter().filter(|t| t.contains("raid")).count() as u32;
     AwaySummary {
         elapsed_secs: after.last_tick_unix.saturating_sub(before.tick),
-        metal: after.resources.metal - before.metal,
-        crystal: after.resources.crystal - before.crystal,
+        iron: after.resources.iron - before.iron,
+        silicon: after.resources.silicon - before.silicon,
         deuterium: after.resources.deuterium - before.deuterium,
         builds: after_building_levels(after).saturating_sub(before.builds),
         research: after

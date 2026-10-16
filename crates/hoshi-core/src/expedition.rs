@@ -206,17 +206,17 @@ pub fn roll_expedition(
         ExpeditionKind::Nothing => ExpeditionResult::Nothing,
         ExpeditionKind::Resources => {
             let scale = 0.5 + (next_u64(&mut rng) % 1001) as f64 / 1000.0;
-            ExpeditionResult::Resources(Resources {
-                metal: (points * cfg.metal_per_point * scale * cfg.reward_mult.max(0.0))
+            ExpeditionResult::Resources(Resources::from_parts(
+                (points * cfg.metal_per_point * scale * cfg.reward_mult.max(0.0))
                     .floor()
                     .max(1.0),
-                crystal: (points * cfg.crystal_per_point * scale * cfg.reward_mult.max(0.0))
+                (points * cfg.crystal_per_point * scale * cfg.reward_mult.max(0.0))
                     .floor()
                     .max(0.0),
-                deuterium: (points * cfg.deuterium_per_point * scale * cfg.reward_mult.max(0.0))
+                (points * cfg.deuterium_per_point * scale * cfg.reward_mult.max(0.0))
                     .floor()
                     .max(0.0),
-            })
+            ))
         }
         ExpeditionKind::Ships => {
             let n = ((points * cfg.ships_per_point * cfg.reward_mult.max(0.0)).floor() as u32)

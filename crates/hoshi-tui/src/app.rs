@@ -70,12 +70,12 @@ struct ReplayView {
 }
 
 const TRADE_PAIRS: [(ResourceKind, ResourceKind); 6] = [
-    (ResourceKind::Metal, ResourceKind::Crystal),
-    (ResourceKind::Metal, ResourceKind::Deuterium),
-    (ResourceKind::Crystal, ResourceKind::Metal),
-    (ResourceKind::Crystal, ResourceKind::Deuterium),
-    (ResourceKind::Deuterium, ResourceKind::Metal),
-    (ResourceKind::Deuterium, ResourceKind::Crystal),
+    (ResourceKind::Iron, ResourceKind::Silicon),
+    (ResourceKind::Iron, ResourceKind::Deuterium),
+    (ResourceKind::Silicon, ResourceKind::Iron),
+    (ResourceKind::Silicon, ResourceKind::Deuterium),
+    (ResourceKind::Deuterium, ResourceKind::Iron),
+    (ResourceKind::Deuterium, ResourceKind::Silicon),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1175,7 +1175,7 @@ impl App {
             Line::from(format!("elapsed {}s", away.elapsed_secs)),
             Line::from(format!(
                 "resources +{:.0} metal +{:.0} crystal +{:.0} deuterium",
-                away.metal, away.crystal, away.deuterium
+                away.iron, away.silicon, away.deuterium
             )),
             Line::from(format!(
                 "builds {}  research {}  fleets returned {}  expeditions {}  raids {}",
@@ -1778,8 +1778,8 @@ impl App {
     fn header_lines(&self) -> Vec<Line<'static>> {
         let s = &self.state;
         let mut lines = vec![
-            resource_line("Metal", s, ResourceKind::Metal),
-            resource_line("Crystal", s, ResourceKind::Crystal),
+            resource_line("Metal", s, ResourceKind::Iron),
+            resource_line("Crystal", s, ResourceKind::Silicon),
             resource_line("Deuterium", s, ResourceKind::Deuterium),
             Line::from(format!(
                 "Energy     {:>7.0} / {:.0}  bal {:+.0}",
@@ -2264,8 +2264,8 @@ impl App {
                 rows.push(Line::from(format!(
                     "Active {name}  stage {}/{total}  need M{:.0} C{:.0} D{:.0}  eta {eta}",
                     job.stage + 1,
-                    remaining.metal,
-                    remaining.crystal,
+                    remaining.iron,
+                    remaining.silicon,
                     remaining.deuterium
                 )));
             }
@@ -2770,15 +2770,15 @@ impl App {
         let mut rows = vec![
             Line::from(format!(
                 "Prices  metal {:.3}  crystal {:.3}  deuterium {:.3}",
-                market.metal, market.crystal, market.deuterium
+                market.iron, market.silicon, market.deuterium
             )),
             Line::from(format!(
                 "metal     {}",
-                sparkline(market.history(ResourceKind::Metal), 24)
+                sparkline(market.history(ResourceKind::Iron), 24)
             )),
             Line::from(format!(
                 "crystal   {}",
-                sparkline(market.history(ResourceKind::Crystal), 24)
+                sparkline(market.history(ResourceKind::Silicon), 24)
             )),
             Line::from(format!(
                 "deuterium {}",
@@ -2824,7 +2824,7 @@ impl App {
         if let Some(region) = self.state.board.regions.get(&self.state.home) {
             rows.push(Line::from(format!(
                 "home book  crystal {}  deut {}",
-                sparkline(region.history(ResourceKind::Crystal), 16),
+                sparkline(region.history(ResourceKind::Silicon), 16),
                 sparkline(region.history(ResourceKind::Deuterium), 16)
             )));
         }
@@ -3044,7 +3044,7 @@ impl App {
             rows.push(Line::from("Rivals:"));
             for row in self.state.rival_intel() {
                 let stock = match row.resources {
-                    Some(r) => format!("  {:.0}M {:.0}C {:.0}D", r.metal, r.crystal, r.deuterium),
+                    Some(r) => format!("  {:.0}M {:.0}C {:.0}D", r.iron, r.silicon, r.deuterium),
                     None => String::new(),
                 };
                 let fleet = match row.fleet {
@@ -3267,7 +3267,7 @@ impl App {
             hoshi_core::RuleCondition {
                 kind: hoshi_core::RuleConditionKind::StockBelow,
                 planet: self.state.home,
-                resource: ResourceKind::Metal,
+                resource: ResourceKind::Iron,
                 amount: 2_000.0,
             },
             hoshi_core::RuleAction::QueueBuild {
@@ -3485,7 +3485,7 @@ impl App {
                     Some(snap) => {
                         lines.push(Line::from(format!(
                             "M{:.0} C{:.0} D{:.0}  energy {:.0}  heat {:.0}",
-                            snap.metal, snap.crystal, snap.deuterium, snap.energy, snap.heat
+                            snap.iron, snap.silicon, snap.deuterium, snap.energy, snap.heat
                         )));
                         lines.push(Line::from(format!(
                             "home {}  buildings {}",
@@ -3561,7 +3561,7 @@ impl App {
                 };
                 Line::from(format!(
                     "{mark} {coord}  M{:.0} C{:.0} D{:.0}  {active}{moon}",
-                    res.metal, res.crystal, res.deuterium
+                    res.iron, res.silicon, res.deuterium
                 ))
             })
             .collect()
@@ -3670,7 +3670,7 @@ fn report_overlay_lines(report: &SpyReport, now: u64) -> Vec<Line<'static>> {
     if let Some(res) = report.resources {
         lines.push(Line::from(format!(
             "resources M{:.0} C{:.0} D{:.0}",
-            res.metal, res.crystal, res.deuterium
+            res.iron, res.silicon, res.deuterium
         )));
     }
     if let Some(fleet) = report.fleet {
@@ -3704,17 +3704,17 @@ fn fleet_brief(fleet: Fleet) -> String {
 fn cost_label(cost: Resources) -> String {
     format!(
         "M{:.0} C{:.0} D{:.0}",
-        cost.metal, cost.crystal, cost.deuterium
+        cost.iron, cost.silicon, cost.deuterium
     )
 }
 
 fn missing_label(missing: Resources) -> String {
     let mut parts = Vec::new();
-    if missing.metal > 0.5 {
-        parts.push(format!("M{:.0}", missing.metal));
+    if missing.iron > 0.5 {
+        parts.push(format!("M{:.0}", missing.iron));
     }
-    if missing.crystal > 0.5 {
-        parts.push(format!("C{:.0}", missing.crystal));
+    if missing.silicon > 0.5 {
+        parts.push(format!("C{:.0}", missing.silicon));
     }
     if missing.deuterium > 0.5 {
         parts.push(format!("D{:.0}", missing.deuterium));
@@ -3872,7 +3872,7 @@ mod tests {
         let mut app = App::new(GameState::new(1_000));
         app.set_away(crate::title::AwaySummary {
             elapsed_secs: 120,
-            metal: 10.0,
+            iron: 10.0,
             builds: 1,
             events: vec!["raid: lost".into()],
             ..crate::title::AwaySummary::default()
@@ -3968,8 +3968,8 @@ mod tests {
     fn tree_view_queues_research_from_the_keyboard() {
         let mut state = GameState::new(1_000);
         state.buildings.research_lab = 1;
-        state.resources.metal = 10_000.0;
-        state.resources.crystal = 10_000.0;
+        state.resources.iron = 10_000.0;
+        state.resources.silicon = 10_000.0;
         state.resources.deuterium = 10_000.0;
         let mut app = App::new(state);
         let energy = app
@@ -4118,8 +4118,8 @@ mod tests {
     fn start_build_and_research_from_keys_and_countdowns_tick() {
         let clock = FakeClock::new(1_000);
         let mut state = GameState::new(clock.now_unix());
-        state.resources.metal = 10_000.0;
-        state.resources.crystal = 10_000.0;
+        state.resources.iron = 10_000.0;
+        state.resources.silicon = 10_000.0;
         state.resources.deuterium = 10_000.0;
         state.buildings.research_lab = 1;
         let mut app = App::new(state);
@@ -4253,8 +4253,8 @@ mod tests {
         let mut state = GameState::new(1_000);
         state.buildings.shipyard = 1;
         state.tech_levels.insert("combustion_drive".into(), 1);
-        state.resources.metal = 100_000.0;
-        state.resources.crystal = 100_000.0;
+        state.resources.iron = 100_000.0;
+        state.resources.silicon = 100_000.0;
         state.resources.deuterium = 100_000.0;
         state.fleet.add(ShipKind::LightFighter, 4);
         state.fleet.add(ShipKind::HeavyFighter, 2);
@@ -4333,8 +4333,8 @@ mod tests {
         let mut state = GameState::new(1_000);
         state.buildings.shipyard = 1;
         state.tech_levels.insert("combustion_drive".into(), 1);
-        state.resources.metal = 100_000.0;
-        state.resources.crystal = 100_000.0;
+        state.resources.iron = 100_000.0;
+        state.resources.silicon = 100_000.0;
         state.resources.deuterium = 100_000.0;
         let mut app = App::new(state);
         app.handle_key(KeyCode::Tab, 1_000);
@@ -4381,8 +4381,8 @@ mod tests {
     fn shipyard_lists_defences_and_queues_a_cannon() {
         let mut state = GameState::new(1_000);
         state.buildings.shipyard = 1;
-        state.resources.metal = 100_000.0;
-        state.resources.crystal = 100_000.0;
+        state.resources.iron = 100_000.0;
+        state.resources.silicon = 100_000.0;
         state.resources.deuterium = 100_000.0;
         let mut app = App::new(state);
         open_shipyard(&mut app, 1_000);
@@ -4439,18 +4439,14 @@ mod tests {
             position: 2,
         };
         let mut state = GameState::new(1_000);
-        state.resources.metal = 10_000.0;
-        state.resources.crystal = 10_000.0;
+        state.resources.iron = 10_000.0;
+        state.resources.silicon = 10_000.0;
         state.resources.deuterium = 10_000.0;
         state.colonies.push(Colony {
             coord: dest,
             kind: PlanetType::Rocky,
             size: 120,
-            resources: Resources {
-                metal: 10_000.0,
-                crystal: 10_000.0,
-                deuterium: 10_000.0,
-            },
+            resources: Resources::from_parts(10_000.0, 10_000.0, 10_000.0),
             buildings: Buildings::default(),
             fleet: Fleet::default(),
             defences: hoshi_core::DefenceGrid::default(),
@@ -4505,7 +4501,7 @@ mod tests {
         let text = render_text(&app, 100, 32);
         assert!(text.contains("Planet 1:1:2"), "{text}");
         assert!(text.contains("Rare: Rich vein"), "{text}");
-        assert!(text.contains("metal +25%"), "{text}");
+        assert!(text.contains("iron +25%"), "{text}");
     }
 
     #[test]
@@ -4554,8 +4550,8 @@ mod tests {
         state.buildings.metal_storage = 10;
         state.buildings.crystal_storage = 10;
         state.buildings.deuterium_storage = 10;
-        state.resources.metal = 1_000.0;
-        state.resources.crystal = 500.0;
+        state.resources.iron = 1_000.0;
+        state.resources.silicon = 500.0;
         state.resources.deuterium = 2_000.0;
         let mut app = App::new(state);
         app.handle_key(KeyCode::Tab, 1_000);
@@ -4571,7 +4567,7 @@ mod tests {
         assert!(text.contains("[wonder]"), "{text}");
         assert!(text.contains("Dyson ring"), "{text}");
         assert!(
-            text.contains(&format!("need M{:.0}", remaining.metal)),
+            text.contains(&format!("need M{:.0}", remaining.iron)),
             "{text}"
         );
         assert!(text.contains(&format!("eta {eta}s")), "{text}");
@@ -4678,7 +4674,7 @@ mod tests {
                 hoshi_core::RuleCondition {
                     kind: hoshi_core::RuleConditionKind::StockBelow,
                     planet: state.home,
-                    resource: ResourceKind::Metal,
+                    resource: ResourceKind::Iron,
                     amount: 2_000.0,
                 },
                 hoshi_core::RuleAction::QueueBuild {
@@ -4837,7 +4833,7 @@ mod tests {
     #[test]
     fn market_screen_shows_prices_sparkline_and_trade_preview() {
         let mut state = GameState::new(1_000);
-        state.resources.metal = 1_000.0;
+        state.resources.iron = 1_000.0;
         let mut app = App::new(state);
         for _ in 0..9 {
             app.handle_key(KeyCode::Tab, 1_000);
@@ -4854,10 +4850,10 @@ mod tests {
         app.handle_key(KeyCode::Char('+'), 1_000);
         let text = render_text(&app, 100, 32);
         assert!(text.contains("amount 20"), "{text}");
-        let before = app.state.resources.metal;
+        let before = app.state.resources.iron;
         app.handle_key(KeyCode::Enter, 1_000);
         assert!(
-            app.state.resources.metal < before,
+            app.state.resources.iron < before,
             "trade should spend metal"
         );
     }
@@ -4865,7 +4861,7 @@ mod tests {
     #[test]
     fn diplomacy_screen_shows_standing_next_tier_and_pays_tribute() {
         let mut state = GameState::new(1_000);
-        state.resources.metal = 1_000.0;
+        state.resources.iron = 1_000.0;
         let mut app = App::new(state);
         for _ in 0..10 {
             app.handle_key(KeyCode::Tab, 1_000);
@@ -5501,8 +5497,8 @@ mod tests {
     #[test]
     fn cockpit_late_game_render_stays_under_budget() {
         let mut state = GameState::new(1_000);
-        state.resources.metal = 80_000.0;
-        state.resources.crystal = 40_000.0;
+        state.resources.iron = 80_000.0;
+        state.resources.silicon = 40_000.0;
         state.buildings.metal_mine = 20;
         for i in 0..8u16 {
             state.colonies.push(hoshi_core::Colony {
@@ -5624,8 +5620,8 @@ mod tests {
         cfg.starting_buildings.crystal_mine = 0;
         cfg.starting_buildings.deuterium_synthesizer = 0;
         cfg.starting_buildings.solar_plant = 0;
-        cfg.starting_resources.metal = 0.0;
-        cfg.starting_resources.crystal = 0.0;
+        cfg.starting_resources.iron = 0.0;
+        cfg.starting_resources.silicon = 0.0;
         cfg.starting_resources.deuterium = 0.0;
         let mut app = App::new(GameState::with_config(0, cfg));
         app.portraits.enabled = false;

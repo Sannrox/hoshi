@@ -142,8 +142,8 @@ impl LadderConfig {
                 )));
             }
             for (label, value) in [
-                ("reward_metal", tier.reward.metal),
-                ("reward_crystal", tier.reward.crystal),
+                ("reward_metal", tier.reward.iron),
+                ("reward_crystal", tier.reward.silicon),
                 ("reward_deuterium", tier.reward.deuterium),
             ] {
                 if !value.is_finite() || value < 0.0 {
@@ -212,11 +212,11 @@ impl File {
                     goods: row.goods,
                     energy: row.energy,
                     routes: row.routes,
-                    reward: Resources {
-                        metal: row.reward_metal,
-                        crystal: row.reward_crystal,
-                        deuterium: row.reward_deuterium,
-                    },
+                    reward: Resources::from_parts(
+                        row.reward_metal,
+                        row.reward_crystal,
+                        row.reward_deuterium,
+                    ),
                 })
                 .collect(),
         };
@@ -486,7 +486,7 @@ mod tests {
                 "wonder_supply"
             ]
         );
-        assert!(state.resources.metal > 0.0);
+        assert!(state.resources.iron > 0.0);
         assert!(
             state
                 .events
@@ -519,15 +519,15 @@ mod tests {
             step.catch_up(t);
         }
         assert_eq!(gap.ladder.completed, step.ladder.completed);
-        assert_eq!(gap.resources.metal, step.resources.metal);
+        assert_eq!(gap.resources.iron, step.resources.iron);
     }
 
     #[test]
     fn dyson_ring_needs_wonder_supply_rates() {
         let mut state = GameState::with_config(0, quiet_config());
         state.tech_levels.insert("energy".into(), 8);
-        state.resources.metal = 50_000.0;
-        state.resources.crystal = 50_000.0;
+        state.resources.iron = 50_000.0;
+        state.resources.silicon = 50_000.0;
         state.resources.deuterium = 10_000.0;
         let err = state.start_wonder("dyson_ring", 0).unwrap_err();
         assert!(
@@ -541,11 +541,11 @@ mod tests {
         state.buildings.deuterium_storage = 10;
         state.evaluate_ladder(0);
         state.start_wonder("dyson_ring", 0).unwrap();
-        state.resources.metal = 50_000.0;
-        state.resources.crystal = 50_000.0;
+        state.resources.iron = 50_000.0;
+        state.resources.silicon = 50_000.0;
         state.resources.deuterium = 10_000.0;
         let paid = state.contribute_wonder(state.home, 0).unwrap();
-        assert!(paid.metal > 0.0);
+        assert!(paid.iron > 0.0);
     }
 
     #[test]

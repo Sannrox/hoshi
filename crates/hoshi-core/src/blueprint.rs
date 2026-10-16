@@ -396,8 +396,8 @@ mod tests {
     #[test]
     fn apply_queues_only_missing_levels_in_power_then_extract_order() {
         let mut state = GameState::with_config(0, quiet());
-        state.resources.metal = 50_000.0;
-        state.resources.crystal = 50_000.0;
+        state.resources.iron = 50_000.0;
+        state.resources.silicon = 50_000.0;
         state.resources.deuterium = 50_000.0;
         state.buildings.solar_plant = 1;
         let bp = Blueprint {
@@ -420,8 +420,8 @@ mod tests {
     #[test]
     fn mismatches_are_listed_and_those_buildings_are_not_queued() {
         let mut cfg = quiet();
-        cfg.starting_resources.metal = 50_000.0;
-        cfg.starting_resources.crystal = 50_000.0;
+        cfg.starting_resources.iron = 50_000.0;
+        cfg.starting_resources.silicon = 50_000.0;
         let mut state = GameState::with_config(0, cfg);
         let dest = Coord {
             galaxy: 1,
@@ -432,11 +432,7 @@ mod tests {
             coord: dest,
             kind: PlanetType::Ice,
             size: 80,
-            resources: Resources {
-                metal: 50_000.0,
-                crystal: 50_000.0,
-                deuterium: 0.0,
-            },
+            resources: Resources::from_parts(50_000.0, 50_000.0, 0.0),
             buildings: Buildings::default(),
             fleet: Fleet::default(),
             defences: DefenceGrid::default(),

@@ -58,95 +58,187 @@ pub struct LogisticsGlance {
     pub completed: Vec<String>,
 }
 
-/// Stored resources. Energy is a balance, not a stockpile.
+/// Stored construction materials. Energy is a balance, not a stockpile.
+///
+/// Deuterium is kept as already-enriched fusion/rocket fuel. Water ice is the
+/// feedstock; the synthesizer pays energy and heat to enrich it (natural D/H
+/// in terrestrial ice is about 156 ppm). Helium-3 is a separate giant-planet
+/// and regolith product, not a deuterium substitute.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Resources {
-    pub metal: f64,
-    pub crystal: f64,
+    pub iron: f64,
+    pub silicon: f64,
+    pub rare_earths: f64,
+    pub water_ice: f64,
+    pub helium_3: f64,
     pub deuterium: f64,
 }
 
 impl Resources {
     pub const ZERO: Self = Self {
-        metal: 0.0,
-        crystal: 0.0,
+        iron: 0.0,
+        silicon: 0.0,
+        rare_earths: 0.0,
+        water_ice: 0.0,
+        helium_3: 0.0,
         deuterium: 0.0,
     };
 
+    /// Construction triple used by most costs: iron, silicon, deuterium fuel.
+    pub const fn from_parts(iron: f64, silicon: f64, deuterium: f64) -> Self {
+        Self {
+            iron,
+            silicon,
+            rare_earths: 0.0,
+            water_ice: 0.0,
+            helium_3: 0.0,
+            deuterium,
+        }
+    }
+
+    /// Map a pre-v40 metal/crystal/deuterium triple onto the material set.
+    /// Metal mass is split 95% iron / 5% rare earths. Crystal is silicon.
+    /// Deuterium tankage was already fuel, so it stays deuterium (not ice).
+    pub fn from_legacy(metal: f64, crystal: f64, deuterium: f64) -> Self {
+        Self {
+            iron: metal * 0.95,
+            silicon: crystal,
+            rare_earths: metal * 0.05,
+            water_ice: 0.0,
+            helium_3: 0.0,
+            deuterium,
+        }
+    }
+
+    pub fn total(self) -> f64 {
+        self.iron
+            + self.silicon
+            + self.rare_earths
+            + self.water_ice
+            + self.helium_3
+            + self.deuterium
+    }
+
+    pub fn with_fuel(mut self, fuel: f64) -> Self {
+        self.deuterium += fuel;
+        self
+    }
+
+    pub fn is_finite_nonneg(self) -> bool {
+        ResourceKind::ALL.iter().all(|&kind| {
+            let v = self.get(kind);
+            v.is_finite() && v >= 0.0
+        })
+    }
+
     pub fn get(self, kind: ResourceKind) -> f64 {
         match kind {
-            ResourceKind::Metal => self.metal,
-            ResourceKind::Crystal => self.crystal,
+            ResourceKind::Iron => self.iron,
+            ResourceKind::Silicon => self.silicon,
+            ResourceKind::RareEarths => self.rare_earths,
+            ResourceKind::WaterIce => self.water_ice,
+            ResourceKind::Helium3 => self.helium_3,
             ResourceKind::Deuterium => self.deuterium,
         }
     }
 
     pub fn set(&mut self, kind: ResourceKind, value: f64) {
         match kind {
-            ResourceKind::Metal => self.metal = value,
-            ResourceKind::Crystal => self.crystal = value,
+            ResourceKind::Iron => self.iron = value,
+            ResourceKind::Silicon => self.silicon = value,
+            ResourceKind::RareEarths => self.rare_earths = value,
+            ResourceKind::WaterIce => self.water_ice = value,
+            ResourceKind::Helium3 => self.helium_3 = value,
             ResourceKind::Deuterium => self.deuterium = value,
         }
     }
 
     pub fn saturating_add(self, other: Self) -> Self {
         Self {
-            metal: self.metal + other.metal,
-            crystal: self.crystal + other.crystal,
+            iron: self.iron + other.iron,
+            silicon: self.silicon + other.silicon,
+            rare_earths: self.rare_earths + other.rare_earths,
+            water_ice: self.water_ice + other.water_ice,
+            helium_3: self.helium_3 + other.helium_3,
             deuterium: self.deuterium + other.deuterium,
         }
     }
 
     pub fn saturating_sub(self, other: Self) -> Self {
         Self {
-            metal: (self.metal - other.metal).max(0.0),
-            crystal: (self.crystal - other.crystal).max(0.0),
+            iron: (self.iron - other.iron).max(0.0),
+            silicon: (self.silicon - other.silicon).max(0.0),
+            rare_earths: (self.rare_earths - other.rare_earths).max(0.0),
+            water_ice: (self.water_ice - other.water_ice).max(0.0),
+            helium_3: (self.helium_3 - other.helium_3).max(0.0),
             deuterium: (self.deuterium - other.deuterium).max(0.0),
         }
     }
 
     pub fn missing(self, cost: Self) -> Self {
         Self {
-            metal: (cost.metal - self.metal).max(0.0),
-            crystal: (cost.crystal - self.crystal).max(0.0),
+            iron: (cost.iron - self.iron).max(0.0),
+            silicon: (cost.silicon - self.silicon).max(0.0),
+            rare_earths: (cost.rare_earths - self.rare_earths).max(0.0),
+            water_ice: (cost.water_ice - self.water_ice).max(0.0),
+            helium_3: (cost.helium_3 - self.helium_3).max(0.0),
             deuterium: (cost.deuterium - self.deuterium).max(0.0),
         }
     }
 
     pub fn can_afford(self, cost: Self) -> bool {
-        self.metal + 1e-9 >= cost.metal
-            && self.crystal + 1e-9 >= cost.crystal
-            && self.deuterium + 1e-9 >= cost.deuterium
+        ResourceKind::ALL
+            .iter()
+            .all(|&kind| self.get(kind) + 1e-9 >= cost.get(kind))
     }
 }
 
-/// Stockpiled resource kinds. Energy is computed, not stored.
+/// Stockpiled construction materials. Energy is computed, not stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResourceKind {
-    Metal,
-    Crystal,
+    Iron,
+    Silicon,
+    RareEarths,
+    WaterIce,
+    Helium3,
     Deuterium,
 }
 
 impl ResourceKind {
-    pub const ALL: [ResourceKind; 3] = [
-        ResourceKind::Metal,
-        ResourceKind::Crystal,
+    pub const ALL: [ResourceKind; 6] = [
+        ResourceKind::Iron,
+        ResourceKind::Silicon,
+        ResourceKind::RareEarths,
+        ResourceKind::WaterIce,
+        ResourceKind::Helium3,
+        ResourceKind::Deuterium,
+    ];
+
+    /// Distinct market price/history slots. Extra materials share these quotes.
+    pub const QUOTED: [ResourceKind; 3] = [
+        ResourceKind::Iron,
+        ResourceKind::Silicon,
         ResourceKind::Deuterium,
     ];
 
     pub fn as_key(self) -> &'static str {
         match self {
-            ResourceKind::Metal => "metal",
-            ResourceKind::Crystal => "crystal",
+            ResourceKind::Iron => "iron",
+            ResourceKind::Silicon => "silicon",
+            ResourceKind::RareEarths => "rare_earths",
+            ResourceKind::WaterIce => "water_ice",
+            ResourceKind::Helium3 => "helium_3",
             ResourceKind::Deuterium => "deuterium",
         }
     }
 
     pub fn from_key(key: &str) -> Option<Self> {
         match key {
-            "metal" => Some(ResourceKind::Metal),
-            "crystal" => Some(ResourceKind::Crystal),
+            "iron" | "metal" => Some(ResourceKind::Iron),
+            "silicon" | "crystal" => Some(ResourceKind::Silicon),
+            "rare_earths" => Some(ResourceKind::RareEarths),
+            "water_ice" => Some(ResourceKind::WaterIce),
+            "helium_3" => Some(ResourceKind::Helium3),
             "deuterium" => Some(ResourceKind::Deuterium),
             _ => None,
         }
@@ -154,9 +246,24 @@ impl ResourceKind {
 
     pub fn label(self) -> &'static str {
         match self {
-            ResourceKind::Metal => "metal",
-            ResourceKind::Crystal => "crystal",
+            ResourceKind::Iron => "iron",
+            ResourceKind::Silicon => "silicon",
+            ResourceKind::RareEarths => "rare earths",
+            ResourceKind::WaterIce => "water ice",
+            ResourceKind::Helium3 => "helium-3",
             ResourceKind::Deuterium => "deuterium",
+        }
+    }
+
+    /// Storage building that holds this stockpile.
+    pub fn storage_building(self) -> crate::buildings::BuildingKind {
+        use crate::buildings::BuildingKind::*;
+        match self {
+            ResourceKind::Iron | ResourceKind::RareEarths => MetalStorage,
+            ResourceKind::Silicon => CrystalStorage,
+            ResourceKind::WaterIce | ResourceKind::Helium3 | ResourceKind::Deuterium => {
+                DeuteriumStorage
+            }
         }
     }
 }
@@ -165,8 +272,8 @@ struct ChainSite<'a> {
     buildings: Buildings,
     planet: PlanetType,
     coord: Coord,
-    extra_metal: f64,
-    extra_crystal: f64,
+    extra_iron: f64,
+    extra_silicon: f64,
     extra_deut: f64,
     energy_factor: f64,
     boost: f64,
@@ -1233,7 +1340,7 @@ impl GameState {
         };
         let from_level = projected_on(&buildings, &queue, kind, queue.len());
         let cost = self.config.buildings.get(kind).cost(from_level);
-        let spend = cost.metal + cost.crystal + cost.deuterium;
+        let spend = cost.iron + cost.silicon + cost.deuterium;
         self.authorize(actor, crate::Permission::QueueBuild, Some(coord), spend)
             .map_err(|err| BuildError::PermissionDenied(err.to_string()))?;
         let now = self.last_tick_unix;
@@ -1511,7 +1618,7 @@ impl GameState {
             objects: vec![tech.to_string()],
             inputs: format!(
                 "M{:.0} C{:.0} D{:.0}",
-                cost.metal, cost.crystal, cost.deuterium
+                cost.iron, cost.silicon, cost.deuterium
             ),
             outcome: "started".into(),
             cause_key: Some(format!("research:{tech}")),
@@ -1559,11 +1666,7 @@ impl GameState {
         }
         let unit = spec.unit_cost();
         let n = f64::from(count);
-        let cost = Resources {
-            metal: unit.metal * n,
-            crystal: unit.crystal * n,
-            deuterium: unit.deuterium * n,
-        };
+        let cost = Resources::from_parts(unit.iron * n, unit.silicon * n, unit.deuterium * n);
         if !self.resources.can_afford(cost) {
             return Err(ShipError::InsufficientResources {
                 missing: self.resources.missing(cost),
@@ -1623,11 +1726,7 @@ impl GameState {
         }
         let unit = spec.unit_cost();
         let n = f64::from(count);
-        let cost = Resources {
-            metal: unit.metal * n,
-            crystal: unit.crystal * n,
-            deuterium: unit.deuterium * n,
-        };
+        let cost = Resources::from_parts(unit.iron * n, unit.silicon * n, unit.deuterium * n);
         if !self.resources.can_afford(cost) {
             return Err(ShipError::InsufficientResources {
                 missing: self.resources.missing(cost),
@@ -1652,11 +1751,7 @@ impl GameState {
     pub fn defence_cost(&self, kind: DefenceKind, count: u32) -> Resources {
         let unit = self.config.defences.get(kind).unit_cost();
         let n = f64::from(count);
-        Resources {
-            metal: unit.metal * n,
-            crystal: unit.crystal * n,
-            deuterium: unit.deuterium * n,
-        }
+        Resources::from_parts(unit.iron * n, unit.silicon * n, unit.deuterium * n)
     }
 
     pub fn cancel_ships(&mut self, index: usize, now_unix: u64) -> Result<Resources, ShipError> {
@@ -1678,11 +1773,11 @@ impl GameState {
         }
         let job = self.ship_queue.remove(index);
         let n = f64::from(job.remaining);
-        let refund = Resources {
-            metal: job.unit_paid.metal * n,
-            crystal: job.unit_paid.crystal * n,
-            deuterium: job.unit_paid.deuterium * n,
-        };
+        let refund = Resources::from_parts(
+            job.unit_paid.iron * n,
+            job.unit_paid.silicon * n,
+            job.unit_paid.deuterium * n,
+        );
         self.resources = self.resources.saturating_add(refund);
         if index == 0 {
             self.start_ship_head(now);
@@ -1698,11 +1793,11 @@ impl GameState {
             .as_ref()
             .map(|run| run.ship_cost)
             .unwrap_or(1.0);
-        Resources {
-            metal: unit.metal * n * mult,
-            crystal: unit.crystal * n * mult,
-            deuterium: unit.deuterium * n * mult,
-        }
+        Resources::from_parts(
+            unit.iron * n * mult,
+            unit.silicon * n * mult,
+            unit.deuterium * n * mult,
+        )
     }
 
     /// Ships queue at home. A rare shipyard-world bonus on any owned planet
@@ -1970,14 +2065,11 @@ impl GameState {
     }
 
     pub(crate) fn cargo_mass(cargo: Resources) -> f64 {
-        cargo.metal + cargo.crystal + cargo.deuterium
+        cargo.total()
     }
 
     fn check_cargo(cargo: Resources) -> Result<(), FleetError> {
-        let ok = [cargo.metal, cargo.crystal, cargo.deuterium]
-            .into_iter()
-            .all(|n| n.is_finite() && n >= 0.0);
-        if ok {
+        if cargo.is_finite_nonneg() {
             Ok(())
         } else {
             Err(FleetError::InvalidCargo)
@@ -2007,23 +2099,17 @@ impl GameState {
             self.credit_capped(found);
             return;
         }
-        if let Some(colony) = self.colonies.iter_mut().find(|c| c.coord == coord) {
-            let config = &self.config;
-            colony.resources.metal = (colony.resources.metal + found.metal).min(
-                config
-                    .metal_storage
-                    .capacity(colony.buildings.metal_storage),
-            );
-            colony.resources.crystal = (colony.resources.crystal + found.crystal).min(
-                config
-                    .crystal_storage
-                    .capacity(colony.buildings.crystal_storage),
-            );
-            colony.resources.deuterium = (colony.resources.deuterium + found.deuterium).min(
-                config
-                    .deuterium_storage
-                    .capacity(colony.buildings.deuterium_storage),
-            );
+        if self.colonies.iter().any(|c| c.coord == coord) {
+            let caps: [(ResourceKind, f64); 6] =
+                ResourceKind::ALL.map(|kind| (kind, self.storage_cap_at(coord, kind)));
+            if let Some(colony) = self.colonies.iter_mut().find(|c| c.coord == coord) {
+                for (kind, cap) in caps {
+                    let current = colony.resources.get(kind);
+                    colony
+                        .resources
+                        .set(kind, (current + found.get(kind)).min(cap));
+                }
+            }
         } else {
             self.credit_capped(found);
         }
@@ -2095,11 +2181,7 @@ impl GameState {
             return Err(FleetError::DestFull);
         }
         let (outbound_secs, fuel) = self.flight_from(origin, dest, ships, speed_percent)?;
-        let needed = Resources {
-            metal: cargo.metal,
-            crystal: cargo.crystal,
-            deuterium: cargo.deuterium + fuel,
-        };
+        let needed = cargo.with_fuel(fuel);
         let cargo_missing = {
             let res = self.resources_at_mut(origin)?;
             if !res.can_afford(cargo) {
@@ -2170,7 +2252,7 @@ impl GameState {
             objects: vec![origin.to_string(), dest.to_string()],
             inputs: format!(
                 "M{:.0} C{:.0} D{:.0}",
-                cargo.metal, cargo.crystal, cargo.deuterium
+                cargo.iron, cargo.silicon, cargo.deuterium
             ),
             outcome: "outbound".into(),
             cause_key: Some(format!("mission:{id}")),
@@ -2410,9 +2492,7 @@ impl GameState {
         let Some(kind) = self.planet_kind(coord) else {
             return BTreeMap::new();
         };
-        self.config
-            .chains
-            .deposits_for(kind, self.galaxy_seed, coord)
+        self.chain_deposits(kind, self.galaxy_seed, coord)
     }
 
     pub fn colony_cap(&self) -> u32 {
@@ -2489,20 +2569,20 @@ impl GameState {
         self.wonder_tier_ok(stage)?;
         let cost = stage.cost;
         let duration = stage.duration_secs;
-        let remaining = Resources {
-            metal: (cost.metal - contributed.metal).max(0.0),
-            crystal: (cost.crystal - contributed.crystal).max(0.0),
-            deuterium: (cost.deuterium - contributed.deuterium).max(0.0),
-        };
+        let remaining = Resources::from_parts(
+            (cost.iron - contributed.iron).max(0.0),
+            (cost.silicon - contributed.silicon).max(0.0),
+            (cost.deuterium - contributed.deuterium).max(0.0),
+        );
         let planet = self
             .resources_at_mut(coord)
             .map_err(|_| WonderError::UnknownPlanet)?;
-        let take = Resources {
-            metal: planet.metal.min(remaining.metal),
-            crystal: planet.crystal.min(remaining.crystal),
-            deuterium: planet.deuterium.min(remaining.deuterium),
-        };
-        if take.metal <= 0.0 && take.crystal <= 0.0 && take.deuterium <= 0.0 {
+        let take = Resources::from_parts(
+            planet.iron.min(remaining.iron),
+            planet.silicon.min(remaining.silicon),
+            planet.deuterium.min(remaining.deuterium),
+        );
+        if take.iron <= 0.0 && take.silicon <= 0.0 && take.deuterium <= 0.0 {
             return Err(WonderError::NothingToContribute);
         }
         *planet = planet.saturating_sub(take);
@@ -2511,8 +2591,8 @@ impl GameState {
             .as_mut()
             .ok_or(WonderError::NothingToContribute)?;
         job.contributed = job.contributed.saturating_add(take);
-        if job.contributed.metal + 1e-9 >= cost.metal
-            && job.contributed.crystal + 1e-9 >= cost.crystal
+        if job.contributed.iron + 1e-9 >= cost.iron
+            && job.contributed.silicon + 1e-9 >= cost.silicon
             && job.contributed.deuterium + 1e-9 >= cost.deuterium
             && job.completes_at.is_none()
         {
@@ -2525,11 +2605,11 @@ impl GameState {
         let job = self.wonder.as_ref()?;
         let spec = self.config.wonders.iter().find(|s| s.id == job.id)?;
         let stage = spec.stage(job.stage)?;
-        Some(Resources {
-            metal: (stage.cost.metal - job.contributed.metal).max(0.0),
-            crystal: (stage.cost.crystal - job.contributed.crystal).max(0.0),
-            deuterium: (stage.cost.deuterium - job.contributed.deuterium).max(0.0),
-        })
+        Some(Resources::from_parts(
+            (stage.cost.iron - job.contributed.iron).max(0.0),
+            (stage.cost.silicon - job.contributed.silicon).max(0.0),
+            (stage.cost.deuterium - job.contributed.deuterium).max(0.0),
+        ))
     }
 
     /// Seconds until the current stage finishes at current income, or the running timer.
@@ -2591,8 +2671,8 @@ impl GameState {
                     buildings: colony.buildings,
                     planet: colony.kind,
                     coord: colony.coord,
-                    extra_metal: rare.metal + frontier,
-                    extra_crystal: rare.crystal + frontier,
+                    extra_iron: rare.iron + frontier,
+                    extra_silicon: rare.silicon + frontier,
                     extra_deut: rare.deuterium + frontier,
                     energy_factor: factor,
                     boost,
@@ -2603,21 +2683,21 @@ impl GameState {
             ) * staff;
         }
         let (raw, output, planet_bonus) = match kind {
-            ResourceKind::Metal => (
+            ResourceKind::Iron | ResourceKind::RareEarths => (
                 self.config
                     .metal_mine
                     .production_per_hour(colony.buildings.metal_mine),
                 ModifierKind::MetalOutput,
-                bonus.metal + rare.metal + frontier,
+                bonus.iron + rare.iron + frontier,
             ),
-            ResourceKind::Crystal => (
+            ResourceKind::Silicon => (
                 self.config
                     .crystal_mine
                     .production_per_hour(colony.buildings.crystal_mine),
                 ModifierKind::CrystalOutput,
-                bonus.crystal + rare.crystal + frontier,
+                bonus.silicon + rare.silicon + frontier,
             ),
-            ResourceKind::Deuterium => (
+            ResourceKind::Deuterium | ResourceKind::WaterIce | ResourceKind::Helium3 => (
                 self.config
                     .deuterium_synthesizer
                     .production_per_hour(colony.buildings.deuterium_synthesizer),
@@ -2644,8 +2724,8 @@ impl GameState {
                 id: String::new(),
                 name: String::new(),
                 weight: 0,
-                metal: 0.0,
-                crystal: 0.0,
+                iron: 0.0,
+                silicon: 0.0,
                 deuterium: 0.0,
                 energy: 0.0,
                 shipyard_speed: 0.0,
@@ -2824,8 +2904,8 @@ impl GameState {
 
     fn apply_prestige_start(&mut self) {
         let (metal, crystal, deuterium) = self.prestige.starting_bonus(&self.config.prestige);
-        self.resources.metal += metal;
-        self.resources.crystal += crystal;
+        self.resources.iron += metal;
+        self.resources.silicon += crystal;
         self.resources.deuterium += deuterium;
         if !self.prestige.runs.is_empty() {
             let starting = self.config.techs.starting_techs.clone();
@@ -3124,8 +3204,8 @@ impl GameState {
     fn planet_bonus(&self, planet: PlanetType, kind: ModifierKind) -> f64 {
         let bonus = self.config.planet_types.get(planet);
         match kind {
-            ModifierKind::MetalOutput => bonus.metal,
-            ModifierKind::CrystalOutput => bonus.crystal,
+            ModifierKind::MetalOutput => bonus.iron,
+            ModifierKind::CrystalOutput => bonus.silicon,
             ModifierKind::DeuteriumOutput => bonus.deuterium,
             ModifierKind::EnergyOutput => bonus.energy,
             _ => 0.0,
@@ -3423,7 +3503,7 @@ impl GameState {
                     done_at,
                     format!(
                         "expedition: found M{:.0} C{:.0} D{:.0}",
-                        found.metal, found.crystal, found.deuterium
+                        found.iron, found.silicon, found.deuterium
                     ),
                 );
                 false
@@ -4210,8 +4290,8 @@ impl GameState {
         let snapshot = crate::EmpireSnapshot {
             at: draft.at,
             event_id: 0,
-            metal: self.resources.metal,
-            crystal: self.resources.crystal,
+            iron: self.resources.iron,
+            silicon: self.resources.silicon,
             deuterium: self.resources.deuterium,
             energy: self.energy_produced(),
             heat: waste.heat_load,
@@ -4308,10 +4388,7 @@ impl GameState {
         if throttle <= 0.0 {
             return Vec::new();
         }
-        let deposits = self
-            .config
-            .chains
-            .deposits_for(kind, self.galaxy_seed, coord);
+        let deposits = self.chain_deposits(kind, self.galaxy_seed, coord);
         let mut consume: BTreeMap<String, f64> = BTreeMap::new();
         let mut produce: BTreeMap<String, f64> = BTreeMap::new();
         for recipe in &self.config.chains.recipes {
@@ -4426,12 +4503,14 @@ impl GameState {
             return 0.0;
         };
         match kind {
-            ResourceKind::Metal => self.config.metal_storage.capacity(buildings.metal_storage),
-            ResourceKind::Crystal => self
+            ResourceKind::Iron | ResourceKind::RareEarths => {
+                self.config.metal_storage.capacity(buildings.metal_storage)
+            }
+            ResourceKind::Silicon => self
                 .config
                 .crystal_storage
                 .capacity(buildings.crystal_storage),
-            ResourceKind::Deuterium => self
+            ResourceKind::Deuterium | ResourceKind::WaterIce | ResourceKind::Helium3 => self
                 .config
                 .deuterium_storage
                 .capacity(buildings.deuterium_storage),
@@ -4932,12 +5011,12 @@ impl GameState {
         if (after - before).abs() < 1e-12 {
             return Err(crate::DiplomacyError::NoStandingChange(spec.name));
         }
-        if self.resources.metal + 1e-9 < spec.tribute_metal {
+        if self.resources.iron + 1e-9 < spec.tribute_metal {
             return Err(crate::DiplomacyError::Insufficient {
-                missing: spec.tribute_metal - self.resources.metal,
+                missing: spec.tribute_metal - self.resources.iron,
             });
         }
-        self.resources.metal -= spec.tribute_metal;
+        self.resources.iron -= spec.tribute_metal;
         self.adjust_standing(&spec.id, spec.tribute_delta, "tribute", self.last_tick_unix);
         Ok(())
     }
@@ -4958,8 +5037,8 @@ impl GameState {
             .ok_or_else(|| crate::StoryError::UnknownChoice(choice_id.to_string()))?
             .clone();
         let title = event.title.clone();
-        self.resources.metal = (self.resources.metal + choice.metal).max(0.0);
-        self.resources.crystal = (self.resources.crystal + choice.crystal).max(0.0);
+        self.resources.iron = (self.resources.iron + choice.iron).max(0.0);
+        self.resources.silicon = (self.resources.silicon + choice.silicon).max(0.0);
         self.resources.deuterium = (self.resources.deuterium + choice.deuterium).max(0.0);
         for (kind, delta) in choice.ships {
             if delta >= 0 {
@@ -4977,9 +5056,9 @@ impl GameState {
         }
         if self.config.market.enabled {
             self.market
-                .shock(ResourceKind::Metal, choice.metal_price, &self.config.market);
+                .shock(ResourceKind::Iron, choice.metal_price, &self.config.market);
             self.market.shock(
-                ResourceKind::Crystal,
+                ResourceKind::Silicon,
                 choice.crystal_price,
                 &self.config.market,
             );
@@ -5124,14 +5203,14 @@ impl GameState {
                 let metal_rate = config
                     .metal_mine
                     .production_per_hour(colony.buildings.metal_mine)
-                    * (1.0 + metal_t + bonus.metal)
+                    * (1.0 + metal_t + bonus.iron)
                     * factor
                     * boost
                     * staff;
                 let crystal_rate = config
                     .crystal_mine
                     .production_per_hour(colony.buildings.crystal_mine)
-                    * (1.0 + crystal_t + bonus.crystal)
+                    * (1.0 + crystal_t + bonus.silicon)
                     * factor
                     * boost
                     * staff;
@@ -5151,10 +5230,10 @@ impl GameState {
                 let deut_cap = config
                     .deuterium_storage
                     .capacity(colony.buildings.deuterium_storage);
-                colony.resources.metal =
-                    add_capped(colony.resources.metal, metal_rate, hours, metal_cap);
-                colony.resources.crystal =
-                    add_capped(colony.resources.crystal, crystal_rate, hours, crystal_cap);
+                colony.resources.iron =
+                    add_capped(colony.resources.iron, metal_rate, hours, metal_cap);
+                colony.resources.silicon =
+                    add_capped(colony.resources.silicon, crystal_rate, hours, crystal_cap);
                 colony.resources.deuterium =
                     add_capped(colony.resources.deuterium, deut_rate, hours, deut_cap);
             }
@@ -5167,11 +5246,11 @@ impl GameState {
 
     fn produce_chains(&mut self, hours: f64, home_factor: f64, boost: f64, from: u64, to: u64) {
         let chains = self.config.chains.clone();
-        let home_deposits = chains.deposits_for(self.home_kind, self.galaxy_seed, self.home);
+        let home_deposits = self.chain_deposits(self.home_kind, self.galaxy_seed, self.home);
         let home_buildings = self.buildings;
         let home_kind = self.home_kind;
-        let metal_cap = self.storage_cap(ResourceKind::Metal);
-        let crystal_cap = self.storage_cap(ResourceKind::Crystal);
+        let metal_cap = self.storage_cap(ResourceKind::Iron);
+        let crystal_cap = self.storage_cap(ResourceKind::Silicon);
         let deut_cap = self.storage_cap(ResourceKind::Deuterium);
         let home_metal = self.recipe_building_scale(
             home_buildings,
@@ -5215,9 +5294,11 @@ impl GameState {
             &mut self.resources,
             &mut self.goods,
             |kind| match kind {
-                ResourceKind::Metal => metal_cap,
-                ResourceKind::Crystal => crystal_cap,
-                ResourceKind::Deuterium => deut_cap,
+                ResourceKind::Iron | ResourceKind::RareEarths => metal_cap,
+                ResourceKind::Silicon => crystal_cap,
+                ResourceKind::Deuterium | ResourceKind::WaterIce | ResourceKind::Helium3 => {
+                    deut_cap
+                }
             },
         );
 
@@ -5246,8 +5327,8 @@ impl GameState {
                     colony.coord,
                     colony.kind,
                     colony.buildings,
-                    rare.metal + self.frontier_production_bonus(colony.coord),
-                    rare.crystal + self.frontier_production_bonus(colony.coord),
+                    rare.iron + self.frontier_production_bonus(colony.coord),
+                    rare.silicon + self.frontier_production_bonus(colony.coord),
                     rare.deuterium + self.frontier_production_bonus(colony.coord),
                     factor,
                     self.config
@@ -5273,7 +5354,7 @@ impl GameState {
                 crystal_cap,
                 deut_cap,
             ) = snapshot;
-            let deposits = chains.deposits_for(kind, self.galaxy_seed, coord);
+            let deposits = self.chain_deposits(kind, self.galaxy_seed, coord);
             let metal_s = self.recipe_building_scale(
                 buildings,
                 kind,
@@ -5317,12 +5398,28 @@ impl GameState {
                 &mut colony.resources,
                 &mut colony.goods,
                 |res| match res {
-                    ResourceKind::Metal => metal_cap,
-                    ResourceKind::Crystal => crystal_cap,
-                    ResourceKind::Deuterium => deut_cap,
+                    ResourceKind::Iron | ResourceKind::RareEarths => metal_cap,
+                    ResourceKind::Silicon => crystal_cap,
+                    ResourceKind::Deuterium | ResourceKind::WaterIce | ResourceKind::Helium3 => {
+                        deut_cap
+                    }
                 },
             );
         }
+    }
+
+    pub(crate) fn chain_deposits(
+        &self,
+        kind: crate::PlanetType,
+        galaxy_seed: u64,
+        coord: Coord,
+    ) -> std::collections::BTreeMap<String, f64> {
+        let bonus = self.config.planet_types.get(kind);
+        let mut deposits = self.config.chains.deposits_for(kind, galaxy_seed, coord);
+        for (id, value) in deposits.iter_mut() {
+            *value *= bonus.chain_deposit_factor(id);
+        }
+        deposits
     }
 
     pub(crate) fn recipe_building_scale(
@@ -5334,7 +5431,7 @@ impl GameState {
         span: (u64, u64),
     ) -> f64 {
         let (from, to) = span;
-        let (extra_metal, extra_crystal, extra_deut) = extra;
+        let (extra_iron, extra_silicon, extra_deut) = extra;
         match building {
             BuildingKind::MetalMine => {
                 self.config
@@ -5343,7 +5440,7 @@ impl GameState {
                     * (1.0
                         + self.tech_modifier_range(ModifierKind::MetalOutput, from, to)
                         + self.planet_bonus(planet, ModifierKind::MetalOutput)
-                        + extra_metal)
+                        + extra_iron)
             }
             BuildingKind::CrystalMine => {
                 self.config
@@ -5352,7 +5449,7 @@ impl GameState {
                     * (1.0
                         + self.tech_modifier_range(ModifierKind::CrystalOutput, from, to)
                         + self.planet_bonus(planet, ModifierKind::CrystalOutput)
-                        + extra_crystal)
+                        + extra_silicon)
             }
             BuildingKind::DeuteriumSynthesizer => {
                 self.config
@@ -5522,8 +5619,8 @@ impl GameState {
         if rate <= 0.0 || hours <= 0.0 {
             return;
         }
-        let take = (rate * hours).max(0.0).min(self.resources.metal.max(0.0));
-        self.resources.metal -= take;
+        let take = (rate * hours).max(0.0).min(self.resources.iron.max(0.0));
+        self.resources.iron -= take;
         if take <= 0.0 {
             return;
         }
@@ -5662,8 +5759,8 @@ impl GameState {
                     buildings: self.buildings,
                     planet: self.home_kind,
                     coord: self.home,
-                    extra_metal: 0.0,
-                    extra_crystal: 0.0,
+                    extra_iron: 0.0,
+                    extra_silicon: 0.0,
                     extra_deut: 0.0,
                     energy_factor: factor,
                     boost,
@@ -5681,12 +5778,9 @@ impl GameState {
         let mut stock = *site.resources;
         let mut bag = site.goods.clone();
         let before = stock.get(kind);
-        let deposits = self
-            .config
-            .chains
-            .deposits_for(site.planet, self.galaxy_seed, site.coord);
+        let deposits = self.chain_deposits(site.planet, self.galaxy_seed, site.coord);
         let now = self.last_tick_unix;
-        let extra = (site.extra_metal, site.extra_crystal, site.extra_deut);
+        let extra = (site.extra_iron, site.extra_silicon, site.extra_deut);
         let metal_s = self.recipe_building_scale(
             site.buildings,
             site.planet,
@@ -5826,15 +5920,15 @@ impl GameState {
 
     pub fn storage_cap(&self, kind: ResourceKind) -> f64 {
         match kind {
-            ResourceKind::Metal => self
+            ResourceKind::Iron | ResourceKind::RareEarths => self
                 .config
                 .metal_storage
                 .capacity(self.buildings.metal_storage),
-            ResourceKind::Crystal => self
+            ResourceKind::Silicon => self
                 .config
                 .crystal_storage
                 .capacity(self.buildings.crystal_storage),
-            ResourceKind::Deuterium => self
+            ResourceKind::Deuterium | ResourceKind::WaterIce | ResourceKind::Helium3 => self
                 .config
                 .deuterium_storage
                 .capacity(self.buildings.deuterium_storage),
@@ -5847,23 +5941,25 @@ impl GameState {
 
     fn base_production_range(&self, kind: ResourceKind, from: u64, to: u64) -> f64 {
         let raw = match kind {
-            ResourceKind::Metal => self
+            ResourceKind::Iron | ResourceKind::RareEarths => self
                 .config
                 .metal_mine
                 .production_per_hour(self.buildings.metal_mine),
-            ResourceKind::Crystal => self
+            ResourceKind::Silicon => self
                 .config
                 .crystal_mine
                 .production_per_hour(self.buildings.crystal_mine),
-            ResourceKind::Deuterium => self
+            ResourceKind::Deuterium | ResourceKind::WaterIce | ResourceKind::Helium3 => self
                 .config
                 .deuterium_synthesizer
                 .production_per_hour(self.buildings.deuterium_synthesizer),
         };
         let output = match kind {
-            ResourceKind::Metal => ModifierKind::MetalOutput,
-            ResourceKind::Crystal => ModifierKind::CrystalOutput,
-            ResourceKind::Deuterium => ModifierKind::DeuteriumOutput,
+            ResourceKind::Iron | ResourceKind::RareEarths => ModifierKind::MetalOutput,
+            ResourceKind::Silicon => ModifierKind::CrystalOutput,
+            ResourceKind::Deuterium | ResourceKind::WaterIce | ResourceKind::Helium3 => {
+                ModifierKind::DeuteriumOutput
+            }
         };
         raw * (1.0
             + self.tech_modifier_range(output, from, to)
@@ -5934,8 +6030,8 @@ fn format_raid_report(report: &crate::CombatReport, plunder: Resources) -> Strin
         report.rounds,
         fleet_label(fleet_losses(report.defender_before, report.defender_after)),
         fleet_label(fleet_losses(report.attacker_before, report.attacker_after)),
-        plunder.metal,
-        plunder.crystal,
+        plunder.iron,
+        plunder.silicon,
         plunder.deuterium,
         report.winner.as_key(),
     )
@@ -5986,8 +6082,8 @@ fn format_layered_raid(
         fleet_label(fleet_losses(pirates, battle.attacker_after)),
         battle.rebuilt,
         battle.winner.as_key(),
-        plunder.metal,
-        plunder.crystal,
+        plunder.iron,
+        plunder.silicon,
         plunder.deuterium
     )
 }
@@ -6153,11 +6249,7 @@ mod tests {
                 base: 1_000.0,
                 growth: 2.0,
             },
-            starting_resources: Resources {
-                metal: 0.0,
-                crystal: 0.0,
-                deuterium: 0.0,
-            },
+            starting_resources: Resources::from_parts(0.0, 0.0, 0.0),
             starting_buildings: Buildings {
                 metal_mine: 1,
                 crystal_mine: 1,
@@ -6233,16 +6325,16 @@ mod tests {
         );
         close(state.energy_factor(), 1.0);
         close(
-            state.production_per_hour(ResourceKind::Metal),
+            state.production_per_hour(ResourceKind::Iron),
             cfg.metal_mine.base_per_hour,
         );
         close(
-            state.production_per_hour(ResourceKind::Crystal),
+            state.production_per_hour(ResourceKind::Silicon),
             cfg.crystal_mine.base_per_hour,
         );
         close(state.production_per_hour(ResourceKind::Deuterium), 0.0);
         close(
-            state.storage_cap(ResourceKind::Metal),
+            state.storage_cap(ResourceKind::Iron),
             cfg.metal_storage.base,
         );
     }
@@ -6255,9 +6347,9 @@ mod tests {
         close(state.energy_factor(), 0.5);
         close(state.energy_balance(), -10.0);
         state.catch_up(3600);
-        close(state.resources.metal, cfg.metal_mine.base_per_hour * 0.5);
+        close(state.resources.iron, cfg.metal_mine.base_per_hour * 0.5);
         close(
-            state.resources.crystal,
+            state.resources.silicon,
             cfg.crystal_mine.base_per_hour * 0.5,
         );
         close(state.resources.deuterium, 0.0);
@@ -6275,7 +6367,7 @@ mod tests {
         raw.buildings.solar_plant = 24;
         assert!(raw.waste_home().overflowing());
         assert!(raw.unrest_factor() < 1.0);
-        let quiet = raw.production_per_hour(ResourceKind::Metal);
+        let quiet = raw.production_per_hour(ResourceKind::Iron);
         let pirates = raw.pirate_fleet().get(crate::ShipKind::LightFighter);
         assert!(pirates > 1, "{pirates}");
 
@@ -6284,7 +6376,7 @@ mod tests {
         ok.buildings.scrubber = 2;
         assert!(!ok.waste_home().overflowing());
         close(ok.unrest_factor(), 1.0);
-        assert!(ok.production_per_hour(ResourceKind::Metal) > quiet);
+        assert!(ok.production_per_hour(ResourceKind::Iron) > quiet);
         assert_eq!(ok.pirate_fleet().get(crate::ShipKind::LightFighter), 1);
     }
 
@@ -6346,13 +6438,13 @@ mod tests {
         cfg.starting_buildings.crystal_mine = 0;
         let mut state = GameState::with_config(0, cfg);
         state.goods.insert("iron_ore".into(), 5.0);
-        close(state.production_per_hour(ResourceKind::Metal), 5.0);
+        close(state.production_per_hour(ResourceKind::Iron), 5.0);
         state.catch_up(3600);
-        close(state.resources.metal, 5.0);
+        close(state.resources.iron, 5.0);
         close(state.goods.get("iron_ore").copied().unwrap_or(0.0), 0.0);
         close(state.goods.get("steel").copied().unwrap_or(0.0), 0.0);
         state.catch_up(7200);
-        close(state.resources.metal, 5.0);
+        close(state.resources.iron, 5.0);
     }
 
     #[test]
@@ -6360,12 +6452,12 @@ mod tests {
         let mut cfg = BalanceConfig::default();
         cfg.raid.enabled = false;
         let mut state = GameState::with_config(0, cfg);
-        let start = state.resources.metal;
+        let start = state.resources.iron;
         state.catch_up(3600);
         assert!(
-            state.resources.metal > start,
+            state.resources.iron > start,
             "frames {} start {start}",
-            state.resources.metal
+            state.resources.iron
         );
         assert!(
             state.goods.values().any(|v| *v > 0.0),
@@ -6381,8 +6473,8 @@ mod tests {
         let mut state = GameState::with_config(0, cfg);
         close(state.energy_factor(), 0.0);
         state.catch_up(3600 * 10);
-        close(state.resources.metal, 0.0);
-        close(state.resources.crystal, 0.0);
+        close(state.resources.iron, 0.0);
+        close(state.resources.silicon, 0.0);
     }
 
     #[test]
@@ -6392,12 +6484,12 @@ mod tests {
         cfg.solar_plant.base_energy = 1_000.0; // no shortfall
         let mut state = GameState::with_config(0, cfg.clone());
         close(
-            state.production_per_hour(ResourceKind::Metal),
+            state.production_per_hour(ResourceKind::Iron),
             cfg.metal_mine.base_per_hour * cfg.metal_mine.growth.powi(2),
         );
         state.catch_up(3600);
         close(
-            state.resources.metal,
+            state.resources.iron,
             cfg.metal_mine.base_per_hour * cfg.metal_mine.growth.powi(2),
         );
     }
@@ -6412,8 +6504,8 @@ mod tests {
             stepped.catch_up(t);
         }
 
-        close(one_shot.resources.metal, stepped.resources.metal);
-        close(one_shot.resources.crystal, stepped.resources.crystal);
+        close(one_shot.resources.iron, stepped.resources.iron);
+        close(one_shot.resources.silicon, stepped.resources.silicon);
         close(one_shot.resources.deuterium, stepped.resources.deuterium);
         assert_eq!(one_shot.last_tick_unix, 7200);
         assert_eq!(stepped.last_tick_unix, 7200);
@@ -6443,7 +6535,7 @@ mod tests {
             rare: None,
             goods: BTreeMap::new(),
         });
-        let before = state.colony_production_per_hour(&state.colonies[0], ResourceKind::Metal);
+        let before = state.colony_production_per_hour(&state.colonies[0], ResourceKind::Iron);
         let id = state
             .propose_law(
                 "emission_cap",
@@ -6455,7 +6547,7 @@ mod tests {
             .unwrap();
         state.approve_law(id, 0).unwrap();
         state.catch_up(3_600);
-        let after = state.colony_production_per_hour(&state.colonies[0], ResourceKind::Metal);
+        let after = state.colony_production_per_hour(&state.colonies[0], ResourceKind::Iron);
         assert!(
             after < before,
             "colony rate {after} should drop from {before}"
@@ -6492,7 +6584,7 @@ mod tests {
         let mut state = GameState::with_config(clock.now_unix(), test_config());
         clock.advance(3600);
         catch_up_via_clock(&mut state, &clock);
-        close(state.resources.metal, 100.0);
+        close(state.resources.iron, 100.0);
         assert_eq!(state.last_tick_unix, 4_600);
     }
 
@@ -6500,36 +6592,36 @@ mod tests {
     fn storage_cap_stops_accumulation_and_partial_tick_is_exact() {
         let mut cfg = test_config();
         cfg.metal_storage.base = 150.0;
-        cfg.starting_resources.metal = 100.0;
+        cfg.starting_resources.iron = 100.0;
         // 100/h, 50 room → hits cap in 0.5 h = 1800 s.
         let mut one_shot = GameState::with_config(0, cfg.clone());
         one_shot.catch_up(3600);
-        close(one_shot.resources.metal, 150.0);
+        close(one_shot.resources.iron, 150.0);
 
         let mut stepped = GameState::with_config(0, cfg.clone());
         for t in 1..=3600 {
             stepped.catch_up(t);
         }
-        close(stepped.resources.metal, 150.0);
-        close(one_shot.resources.metal, stepped.resources.metal);
+        close(stepped.resources.iron, 150.0);
+        close(one_shot.resources.iron, stepped.resources.iron);
 
         // Exactly at the crossing instant.
         let mut at_cap_time = GameState::with_config(0, cfg);
         at_cap_time.catch_up(1800);
-        close(at_cap_time.resources.metal, 150.0);
+        close(at_cap_time.resources.iron, 150.0);
     }
 
     #[test]
     fn over_cap_stockpile_is_not_drained() {
         let mut cfg = test_config();
         cfg.metal_storage.base = 50.0;
-        cfg.starting_resources.metal = 80.0;
+        cfg.starting_resources.iron = 80.0;
         let mut state = GameState::with_config(0, cfg);
         state.catch_up(3600);
-        close(state.resources.metal, 80.0);
+        close(state.resources.iron, 80.0);
         let mut chained = test_config();
         chained.metal_storage.base = 50.0;
-        chained.starting_resources.metal = 80.0;
+        chained.starting_resources.iron = 80.0;
         chained.chains = crate::ChainConfig {
             goods: vec![crate::GoodSpec {
                 id: "frames".into(),
@@ -6549,14 +6641,14 @@ mod tests {
         };
         let mut state = GameState::with_config(0, chained);
         state.catch_up(3600);
-        close(state.resources.metal, 80.0);
+        close(state.resources.iron, 80.0);
     }
 
     #[test]
     fn full_frames_stockpile_does_not_consume_steel() {
         let mut cfg = test_config();
         cfg.metal_storage.base = 50.0;
-        cfg.starting_resources.metal = 50.0;
+        cfg.starting_resources.iron = 50.0;
         cfg.starting_buildings.crystal_mine = 0;
         let mut deposits = BTreeMap::new();
         deposits.insert(
@@ -6613,7 +6705,7 @@ mod tests {
         let mut state = GameState::with_config(0, cfg);
         state.goods.insert("steel".into(), 20.0);
         state.catch_up(3600);
-        close(state.resources.metal, 50.0);
+        close(state.resources.iron, 50.0);
         close(state.goods.get("steel").copied().unwrap_or(0.0), 20.0);
     }
 
@@ -6621,12 +6713,12 @@ mod tests {
     fn clock_going_backwards_does_not_lose_resources() {
         let mut state = GameState::with_config(100, test_config());
         state.catch_up(3600);
-        let metal = state.resources.metal;
-        let crystal = state.resources.crystal;
+        let metal = state.resources.iron;
+        let crystal = state.resources.silicon;
         let last = state.last_tick_unix;
         state.catch_up(50);
-        close(state.resources.metal, metal);
-        close(state.resources.crystal, crystal);
+        close(state.resources.iron, metal);
+        close(state.resources.silicon, crystal);
         assert_eq!(state.last_tick_unix, last);
     }
 
@@ -6634,8 +6726,8 @@ mod tests {
     fn default_starter_has_full_energy_for_starting_mines() {
         let state = GameState::new(0);
         assert!(state.energy_factor() >= 1.0 - EPS);
-        assert!(state.production_per_hour(ResourceKind::Metal) > 0.0);
-        assert!(state.production_per_hour(ResourceKind::Crystal) > 0.0);
+        assert!(state.production_per_hour(ResourceKind::Iron) > 0.0);
+        assert!(state.production_per_hour(ResourceKind::Silicon) > 0.0);
     }
 
     #[test]
@@ -6651,8 +6743,8 @@ mod tests {
             cfg.starting_buildings.metal_mine = metal_level;
             cfg.starting_buildings.crystal_mine = metal_level.min(4);
             cfg.starting_buildings.solar_plant = solar_level;
-            cfg.starting_resources.metal = fill;
-            cfg.starting_resources.crystal = fill / 2.0;
+            cfg.starting_resources.iron = fill;
+            cfg.starting_resources.silicon = fill / 2.0;
 
             let mut one_shot = GameState::with_config(0, cfg.clone());
             one_shot.catch_up(gap);
@@ -6667,12 +6759,12 @@ mod tests {
             stepped.catch_up(gap);
 
             assert_eq!(one_shot.last_tick_unix, gap, "trial {trial}");
-            close(one_shot.resources.metal, stepped.resources.metal);
-            close(one_shot.resources.crystal, stepped.resources.crystal);
+            close(one_shot.resources.iron, stepped.resources.iron);
+            close(one_shot.resources.silicon, stepped.resources.silicon);
             close(one_shot.resources.deuterium, stepped.resources.deuterium);
             assert!(
-                one_shot.resources.metal <= one_shot.storage_cap(ResourceKind::Metal) + EPS
-                    || fill > one_shot.storage_cap(ResourceKind::Metal),
+                one_shot.resources.iron <= one_shot.storage_cap(ResourceKind::Iron) + EPS
+                    || fill > one_shot.storage_cap(ResourceKind::Iron),
                 "cap violated trial {trial}"
             );
         }
@@ -6702,9 +6794,9 @@ mod tests {
                 deposit_jitter: 0.0,
             };
             cfg.buildings.metal_mine = cheap_spec(1_800.0);
-            cfg.starting_resources.metal = 20_000.0;
+            cfg.starting_resources.iron = 20_000.0;
             cfg.starting_resources.deuterium = 500.0;
-            cfg.starting_resources.crystal = 5_000.0;
+            cfg.starting_resources.silicon = 5_000.0;
 
             let mut one_shot = GameState::with_config(0, cfg.clone());
             plant_colony(&mut one_shot, neighbor());
@@ -6715,11 +6807,7 @@ mod tests {
                     one_shot.home,
                     neighbor(),
                     cargo_fleet(),
-                    Resources {
-                        metal: 50.0,
-                        crystal: 0.0,
-                        deuterium: 0.0,
-                    },
+                    Resources::from_parts(50.0, 0.0, 0.0),
                     30,
                     0,
                 )
@@ -6735,11 +6823,7 @@ mod tests {
                     stepped.home,
                     neighbor(),
                     cargo_fleet(),
-                    Resources {
-                        metal: 50.0,
-                        crystal: 0.0,
-                        deuterium: 0.0,
-                    },
+                    Resources::from_parts(50.0, 0.0, 0.0),
                     30,
                     0,
                 )
@@ -6756,12 +6840,12 @@ mod tests {
             stepped.catch_up(gap);
 
             assert_eq!(one_shot.last_tick_unix, gap, "trial {trial}");
-            close(one_shot.resources.metal, stepped.resources.metal);
-            close(one_shot.resources.crystal, stepped.resources.crystal);
+            close(one_shot.resources.iron, stepped.resources.iron);
+            close(one_shot.resources.silicon, stepped.resources.silicon);
             close(one_shot.resources.deuterium, stepped.resources.deuterium);
             close(
-                one_shot.colonies[0].resources.metal,
-                stepped.colonies[0].resources.metal,
+                one_shot.colonies[0].resources.iron,
+                stepped.colonies[0].resources.iron,
             );
             close(
                 one_shot.goods.get("steel").copied().unwrap_or(0.0),
@@ -6791,11 +6875,7 @@ mod tests {
         cfg.starting_buildings.solar_plant = 24;
         cfg.starting_buildings.robotics_factory = 8;
         cfg.starting_buildings.shipyard = 6;
-        cfg.starting_resources = Resources {
-            metal: 1_000_000.0,
-            crystal: 1_000_000.0,
-            deuterium: 50_000.0,
-        };
+        cfg.starting_resources = Resources::from_parts(1_000_000.0, 1_000_000.0, 50_000.0);
         cfg.flight.base_fleet_slots = 16;
         let mut state = GameState::with_config(0, cfg);
         for pos in 2..=8u16 {
@@ -6809,11 +6889,7 @@ mod tests {
             colony.buildings.metal_mine = 12;
             colony.buildings.crystal_mine = 10;
             colony.buildings.solar_plant = 16;
-            colony.resources = Resources {
-                metal: 10_000.0,
-                crystal: 10_000.0,
-                deuterium: 1_000.0,
-            };
+            colony.resources = Resources::from_parts(10_000.0, 10_000.0, 1_000.0);
         }
         state.fleet.add(ShipKind::SmallCargo, 12);
         for i in 0..4 {
@@ -6823,11 +6899,7 @@ mod tests {
                     state.home,
                     dest,
                     cargo_fleet(),
-                    Resources {
-                        metal: 80.0,
-                        crystal: 0.0,
-                        deuterium: 0.0,
-                    },
+                    Resources::from_parts(80.0, 0.0, 0.0),
                     3_600,
                     0,
                 )
@@ -6852,21 +6924,21 @@ mod tests {
     fn storage_full_pauses_at_fill_instant_and_notes_a_stall() {
         let mut cfg = test_config();
         cfg.metal_storage.base = 150.0;
-        cfg.starting_resources.metal = 100.0;
+        cfg.starting_resources.iron = 100.0;
         let mut state = GameState::with_config(0, cfg);
         state.catch_up(1800);
-        close(state.resources.metal, 150.0);
+        close(state.resources.iron, 150.0);
         assert!(
             state
                 .logistics
                 .stalls
                 .iter()
-                .any(|s| s.contains("full storage") && s.contains("metal")),
+                .any(|s| s.contains("full storage") && s.contains("iron")),
             "{:?}",
             state.logistics.stalls
         );
         state.catch_up(3600);
-        close(state.resources.metal, 150.0);
+        close(state.resources.iron, 150.0);
     }
 
     #[test]
@@ -6894,7 +6966,7 @@ mod tests {
         state.goods.insert("steel".into(), 50.0);
         state.catch_up(1800);
         close(state.goods.get("steel").copied().unwrap_or(0.0), 0.0);
-        close(state.resources.metal, 50.0);
+        close(state.resources.iron, 50.0);
         assert!(
             state
                 .logistics
@@ -6907,7 +6979,7 @@ mod tests {
         state.goods.insert("steel".into(), 50.0);
         state.catch_up(3600);
         close(state.goods.get("steel").copied().unwrap_or(0.0), 0.0);
-        close(state.resources.metal, 100.0);
+        close(state.resources.iron, 100.0);
     }
 
     #[test]
@@ -6956,10 +7028,10 @@ mod tests {
 
         close(one_shot.goods.get("steel").copied().unwrap_or(0.0), 0.0);
         close(stepped.goods.get("steel").copied().unwrap_or(0.0), 0.0);
-        close(one_shot.resources.metal, stepped.resources.metal);
-        close(one_shot.resources.crystal, stepped.resources.crystal);
-        close(one_shot.resources.metal, 50.0);
-        close(one_shot.resources.crystal, 50.0);
+        close(one_shot.resources.iron, stepped.resources.iron);
+        close(one_shot.resources.silicon, stepped.resources.silicon);
+        close(one_shot.resources.iron, 50.0);
+        close(one_shot.resources.silicon, 50.0);
         assert!(
             one_shot
                 .logistics
@@ -6977,12 +7049,12 @@ mod tests {
         cfg.starting_buildings.solar_plant = 0;
         cfg.starting_buildings.metal_mine = 1;
         cfg.starting_buildings.crystal_mine = 0;
-        cfg.starting_resources.metal = 1_000.0;
+        cfg.starting_resources.iron = 1_000.0;
         let mut state = GameState::with_config(0, cfg);
         assert!(state.energy_factor() < 1e-12);
         state.enqueue_build(BuildingKind::SolarPlant, 0).unwrap();
         state.catch_up(1_800);
-        close(state.resources.metal, 1_000.0);
+        close(state.resources.iron, 1_000.0);
         assert!(
             state
                 .logistics
@@ -6995,7 +7067,7 @@ mod tests {
         state.catch_up(7_200);
         assert_eq!(state.buildings.solar_plant, 1);
         assert!(state.energy_factor() > 0.99);
-        close(state.resources.metal, 1_100.0);
+        close(state.resources.iron, 1_100.0);
         assert!(
             state
                 .logistics
@@ -7032,11 +7104,7 @@ mod tests {
         cfg.metal_storage.base = 100_000.0;
         cfg.crystal_storage.base = 100_000.0;
         cfg.deuterium_storage.base = 100_000.0;
-        cfg.starting_resources = Resources {
-            metal: 1_000.0,
-            crystal: 1_000.0,
-            deuterium: 1_000.0,
-        };
+        cfg.starting_resources = Resources::from_parts(1_000.0, 1_000.0, 1_000.0);
         cfg.buildings.metal_mine = cheap_spec(1_800.0);
         cfg.buildings.solar_plant = cheap_spec(3_600.0);
         cfg.buildings.robotics_factory = cheap_spec(100.0);
@@ -7075,14 +7143,14 @@ mod tests {
         assert_eq!(one_shot.buildings.metal_mine, 2);
         assert!(one_shot.build_queue.is_empty());
         // 0.5 h at 100/h then 0.5 h at 200/h, paid 0.
-        close(one_shot.resources.metal, 1_000.0 + 50.0 + 100.0);
+        close(one_shot.resources.iron, 1_000.0 + 50.0 + 100.0);
 
         let mut stepped = GameState::with_config(0, cfg);
         stepped.enqueue_build(BuildingKind::MetalMine, 0).unwrap();
         for t in 1..=3_600 {
             stepped.catch_up(t);
         }
-        close(one_shot.resources.metal, stepped.resources.metal);
+        close(one_shot.resources.iron, stepped.resources.iron);
         assert_eq!(stepped.buildings.metal_mine, 2);
     }
 
@@ -7116,8 +7184,8 @@ mod tests {
             .unwrap_err();
         match &err {
             BuildError::InsufficientResources { missing, cost } => {
-                close(missing.metal, 40.0);
-                close(cost.metal, 40.0);
+                close(missing.iron, 40.0);
+                close(cost.iron, 40.0);
             }
             other => panic!("unexpected {other:?}"),
         }
@@ -7164,13 +7232,13 @@ mod tests {
     fn cancel_refunds_paid_resources_in_full() {
         let mut cfg = queue_config();
         cfg.buildings.metal_storage.metal_base = 80.0;
-        cfg.starting_resources.metal = 100.0;
+        cfg.starting_resources.iron = 100.0;
         let mut state = GameState::with_config(0, cfg);
         state.enqueue_build(BuildingKind::MetalStorage, 0).unwrap();
-        close(state.resources.metal, 20.0);
+        close(state.resources.iron, 20.0);
         let refund = state.cancel_build(0, 0).unwrap();
-        close(refund.metal, 80.0);
-        close(state.resources.metal, 100.0);
+        close(refund.iron, 80.0);
+        close(state.resources.iron, 100.0);
         assert!(state.build_queue.is_empty());
         assert_eq!(state.buildings.metal_storage, 0);
     }
@@ -7201,8 +7269,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![0, 1]
         );
-        close(state.build_queue[0].paid.metal, 10.0);
-        close(state.build_queue[1].paid.metal, 20.0);
+        close(state.build_queue[0].paid.iron, 10.0);
+        close(state.build_queue[1].paid.iron, 20.0);
         assert_eq!(state.build_queue[0].completes_at, Some(10));
     }
 
@@ -7211,17 +7279,17 @@ mod tests {
         let mut cfg = queue_config();
         cfg.buildings.robotics_factory.metal_base = 5.0;
         cfg.buildings.shipyard.metal_base = 7.0;
-        cfg.starting_resources.metal = 100.0;
+        cfg.starting_resources.iron = 100.0;
         let mut state = GameState::with_config(0, cfg);
         state
             .enqueue_build(BuildingKind::RoboticsFactory, 0)
             .unwrap();
         state.enqueue_build(BuildingKind::Shipyard, 0).unwrap();
         assert_eq!(state.build_queue.len(), 2);
-        close(state.resources.metal, 88.0);
+        close(state.resources.iron, 88.0);
         state.cancel_build(0, 0).unwrap();
         assert!(state.build_queue.is_empty());
-        close(state.resources.metal, 100.0);
+        close(state.resources.iron, 100.0);
         assert_eq!(state.buildings.robotics_factory, 0);
         assert_eq!(state.buildings.shipyard, 0);
     }
@@ -7238,11 +7306,7 @@ mod tests {
 
     fn research_config() -> BalanceConfig {
         let mut cfg = test_config();
-        cfg.starting_resources = Resources {
-            metal: 10_000.0,
-            crystal: 10_000.0,
-            deuterium: 10_000.0,
-        };
+        cfg.starting_resources = Resources::from_parts(10_000.0, 10_000.0, 10_000.0);
         cfg.starting_buildings.research_lab = 1;
         cfg.techs = TechTree::parse(
             r#"
@@ -7302,7 +7366,7 @@ modifiers = []
             stepped.catch_up(t);
         }
         assert_eq!(stepped.tech_level("energy"), 1);
-        close(one_shot.resources.crystal, stepped.resources.crystal);
+        close(one_shot.resources.silicon, stepped.resources.silicon);
     }
 
     #[test]
@@ -7358,8 +7422,8 @@ modifiers = []
         let mut state = GameState::new(0);
         state.buildings.research_lab = 1;
         state.tech_levels.insert("energy".into(), 1);
-        state.resources.metal = 10_000.0;
-        state.resources.crystal = 10_000.0;
+        state.resources.iron = 10_000.0;
+        state.resources.silicon = 10_000.0;
         state.resources.deuterium = 10_000.0;
         assert_eq!(
             state.tech_node_state("deep_core"),
@@ -7426,8 +7490,8 @@ modifiers = []
         let mut state = GameState::new(now);
         state.buildings.shipyard = 1;
         state.tech_levels.insert("combustion_drive".into(), 1);
-        state.resources.metal = 100_000.0;
-        state.resources.crystal = 100_000.0;
+        state.resources.iron = 100_000.0;
+        state.resources.silicon = 100_000.0;
         state.resources.deuterium = 100_000.0;
         state
     }
@@ -7456,8 +7520,8 @@ modifiers = []
     fn locked_ship_lists_missing_techs() {
         let mut state = GameState::new(0);
         state.buildings.shipyard = 5;
-        state.resources.metal = 100_000.0;
-        state.resources.crystal = 100_000.0;
+        state.resources.iron = 100_000.0;
+        state.resources.silicon = 100_000.0;
         state.resources.deuterium = 100_000.0;
         let gaps = state.missing_ship_prereqs(ShipKind::Cruiser);
         assert!(
@@ -7496,7 +7560,9 @@ modifiers = []
         }
         assert_eq!(step.fleet, gap.fleet);
         assert_eq!(step.ship_queue, gap.ship_queue);
-        assert_eq!(step.resources, gap.resources);
+        for kind in ResourceKind::ALL {
+            close(step.resources.get(kind), gap.resources.get(kind));
+        }
         assert_eq!(step.last_tick_unix, gap.last_tick_unix);
     }
 
@@ -7511,10 +7577,10 @@ modifiers = []
             .unwrap_err();
         match err {
             ShipError::InsufficientResources { missing, cost } => {
-                assert!(missing.metal > 0.0);
+                assert!(missing.iron > 0.0);
                 close(
-                    cost.metal,
-                    state.config.ships.get(ShipKind::LightFighter).metal * 2.0,
+                    cost.iron,
+                    state.config.ships.get(ShipKind::LightFighter).iron * 2.0,
                 );
             }
             other => panic!("unexpected {other:?}"),
@@ -7524,8 +7590,8 @@ modifiers = []
     #[test]
     fn shipyard_is_required_to_queue_ships() {
         let mut state = GameState::new(0);
-        state.resources.metal = 100_000.0;
-        state.resources.crystal = 100_000.0;
+        state.resources.iron = 100_000.0;
+        state.resources.silicon = 100_000.0;
         let err = state.enqueue_ships(ShipKind::SmallCargo, 1, 0).unwrap_err();
         assert_eq!(
             err,
@@ -7619,10 +7685,10 @@ modifiers = []
     fn disabled_raids_do_not_resolve_a_stale_schedule() {
         let mut state = GameState::with_config(0, test_config());
         state.next_raid_at = Some(10);
-        state.resources.metal = 500.0;
+        state.resources.iron = 500.0;
         state.catch_up(100);
         assert!(state.events.is_empty());
-        close(state.resources.metal, 500.0 + 100.0 * 100.0 / 3600.0);
+        close(state.resources.iron, 500.0 + 100.0 * 100.0 / 3600.0);
         assert_eq!(state.next_raid_at, Some(10));
         assert_eq!(state.last_tick_unix, 100);
     }
@@ -7642,8 +7708,8 @@ modifiers = []
             "{:?}",
             state.events
         );
-        assert!(state.resources.metal > 0.0);
-        assert!(state.resources.crystal > 0.0);
+        assert!(state.resources.iron > 0.0);
+        assert!(state.resources.silicon > 0.0);
         assert_eq!(state.next_raid_at, Some(3600 + 8 * 3600));
     }
 
@@ -7728,7 +7794,7 @@ modifiers = []
     fn defences_complete_through_the_shipyard_queue() {
         let mut cfg = test_config();
         cfg.starting_buildings.shipyard = 1;
-        cfg.starting_resources.metal = 10_000.0;
+        cfg.starting_resources.iron = 10_000.0;
         let mut state = GameState::with_config(0, cfg);
         state
             .enqueue_defence(DefenceKind::LightCannon, 2, 0)
@@ -7779,14 +7845,14 @@ modifiers = []
         cfg.raid.strength_factor = 0.0;
         cfg.raid.min_ships = 1;
         let mut state = GameState::with_config(0, cfg);
-        state.resources.metal = 1_000.0;
+        state.resources.iron = 1_000.0;
         state.fleet.add(ShipKind::Battleship, 8);
         state.defences.add(DefenceKind::LightCannon, 1);
-        let before = state.resources.metal;
+        let before = state.resources.iron;
         let report = state.trigger_raid(0);
         assert_ne!(report.winner, CombatWinner::Attacker);
         assert!(!report.defender_after.is_empty());
-        assert_eq!(state.resources.metal, before);
+        assert_eq!(state.resources.iron, before);
         let text = state
             .events
             .iter()
@@ -7825,8 +7891,8 @@ modifiers = []
         for t in 1..=7200 {
             step.catch_up(t);
         }
-        close(gap.resources.metal, step.resources.metal);
-        close(gap.resources.crystal, step.resources.crystal);
+        close(gap.resources.iron, step.resources.iron);
+        close(gap.resources.silicon, step.resources.silicon);
         assert_eq!(gap.fleet, step.fleet);
         assert_eq!(gap.events, step.events);
         assert_eq!(gap.rng_seed, step.rng_seed);
@@ -7857,23 +7923,15 @@ modifiers = []
         cfg.raid.first_delay_secs = 10;
         cfg.raid.min_warning_secs = 10;
         cfg.raid.plunder_share = 1.0;
-        cfg.raid.plunder_cap = Resources {
-            metal: 40.0,
-            crystal: 30.0,
-            deuterium: 5.0,
-        };
-        cfg.starting_resources = Resources {
-            metal: 500.0,
-            crystal: 500.0,
-            deuterium: 100.0,
-        };
+        cfg.raid.plunder_cap = Resources::from_parts(40.0, 30.0, 5.0);
+        cfg.starting_resources = Resources::from_parts(500.0, 500.0, 100.0);
         cfg.starting_buildings.metal_mine = 0;
         cfg.starting_buildings.crystal_mine = 0;
         cfg.starting_buildings.solar_plant = 0;
         let mut state = GameState::with_config(0, cfg);
         state.catch_up(10);
-        close(state.resources.metal, 460.0);
-        close(state.resources.crystal, 470.0);
+        close(state.resources.iron, 460.0);
+        close(state.resources.silicon, 470.0);
         close(state.resources.deuterium, 95.0);
         assert!(
             state
@@ -8074,8 +8132,8 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
             state.apply_activity(ActivityPulse::PrMerged { ts: 1800 }, 10_000),
             ActivityApply::Applied
         );
-        close(state.resources.metal, 50.0 + 100.0);
-        close(state.resources.crystal, 25.0 + 50.0);
+        close(state.resources.iron, 50.0 + 100.0);
+        close(state.resources.silicon, 25.0 + 50.0);
         assert_eq!(state.last_tick_unix, 1800);
         assert!(state.events.iter().any(|e| e.text.contains("merged PR")));
     }
@@ -8100,12 +8158,12 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
         let cfg = activity_config();
         let mut state = GameState::with_config(0, cfg);
         state.catch_up(3600);
-        let metal = state.resources.metal;
+        let metal = state.resources.iron;
         assert_eq!(
             state.apply_activity(ActivityPulse::PrMerged { ts: 100 }, 4000),
             ActivityApply::Skipped
         );
-        close(state.resources.metal, metal);
+        close(state.resources.iron, metal);
         assert_eq!(state.last_tick_unix, 3600);
     }
 
@@ -8141,7 +8199,7 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
             state.apply_activity(ActivityPulse::PrMerged { ts: 10 }, 10_000),
             ActivityApply::Skipped
         );
-        close(state.resources.metal, 0.0);
+        close(state.resources.iron, 0.0);
     }
 
     #[test]
@@ -8167,11 +8225,11 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
         for t in 1..=3600 {
             step.catch_up(t);
         }
-        close(gap.resources.metal, step.resources.metal);
-        close(gap.resources.crystal, step.resources.crystal);
+        close(gap.resources.iron, step.resources.iron);
+        close(gap.resources.silicon, step.resources.silicon);
         // 1800s at 2x then 1800s at 1x: metal 100/h -> 50+50 = 100?
         // 0.5h * 200 + 0.5h * 100 = 100+50 = 150
-        close(gap.resources.metal, 150.0);
+        close(gap.resources.iron, 150.0);
     }
 
     #[test]
@@ -8276,7 +8334,7 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
             ActivityApply::Skipped
         );
         assert_eq!(state.last_tick_unix, 0);
-        close(state.resources.metal, 0.0);
+        close(state.resources.iron, 0.0);
     }
 
     fn expedition_state(now: u64) -> GameState {
@@ -8330,8 +8388,8 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
         loaded.catch_up(outbound + hold + outbound);
         assert_eq!(original.events, loaded.events);
         assert_eq!(original.fleet, loaded.fleet);
-        close(original.resources.metal, loaded.resources.metal);
-        close(original.resources.crystal, loaded.resources.crystal);
+        close(original.resources.iron, loaded.resources.iron);
+        close(original.resources.silicon, loaded.resources.silicon);
         close(original.resources.deuterium, loaded.resources.deuterium);
     }
 
@@ -8388,11 +8446,7 @@ modifiers = [{ kind = "expedition_slots", per_level = 1.0 }]
             coord,
             kind: PlanetType::Rocky,
             size: 120,
-            resources: Resources {
-                metal: 100_000.0,
-                crystal: 100_000.0,
-                deuterium: 100_000.0,
-            },
+            resources: Resources::from_parts(100_000.0, 100_000.0, 100_000.0),
             buildings: Buildings::default(),
             fleet: Fleet::default(),
             defences: crate::DefenceGrid::default(),
@@ -8437,11 +8491,7 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
     #[test]
     fn colony_and_home_queues_advance_independently() {
         let mut state = GameState::with_config(0, test_config());
-        state.resources = Resources {
-            metal: 100_000.0,
-            crystal: 100_000.0,
-            deuterium: 100_000.0,
-        };
+        state.resources = Resources::from_parts(100_000.0, 100_000.0, 100_000.0);
         plant_colony(&mut state, neighbor());
         state.colonies[0].buildings.robotics_factory = 1;
         state
@@ -8466,16 +8516,12 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
     #[test]
     fn transport_rejects_cargo_over_capacity_and_pays_fuel() {
         let mut state = GameState::with_config(0, logistics_config());
-        state.resources.metal = 10_000.0;
-        state.resources.crystal = 0.0;
+        state.resources.iron = 10_000.0;
+        state.resources.silicon = 0.0;
         state.resources.deuterium = 50.0;
         plant_colony(&mut state, neighbor());
         state.fleet.add(ShipKind::SmallCargo, 1);
-        let over = Resources {
-            metal: 5_001.0,
-            crystal: 0.0,
-            deuterium: 0.0,
-        };
+        let over = Resources::from_parts(5_001.0, 0.0, 0.0);
         let err = state
             .launch_transport(state.home, neighbor(), cargo_fleet(), over, 100, 0)
             .unwrap_err();
@@ -8489,34 +8535,26 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         assert_eq!(state.fleet.get(ShipKind::SmallCargo), 1);
         close(state.resources.deuterium, 50.0);
 
-        state.resources.metal = 50.0;
-        let short_metal = Resources {
-            metal: 200.0,
-            crystal: 0.0,
-            deuterium: 0.0,
-        };
+        state.resources.iron = 50.0;
+        let short_metal = Resources::from_parts(200.0, 0.0, 0.0);
         match state.launch_transport(state.home, neighbor(), cargo_fleet(), short_metal, 100, 0) {
-            Err(FleetError::InsufficientCargo { missing }) => close(missing.metal, 150.0),
+            Err(FleetError::InsufficientCargo { missing }) => close(missing.iron, 150.0),
             other => panic!("{other:?}"),
         }
-        state.resources.metal = 10_000.0;
+        state.resources.iron = 10_000.0;
 
-        let cargo = Resources {
-            metal: 100.0,
-            crystal: 0.0,
-            deuterium: 0.0,
-        };
+        let cargo = Resources::from_parts(100.0, 0.0, 0.0);
         let id = state
             .launch_transport(state.home, neighbor(), cargo_fleet(), cargo, 100, 0)
             .unwrap();
         assert_eq!(state.fleet.get(ShipKind::SmallCargo), 0);
-        close(state.resources.metal, 9_900.0);
+        close(state.resources.iron, 9_900.0);
         let fuel = state.missions[0].fuel_paid;
         assert!(fuel > 0.0);
         close(state.resources.deuterium, 50.0 - fuel);
         let outbound = state.missions[0].outbound_secs;
         state.catch_up(outbound);
-        close(state.colonies[0].resources.metal, 100_100.0);
+        close(state.colonies[0].resources.iron, 100_100.0);
         assert!(state.missions[0].transport);
         assert_eq!(state.missions[0].id, id);
         state.catch_up(outbound * 2);
@@ -8529,25 +8567,21 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         let mut state = GameState::with_config(0, logistics_config());
         plant_colony(&mut state, neighbor());
         state.fleet.add(ShipKind::SmallCargo, 1);
-        state.resources.metal = 10_000.0;
+        state.resources.iron = 10_000.0;
         state.resources.deuterium = 50.0;
-        let cargo = Resources {
-            metal: 100.0,
-            crystal: 0.0,
-            deuterium: 0.0,
-        };
+        let cargo = Resources::from_parts(100.0, 0.0, 0.0);
         let id = state
             .launch_transport(state.home, neighbor(), cargo_fleet(), cargo, 100, 0)
             .unwrap();
         let fuel = state.missions[0].fuel_paid;
-        let metal_rate = state.production_per_hour(ResourceKind::Metal);
+        let metal_rate = state.production_per_hour(ResourceKind::Iron);
         state.recall_fleet(id, 0).unwrap();
         state.catch_up(1);
         assert!(state.missions.is_empty());
         assert_eq!(state.fleet.get(ShipKind::SmallCargo), 1);
-        close(state.resources.metal, 10_000.0 + metal_rate / 3600.0);
+        close(state.resources.iron, 10_000.0 + metal_rate / 3600.0);
         close(state.resources.deuterium, 50.0 - fuel);
-        close(state.colonies[0].resources.metal, 100_000.0);
+        close(state.colonies[0].resources.iron, 100_000.0);
     }
 
     #[test]
@@ -8555,28 +8589,20 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         let mut state = GameState::with_config(0, logistics_config());
         plant_colony(&mut state, neighbor());
         state.fleet.add(ShipKind::SmallCargo, 2);
-        state.resources.metal = 10_000.0;
+        state.resources.iron = 10_000.0;
         state.resources.deuterium = 50.0;
-        let bad = Resources {
-            metal: -10.0,
-            crystal: 0.0,
-            deuterium: 0.0,
-        };
+        let bad = Resources::from_parts(-10.0, 0.0, 0.0);
         assert_eq!(
             state.launch_transport(state.home, neighbor(), cargo_fleet(), bad, 100, 0),
             Err(FleetError::InvalidCargo)
         );
-        close(state.resources.metal, 10_000.0);
+        close(state.resources.iron, 10_000.0);
         assert_eq!(state.fleet.get(ShipKind::SmallCargo), 2);
         assert_eq!(
             state.schedule_route(state.home, neighbor(), cargo_fleet(), bad, 10, 0),
             Err(FleetError::InvalidCargo)
         );
-        let over = Resources {
-            metal: 5_001.0,
-            crystal: 0.0,
-            deuterium: 0.0,
-        };
+        let over = Resources::from_parts(5_001.0, 0.0, 0.0);
         match state.schedule_route(state.home, neighbor(), cargo_fleet(), over, 10, 0) {
             Err(FleetError::CargoExceedsCapacity { .. }) => {}
             other => panic!("{other:?}"),
@@ -8600,25 +8626,18 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         let mut state = GameState::with_config(0, logistics_config());
         plant_colony(&mut state, neighbor());
         state.fleet.add(ShipKind::SmallCargo, 1);
-        state.resources.metal = 10_000.0;
+        state.resources.iron = 10_000.0;
         state.resources.deuterium = 50.0;
-        let cargo = Resources {
-            metal: 100.0,
-            crystal: 0.0,
-            deuterium: 0.0,
-        };
+        let cargo = Resources::from_parts(100.0, 0.0, 0.0);
         let id = state
             .schedule_route(state.home, neighbor(), cargo_fleet(), cargo, 10, 0)
             .unwrap();
-        let metal_rate = state.production_per_hour(ResourceKind::Metal);
+        let metal_rate = state.production_per_hour(ResourceKind::Iron);
         state.catch_up(1);
         assert_eq!(state.missions.len(), 1);
         assert!(state.missions[0].transport);
-        close(
-            state.resources.metal,
-            10_000.0 - 100.0 + metal_rate / 3600.0,
-        );
-        close(state.colonies[0].resources.metal, 100_100.0);
+        close(state.resources.iron, 10_000.0 - 100.0 + metal_rate / 3600.0);
+        close(state.colonies[0].resources.iron, 100_100.0);
         assert_eq!(state.fleet.get(ShipKind::SmallCargo), 0);
         assert_eq!(state.routes[0].id, id);
         assert_eq!(state.routes[0].next_at, 10);
@@ -8629,13 +8648,9 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         let mut state = GameState::with_config(0, logistics_config());
         plant_colony(&mut state, neighbor());
         state.fleet.add(ShipKind::SmallCargo, 1);
-        state.resources.metal = 10.0;
+        state.resources.iron = 10.0;
         state.resources.deuterium = 50.0;
-        let cargo = Resources {
-            metal: 100.0,
-            crystal: 0.0,
-            deuterium: 0.0,
-        };
+        let cargo = Resources::from_parts(100.0, 0.0, 0.0);
         let id = state
             .schedule_route(state.home, neighbor(), cargo_fleet(), cargo, 10, 0)
             .unwrap();
@@ -8661,16 +8676,12 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
     fn repeating_route_skips_when_destination_storage_is_full() {
         let mut state = GameState::with_config(0, logistics_config());
         plant_colony(&mut state, neighbor());
-        let cap = state.storage_cap_at(neighbor(), ResourceKind::Metal);
-        state.colonies[0].resources.metal = cap;
+        let cap = state.storage_cap_at(neighbor(), ResourceKind::Iron);
+        state.colonies[0].resources.iron = cap;
         state.fleet.add(ShipKind::SmallCargo, 1);
-        state.resources.metal = 10_000.0;
+        state.resources.iron = 10_000.0;
         state.resources.deuterium = 50.0;
-        let cargo = Resources {
-            metal: 100.0,
-            crystal: 0.0,
-            deuterium: 0.0,
-        };
+        let cargo = Resources::from_parts(100.0, 0.0, 0.0);
         let id = state
             .schedule_route(state.home, neighbor(), cargo_fleet(), cargo, 10, 0)
             .unwrap();
@@ -8686,28 +8697,24 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         );
         assert!(state.missions.is_empty());
         assert_eq!(state.fleet.get(ShipKind::SmallCargo), 1);
-        close(state.colonies[0].resources.metal, cap);
+        close(state.colonies[0].resources.iron, cap);
     }
 
     #[test]
     fn transport_bounces_overflow_when_dest_has_no_room() {
         let mut state = GameState::with_config(0, logistics_config());
         plant_colony(&mut state, neighbor());
-        let cap = state.storage_cap_at(neighbor(), ResourceKind::Metal);
-        state.colonies[0].resources.metal = cap - 1.0;
+        let cap = state.storage_cap_at(neighbor(), ResourceKind::Iron);
+        state.colonies[0].resources.iron = cap - 1.0;
         state.fleet.add(ShipKind::SmallCargo, 1);
-        state.resources.metal = 10_000.0;
+        state.resources.iron = 10_000.0;
         state.resources.deuterium = 50.0;
-        let cargo = Resources {
-            metal: 100.0,
-            crystal: 0.0,
-            deuterium: 0.0,
-        };
+        let cargo = Resources::from_parts(100.0, 0.0, 0.0);
         state
             .launch_transport(state.home, neighbor(), cargo_fleet(), cargo, 100, 0)
             .unwrap();
         state.catch_up(1);
-        close(state.colonies[0].resources.metal, cap);
+        close(state.colonies[0].resources.iron, cap);
         assert!(
             state
                 .logistics
@@ -8727,17 +8734,13 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
             state.logistics.deliveries
         );
         assert_eq!(state.missions.len(), 1);
-        close(state.missions[0].cargo.metal, 99.0);
+        close(state.missions[0].cargo.iron, 99.0);
     }
 
     #[test]
     fn enqueue_build_many_needs_logistics_and_reports_unaffordable() {
         let mut state = GameState::with_config(0, logistics_config());
-        state.resources = Resources {
-            metal: 100_000.0,
-            crystal: 100_000.0,
-            deuterium: 100_000.0,
-        };
+        state.resources = Resources::from_parts(100_000.0, 100_000.0, 100_000.0);
         plant_colony(&mut state, neighbor());
         state.colonies[0].resources = Resources::ZERO;
         let coords = [state.home, neighbor()];
@@ -8764,11 +8767,7 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
 
     fn wonder_config() -> BalanceConfig {
         let mut cfg = test_config();
-        cfg.starting_resources = Resources {
-            metal: 1_000.0,
-            crystal: 1_000.0,
-            deuterium: 1_000.0,
-        };
+        cfg.starting_resources = Resources::from_parts(1_000.0, 1_000.0, 1_000.0);
         cfg.wonders = vec![crate::WonderSpec {
             id: "test_ring".into(),
             name: "Test ring".into(),
@@ -8778,20 +8777,12 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
             }],
             stages: vec![
                 crate::WonderStage {
-                    cost: Resources {
-                        metal: 100.0,
-                        crystal: 40.0,
-                        deuterium: 10.0,
-                    },
+                    cost: Resources::from_parts(100.0, 40.0, 10.0),
                     duration_secs: 10,
                     require_tier: None,
                 },
                 crate::WonderStage {
-                    cost: Resources {
-                        metal: 200.0,
-                        crystal: 80.0,
-                        deuterium: 20.0,
-                    },
+                    cost: Resources::from_parts(200.0, 80.0, 20.0),
                     duration_secs: 20,
                     require_tier: None,
                 },
@@ -8832,28 +8823,20 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         let mut gap = GameState::with_config(0, wonder_config());
         gap.tech_levels.insert("energy".into(), 1);
         plant_colony(&mut gap, neighbor());
-        gap.resources = Resources {
-            metal: 60.0,
-            crystal: 20.0,
-            deuterium: 4.0,
-        };
-        gap.colonies[0].resources = Resources {
-            metal: 60.0,
-            crystal: 20.0,
-            deuterium: 6.0,
-        };
+        gap.resources = Resources::from_parts(60.0, 20.0, 4.0);
+        gap.colonies[0].resources = Resources::from_parts(60.0, 20.0, 6.0);
         gap.start_wonder("test_ring", 0).unwrap();
         let from_home = gap.contribute_wonder(gap.home, 0).unwrap();
-        close(from_home.metal, 60.0);
-        close(from_home.crystal, 20.0);
+        close(from_home.iron, 60.0);
+        close(from_home.silicon, 20.0);
         close(from_home.deuterium, 4.0);
         let from_colony = gap.contribute_wonder(neighbor(), 0).unwrap();
-        close(from_colony.metal, 40.0);
-        close(from_colony.crystal, 20.0);
+        close(from_colony.iron, 40.0);
+        close(from_colony.silicon, 20.0);
         close(from_colony.deuterium, 6.0);
         assert_eq!(gap.wonder.as_ref().unwrap().completes_at, Some(10));
-        close(gap.resources.metal, 0.0);
-        close(gap.colonies[0].resources.metal, 20.0);
+        close(gap.resources.iron, 0.0);
+        close(gap.colonies[0].resources.iron, 20.0);
 
         let mut step = gap.clone();
         gap.catch_up(10);
@@ -8864,10 +8847,10 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         assert_eq!(step.wonder.as_ref().unwrap().stage, 1);
         assert_eq!(gap.wonder.as_ref().unwrap().completes_at, None);
         assert_eq!(gap.last_tick_unix, step.last_tick_unix);
-        close(gap.resources.metal, step.resources.metal);
+        close(gap.resources.iron, step.resources.iron);
         close(
-            gap.colonies[0].resources.metal,
-            step.colonies[0].resources.metal,
+            gap.colonies[0].resources.iron,
+            step.colonies[0].resources.iron,
         );
         assert!(
             gap.events
@@ -8880,11 +8863,7 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
     fn completed_wonder_feeds_modifier_lookup() {
         let mut state = GameState::with_config(0, wonder_config());
         state.tech_levels.insert("energy".into(), 1);
-        state.resources = Resources {
-            metal: 400.0,
-            crystal: 200.0,
-            deuterium: 50.0,
-        };
+        state.resources = Resources::from_parts(400.0, 200.0, 50.0);
         let before = state.modifier(ModifierKind::EnergyOutput);
         state.start_wonder("test_ring", 0).unwrap();
         state.contribute_wonder(state.home, 0).unwrap();
@@ -8920,14 +8899,10 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         state.colonies[0].buildings.metal_mine = 1;
         state.colonies[0].buildings.crystal_mine = 1;
         state.colonies[0].buildings.solar_plant = 1;
-        state.resources = Resources {
-            metal: 50.0,
-            crystal: 20.0,
-            deuterium: 10.0,
-        };
+        state.resources = Resources::from_parts(50.0, 20.0, 10.0);
         state.start_wonder("test_ring", 0).unwrap();
         state.contribute_wonder(state.home, 0).unwrap();
-        close(state.production_per_hour(ResourceKind::Metal), 0.0);
+        close(state.production_per_hour(ResourceKind::Iron), 0.0);
         assert!(
             state.wonder_eta_secs().is_some(),
             "colony mines should fund the unpaid remainder"
@@ -9214,12 +9189,8 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         assert_eq!(state.colonies[0].rare.as_deref(), Some("rich_vein"));
         let bonus = state.rare_bonus_at(dest).expect("rare bonus");
         assert_eq!(bonus.id, "rich_vein");
-        assert!((bonus.metal - 0.25).abs() < 1e-9);
-        assert!(
-            bonus.summary().contains("metal +25%"),
-            "{}",
-            bonus.summary()
-        );
+        assert!((bonus.iron - 0.25).abs() < 1e-9);
+        assert!(bonus.summary().contains("iron +25%"), "{}", bonus.summary());
         let base = outpost_config()
             .ships
             .get(ShipKind::LightFighter)
@@ -9301,8 +9272,8 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         state.completed_wonders.push("dyson_ring".into());
         assert!(state.can_prestige());
         let before = state.building_levels();
-        state.resources.metal = 10_000.0;
-        state.resources.crystal = 10_000.0;
+        state.resources.iron = 10_000.0;
+        state.resources.silicon = 10_000.0;
         state.enqueue_build(BuildingKind::SolarPlant, 0).unwrap();
         state.prestige_reset(10_000).unwrap();
         assert!(state.build_queue.is_empty());
@@ -9318,7 +9289,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
     #[test]
     fn prestige_bonuses_survive_reset_and_run_state_does_not() {
         let mut state = GameState::with_config(0, prestige_test_config());
-        state.resources.metal = 9_000.0;
+        state.resources.iron = 9_000.0;
         state.buildings.metal_mine = 6;
         state.tech_levels.insert("energy".into(), 3);
         state.fleet.add(ShipKind::LightFighter, 4);
@@ -9340,17 +9311,17 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         assert!(state.tech_levels.is_empty());
         assert_eq!(state.fleet.total(), 0);
         assert!(state.completed_wonders.is_empty());
-        assert!(state.resources.metal > state.config.starting_resources.metal);
+        assert!(state.resources.iron > state.config.starting_resources.iron);
         assert_eq!(state.prestige.runs[0].score, score);
         assert_eq!(state.prestige.runs[0].ended_at, Some(20));
         assert_eq!(state.prestige.current.index, 2);
-        let with_bonus = state.production_per_hour(ResourceKind::Metal);
+        let with_bonus = state.production_per_hour(ResourceKind::Iron);
         let mut plain = GameState::with_config(20, prestige_test_config());
         plain.resources = state.resources;
         assert!(
-            with_bonus > plain.production_per_hour(ResourceKind::Metal),
+            with_bonus > plain.production_per_hour(ResourceKind::Iron),
             "bonus {with_bonus} plain {}",
-            plain.production_per_hour(ResourceKind::Metal)
+            plain.production_per_hour(ResourceKind::Iron)
         );
     }
 
@@ -9362,9 +9333,9 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         source.prestige.lifetime = 4;
         source.prestige.runs.push(crate::RunStats::new(1, 0));
         let mut next = GameState::new_live_galaxy(10, prestige_test_config(), 7);
-        let before = next.resources.metal;
+        let before = next.resources.iron;
         next.inherit_prestige(source.prestige.clone());
-        assert!(next.resources.metal > before);
+        assert!(next.resources.iron > before);
         assert_eq!(next.prestige.owned_count("starter_cache"), 1);
         assert_eq!(next.prestige.current.index, 2);
         assert_eq!(next.prestige.lifetime, 4);
@@ -9468,10 +9439,10 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         plain.catch_up(3600);
         boosted.catch_up(3600);
         assert!(
-            boosted.colonies[0].resources.metal > plain.colonies[0].resources.metal,
+            boosted.colonies[0].resources.iron > plain.colonies[0].resources.iron,
             "boosted {} plain {}",
-            boosted.colonies[0].resources.metal,
-            plain.colonies[0].resources.metal
+            boosted.colonies[0].resources.iron,
+            plain.colonies[0].resources.iron
         );
     }
 
@@ -9576,7 +9547,7 @@ label = "Pass"
         );
         state.catch_up(30);
         assert!(state.story_pending.is_none());
-        close(state.resources.metal, 0.0);
+        close(state.resources.iron, 0.0);
         assert_eq!(state.last_story_at, 30);
         assert!(
             state
@@ -9594,7 +9565,7 @@ label = "Pass"
         state.rng_seed = 1;
         state.catch_up(10);
         state.choose_story("take", 12).unwrap();
-        close(state.resources.metal, 40.0);
+        close(state.resources.iron, 40.0);
         assert!(state.story_pending.is_none());
         assert_eq!(state.last_story_at, 12);
         assert!(
@@ -9703,14 +9674,14 @@ label = "Pass"
         cfg.market.tick_secs = 10_000;
         cfg.market.cargo_free = 1_000.0;
         let mut state = GameState::with_config(0, cfg);
-        state.resources.metal = 500.0;
+        state.resources.iron = 500.0;
         let buy = state
-            .trade_market(ResourceKind::Metal, ResourceKind::Crystal, 100.0, 0)
+            .trade_market(ResourceKind::Iron, ResourceKind::Silicon, 100.0, 0)
             .unwrap();
         let back = state
             .trade_market(
-                ResourceKind::Crystal,
-                ResourceKind::Metal,
+                ResourceKind::Silicon,
+                ResourceKind::Iron,
                 buy.recv_amount,
                 0,
             )
@@ -9721,7 +9692,7 @@ label = "Pass"
             100.0,
             back.recv_amount
         );
-        assert!(state.resources.metal < 500.0);
+        assert!(state.resources.iron < 500.0);
     }
 
     #[test]
@@ -9730,9 +9701,9 @@ label = "Pass"
         cfg.market.cargo_free = 50.0;
         cfg.market.tick_secs = 10_000;
         let mut state = GameState::with_config(0, cfg);
-        state.resources.metal = 200.0;
+        state.resources.iron = 200.0;
         let err = state
-            .trade_market(ResourceKind::Metal, ResourceKind::Crystal, 100.0, 0)
+            .trade_market(ResourceKind::Iron, ResourceKind::Silicon, 100.0, 0)
             .unwrap_err();
         assert!(
             matches!(err, crate::MarketError::NeedCargo { need, have } if (need - 100.0).abs() < 1e-9 && have == 0.0),
@@ -9740,9 +9711,9 @@ label = "Pass"
         );
         state.fleet.add(ShipKind::SmallCargo, 1);
         state
-            .trade_market(ResourceKind::Metal, ResourceKind::Crystal, 100.0, 0)
+            .trade_market(ResourceKind::Iron, ResourceKind::Silicon, 100.0, 0)
             .unwrap();
-        close(state.resources.metal, 100.0);
+        close(state.resources.iron, 100.0);
     }
 
     #[test]
@@ -9885,9 +9856,9 @@ label = "Pass"
             ..crate::MarketConfig::default_active()
         };
         let mut state = GameState::with_config(0, cfg);
-        state.resources.metal = 500.0;
+        state.resources.iron = 500.0;
         state
-            .trade_market(ResourceKind::Metal, ResourceKind::Crystal, 100.0, 0)
+            .trade_market(ResourceKind::Iron, ResourceKind::Silicon, 100.0, 0)
             .unwrap();
         close(state.diplomacy.standing("traders"), 1.0);
         assert!(
@@ -9965,26 +9936,26 @@ label = "Pass"
     #[test]
     fn tribute_pays_metal_for_pirate_standing() {
         let mut state = GameState::with_config(0, diplomacy_config());
-        state.resources.metal = 250.0;
+        state.resources.iron = 250.0;
         state.pay_tribute("pirates", 0).unwrap();
-        close(state.resources.metal, 50.0);
+        close(state.resources.iron, 50.0);
         close(state.diplomacy.standing("pirates"), 12.0);
         let err = state.pay_tribute("traders", 0).unwrap_err();
         assert!(matches!(err, crate::DiplomacyError::NoTribute(_)), "{err}");
-        state.resources.metal = 0.0;
+        state.resources.iron = 0.0;
         let err = state.pay_tribute("pirates", 0).unwrap_err();
         assert!(
             matches!(err, crate::DiplomacyError::Insufficient { .. }),
             "{err}"
         );
-        state.resources.metal = 500.0;
+        state.resources.iron = 500.0;
         state.diplomacy.set_standing("pirates", 100.0);
         let err = state.pay_tribute("pirates", 0).unwrap_err();
         assert!(
             matches!(err, crate::DiplomacyError::NoStandingChange(_)),
             "{err}"
         );
-        close(state.resources.metal, 500.0);
+        close(state.resources.iron, 500.0);
         close(state.diplomacy.standing("pirates"), 100.0);
     }
 
@@ -10064,11 +10035,7 @@ label = "Leave it"
     #[test]
     fn history_time_travel_matches_recorded_snapshot() {
         let mut state = GameState::with_config(0, test_config());
-        state.resources = Resources {
-            metal: 1_000.0,
-            crystal: 1_000.0,
-            deuterium: 1_000.0,
-        };
+        state.resources = Resources::from_parts(1_000.0, 1_000.0, 1_000.0);
         state.enqueue_build(BuildingKind::MetalMine, 0).unwrap();
         let queued = state
             .history
@@ -10082,7 +10049,7 @@ label = "Leave it"
             .as_of(queued.at)
             .cloned()
             .expect("snapshot at queue");
-        assert_eq!(snap.metal, state.resources.metal);
+        assert_eq!(snap.iron, state.resources.iron);
         assert_eq!(snap.event_id, queued.id);
         let done_at = state.build_queue[0].completes_at.expect("timer");
         state.catch_up(done_at);
@@ -10099,7 +10066,7 @@ label = "Leave it"
         assert_eq!(lineage[0].id, queued.id);
         let past = state.history.as_of(queued.at).expect("past glance");
         assert_eq!(past.building_levels, snap.building_levels);
-        assert_eq!(past.metal, snap.metal);
+        assert_eq!(past.iron, snap.iron);
         let now = state.history.as_of(complete.at).expect("now glance");
         assert!(now.building_levels > past.building_levels);
         let hits = state.history.search(&crate::HistoryQuery {
@@ -10113,8 +10080,8 @@ label = "Leave it"
     #[test]
     fn leader_permissions_delegation_and_spend_cap() {
         let mut state = GameState::new(1_000);
-        state.resources.metal = 50_000.0;
-        state.resources.crystal = 50_000.0;
+        state.resources.iron = 50_000.0;
+        state.resources.silicon = 50_000.0;
         state.resources.deuterium = 50_000.0;
         let admiral = 1;
         let governor = 2;
@@ -10166,8 +10133,8 @@ label = "Leave it"
         state
             .delegate_leader(governor, crate::Permission::QueueBuild, None, 1_000)
             .unwrap();
-        let broke = state.resources.metal;
-        state.resources.metal = 0.0;
+        let broke = state.resources.iron;
+        state.resources.iron = 0.0;
         let unaffordable = state.enqueue_build_as(
             Coord::HOME,
             BuildingKind::MetalMine,
@@ -10186,7 +10153,7 @@ label = "Leave it"
                 .map(|row| row.spent),
             Some(0.0)
         );
-        state.resources.metal = broke;
+        state.resources.iron = broke;
         state
             .enqueue_build_as(
                 Coord::HOME,
@@ -10205,32 +10172,32 @@ label = "Leave it"
     #[test]
     fn governor_trait_raises_output_inside_energy_budget() {
         let mut state = GameState::new(1_000);
-        let baseline = state.production_per_hour(ResourceKind::Metal);
+        let baseline = state.production_per_hour(ResourceKind::Iron);
         if let Some(leader) = state.leaders.iter_mut().find(|row| row.id == 2) {
             leader.trait_id = "logistics".into();
         }
-        let boosted = state.production_per_hour(ResourceKind::Metal);
+        let boosted = state.production_per_hour(ResourceKind::Iron);
         assert!(boosted > baseline);
         assert!(boosted / baseline < 1.05);
         state.assignments.retain(|row| row.leader_id != 2);
-        let empty = state.production_per_hour(ResourceKind::Metal);
+        let empty = state.production_per_hour(ResourceKind::Iron);
         assert!(empty < baseline);
 
         let mut governed = GameState::new(2_000);
-        governed.resources.metal = 0.0;
+        governed.resources.iron = 0.0;
         let mut vacant = GameState::new(2_000);
-        vacant.resources.metal = 0.0;
+        vacant.resources.iron = 0.0;
         vacant.assignments.retain(|row| row.leader_id != 2);
         governed.catch_up(2_000 + 3_600);
         vacant.catch_up(2_000 + 3_600);
-        assert!(governed.resources.metal > vacant.resources.metal);
+        assert!(governed.resources.iron > vacant.resources.iron);
     }
 
     #[test]
     fn reassignment_delay_and_retirement() {
         let mut state = GameState::new(1_000);
-        state.resources.metal = 5_000.0;
-        state.resources.crystal = 5_000.0;
+        state.resources.iron = 5_000.0;
+        state.resources.silicon = 5_000.0;
         let id = state.recruit_leader("Nara", "reformer", 1_000).unwrap();
         state
             .assign_leader(
@@ -10271,8 +10238,8 @@ label = "Leave it"
     #[test]
     fn minister_needs_delegation_to_propose() {
         let mut state = GameState::new(1_000);
-        state.resources.metal = 5_000.0;
-        state.resources.crystal = 5_000.0;
+        state.resources.iron = 5_000.0;
+        state.resources.silicon = 5_000.0;
         let id = state.recruit_leader("Iri", "reformer", 1_000).unwrap();
         state
             .assign_leader(

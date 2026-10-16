@@ -113,8 +113,8 @@ impl TechNodeState {
 pub struct TechSpec {
     pub id: String,
     pub name: String,
-    pub metal: f64,
-    pub crystal: f64,
+    pub iron: f64,
+    pub silicon: f64,
     pub deuterium: f64,
     pub cost_growth: f64,
     pub base_seconds: f64,
@@ -133,11 +133,7 @@ pub struct TechSpec {
 impl TechSpec {
     pub fn cost(&self, from_level: u32) -> Resources {
         let g = self.cost_growth.powi(from_level as i32);
-        Resources {
-            metal: self.metal * g,
-            crystal: self.crystal * g,
-            deuterium: self.deuterium * g,
-        }
+        Resources::from_parts(self.iron * g, self.silicon * g, self.deuterium * g)
     }
 
     pub fn duration_secs(&self, from_level: u32) -> u64 {
@@ -172,8 +168,8 @@ impl TechTree {
             let spec = TechSpec {
                 id: raw.id.clone(),
                 name: raw.name,
-                metal: raw.metal,
-                crystal: raw.crystal,
+                iron: raw.iron,
+                silicon: raw.silicon,
                 deuterium: raw.deuterium,
                 cost_growth: raw.cost_growth,
                 base_seconds: raw.base_seconds,
@@ -464,11 +460,11 @@ impl fmt::Display for ResearchError {
             ResearchError::InsufficientResources { missing, cost } => write!(
                 f,
                 "not enough resources (missing metal {:.0}, crystal {:.0}, deuterium {:.0}; cost metal {:.0}, crystal {:.0}, deuterium {:.0})",
-                missing.metal,
-                missing.crystal,
+                missing.iron,
+                missing.silicon,
                 missing.deuterium,
-                cost.metal,
-                cost.crystal,
+                cost.iron,
+                cost.silicon,
                 cost.deuterium
             ),
             ResearchError::MissingPrerequisites { gaps } => {
@@ -553,8 +549,10 @@ struct FileTree {
 struct FileTech {
     id: String,
     name: String,
-    metal: f64,
-    crystal: f64,
+    #[serde(alias = "metal")]
+    iron: f64,
+    #[serde(alias = "crystal")]
+    silicon: f64,
     deuterium: f64,
     cost_growth: f64,
     base_seconds: f64,

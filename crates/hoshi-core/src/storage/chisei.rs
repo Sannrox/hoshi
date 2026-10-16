@@ -875,7 +875,7 @@ mod tests {
         cfg.raid.enabled = false;
         let mut state = GameState::with_config(1_000, cfg);
         store.save(&state).unwrap();
-        let metal = state.resources.metal;
+        let metal = state.resources.iron;
         let err = store
             .apply_intent(
                 &mut state,
@@ -886,9 +886,9 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(err, IntentError::Research(_)));
-        assert_eq!(state.resources.metal, metal);
+        assert_eq!(state.resources.iron, metal);
         let loaded = store.load(BalanceConfig::default()).unwrap();
-        assert_eq!(loaded.resources.metal, metal);
+        assert_eq!(loaded.resources.iron, metal);
         assert!(store.graph.applied.is_empty());
         drop(store);
         cleanup_dir(&path);
@@ -901,8 +901,8 @@ mod tests {
         let mut cfg = BalanceConfig::default();
         cfg.raid.enabled = false;
         let mut state = GameState::with_config(1_000, cfg);
-        state.resources.metal = 40_000.0;
-        state.resources.crystal = 20_000.0;
+        state.resources.iron = 40_000.0;
+        state.resources.silicon = 20_000.0;
         store
             .apply_intent(
                 &mut state,
@@ -927,8 +927,8 @@ mod tests {
         let mut cfg = BalanceConfig::default();
         cfg.raid.enabled = false;
         let mut state = GameState::with_config(1_000, cfg);
-        state.resources.metal = 80_000.0;
-        state.resources.crystal = 40_000.0;
+        state.resources.iron = 80_000.0;
+        state.resources.silicon = 40_000.0;
         store
             .apply_intent(
                 &mut state,
@@ -963,8 +963,8 @@ mod tests {
         let mut cfg = BalanceConfig::default();
         cfg.raid.enabled = false;
         let mut state = GameState::with_config(1_000, cfg);
-        state.resources.metal = 40_000.0;
-        state.resources.crystal = 20_000.0;
+        state.resources.iron = 40_000.0;
+        state.resources.silicon = 20_000.0;
         let proposal = store
             .apply_intent(
                 &mut state,
@@ -1045,15 +1045,15 @@ mod tests {
         let mut cfg = BalanceConfig::default();
         cfg.raid.enabled = false;
         let mut state = GameState::with_config(1_000, cfg.clone());
-        state.resources.metal = 111.0;
+        state.resources.iron = 111.0;
         store.save(&state).unwrap();
         let rev = store.committed;
-        state.resources.metal = 999.0;
+        state.resources.iron = 999.0;
         persist_sqlite(&store.state_file(rev + 1), &state).unwrap();
         drop(store);
         let again = ChiseiStorage::open(&path).unwrap();
         let loaded = again.load(cfg).unwrap();
-        assert!((loaded.resources.metal - 111.0).abs() < 1e-9);
+        assert!((loaded.resources.iron - 111.0).abs() < 1e-9);
         drop(again);
         cleanup_dir(&path);
     }
@@ -1084,8 +1084,8 @@ mod tests {
         let mut cfg = BalanceConfig::default();
         cfg.raid.enabled = false;
         let mut state = GameState::with_config(1_000, cfg);
-        state.resources.metal = 500_000.0;
-        state.resources.crystal = 500_000.0;
+        state.resources.iron = 500_000.0;
+        state.resources.silicon = 500_000.0;
         state.resources.deuterium = 500_000.0;
         let clock = FakeClock::new(1_000);
         let start = Instant::now();

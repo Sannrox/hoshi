@@ -119,8 +119,8 @@ pub struct DefenceSpec {
     pub kind: DefenceKind,
     pub name: String,
     pub role: DefenceRole,
-    pub metal: f64,
-    pub crystal: f64,
+    pub iron: f64,
+    pub silicon: f64,
     pub deuterium: f64,
     pub base_seconds: f64,
     pub shipyard: u32,
@@ -131,11 +131,7 @@ pub struct DefenceSpec {
 
 impl DefenceSpec {
     pub fn unit_cost(&self) -> Resources {
-        Resources {
-            metal: self.metal,
-            crystal: self.crystal,
-            deuterium: self.deuterium,
-        }
+        Resources::from_parts(self.iron, self.silicon, self.deuterium)
     }
 
     pub fn duration_secs(&self) -> u64 {
@@ -221,8 +217,10 @@ struct FileDefence {
     id: String,
     name: String,
     role: String,
-    metal: f64,
-    crystal: f64,
+    #[serde(alias = "metal")]
+    iron: f64,
+    #[serde(alias = "crystal")]
+    silicon: f64,
     deuterium: f64,
     base_seconds: f64,
     shipyard: u32,
@@ -251,8 +249,8 @@ impl File {
                 kind,
                 name: row.name,
                 role,
-                metal: row.metal,
-                crystal: row.crystal,
+                iron: row.iron,
+                silicon: row.silicon,
                 deuterium: row.deuterium,
                 base_seconds: row.base_seconds,
                 shipyard: row.shipyard,

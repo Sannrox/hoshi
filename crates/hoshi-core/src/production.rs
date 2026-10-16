@@ -130,8 +130,8 @@ impl GameState {
             energy_demand,
             heat_load,
             heat_sink,
-            metal_per_hour: self.empire_production_per_hour(ResourceKind::Metal),
-            crystal_per_hour: self.empire_production_per_hour(ResourceKind::Crystal),
+            metal_per_hour: self.empire_production_per_hour(ResourceKind::Iron),
+            crystal_per_hour: self.empire_production_per_hour(ResourceKind::Silicon),
             deuterium_per_hour: self.empire_production_per_hour(ResourceKind::Deuterium),
             limited_by,
         }
@@ -195,12 +195,14 @@ impl GameState {
 
     fn storage_cap_for(&self, buildings: crate::Buildings, kind: ResourceKind) -> f64 {
         match kind {
-            ResourceKind::Metal => self.config.metal_storage.capacity(buildings.metal_storage),
-            ResourceKind::Crystal => self
+            ResourceKind::Iron | ResourceKind::RareEarths => {
+                self.config.metal_storage.capacity(buildings.metal_storage)
+            }
+            ResourceKind::Silicon => self
                 .config
                 .crystal_storage
                 .capacity(buildings.crystal_storage),
-            ResourceKind::Deuterium => self
+            ResourceKind::Deuterium | ResourceKind::WaterIce | ResourceKind::Helium3 => self
                 .config
                 .deuterium_storage
                 .capacity(buildings.deuterium_storage),
@@ -222,7 +224,7 @@ impl GameState {
                     .rare
                     .iter()
                     .find(|row| row.id == *id)
-                    .map(|row| (row.metal, row.crystal, row.deuterium))
+                    .map(|row| (row.iron, row.silicon, row.deuterium))
             })
             .unwrap_or((0.0, 0.0, 0.0));
         let bonus = self.frontier_production_bonus(coord);
@@ -291,10 +293,7 @@ impl GameState {
         let kind = self.planet_kind(coord).unwrap_or(crate::PlanetType::Rocky);
         let energy = self.site_energy_factor(coord, buildings, kind);
         let unrest = self.site_unrest(coord);
-        let deposits = self
-            .config
-            .chains
-            .deposits_for(kind, self.galaxy_seed, coord);
+        let deposits = self.chain_deposits(kind, self.galaxy_seed, coord);
         let deposit = recipe
             .deposit
             .as_ref()
@@ -384,11 +383,7 @@ impl GameState {
                     && mission.dest == dest
                     && mission.phase == MissionPhase::Outbound
                 {
-                    let amount = match kind {
-                        ResourceKind::Metal => mission.cargo.metal,
-                        ResourceKind::Crystal => mission.cargo.crystal,
-                        ResourceKind::Deuterium => mission.cargo.deuterium,
-                    };
+                    let amount = mission.cargo.get(kind);
                     if amount > 1e-9 {
                         let eta = mission.phase_ends_at.saturating_sub(self.last_tick_unix);
                         return Some(LimitingFactor::Transport {
@@ -431,10 +426,10 @@ impl GameState {
         };
         let mut steps = Vec::new();
         for (id, kind, level) in [
-            ("metal_mine", ResourceKind::Metal, buildings.metal_mine),
+            ("metal_mine", ResourceKind::Iron, buildings.metal_mine),
             (
                 "crystal_mine",
-                ResourceKind::Crystal,
+                ResourceKind::Silicon,
                 buildings.crystal_mine,
             ),
             (
@@ -640,7 +635,7 @@ mod tests {
         cfg.starting_buildings.crystal_mine = 0;
         let mut state = GameState::with_config(0, cfg);
         state.goods.insert("steel".into(), 50.0);
-        state.resources.metal = state.storage_cap(ResourceKind::Metal);
+        state.resources.iron = state.storage_cap(ResourceKind::Iron);
         let report = state.production_report();
         let forge = report.steps.iter().find(|s| s.id == "forge").unwrap();
         assert_eq!(forge.limited_by.as_key(), "buffer");
@@ -700,11 +695,7 @@ mod tests {
             colonize: false,
             expedition_seed: None,
             expedition_applied: false,
-            cargo: Resources {
-                metal: 10.0,
-                crystal: 0.0,
-                deuterium: 0.0,
-            },
+            cargo: Resources::from_parts(10.0, 0.0, 0.0),
             transport: true,
             attack: false,
             invade: false,
@@ -790,11 +781,11 @@ mod tests {
             .iter()
             .find(|s| s.id == "metal_mine" && s.planet == dest)
             .unwrap();
-        let rate = *mine.outputs_per_hour.get("metal").unwrap_or(&0.0);
+        let rate = *mine.outputs_per_hour.get("iron").unwrap_or(&0.0);
         assert!(rate > 0.0, "colony mine rate was {rate}");
-        let before = state.colonies[0].resources.metal;
+        let before = state.colonies[0].resources.iron;
         state.catch_up(3_600);
-        close(state.colonies[0].resources.metal - before, rate);
+        close(state.colonies[0].resources.iron - before, rate);
     }
 
     #[test]
@@ -815,17 +806,13 @@ mod tests {
             ..Buildings::default()
         };
         let colony_cap = state.config.metal_storage.capacity(0);
-        let home_cap = state.storage_cap(ResourceKind::Metal);
+        let home_cap = state.storage_cap(ResourceKind::Iron);
         assert!(home_cap > colony_cap + 1.0);
         state.colonies.push(Colony {
             coord: dest,
             kind: PlanetType::Rocky,
             size: 120,
-            resources: Resources {
-                metal: colony_cap,
-                crystal: 0.0,
-                deuterium: 0.0,
-            },
+            resources: Resources::from_parts(colony_cap, 0.0, 0.0),
             buildings,
             fleet: Fleet::default(),
             defences: crate::DefenceGrid::default(),

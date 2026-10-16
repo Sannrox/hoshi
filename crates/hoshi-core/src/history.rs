@@ -136,8 +136,8 @@ impl HistoryEvent {
 pub struct EmpireSnapshot {
     pub at: u64,
     pub event_id: u64,
-    pub metal: f64,
-    pub crystal: f64,
+    pub iron: f64,
+    pub silicon: f64,
     pub deuterium: f64,
     pub energy: f64,
     pub heat: f64,
@@ -443,12 +443,12 @@ mod tests {
         }
     }
 
-    fn snap(at: u64, metal: f64, levels: u32) -> EmpireSnapshot {
+    fn snap(at: u64, iron: f64, levels: u32) -> EmpireSnapshot {
         EmpireSnapshot {
             at,
             event_id: 0,
-            metal,
-            crystal: 1.0,
+            iron,
+            silicon: 1.0,
             deuterium: 0.0,
             energy: 10.0,
             heat: 2.0,
@@ -548,7 +548,7 @@ mod tests {
         log.record(draft(5, "queue"), snap(5, 80.0, 2));
         log.record(draft(50, "complete"), snap(50, 80.0, 3));
         let past = log.as_of(5).expect("snapshot at 5");
-        assert_eq!(past.metal, 80.0);
+        assert_eq!(past.iron, 80.0);
         assert_eq!(past.building_levels, 2);
         let later = log.as_of(50).expect("snapshot at 50");
         assert_eq!(later.building_levels, 3);

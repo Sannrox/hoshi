@@ -13,10 +13,13 @@
     "save_schema": { "type": "integer" },
     "resources": {
       "type": "object",
-      "required": ["metal", "crystal", "deuterium"],
+      "required": ["iron", "silicon", "rare_earths", "water_ice", "helium_3", "deuterium"],
       "properties": {
-        "metal": { "type": "number" },
-        "crystal": { "type": "number" },
+        "iron": { "type": "number" },
+        "silicon": { "type": "number" },
+        "rare_earths": { "type": "number" },
+        "water_ice": { "type": "number" },
+        "helium_3": { "type": "number" },
         "deuterium": { "type": "number" }
       }
     },

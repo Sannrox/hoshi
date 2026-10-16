@@ -304,8 +304,12 @@ fn mix_u64(mut x: u64) -> u64 {
 /// stay in the goods map; toml cost aliases map those names at parse time.
 pub fn component_kind(id: &str) -> Option<ResourceKind> {
     match id {
-        "frames" | "metal" => Some(ResourceKind::Metal),
-        "electronics" | "crystal" => Some(ResourceKind::Crystal),
+        // Terminal construction columns. Raw/refined goods stay in the per-planet map.
+        "frames" | "iron" => Some(ResourceKind::Iron),
+        "electronics" => Some(ResourceKind::Silicon),
+        "rare_earths" => Some(ResourceKind::RareEarths),
+        "water_ice" => Some(ResourceKind::WaterIce),
+        "helium_3" => Some(ResourceKind::Helium3),
         "deuterium" => Some(ResourceKind::Deuterium),
         _ => None,
     }
@@ -597,10 +601,13 @@ mod tests {
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("cycle") || err.contains("mass"), "{err}");
         cfg = base();
-        cfg.recipes[2].inputs.insert("metal".into(), 1.0);
         cfg.recipes[2].inputs.insert("frames".into(), 1.0);
+        cfg.recipes[2].inputs.insert("metal".into(), 1.0);
         let err = cfg.validate().unwrap_err();
-        assert!(err.contains("stockpile"), "{err}");
+        assert!(
+            err.contains("stockpile") || err.contains("unknown"),
+            "{err}"
+        );
         cfg = base();
         cfg.recipes.swap(1, 2);
         let err = cfg.validate().unwrap_err();
@@ -643,19 +650,19 @@ mod tests {
         goods.insert("iron_ore".into(), 5.0);
         tick(&cfg, buildings, &deposits, &mut resources, &mut goods);
         // extract +10 ore, smelt uses 15 (5 stock + 10 new) limited by smelt rate 10 → 10 steel, 5 ore left, forge 10 frames
-        assert!((resources.metal - 10.0).abs() < 1e-9, "{}", resources.metal);
+        assert!((resources.iron - 10.0).abs() < 1e-9, "{}", resources.iron);
         assert!((goods.get("iron_ore").copied().unwrap_or(0.0) - 5.0).abs() < 1e-9);
         assert!(goods.get("steel").copied().unwrap_or(0.0).abs() < 1e-9);
         goods.clear();
         resources = Resources::ZERO;
         tick(&cfg, buildings, &deposits, &mut resources, &mut goods);
-        assert!((resources.metal - 10.0).abs() < 1e-9);
+        assert!((resources.iron - 10.0).abs() < 1e-9);
         let mut empty_dep = deposits.clone();
         empty_dep.insert("iron_ore".into(), 0.0);
         resources = Resources::ZERO;
         goods.clear();
         tick(&cfg, buildings, &empty_dep, &mut resources, &mut goods);
-        assert!(resources.metal.abs() < 1e-9);
+        assert!(resources.iron.abs() < 1e-9);
     }
 
     #[test]
@@ -667,7 +674,7 @@ mod tests {
         };
         let deposits = BTreeMap::from([("iron_ore".into(), 0.0)]);
         let mut resources = Resources {
-            metal: 10.0,
+            iron: 10.0,
             ..Resources::ZERO
         };
         let mut goods = BTreeMap::from([("steel".into(), 50.0)]);
@@ -685,9 +692,9 @@ mod tests {
             &mut goods,
             |_| 10.0,
         );
-        assert!((resources.metal - 10.0).abs() < 1e-9, "{}", resources.metal);
+        assert!((resources.iron - 10.0).abs() < 1e-9, "{}", resources.iron);
         assert!((goods.get("steel").copied().unwrap_or(0.0) - 50.0).abs() < 1e-9);
-        resources.metal = 6.0;
+        resources.iron = 6.0;
         apply_recipes(
             RecipeRun {
                 config: &cfg,
@@ -702,7 +709,7 @@ mod tests {
             &mut goods,
             |_| 10.0,
         );
-        assert!((resources.metal - 10.0).abs() < 1e-9, "{}", resources.metal);
+        assert!((resources.iron - 10.0).abs() < 1e-9, "{}", resources.iron);
         assert!((goods.get("steel").copied().unwrap_or(0.0) - 46.0).abs() < 1e-9);
     }
 
@@ -722,5 +729,39 @@ mod tests {
         assert_eq!(a, b);
         let c = cfg.deposits_for(PlanetType::Rocky, 8, Coord::HOME);
         assert_ne!(a.get("iron_ore"), c.get("iron_ore"));
+    }
+
+    #[test]
+    fn deposits_match_body_type() {
+        let cfg = crate::BalanceConfig::default().chains;
+        let home = crate::fleets::Coord::HOME;
+        let rocky = cfg.deposits_for(PlanetType::Rocky, 1, home);
+        let ice = cfg.deposits_for(PlanetType::Ice, 1, home);
+        let gas = cfg.deposits_for(PlanetType::GasGiant, 1, home);
+        assert!(
+            rocky.get("iron_ore").copied().unwrap_or(0.0)
+                > ice.get("iron_ore").copied().unwrap_or(0.0)
+        );
+        assert!(
+            rocky.get("silicon").copied().unwrap_or(0.0)
+                > gas.get("silicon").copied().unwrap_or(0.0)
+        );
+        assert!(
+            ice.get("water_ice").copied().unwrap_or(0.0)
+                > rocky.get("water_ice").copied().unwrap_or(0.0)
+        );
+        assert!(
+            gas.get("helium_3").copied().unwrap_or(0.0)
+                > rocky.get("helium_3").copied().unwrap_or(0.0)
+        );
+        assert!(
+            rocky.get("rare_earths").copied().unwrap_or(0.0)
+                > gas.get("rare_earths").copied().unwrap_or(0.0)
+        );
+    }
+
+    #[test]
+    fn bundled_recipes_conserve_mass() {
+        crate::BalanceConfig::default().chains.validate().unwrap();
     }
 }

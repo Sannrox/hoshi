@@ -630,8 +630,8 @@ condition = { kind = "building_level", id = "not_a_mine", level = 1 }
         let mut state = GameState::with_config(0, cfg);
         state.buildings.shipyard = 1;
         state.tech_levels.insert("combustion_drive".into(), 1);
-        state.resources.metal = 100_000.0;
-        state.resources.crystal = 100_000.0;
+        state.resources.iron = 100_000.0;
+        state.resources.silicon = 100_000.0;
         state.enqueue_ships(ShipKind::LightFighter, 1, 0).unwrap();
         let done = state.ship_queue[0].completes_at.expect("queued");
         state.next_raid_at = Some(done.saturating_add(1));

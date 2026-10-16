@@ -208,8 +208,8 @@ mod tests {
     #[test]
     fn balance_transform_keeps_event_ids() {
         let mut state = GameState::with_config(1_000, crate::BalanceConfig::default());
-        state.resources.metal = 50_000.0;
-        state.resources.crystal = 50_000.0;
+        state.resources.iron = 50_000.0;
+        state.resources.silicon = 50_000.0;
         state.resources.deuterium = 50_000.0;
         state.enqueue_build(BuildingKind::MetalMine, 1_000).unwrap();
         let rows = transform_balance(&state.history.events);

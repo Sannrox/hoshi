@@ -49,7 +49,7 @@ impl fmt::Display for MoonError {
             MoonError::Insufficient { missing } => write!(
                 f,
                 "need M{:.0} C{:.0} D{:.0}",
-                missing.metal, missing.crystal, missing.deuterium
+                missing.iron, missing.silicon, missing.deuterium
             ),
             MoonError::NoGate { at } => write!(f, "no jump gate at {at}"),
             MoonError::Cooling { ready_at } => write!(f, "jump ready at {ready_at}"),
@@ -129,16 +129,8 @@ impl Default for MoonConfig {
             form_chance_cap: 0.35,
             phalanx_range_systems: 5,
             jump_cooldown_secs: 3_600,
-            phalanx_cost: Resources {
-                metal: 400.0,
-                crystal: 200.0,
-                deuterium: 0.0,
-            },
-            gate_cost: Resources {
-                metal: 800.0,
-                crystal: 400.0,
-                deuterium: 100.0,
-            },
+            phalanx_cost: Resources::from_parts(400.0, 200.0, 0.0),
+            gate_cost: Resources::from_parts(800.0, 400.0, 100.0),
         }
     }
 }
@@ -205,16 +197,16 @@ impl FileMoons {
             form_chance_cap: self.form_chance_cap.clamp(0.0, 1.0),
             phalanx_range_systems: self.phalanx_range_systems,
             jump_cooldown_secs: self.jump_cooldown_secs,
-            phalanx_cost: Resources {
-                metal: self.phalanx_metal,
-                crystal: self.phalanx_crystal,
-                deuterium: self.phalanx_deuterium,
-            },
-            gate_cost: Resources {
-                metal: self.gate_metal,
-                crystal: self.gate_crystal,
-                deuterium: self.gate_deuterium,
-            },
+            phalanx_cost: Resources::from_parts(
+                self.phalanx_metal,
+                self.phalanx_crystal,
+                self.phalanx_deuterium,
+            ),
+            gate_cost: Resources::from_parts(
+                self.gate_metal,
+                self.gate_crystal,
+                self.gate_deuterium,
+            ),
         }
     }
 }
@@ -309,17 +301,17 @@ impl GameState {
             .resources_at(parent)
             .copied()
             .unwrap_or(Resources::ZERO);
-        let missing = Resources {
-            metal: (cost.metal - have.metal).max(0.0),
-            crystal: (cost.crystal - have.crystal).max(0.0),
-            deuterium: (cost.deuterium - have.deuterium).max(0.0),
-        };
-        if missing.metal > 0.0 || missing.crystal > 0.0 || missing.deuterium > 0.0 {
+        let missing = Resources::from_parts(
+            (cost.iron - have.iron).max(0.0),
+            (cost.silicon - have.silicon).max(0.0),
+            (cost.deuterium - have.deuterium).max(0.0),
+        );
+        if missing.iron > 0.0 || missing.silicon > 0.0 || missing.deuterium > 0.0 {
             return Err(MoonError::Insufficient { missing });
         }
         if let Ok(res) = self.resources_at_mut(parent) {
-            res.metal = (res.metal - cost.metal).max(0.0);
-            res.crystal = (res.crystal - cost.crystal).max(0.0);
+            res.iron = (res.iron - cost.iron).max(0.0);
+            res.silicon = (res.silicon - cost.silicon).max(0.0);
             res.deuterium = (res.deuterium - cost.deuterium).max(0.0);
         }
         let moon = self.moon_at_mut(parent).expect("moon still present");
@@ -472,16 +464,8 @@ mod tests {
         cfg.moons.form_threshold = 10.0;
         cfg.moons.form_chance_per_debris = 1.0;
         cfg.moons.form_chance_cap = 1.0;
-        cfg.moons.phalanx_cost = Resources {
-            metal: 10.0,
-            crystal: 0.0,
-            deuterium: 0.0,
-        };
-        cfg.moons.gate_cost = Resources {
-            metal: 10.0,
-            crystal: 0.0,
-            deuterium: 0.0,
-        };
+        cfg.moons.phalanx_cost = Resources::from_parts(10.0, 0.0, 0.0);
+        cfg.moons.gate_cost = Resources::from_parts(10.0, 0.0, 0.0);
         cfg.moons.jump_cooldown_secs = 100;
         cfg.moons.phalanx_range_systems = 5;
         cfg.flight.base_fleet_slots = 4;
@@ -493,8 +477,8 @@ mod tests {
         let cfg = moon_cfg();
         let mut a = GameState::with_seed(0, cfg.clone(), 7);
         let mut b = GameState::with_seed(0, cfg, 7);
-        a.resources.metal = 1_000.0;
-        b.resources.metal = 1_000.0;
+        a.resources.iron = 1_000.0;
+        b.resources.iron = 1_000.0;
         a.add_battle_debris(0, Coord::HOME, 20.0, 20.0);
         b.add_battle_debris(0, Coord::HOME, 20.0, 20.0);
         assert_eq!(a.moons, b.moons);
@@ -505,7 +489,7 @@ mod tests {
     #[test]
     fn jump_is_instant_and_enforces_cooldown_and_missing_gate() {
         let mut state = GameState::with_seed(0, moon_cfg(), 1);
-        state.resources.metal = 1_000.0;
+        state.resources.iron = 1_000.0;
         let dest = Coord {
             galaxy: 1,
             system: 1,
@@ -532,7 +516,7 @@ mod tests {
             .jump_between(Coord::HOME, dest, scout(), 0)
             .unwrap_err();
         assert!(matches!(err, MoonError::NoGate { at } if at == dest));
-        state.colonies[0].resources.metal = 1_000.0;
+        state.colonies[0].resources.iron = 1_000.0;
         state
             .build_moon_facility(dest, MoonFacility::JumpGate, 0)
             .unwrap();
@@ -550,7 +534,7 @@ mod tests {
     #[test]
     fn phalanx_lists_fleets_inside_range_only() {
         let mut state = GameState::with_seed(0, moon_cfg(), 1);
-        state.resources.metal = 1_000.0;
+        state.resources.iron = 1_000.0;
         state.resources.deuterium = 10_000.0;
         state.moons.push(Moon::new(Coord::HOME));
         state

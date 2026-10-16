@@ -193,11 +193,11 @@ impl fmt::Display for BuildError {
                 write!(
                     f,
                     "not enough resources (missing metal {:.0}, crystal {:.0}, deuterium {:.0}; cost metal {:.0}, crystal {:.0}, deuterium {:.0})",
-                    missing.metal,
-                    missing.crystal,
+                    missing.iron,
+                    missing.silicon,
                     missing.deuterium,
-                    cost.metal,
-                    cost.crystal,
+                    cost.iron,
+                    cost.silicon,
                     cost.deuterium
                 )
             }

@@ -288,10 +288,10 @@ impl GameState {
             }
             (run.brew_metal, run.brew_secs)
         };
-        if self.resources.metal + 1e-9 < cost {
+        if self.resources.iron + 1e-9 < cost {
             return Err(SpeciesError::Unavailable("not enough metal"));
         }
-        self.resources.metal -= cost;
+        self.resources.iron -= cost;
         let run = self
             .species
             .as_mut()
@@ -467,8 +467,10 @@ fn one() -> f64 {
 struct FileTech {
     id: String,
     name: String,
-    metal: f64,
-    crystal: f64,
+    #[serde(alias = "metal")]
+    iron: f64,
+    #[serde(alias = "crystal")]
+    silicon: f64,
     deuterium: f64,
     cost_growth: f64,
     base_seconds: f64,
@@ -584,8 +586,8 @@ fn tech_from_file(raw: FileTech) -> Result<TechSpec, SpeciesError> {
     Ok(TechSpec {
         id: raw.id.clone(),
         name: raw.name,
-        metal: raw.metal,
-        crystal: raw.crystal,
+        iron: raw.iron,
+        silicon: raw.silicon,
         deuterium: raw.deuterium,
         cost_growth: raw.cost_growth,
         base_seconds: raw.base_seconds,
@@ -656,14 +658,14 @@ mod tests {
             prestige,
         )
         .unwrap();
-        state.resources.metal = 100.0;
-        state.resources.crystal = 0.0;
+        state.resources.iron = 100.0;
+        state.resources.silicon = 0.0;
         state
-            .transmute(ResourceKind::Metal, ResourceKind::Crystal, 10.0)
+            .transmute(ResourceKind::Iron, ResourceKind::Silicon, 10.0)
             .unwrap();
-        assert!((state.resources.metal - 90.0).abs() < 1e-9);
-        assert!((state.resources.crystal - 8.0).abs() < 1e-9);
-        state.resources.metal = 500.0;
+        assert!((state.resources.iron - 90.0).abs() < 1e-9);
+        assert!((state.resources.silicon - 8.0).abs() < 1e-9);
+        state.resources.iron = 500.0;
         state.brew_buff(1_000).unwrap();
         assert!(state.brew_active(1_000));
         assert!(!state.brew_active(1_000 + 601));

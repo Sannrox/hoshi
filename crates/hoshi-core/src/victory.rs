@@ -611,7 +611,7 @@ mod tests {
     #[test]
     fn tribute_starts_the_alliance_hold() {
         let mut state = quiet(1_000);
-        state.resources.metal = 10_000.0;
+        state.resources.iron = 10_000.0;
         let ids: Vec<String> = state
             .config
             .diplomacy

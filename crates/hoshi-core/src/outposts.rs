@@ -31,8 +31,8 @@ pub struct RarePlanetBonus {
     pub id: String,
     pub name: String,
     pub weight: u32,
-    pub metal: f64,
-    pub crystal: f64,
+    pub iron: f64,
+    pub silicon: f64,
     pub deuterium: f64,
     pub energy: f64,
     /// Speeds the empire shipyard (ships queue at home).
@@ -44,11 +44,11 @@ impl RarePlanetBonus {
     /// Short labels for the planet screen (`metal +25%`, `fields +20`).
     pub fn summary(&self) -> String {
         let mut parts = Vec::new();
-        if self.metal > 0.0 {
-            parts.push(format!("metal +{:.0}%", self.metal * 100.0));
+        if self.iron > 0.0 {
+            parts.push(format!("iron +{:.0}%", self.iron * 100.0));
         }
-        if self.crystal > 0.0 {
-            parts.push(format!("crystal +{:.0}%", self.crystal * 100.0));
+        if self.silicon > 0.0 {
+            parts.push(format!("silicon +{:.0}%", self.silicon * 100.0));
         }
         if self.deuterium > 0.0 {
             parts.push(format!("deuterium +{:.0}%", self.deuterium * 100.0));
@@ -98,8 +98,8 @@ impl Default for OutpostConfig {
                     id: "rich_vein".into(),
                     name: "Rich vein".into(),
                     weight: 3,
-                    metal: 0.25,
-                    crystal: 0.0,
+                    iron: 0.25,
+                    silicon: 0.0,
                     deuterium: 0.0,
                     energy: 0.0,
                     shipyard_speed: 0.0,
@@ -109,8 +109,8 @@ impl Default for OutpostConfig {
                     id: "crystal_garden".into(),
                     name: "Crystal garden".into(),
                     weight: 2,
-                    metal: 0.0,
-                    crystal: 0.30,
+                    iron: 0.0,
+                    silicon: 0.30,
                     deuterium: 0.0,
                     energy: 0.0,
                     shipyard_speed: 0.0,
@@ -120,8 +120,8 @@ impl Default for OutpostConfig {
                     id: "shipyard_world".into(),
                     name: "Shipyard world".into(),
                     weight: 1,
-                    metal: 0.0,
-                    crystal: 0.0,
+                    iron: 0.0,
+                    silicon: 0.0,
                     deuterium: 0.0,
                     energy: 0.0,
                     shipyard_speed: 0.25,
@@ -131,8 +131,8 @@ impl Default for OutpostConfig {
                     id: "wide_fields".into(),
                     name: "Wide fields".into(),
                     weight: 2,
-                    metal: 0.0,
-                    crystal: 0.0,
+                    iron: 0.0,
+                    silicon: 0.0,
                     deuterium: 0.0,
                     energy: 0.0,
                     shipyard_speed: 0.0,

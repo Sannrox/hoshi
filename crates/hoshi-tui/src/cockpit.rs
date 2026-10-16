@@ -373,8 +373,8 @@ pub fn alerts(state: &GameState) -> Vec<Alert> {
         }
     }
     for kind in [
-        ResourceKind::Metal,
-        ResourceKind::Crystal,
+        ResourceKind::Iron,
+        ResourceKind::Silicon,
         ResourceKind::Deuterium,
     ] {
         let cap = state.storage_cap(kind);
@@ -735,8 +735,8 @@ fn gauge_lines(
     let use_spark = spark_w >= 8;
     let mut lines = Vec::new();
     for kind in [
-        ResourceKind::Metal,
-        ResourceKind::Crystal,
+        ResourceKind::Iron,
+        ResourceKind::Silicon,
         ResourceKind::Deuterium,
     ] {
         let stock = state.resources.get(kind);
@@ -945,13 +945,13 @@ fn market_lines(state: &GameState, height: usize, _high: bool) -> Vec<Line<'stat
     let market = &state.market;
     lines.push(Line::from(format!(
         "M {:.1}  C {:.1}  D {:.1}",
-        market.price(ResourceKind::Metal),
-        market.price(ResourceKind::Crystal),
+        market.price(ResourceKind::Iron),
+        market.price(ResourceKind::Silicon),
         market.price(ResourceKind::Deuterium)
     )));
     lines.push(Line::from(format!(
         "metal {}",
-        sparkline(market.history(ResourceKind::Metal), 16)
+        sparkline(market.history(ResourceKind::Iron), 16)
     )));
     lines.truncate(height.max(1));
     lines
@@ -1105,8 +1105,8 @@ fn fleet_detail(
         lines.push(Line::from(format!(
             "ships {}  cargo M{:.0} C{:.0} D{:.0}",
             mission.ships.total(),
-            mission.cargo.metal,
-            mission.cargo.crystal,
+            mission.cargo.iron,
+            mission.cargo.silicon,
             mission.cargo.deuterium
         )));
         lines.push(Line::from(format!(
@@ -1160,7 +1160,7 @@ fn faction_detail(state: &GameState, id: &str, height: usize, _high: bool) -> Ve
         .filter(|row| row.personality == id || row.name.contains(id))
     {
         let stock = match row.resources {
-            Some(r) => format!("  {:.0}M", r.metal),
+            Some(r) => format!("  {:.0}M", r.iron),
             None => String::new(),
         };
         lines.push(Line::from(format!(
@@ -1265,7 +1265,7 @@ mod tests {
     fn alerts_order_threats_before_idle_queues() {
         let mut state = GameState::new(1_000);
         state.next_raid_at = Some(1_120);
-        state.resources.metal = state.storage_cap(ResourceKind::Metal);
+        state.resources.iron = state.storage_cap(ResourceKind::Iron);
         let rows = alerts(&state);
         let kinds: Vec<_> = rows.iter().map(|row| row.kind.severity()).collect();
         let mut sorted = kinds.clone();

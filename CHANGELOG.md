@@ -8,6 +8,8 @@
 
 ### Added
 
+- Construction stockpiles are iron, silicon, rare earths, water ice, helium-3 and deuterium fuel. Rocky worlds carry iron and rare earths, ice worlds water ice, gas giants helium-3. Old metal/crystal/deuterium saves migrate (schema v40): metal splits 95% iron / 5% rare earths; crystal becomes silicon; deuterium tankage stays fuel. See `docs/realism.md`.
+
 - Automation as research progression: adaptive trade routes, multi-planet queues, then rule-based logistics (`keep metal on the capital`). Rules are data, conflict-checked, and evaluated on catch-up; control systems draw energy. The Automation screen dry-runs rules; `hoshi automation` adds, toggles and previews them. Save schema v39. See `crates/hoshi-core/data/automation.toml`.
 
 - Release and install: the playable crate is named `hoshi` (`cargo install --git … --locked hoshi`). Version tags `vX.Y.Z` publish GitHub Release binaries for Linux (x86_64, aarch64), macOS (Intel and Apple Silicon) and Windows with `SHA256SUMS`, and the Homebrew tap formula is regenerated from the same tag. Release notes copy the changelog and state the save schema (v39; older saves migrate).

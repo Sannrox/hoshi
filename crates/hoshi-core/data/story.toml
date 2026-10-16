@@ -15,14 +15,14 @@ min_elapsed_secs = 0
 [[event.choices]]
 id = "salvage"
 label = "Cut it open"
-metal = 400.0
+iron = 400.0
 schedule_raid = true
 
 [[event.choices]]
 id = "tow"
 label = "Tow it home"
 deuterium = -40.0
-metal = 180.0
+iron = 180.0
 
 [[event]]
 id = "smuggler"
@@ -37,7 +37,7 @@ min_elapsed_secs = 0
 id = "deal"
 label = "Buy the fuel"
 deuterium = 80.0
-metal = -60.0
+iron = -60.0
 schedule_raid = true
 deuterium_price = -0.12
 standing = { traders = 6.0, pirates = -8.0 }
@@ -59,7 +59,7 @@ min_fighters = 4
 [[event.choices]]
 id = "pay"
 label = "Pay them"
-metal = -120.0
+iron = -120.0
 
 [[event.choices]]
 id = "refuse_pay"
@@ -78,7 +78,7 @@ min_elapsed_secs = 0
 [[event.choices]]
 id = "scoop"
 label = "Scoop the ice"
-crystal = 220.0
+silicon = 220.0
 
 [[event.choices]]
 id = "leave"
@@ -101,7 +101,7 @@ deuterium = -30.0
 [[event.choices]]
 id = "expose"
 label = "Ride it out"
-metal = -90.0
+iron = -90.0
 
 [[event]]
 id = "trader_distress"
@@ -116,7 +116,7 @@ min_elapsed_secs = 0
 id = "help"
 label = "Send fuel"
 deuterium = -25.0
-crystal = 140.0
+silicon = 140.0
 
 [[event.choices]]
 id = "pass"
@@ -153,7 +153,7 @@ min_elapsed_secs = 0
 [[event.choices]]
 id = "strip"
 label = "Strip the wafers"
-crystal = 90.0
+silicon = 90.0
 
 [[event.choices]]
 id = "log"
@@ -172,7 +172,7 @@ min_elapsed_secs = 0
 id = "push"
 label = "Burn through"
 deuterium = -20.0
-metal = 70.0
+iron = 70.0
 
 [[event.choices]]
 id = "wait"
@@ -190,7 +190,7 @@ min_elapsed_secs = 0
 [[event.choices]]
 id = "haul"
 label = "Haul the scrap"
-metal = 160.0
+iron = 160.0
 
 [[event.choices]]
 id = "ignore"
@@ -226,7 +226,7 @@ min_elapsed_secs = 0
 [[event.choices]]
 id = "claim"
 label = "Claim the ice"
-crystal = 80.0
+silicon = 80.0
 deuterium = 20.0
 
 [[event.choices]]
