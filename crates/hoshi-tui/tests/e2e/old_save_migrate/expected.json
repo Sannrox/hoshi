@@ -4,5 +4,5 @@
     "message": "save schema v999 is newer than this build (v40)"
   },
   "ok": false,
-  "schema_version": 1
+  "schema_version": 2
 }
