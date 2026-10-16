@@ -530,7 +530,7 @@ impl HelpContext {
         match binding {
             Binding::Quit => "quit",
             Binding::Help => "help",
-            Binding::NextScreen => "next screen / next field",
+            Binding::NextScreen => "next screen in hub order / next field",
             Binding::PrevPlanet => "previous planet",
             Binding::NextPlanet => "next planet",
             Binding::SelectNext => "select next / move down",
@@ -551,7 +551,7 @@ impl HelpContext {
             Binding::CursorRight => "cursor right / next branch",
             Binding::Activity => "activity log",
             Binding::Advisor => "advisor",
-            Binding::Cockpit => "cockpit dashboard",
+            Binding::Cockpit => "bridge dashboard",
             Binding::Detail => "toggle detail panel",
         }
     }

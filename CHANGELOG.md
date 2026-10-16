@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- TUI redesign ("Slate"): play opens on the bridge dashboard with a navbar, a resource strip (stock, rate, energy, heat) and a key-hint status bar. Screens are grouped into six hubs (bridge, colony, fleet, trade with market and finance, empire, records) opened with 1-6; a hub opens as a window over the dimmed bridge (full screen below 120x40) with tabs, a status note and its main action. Tab walks screens in hub order, shift+tab goes back, esc returns to the bridge (x still cancels). Buildings use a table with level, cost, time and status, and the docked detail card shows cost bars, effects and requirements. Colours adapt to truecolor, 256 or 16 colours and honour `NO_COLOR`; high contrast drops fills for plain text.
+
 ### Fixed
 
 - Story, away, and spy overlays clear the screen underneath so numbered choices stay readable. Inline portraits are erased while an overlay is open.

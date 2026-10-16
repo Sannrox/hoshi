@@ -8,10 +8,12 @@ mod cockpit;
 mod config;
 mod demo;
 mod detail_panel;
+mod hubs;
 mod keymap;
 mod notify;
 mod portraits;
 mod title;
+mod ui;
 
 use app::{Action, App};
 use hoshi_core::{
