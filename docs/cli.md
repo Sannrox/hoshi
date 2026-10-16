@@ -17,6 +17,7 @@ bumps that version.
 ## Commands
 
 ```sh
+hoshi --version
 hoshi --save PATH [--seed N] [--balance PATH] state [--as player|leader:ID] [--json]
 hoshi --save PATH classify <kind> <id> --class open|internal|restricted|secret [--compartment ID] [--as player|leader:ID]
 hoshi --save PATH share <faction> --class open|internal|restricted|secret [--compartment ID]
@@ -161,7 +162,7 @@ the command and the JSON path. Golden files are pretty JSON from the CLI.
 Review golden diffs in the PR; they are not regenerated in CI.
 
 ```sh
-HOSHI_UPDATE_GOLDEN=1 cargo test -p hoshi-tui --test e2e
+HOSHI_UPDATE_GOLDEN=1 cargo test -p hoshi --test e2e
 ```
 
 Old-schema fixtures (`v1.sqlite` through the previous `SCHEMA_VERSION`, plus a

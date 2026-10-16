@@ -1,6 +1,6 @@
 # Local agent activity feed
 
-Optional. Off unless the `hoshi-tui` crate is built with `--features bridge` **and** `BridgeConfig.enabled` is true. The game does not open network connections or call models for this feed.
+Optional. Off unless the `hoshi` crate is built with `--features bridge` **and** `BridgeConfig.enabled` is true. The game does not open network connections or call models for this feed.
 
 Events are line-delimited JSON in the state directory (`feed.jsonl` next to the save file, including when `--save` or `HOSHI_SAVE` is set). An optional Unix socket `feed.sock` in that directory accepts the same lines when the feed is enabled.
 
@@ -41,8 +41,8 @@ echo '{"type":"agent_started","source":"shell","ts":1700000000,"payload":{"agent
 Build with the feature, then:
 
 ```sh
-cargo run -p hoshi-tui --features bridge -- post agent_started shell '{"agent":"local"}'
-cargo run -p hoshi-tui --features bridge -- post --save /path/to/save.sqlite --ts 1700000000 agent_finished hook '{"code":"0"}'
+cargo run -p hoshi --features bridge -- post agent_started shell '{"agent":"local"}'
+cargo run -p hoshi --features bridge -- post --save /path/to/save.sqlite --ts 1700000000 agent_finished hook '{"code":"0"}'
 ```
 
 `hoshi post` appends one valid line. It does not enable the reader; the reader stays off until config sets `enabled`.
