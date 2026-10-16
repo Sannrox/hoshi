@@ -1777,15 +1777,17 @@ impl App {
 
     fn header_lines(&self) -> Vec<Line<'static>> {
         let s = &self.state;
+        let waste = s.waste_home();
         let mut lines = vec![
-            resource_line("Metal", s, ResourceKind::Iron),
-            resource_line("Crystal", s, ResourceKind::Silicon),
-            resource_line("Deuterium", s, ResourceKind::Deuterium),
+            Line::from(stockpile_label(s.resources)),
+            Line::from(rate_label(s)),
             Line::from(format!(
-                "Energy     {:>7.0} / {:.0}  bal {:+.0}",
+                "Energy     {:>7.0} / {:.0}  bal {:+.0}  heat {:.0}/{:.0}",
                 s.energy_produced(),
                 s.energy_consumed(),
-                s.energy_balance()
+                s.energy_balance(),
+                waste.heat_load,
+                waste.heat_sink,
             )),
             Line::from(waste_header_line(s)),
             Line::from(self.build_status()),
@@ -1993,6 +1995,9 @@ impl App {
                 format!("  {}  advisor", self.keymap.display(Binding::Advisor)),
             );
         }
+        lines.insert(2, "Fe iron  Si silicon  REE rare earths".into());
+        lines.insert(3, "H2O water ice  He3 helium-3  D deuterium".into());
+        lines.insert(4, String::new());
         render_overlay(frame, " help ", lines.into_iter().map(Line::from).collect());
     }
 
@@ -2262,11 +2267,9 @@ impl App {
                     None => "?".into(),
                 };
                 rows.push(Line::from(format!(
-                    "Active {name}  stage {}/{total}  need M{:.0} C{:.0} D{:.0}  eta {eta}",
+                    "Active {name}  stage {}/{total}  {}  eta {eta}",
                     job.stage + 1,
-                    remaining.iron,
-                    remaining.silicon,
-                    remaining.deuterium
+                    missing_label(remaining)
                 )));
             }
             None => rows.push(Line::from("Active none")),
@@ -2724,13 +2727,16 @@ impl App {
                 report.limited_by.suggestion()
             )),
             Line::from(format!(
-                "energy {:.0}/{:.0}  heat {:.0}/{:.0}  M{:.0} C{:.0} D{:.0}/h",
+                "energy {:.0}/{:.0}  heat {:.0}/{:.0}  Fe {:.0} Si {:.0} REE {:.0} H2O {:.0} He3 {:.0} D {:.0}/h",
                 report.energy_supply,
                 report.energy_demand,
                 report.heat_load,
                 report.heat_sink,
                 report.metal_per_hour,
                 report.crystal_per_hour,
+                report.rare_earths_per_hour,
+                report.water_ice_per_hour,
+                report.helium_3_per_hour,
                 report.deuterium_per_hour
             )),
             Line::from(format!("rate {}", sparkline(&self.prod_history, 24))),
@@ -3484,7 +3490,7 @@ impl App {
                 match snap {
                     Some(snap) => {
                         lines.push(Line::from(format!(
-                            "M{:.0} C{:.0} D{:.0}  energy {:.0}  heat {:.0}",
+                            "Fe {:.0}  Si {:.0}  D {:.0}  energy {:.0}  heat {:.0}",
                             snap.iron, snap.silicon, snap.deuterium, snap.energy, snap.heat
                         )));
                         lines.push(Line::from(format!(
@@ -3560,21 +3566,12 @@ impl App {
                     ""
                 };
                 Line::from(format!(
-                    "{mark} {coord}  M{:.0} C{:.0} D{:.0}  {active}{moon}",
-                    res.iron, res.silicon, res.deuterium
+                    "{mark} {coord}  {}  {active}{moon}",
+                    stockpile_label(res)
                 ))
             })
             .collect()
     }
-}
-
-fn resource_line(name: &str, state: &GameState, kind: ResourceKind) -> Line<'static> {
-    Line::from(format!(
-        "{name:<10} {:>8.0}  {:+.0}/h  cap {:.0}",
-        state.resources.get(kind),
-        state.production_per_hour(kind),
-        state.storage_cap(kind)
-    ))
 }
 
 fn waste_header_line(state: &GameState) -> String {
@@ -3668,10 +3665,7 @@ fn report_overlay_lines(report: &SpyReport, now: u64) -> Vec<Line<'static>> {
         lines.push(Line::from(format!("planet {} size {size}", kind.as_key())));
     }
     if let Some(res) = report.resources {
-        lines.push(Line::from(format!(
-            "resources M{:.0} C{:.0} D{:.0}",
-            res.iron, res.silicon, res.deuterium
-        )));
+        lines.push(Line::from(format!("resources {}", stockpile_label(res))));
     }
     if let Some(fleet) = report.fleet {
         lines.push(Line::from(format!("fleet {}", fleet_brief(fleet))));
@@ -3701,24 +3695,39 @@ fn fleet_brief(fleet: Fleet) -> String {
     }
 }
 
+fn stockpile_label(stock: Resources) -> String {
+    ResourceKind::ALL
+        .iter()
+        .map(|&kind| format!("{} {:.0}", kind.abbr(), stock.get(kind)))
+        .collect::<Vec<_>>()
+        .join("  ")
+}
+
+fn rate_label(state: &GameState) -> String {
+    ResourceKind::ALL
+        .iter()
+        .map(|&kind| format!("{} {:+.0}/h", kind.abbr(), state.production_per_hour(kind)))
+        .collect::<Vec<_>>()
+        .join("  ")
+}
+
 fn cost_label(cost: Resources) -> String {
-    format!(
-        "M{:.0} C{:.0} D{:.0}",
-        cost.iron, cost.silicon, cost.deuterium
-    )
+    ResourceKind::ALL
+        .iter()
+        .copied()
+        .filter(|&kind| cost.get(kind) > 0.5 || ResourceKind::QUOTED.contains(&kind))
+        .map(|kind| format!("{}{:.0}", kind.abbr(), cost.get(kind)))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn missing_label(missing: Resources) -> String {
-    let mut parts = Vec::new();
-    if missing.iron > 0.5 {
-        parts.push(format!("M{:.0}", missing.iron));
-    }
-    if missing.silicon > 0.5 {
-        parts.push(format!("C{:.0}", missing.silicon));
-    }
-    if missing.deuterium > 0.5 {
-        parts.push(format!("D{:.0}", missing.deuterium));
-    }
+    let parts: Vec<String> = ResourceKind::ALL
+        .iter()
+        .copied()
+        .filter(|&kind| missing.get(kind) > 0.5)
+        .map(|kind| format!("{}{:.0}", kind.abbr(), missing.get(kind)))
+        .collect();
     if parts.is_empty() {
         "need resources".to_string()
     } else {
@@ -3916,7 +3925,9 @@ mod tests {
         let app = App::new(GameState::new(1_000));
         for (w, h) in [(60, 20), (80, 24), (100, 30)] {
             let text = render_text(&app, w, h);
-            assert!(text.contains("Metal"), "{w}x{h}: {text}");
+            assert!(text.contains("Fe"), "{w}x{h}: {text}");
+            assert!(text.contains("Si"), "{w}x{h}: {text}");
+            assert!(text.contains("REE"), "{w}x{h}: {text}");
             assert!(text.contains("Energy"), "{w}x{h}: {text}");
             assert!(text.contains("Build:"), "{w}x{h}: {text}");
             assert!(text.contains("Research:"), "{w}x{h}: {text}");
@@ -3928,6 +3939,24 @@ mod tests {
                 !text.contains('\u{1b}'),
                 "{w}x{h} leaked an escape sequence: {text:?}"
             );
+        }
+    }
+
+    #[test]
+    fn material_labels_fit_80_120_and_160() {
+        let app = App::new(GameState::new(1_000));
+        for (w, h) in [(80, 24), (120, 40), (160, 48)] {
+            let text = render_text(&app, w, h);
+            for needle in ["Fe", "Si", "REE", "H2O", "He3", "D", "Energy", "heat", "/h"] {
+                assert!(text.contains(needle), "{w}x{h} missing {needle}: {text}");
+            }
+            for line in text.lines() {
+                let width = line.chars().count();
+                assert!(
+                    width <= w as usize,
+                    "{w}x{h} truncated cost row ({width}): {line}"
+                );
+            }
         }
     }
 
@@ -3992,7 +4021,7 @@ mod tests {
         let mut app = App::new(GameState::new(1_000));
         app.portraits.enabled = false;
         let text = render_text(&app, 80, 24);
-        assert!(text.contains("Metal"), "{text}");
+        assert!(text.contains("Fe"), "{text}");
         assert!(text.contains(".==."), "{text}");
         assert!(!text.contains('▀'), "{text}");
         app.handle_key(KeyCode::Tab, 1_000);
@@ -4225,7 +4254,7 @@ mod tests {
         terminal.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(terminal.backend());
         assert!(
-            text.contains("need D") || text.contains("need M"),
+            text.contains("need D") || text.contains("need Fe"),
             "planet should show missing resources: {text}"
         );
         assert!(
@@ -4319,7 +4348,7 @@ mod tests {
         terminal.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(terminal.backend());
         assert!(
-            text.contains("need M") || text.contains("need C"),
+            text.contains("need Fe") || text.contains("need Si"),
             "unaffordable ships should show missing amounts: {text}"
         );
         assert!(
@@ -4458,7 +4487,7 @@ mod tests {
         let text = render_text(&app, 100, 32);
         assert!(text.contains("1:1:1"), "{text}");
         assert!(text.contains("1:1:2"), "{text}");
-        assert!(text.contains("M10000"), "{text}");
+        assert!(text.contains("Fe 10000"), "{text}");
 
         app.handle_key(KeyCode::Char(']'), 1_000);
         assert_eq!(app.selected_coord(), dest);
@@ -4567,7 +4596,7 @@ mod tests {
         assert!(text.contains("[wonder]"), "{text}");
         assert!(text.contains("Dyson ring"), "{text}");
         assert!(
-            text.contains(&format!("need M{:.0}", remaining.iron)),
+            text.contains(&format!("need Fe{:.0}", remaining.iron)),
             "{text}"
         );
         assert!(text.contains(&format!("eta {eta}s")), "{text}");
@@ -4767,6 +4796,9 @@ mod tests {
         assert!(text.contains("limit"), "{text}");
         assert!(text.contains("energy"), "{text}");
         assert!(text.contains("heat"), "{text}");
+        assert!(text.contains("REE"), "{text}");
+        assert!(text.contains("H2O"), "{text}");
+        assert!(text.contains("He3"), "{text}");
         let wide = render_text(&app, 120, 32);
         assert!(wide.contains("limit"), "{wide}");
         assert!(
@@ -4796,7 +4828,7 @@ mod tests {
             "overlay left the research list visible:\n{text}"
         );
         assert!(
-            !text.contains("Crystal"),
+            !text.contains("REE"),
             "overlay left resource lines visible:\n{text}"
         );
         app.handle_key(KeyCode::Char('2'), 1_000);
@@ -5296,6 +5328,9 @@ mod tests {
         assert!(overview.contains("quit"), "{overview}");
         assert!(overview.contains("copy galaxy seed"), "{overview}");
         assert!(overview.contains("?"), "{overview}");
+        assert!(overview.contains("Fe iron"), "{overview}");
+        assert!(overview.contains("REE rare earths"), "{overview}");
+        assert!(overview.contains("He3 helium-3"), "{overview}");
         app.handle_key(KeyCode::Char('?'), 1_000);
         for _ in 0..9 {
             app.handle_key(KeyCode::Tab, 1_000);
@@ -5569,7 +5604,7 @@ mod tests {
             &app,
             160,
             48,
-            &["detail", "metal mine", "cost", "metal", "energy draw"],
+            &["detail", "metal mine", "cost", "iron", "energy draw"],
         );
         assert_detail_on(&app, 120, 40, &["detail", "metal mine", "affordable"]);
         app.screen = Screen::Overview;

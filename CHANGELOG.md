@@ -8,6 +8,8 @@
 
 ### Added
 
+- TUI cost rows, resource bar and help use Fe, Si, REE, H2O, He3 and D (full names in help) with energy and heat beside the stockpiles.
+
 - CLI JSON schema_version 2: `state` lists iron, silicon, rare earths, water ice, helium-3 and deuterium plus energy and heat. `metal` and `crystal` arguments error with the replacement id.
 
 - Market mids follow L1 extraction energy (iron 1, silicon 1.5, deuterium 6). `hoshi simulate` reports per-material stock and rates; energy binds before any single material in the default early game.
