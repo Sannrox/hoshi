@@ -25,6 +25,7 @@ mod galaxy;
 mod governance;
 mod history;
 mod intent;
+mod kpi;
 mod ladder;
 mod laws;
 mod leaders;
@@ -139,6 +140,10 @@ pub use history::{
     HistoryQuery,
 };
 pub use intent::{Intent, IntentError, Proposal, apply, propose};
+pub use kpi::{
+    KpiConfig, KpiError, KpiId, KpiSnapshot, KpiState, KpiTarget, Measurement, PeriodicReport,
+    TargetOwner,
+};
 pub use ladder::{
     LadderBoard, LadderCompletion, LadderConfig, LadderError, LadderGoalProgress, LadderProgress,
     LadderTier,

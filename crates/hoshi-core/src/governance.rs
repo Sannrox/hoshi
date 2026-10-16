@@ -178,7 +178,9 @@ pub fn dest_of(intent: &Intent) -> Option<Coord> {
         | Intent::FulfilContract { .. }
         | Intent::SetBudget { .. }
         | Intent::RequestSpend { .. }
-        | Intent::ApproveSpend { .. } => None,
+        | Intent::ApproveSpend { .. }
+        | Intent::SetTarget { .. }
+        | Intent::GenerateReport { .. } => None,
     }
 }
 
@@ -233,7 +235,9 @@ pub fn spend_of(state: &GameState, intent: &Intent, _now: u64) -> f64 {
         Intent::AcceptContract { .. }
         | Intent::FulfilContract { .. }
         | Intent::SetBudget { .. }
-        | Intent::ApproveSpend { .. } => 0.0,
+        | Intent::ApproveSpend { .. }
+        | Intent::SetTarget { .. }
+        | Intent::GenerateReport { .. } => 0.0,
         Intent::RequestSpend { amount, .. } => *amount,
     }
 }

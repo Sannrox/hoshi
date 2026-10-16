@@ -515,8 +515,14 @@ impl GameState {
         match kind {
             IncomeKind::Production => self.finance.income.production += amount,
             IncomeKind::Tax => self.finance.income.tax += amount,
-            IncomeKind::Trade => self.finance.income.trade += amount,
-            IncomeKind::Contract => self.finance.income.contract += amount,
+            IncomeKind::Trade => {
+                self.finance.income.trade += amount;
+                self.kpis.period_trade += amount;
+            }
+            IncomeKind::Contract => {
+                self.finance.income.contract += amount;
+                self.kpis.period_contract += amount;
+            }
         }
     }
 

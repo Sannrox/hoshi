@@ -1,0 +1,5 @@
+# Empire KPIs, targets and periodic reports. Formulas live in kpi.rs and
+# are tested on fixed scenarios. period_secs is game time between reports.
+
+period_secs = 86400
+archive_cap = 16

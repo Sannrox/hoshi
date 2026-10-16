@@ -48,7 +48,7 @@ impl Hub {
                 Screen::Wonder,
             ],
             Hub::Fleet => &[Screen::Shipyard, Screen::Map, Screen::Ops, Screen::Reports],
-            Hub::Trade => &[Screen::Market, Screen::Finance],
+            Hub::Trade => &[Screen::Market, Screen::Finance, Screen::Kpis],
             Hub::Empire => &[
                 Screen::Diplomacy,
                 Screen::Laws,
@@ -92,6 +92,7 @@ pub fn label(screen: Screen) -> &'static str {
         Screen::Reports => "Intel",
         Screen::Market => "Market",
         Screen::Finance => "Finance",
+        Screen::Kpis => "KPIs",
         Screen::Diplomacy => "Diplomacy",
         Screen::Laws => "Laws",
         Screen::Staff => "Staff",
@@ -129,7 +130,7 @@ pub fn enter(current: Screen, hub: Hub) -> Screen {
 mod tests {
     use super::*;
 
-    const EVERY: [Screen; 20] = [
+    const EVERY: [Screen; 21] = [
         Screen::Overview,
         Screen::Planet,
         Screen::Shipyard,
@@ -148,6 +149,7 @@ mod tests {
         Screen::Ops,
         Screen::Automation,
         Screen::Finance,
+        Screen::Kpis,
         Screen::Map,
         Screen::Cockpit,
     ];
@@ -186,7 +188,8 @@ mod tests {
         assert_eq!(enter(Screen::Planet, Hub::Colony), Screen::Production);
         assert_eq!(enter(Screen::Wonder, Hub::Colony), Screen::Planet);
         assert_eq!(enter(Screen::Market, Hub::Trade), Screen::Finance);
-        assert_eq!(enter(Screen::Finance, Hub::Trade), Screen::Market);
+        assert_eq!(enter(Screen::Finance, Hub::Trade), Screen::Kpis);
+        assert_eq!(enter(Screen::Kpis, Hub::Trade), Screen::Market);
         assert_eq!(Hub::Records.digit(), 6);
     }
 }
