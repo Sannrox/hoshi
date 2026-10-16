@@ -792,9 +792,9 @@ fn play_path(
                 exit: cli::EXIT_INVALID,
             })?
         };
-        if spec.rivals {
+        if spec.rivals.enabled {
             state
-                .spawn_rivals(&RivalCatalog::default(), RivalSettings::on())
+                .spawn_rivals(&RivalCatalog::default(), spec.rivals.clone())
                 .map_err(|e| LaunchError {
                     message: e.to_string(),
                     exit: cli::EXIT_INVALID,

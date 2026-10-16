@@ -2215,6 +2215,8 @@ pub struct SaveGlance {
     pub generator_version: u32,
     /// Playable species id when the save has a `species_run` row.
     pub species_id: Option<String>,
+    pub rivals_enabled: bool,
+    pub rival_personalities: Vec<String>,
 }
 
 pub fn inspect_save(path: &Path) -> Result<SaveGlance, SaveError> {
@@ -2317,6 +2319,27 @@ pub fn inspect_save(path: &Path) -> Result<SaveGlance, SaveError> {
     } else {
         None
     };
+    let rivals_enabled = if table_exists(&conn, "rivals_meta") {
+        conn.query_row("SELECT enabled FROM rivals_meta WHERE id = 1", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .optional()?
+        .unwrap_or(0)
+            != 0
+    } else {
+        false
+    };
+    let rival_personalities = if table_exists(&conn, "rivals") {
+        let mut stmt = conn.prepare("SELECT personality FROM rivals ORDER BY rival_id")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut ids = Vec::new();
+        for id in rows {
+            ids.push(id?);
+        }
+        ids
+    } else {
+        Vec::new()
+    };
     Ok(SaveGlance {
         schema,
         last_tick_unix: unix_ts(last_tick)?,
@@ -2326,6 +2349,8 @@ pub fn inspect_save(path: &Path) -> Result<SaveGlance, SaveError> {
         galaxy_seed,
         generator_version,
         species_id,
+        rivals_enabled,
+        rival_personalities,
     })
 }
 
@@ -8285,6 +8310,8 @@ mod tests {
         assert_eq!(glance.galaxy_seed, Some(0));
         assert_eq!(glance.generator_version, crate::GALAXY_GENERATOR_VERSION);
         assert_eq!(glance.species_id, None);
+        assert!(!glance.rivals_enabled);
+        assert!(glance.rival_personalities.is_empty());
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(save_lock_path(&path));
     }
