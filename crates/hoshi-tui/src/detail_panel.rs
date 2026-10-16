@@ -1,7 +1,7 @@
 //! Formats hoshi-core `Detail` values. No game maths live here.
 
 use crate::ui::panels::{Callout, PropertyList, section};
-use crate::ui::spans::{bar, compact, duration};
+use crate::ui::spans::{bar, compact, duration, tag};
 use crate::ui::{Intent, Theme};
 use hoshi_core::{AffordEta, Detail};
 use ratatui::text::{Line, Span};
@@ -75,36 +75,66 @@ pub fn paragraph(detail: &Detail) -> Vec<Line<'static>> {
     lines(detail).into_iter().map(Line::from).collect()
 }
 
-/// Inspector card: title, properties, cost bars, effects and requirements.
-pub fn inspector(detail: &Detail, t: &Theme) -> Vec<Line<'static>> {
+/// Inspector column: kind label, name with level tag, properties, cost bars,
+/// an effect table and requirements.
+pub fn inspector(
+    detail: &Detail,
+    kind: &str,
+    levelled: bool,
+    extra: Vec<(String, Line<'static>)>,
+    t: &Theme,
+) -> Vec<Line<'static>> {
+    let mut title = vec![Span::styled(detail.name.clone(), t.strong())];
+    if levelled {
+        title.push(Span::raw("  "));
+        title.push(tag(
+            t,
+            &format!("LV {} → {}", detail.level, detail.level + 1),
+            Intent::Primary,
+            true,
+        ));
+    }
     let mut out = vec![
-        Line::styled(detail.name.clone(), t.strong()),
+        section(t, kind),
+        Line::from(title),
         Line::styled(detail.description.clone(), t.muted()),
         Line::default(),
     ];
-    let mut props = vec![(
-        "level".to_string(),
-        Line::styled(detail.level.to_string(), t.text()),
-    )];
+    let mut props = extra;
     if let Some(secs) = detail.duration_secs {
-        props.push(("time".into(), Line::styled(duration(secs), t.text())));
+        props.push(("Build time".into(), Line::styled(duration(secs), t.text())));
     }
     if let Some(draw) = detail.energy_draw {
         props.push((
-            "energy".into(),
+            "Energy".into(),
             Line::styled(format!("{draw:+.0}"), t.text()),
         ));
     }
     if let Some(heat) = detail.heat {
-        props.push(("heat".into(), Line::styled(format!("{heat:.0}"), t.text())));
+        props.push(("Heat".into(), Line::styled(format!("{heat:.0}"), t.text())));
     }
-    out.extend(
-        PropertyList {
-            theme: t,
-            rows: props,
-        }
-        .lines(),
-    );
+    if let Some(eta) = detail.afford {
+        let chip = match eta {
+            AffordEta::Now => tag(t, "READY", Intent::Success, false),
+            AffordEta::In(secs) => tag(
+                t,
+                &format!("IN {}", duration(secs).to_uppercase()),
+                Intent::Warning,
+                true,
+            ),
+            AffordEta::Never => tag(t, "NEVER AT CURRENT INCOME", Intent::Danger, true),
+        };
+        props.push(("Status".into(), Line::from(chip)));
+    }
+    if !props.is_empty() {
+        out.extend(
+            PropertyList {
+                theme: t,
+                rows: props,
+            }
+            .lines(),
+        );
+    }
     let costs: Vec<_> = detail
         .costs
         .iter()
@@ -117,60 +147,64 @@ pub fn inspector(detail: &Detail, t: &Theme) -> Vec<Line<'static>> {
         for row in costs {
             let short = row.missing > 0.0;
             let intent = if short {
-                Intent::Warning
+                Intent::Danger
             } else {
-                Intent::Success
+                Intent::Primary
             };
-            let mut spans = vec![Span::styled(format!("{:<w$}  ", row.id), t.label())];
-            spans.extend(bar(t, row.stock / row.cost.max(1.0), 10, intent));
+            let mut spans = vec![Span::styled(format!("{:<w$}  ", row.id), t.muted())];
+            spans.extend(bar(t, row.cost / row.stock.max(1.0), 16, intent));
             spans.push(Span::styled(
-                format!("  {} / {}", compact(row.stock), compact(row.cost)),
-                t.text(),
+                format!("  {}", compact(row.cost)),
+                if short {
+                    t.intent(Intent::Danger)
+                } else {
+                    t.text()
+                },
             ));
-            if short {
-                spans.push(Span::styled(
-                    format!("  -{}", compact(row.missing)),
-                    t.intent(Intent::Warning),
-                ));
-            }
+            spans.push(Span::styled(
+                format!(" / {}", compact(row.stock)),
+                t.label(),
+            ));
             out.push(Line::from(spans));
         }
     }
-    if let Some(eta) = detail.afford {
-        let (intent, title) = match eta {
-            AffordEta::Now => (Intent::Success, "affordable now".to_string()),
-            AffordEta::In(secs) => (Intent::Warning, format!("affordable in {}", duration(secs))),
-            AffordEta::Never => (Intent::Danger, "never at current income".to_string()),
-        };
-        out.push(Line::default());
-        out.extend(
-            Callout {
-                theme: t,
-                intent,
-                title: Line::from(title),
-                detail: None,
-            }
-            .lines(),
-        );
-    }
     if !detail.deltas.is_empty() {
         out.push(Line::default());
-        out.push(section(t, "effect"));
-        let rows = detail
+        let w = detail
             .deltas
             .iter()
-            .map(|d| {
-                (
-                    d.label.clone(),
-                    Line::from(vec![
-                        Span::styled(d.from.clone(), t.muted()),
-                        Span::styled(" → ", t.label()),
-                        Span::styled(d.to.clone(), t.intent(Intent::Success)),
-                    ]),
-                )
-            })
-            .collect();
-        out.extend(PropertyList { theme: t, rows }.lines());
+            .map(|d| d.label.chars().count())
+            .max()
+            .unwrap_or(0)
+            .max(6);
+        out.push(Line::styled(
+            format!("{:<w$} {:>6} {:>6} {:>6}", "EFFECT", "NOW", "NEXT", "Δ"),
+            t.label(),
+        ));
+        for (i, d) in detail.deltas.iter().enumerate() {
+            let change = match (d.from.parse::<f64>(), d.to.parse::<f64>()) {
+                (Ok(a), Ok(b)) if (b - a).abs() > f64::EPSILON => {
+                    let diff = b - a;
+                    let text = if diff.fract().abs() < 1e-9 {
+                        format!("{diff:+.0}")
+                    } else {
+                        format!("{diff:+.1}")
+                    };
+                    Span::styled(format!("{text:>6}"), t.intent(Intent::Success))
+                }
+                _ => Span::styled(format!("{:>6}", "—"), t.faint()),
+            };
+            let mut line = Line::from(vec![
+                Span::styled(format!("{:<w$} ", d.label), t.muted()),
+                Span::styled(format!("{:>6} ", d.from), t.text()),
+                Span::styled(format!("{:>6} ", d.to), t.strong()),
+                change,
+            ]);
+            if i % 2 == 0 {
+                line = line.style(t.surface(crate::ui::Surface::Stripe));
+            }
+            out.push(line);
+        }
     }
     if !detail.requirements.is_empty() {
         out.push(Line::default());

@@ -1,7 +1,9 @@
 //! Dense command-center screen. Core still owns the rules; this only renders.
 
-use crate::ui::chrome::Tile;
-use crate::ui::{Intent, Theme};
+use crate::ui::chrome::{Tile, fill};
+use crate::ui::panels::Callout;
+use crate::ui::spans::countdown;
+use crate::ui::{Intent, Surface, Theme};
 use hoshi_core::{
     Coord, GameState, HistoryKind, MissionPhase, ResourceKind, Resources, RoleKind, ShipKind,
 };
@@ -11,7 +13,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-pub const OVERVIEW_PANELS: &str = "map,gauges,queues,fleets,timeline";
+pub const OVERVIEW_PANELS: &str = "map,queues,fleets,timeline";
 pub const ECONOMY_PANELS: &str = "gauges,kpis,queues,market";
 pub const WAR_PANELS: &str = "map,fleets,raids,tactics";
 
@@ -137,6 +139,7 @@ impl AlertKind {
 pub struct Alert {
     kind: AlertKind,
     pub text: String,
+    pub detail: String,
     pub jump: Target,
 }
 
@@ -339,13 +342,15 @@ pub fn alerts(state: &GameState) -> Vec<Alert> {
     if let Some(secs) = state.raid_countdown_secs() {
         rows.push(Alert {
             kind: AlertKind::Raid,
-            text: format!("incoming raid {secs}s"),
+            text: format!("Incoming raid  T-{}", countdown(secs)),
+            detail: format!("pirates → {home}"),
             jump: Target::Planet(home),
         });
         if state.defences.is_empty() {
             rows.push(Alert {
                 kind: AlertKind::Defence,
-                text: format!("undefended home {home}"),
+                text: "Home undefended".into(),
+                detail: format!("{} ships · 0 defences at {home}", state.fleet.total()),
                 jump: Target::Planet(home),
             });
         }
@@ -353,7 +358,8 @@ pub fn alerts(state: &GameState) -> Vec<Alert> {
     if state.pending_tactical.is_some() {
         rows.push(Alert {
             kind: AlertKind::Raid,
-            text: "tactical combat pending".into(),
+            text: "Tactical combat pending".into(),
+            detail: "orders wait for you".into(),
             jump: Target::Planet(home),
         });
     }
@@ -362,7 +368,8 @@ pub fn alerts(state: &GameState) -> Vec<Alert> {
         if standing < -20.0 {
             rows.push(Alert {
                 kind: AlertKind::Hostile,
-                text: format!("hostile {} {standing:.0}", spec.name),
+                text: format!("Hostile {}", spec.name),
+                detail: format!("standing {standing:.0}"),
                 jump: Target::Faction(spec.id.clone()),
             });
         }
@@ -370,7 +377,8 @@ pub fn alerts(state: &GameState) -> Vec<Alert> {
     if state.build_queue.is_empty() && state.research.is_none() {
         rows.push(Alert {
             kind: AlertKind::IdleQueue,
-            text: format!("idle queues {home}"),
+            text: "Queues idle".into(),
+            detail: format!("{home} · build and research"),
             jump: Target::Planet(home),
         });
     }
@@ -378,7 +386,8 @@ pub fn alerts(state: &GameState) -> Vec<Alert> {
         if colony.build_queue.is_empty() {
             rows.push(Alert {
                 kind: AlertKind::IdleQueue,
-                text: format!("idle queue {}", colony.coord),
+                text: "Queue idle".into(),
+                detail: colony.coord.to_string(),
                 jump: Target::Planet(colony.coord),
             });
         }
@@ -389,7 +398,8 @@ pub fn alerts(state: &GameState) -> Vec<Alert> {
         if cap > 0.0 && stock / cap >= 0.95 {
             rows.push(Alert {
                 kind: AlertKind::Storage,
-                text: format!("{} storage {:.0}%", kind.as_key(), 100.0 * stock / cap),
+                text: format!("{} storage full", kind.abbr()),
+                detail: format!("{:.0}% of cap at {home}", 100.0 * stock / cap),
                 jump: Target::Planet(home),
             });
         }
@@ -445,21 +455,26 @@ pub fn draw(
     footer: Vec<Line<'static>>,
     alert_index: usize,
 ) {
-    let mode = size_mode(area.width, area.height);
+    let screen = frame.area();
+    let mode = size_mode(screen.width, screen.height);
     let t = view.theme;
     let alert_rows = alerts(view.state);
     let panels = view.cockpit.panels();
-    let chunks = TuiLayout::vertical([
-        Constraint::Length(if mode == SizeMode::Tabbed { 2 } else { 3 }),
+    fill(frame.buffer_mut(), area, t.surface(Surface::Base));
+    let top = if mode == SizeMode::Tabbed { 2 } else { 0 };
+    let [strip, body, foot] = TuiLayout::vertical([
+        Constraint::Length(top),
         Constraint::Min(3),
         Constraint::Length(footer.len() as u16),
     ])
-    .split(area);
-    frame.render_widget(
-        Paragraph::new(alert_lines(&alert_rows, alert_index, t, mode)),
-        chunks[0],
-    );
-    frame.render_widget(Paragraph::new(footer), chunks[2]);
+    .areas(area);
+    frame.render_widget(Paragraph::new(footer).style(t.muted()), foot);
+    if mode == SizeMode::Tabbed {
+        frame.render_widget(
+            Paragraph::new(alert_lines(&alert_rows, alert_index, t, mode)),
+            strip,
+        );
+    }
     if let Some(target) = view.cockpit.stack.last() {
         frame.render_widget(
             Tile {
@@ -468,9 +483,9 @@ pub fn draw(
                 right: None,
                 focused: true,
             },
-            chunks[1],
+            body,
         );
-        let inner = Tile::inner(chunks[1]);
+        let inner = Tile::inner(body);
         frame.render_widget(
             Paragraph::new(detail_lines(view.state, target, inner.height as usize, t)),
             inner,
@@ -479,61 +494,213 @@ pub fn draw(
     }
     match mode {
         SizeMode::Tabbed => {
-            let panel = view.cockpit.focused_panel().unwrap_or(Panel::Gauges);
-            let inner_chunks =
-                TuiLayout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(chunks[1]);
+            let panel = view.cockpit.focused_panel().unwrap_or(Panel::Queues);
+            let [tabs, rest] =
+                TuiLayout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(body);
             frame.render_widget(
                 Paragraph::new(tab_line(panels, view.cockpit.focus, t)),
-                inner_chunks[0],
+                tabs,
             );
-            render_panel(frame, inner_chunks[1], panel, true, &view);
+            render_panel(frame, rest, panel, true, &view);
         }
         SizeMode::Compact | SizeMode::Full => {
-            render_spread(frame, chunks[1], &view, mode == SizeMode::Full);
+            render_bridge(
+                frame,
+                body,
+                &view,
+                &alert_rows,
+                alert_index,
+                mode == SizeMode::Full,
+            );
         }
     }
 }
 
-fn render_spread(frame: &mut Frame<'_>, area: Rect, view: &View<'_>, full: bool) {
+fn render_bridge(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    view: &View<'_>,
+    alert_rows: &[Alert],
+    alert_index: usize,
+    full: bool,
+) {
+    let t = view.theme;
     let panels = view.cockpit.panels();
-    if panels.is_empty() {
-        return;
-    }
     let has_map = panels.contains(&Panel::Map);
     let side: Vec<Panel> = panels
         .iter()
         .copied()
         .filter(|p| *p != Panel::Map)
         .collect();
-    if has_map && !side.is_empty() {
-        let cols = TuiLayout::horizontal([
-            Constraint::Percentage(if full { 58 } else { 50 }),
-            Constraint::Percentage(if full { 42 } else { 50 }),
-        ])
-        .split(area);
+    let alert_w = if full { 42 } else { 38 };
+    let map_w = if has_map { 40 } else { 0 };
+    let [left, _, mid, _, right] = TuiLayout::horizontal([
+        Constraint::Length(alert_w),
+        Constraint::Length(1),
+        Constraint::Length(map_w),
+        Constraint::Length(u16::from(has_map)),
+        Constraint::Min(20),
+    ])
+    .areas(area);
+    frame.render_widget(
+        Tile {
+            theme: t,
+            title: "alerts".into(),
+            right: Some(Line::styled(alert_rows.len().to_string(), t.muted())),
+            focused: false,
+        },
+        left,
+    );
+    frame.render_widget(
+        Paragraph::new(callout_lines(alert_rows, alert_index, t)),
+        pad(Tile::inner(left)),
+    );
+    if has_map {
         render_panel(
             frame,
-            cols[0],
+            mid,
             Panel::Map,
             view.cockpit.focused_panel() == Some(Panel::Map),
             view,
         );
-        render_stack(frame, cols[1], &side, view);
-    } else if has_map {
-        render_panel(frame, area, Panel::Map, true, view);
-    } else {
-        render_stack(frame, area, panels, view);
     }
+    let upcoming = upcoming_lines(
+        view.state,
+        Tile::inner(right).width.saturating_sub(2) as usize,
+        t,
+    );
+    let up_h = (upcoming.len() as u16 + 3).min(right.height / 2);
+    let [up, rest] =
+        TuiLayout::vertical([Constraint::Length(up_h), Constraint::Min(0)]).areas(right);
+    frame.render_widget(
+        Tile {
+            theme: t,
+            title: "upcoming".into(),
+            right: Some(Line::styled("next 60 min", t.label())),
+            focused: false,
+        },
+        up,
+    );
+    frame.render_widget(Paragraph::new(upcoming), pad(Tile::inner(up)));
+    let rest = Rect {
+        y: rest.y + u16::from(rest.height > 0),
+        height: rest.height.saturating_sub(1),
+        ..rest
+    };
+    render_stack(frame, rest, &side, view);
+}
+
+fn pad(area: Rect) -> Rect {
+    Rect {
+        x: area.x + 1.min(area.width),
+        width: area.width.saturating_sub(2),
+        ..area
+    }
+}
+
+fn callout_lines(rows: &[Alert], selected: usize, t: &Theme) -> Vec<Line<'static>> {
+    if rows.is_empty() {
+        return vec![Line::styled("all quiet", t.muted())];
+    }
+    let mut out = Vec::new();
+    for (i, row) in rows.iter().enumerate() {
+        let title = if i == selected {
+            Line::styled(
+                row.text.clone(),
+                t.intent(row.kind.intent()).add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Line::from(row.text.clone())
+        };
+        out.extend(
+            Callout {
+                theme: t,
+                intent: row.kind.intent(),
+                title,
+                detail: Some(Line::from(row.detail.clone())),
+            }
+            .lines(),
+        );
+        out.push(Line::default());
+    }
+    out
+}
+
+fn upcoming_lines(state: &GameState, width: usize, t: &Theme) -> Vec<Line<'static>> {
+    let now = state.last_tick_unix;
+    let mut items: Vec<(u64, String, Intent)> = Vec::new();
+    if let Some(secs) = state.raid_countdown_secs() {
+        items.push((secs, format!("raid → {}", state.home), Intent::Danger));
+    }
+    let queues = std::iter::once((state.home, &state.build_queue))
+        .chain(state.colonies.iter().map(|c| (c.coord, &c.build_queue)));
+    for (coord, queue) in queues {
+        if let Some(job) = queue.first()
+            && let Some(at) = job.completes_at
+        {
+            items.push((
+                at.saturating_sub(now),
+                format!("{} lv{} {coord}", job.building, job.from_level + 1),
+                Intent::Success,
+            ));
+        }
+    }
+    if let Some(job) = &state.research {
+        items.push((
+            job.completes_at.saturating_sub(now),
+            format!("research {}", job.tech),
+            Intent::Primary,
+        ));
+    }
+    for mission in &state.missions {
+        items.push((
+            mission.phase_ends_at.saturating_sub(now),
+            format!(
+                "fleet #{} {} → {}",
+                mission.id,
+                mission.phase.as_key(),
+                mission.dest
+            ),
+            Intent::Primary,
+        ));
+    }
+    items.sort_by_key(|row| row.0);
+    let axis_w = width.saturating_sub(10).max(8);
+    let mut cells: Vec<Span<'static>> = (0..axis_w).map(|_| Span::styled("─", t.line())).collect();
+    for (secs, _, intent) in items.iter().filter(|row| row.0 <= 3600) {
+        let x = (*secs as usize * (axis_w - 1)) / 3600;
+        cells[x] = Span::styled("●", t.intent(*intent));
+    }
+    let mut axis = vec![Span::styled("now ", t.label())];
+    axis.extend(cells);
+    axis.push(Span::styled(" +60m", t.label()));
+    let mut out = vec![Line::from(axis), Line::default()];
+    if items.is_empty() {
+        out.push(Line::styled("nothing scheduled", t.muted()));
+    }
+    for (secs, text, intent) in items {
+        out.push(Line::from(vec![
+            Span::styled(format!("T-{:<8}", countdown(secs)), t.intent(intent)),
+            Span::styled(text, t.text()),
+        ]));
+    }
+    out
 }
 
 fn render_stack(frame: &mut Frame<'_>, area: Rect, panels: &[Panel], view: &View<'_>) {
     if panels.is_empty() {
         return;
     }
-    let constraints: Vec<Constraint> = panels.iter().map(|_| Constraint::Min(3)).collect();
+    let mut constraints = Vec::new();
+    for i in 0..panels.len() {
+        if i > 0 {
+            constraints.push(Constraint::Length(1));
+        }
+        constraints.push(Constraint::Min(3));
+    }
     let rows = TuiLayout::vertical(constraints).split(area);
     for (i, panel) in panels.iter().enumerate() {
-        if let Some(rect) = rows.get(i) {
+        if let Some(rect) = rows.get(i * 2) {
             render_panel(
                 frame,
                 *rect,
@@ -550,13 +717,18 @@ fn render_panel(frame: &mut Frame<'_>, area: Rect, panel: Panel, focused: bool, 
     frame.render_widget(
         Tile {
             theme: t,
-            title: panel.title().into(),
-            right: None,
+            title: if panel == Panel::Map {
+                "star map".into()
+            } else {
+                panel.title().into()
+            },
+            right: (panel == Panel::Map)
+                .then(|| Line::styled(format!("galaxy {}", view.state.home.galaxy), t.label())),
             focused,
         },
         area,
     );
-    let inner = Tile::inner(area);
+    let inner = pad(Tile::inner(area));
     let height = inner.height as usize;
     let selected = if focused {
         view.cockpit.selected
@@ -564,7 +736,14 @@ fn render_panel(frame: &mut Frame<'_>, area: Rect, panel: Panel, focused: bool, 
         usize::MAX
     };
     let lines = match panel {
-        Panel::Map => map_lines(view.state, view.map_system, view.map_position, height, t),
+        Panel::Map => map_lines(
+            view.state,
+            view.map_system,
+            view.map_position,
+            height,
+            inner.width as usize,
+            t,
+        ),
         Panel::Gauges => gauge_lines(view.state, view.gauges, height, inner.width as usize, t),
         Panel::Queues => queue_lines(view.state, height, selected, t),
         Panel::Fleets => fleet_lines(view.state, height, selected, t),
@@ -627,13 +806,21 @@ fn map_lines(
     map_system: u16,
     map_position: u16,
     height: usize,
+    width: usize,
     t: &Theme,
 ) -> Vec<Line<'static>> {
     let owned = state.owned_coords();
     let mut entries = Vec::new();
     for system in 1..=MAP_SYSTEM_MAX {
-        let mark = if system == map_system { '>' } else { ' ' };
-        let mut glyphs = String::new();
+        let current = system == map_system;
+        let mut spans = vec![Span::styled(
+            format!("{} {system:>2}  ", if current { '▸' } else { ' ' }),
+            if current {
+                t.intent(Intent::Primary)
+            } else {
+                t.label()
+            },
+        )];
         let mut labels = Vec::new();
         for pos in 1..=MAP_SLOT_COUNT {
             let coord = Coord {
@@ -641,53 +828,47 @@ fn map_lines(
                 system,
                 position: pos,
             };
-            let ch = if coord == state.home {
-                'H'
+            let (ch, style) = if coord == state.home {
+                ('H', t.intent(Intent::Primary).add_modifier(Modifier::BOLD))
             } else if owned.contains(&coord) {
-                'C'
+                ('C', t.intent(Intent::Success))
             } else if state.outposts.iter().any(|o| o.coord == coord) {
-                'P'
+                ('P', t.intent(Intent::Danger))
             } else if state.missions.iter().any(|m| m.dest == coord) {
-                'f'
+                ('f', t.intent(Intent::Warning))
             } else {
-                '.'
+                ('·', t.faint())
             };
-            if pos == map_position && system == map_system {
-                glyphs.push('[');
-                glyphs.push(ch);
-                glyphs.push(']');
+            let style = if current && pos == map_position {
+                t.selected().patch(style).add_modifier(Modifier::REVERSED)
             } else {
-                glyphs.push(ch);
+                style
+            };
+            if pos > 1 {
+                spans.push(Span::raw(" "));
             }
+            spans.push(Span::styled(ch.to_string(), style));
             if coord == state.home {
-                labels.push("home".into());
+                labels.push("home".to_string());
             }
         }
         for mission in &state.missions {
             if mission.dest.galaxy == state.home.galaxy && mission.dest.system == system {
                 let eta = mission.phase_ends_at.saturating_sub(state.last_tick_unix);
-                labels.push(format!("fleet #{} {eta}s", mission.id));
+                labels.push(format!("fleet #{} {}", mission.id, countdown(eta)));
             }
         }
         if let Some(secs) = state.raid_countdown_secs()
             && system == state.home.system
         {
-            labels.push(format!("raid {secs}s"));
+            labels.push(format!("raid {}", countdown(secs)));
         }
-        let extra = if labels.is_empty() {
-            String::new()
-        } else {
-            format!("  {}", labels.join("  "))
-        };
-        let style = if system == map_system {
-            t.strong()
-        } else {
-            t.text()
-        };
-        entries.push(Line::from(Span::styled(
-            format!("{mark} {system:>3} {glyphs}{extra}"),
-            style,
-        )));
+        let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+        let extra = format!("  {}", labels.join("  "));
+        if !labels.is_empty() && used + extra.chars().count() <= width {
+            spans.push(Span::styled(extra, t.muted()));
+        }
+        entries.push(Line::from(spans));
     }
     window(&entries, map_system.saturating_sub(1) as usize, height)
 }
@@ -1245,7 +1426,7 @@ mod tests {
         let mut sorted = kinds.clone();
         sorted.sort_unstable();
         assert_eq!(kinds, sorted);
-        assert!(rows.iter().any(|row| row.text.contains("incoming raid")));
+        assert!(rows.iter().any(|row| row.text.contains("Incoming raid")));
         assert!(rows.iter().any(|row| row.text.contains("idle")));
     }
 
@@ -1255,7 +1436,7 @@ mod tests {
         state.next_raid_at = None;
         state.config.raid.enabled = false;
         let rows = alerts(&state);
-        assert!(!rows.iter().any(|row| row.text.contains("incoming raid")));
+        assert!(!rows.iter().any(|row| row.text.contains("Incoming raid")));
     }
 
     #[test]
