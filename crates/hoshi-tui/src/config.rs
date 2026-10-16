@@ -14,6 +14,7 @@ pub struct UserConfig {
     pub ai_advisor: bool,
     pub arena: bool,
     pub rivals: bool,
+    pub season: bool,
     pub demo: bool,
     pub governance: bool,
     pub chisei: bool,
@@ -52,6 +53,7 @@ impl Default for UserConfig {
             ai_advisor: false,
             arena: false,
             rivals: false,
+            season: true,
             demo: false,
             governance: false,
             chisei: false,
@@ -111,6 +113,7 @@ impl UserConfig {
                 "ai_advisor" => cfg.ai_advisor = value == "true",
                 "arena" => cfg.arena = value == "true",
                 "rivals" => cfg.rivals = value == "true",
+                "season" => cfg.season = value == "true",
                 "demo" => cfg.demo = value == "true",
                 "governance" => cfg.governance = value == "true",
                 "chisei" => cfg.chisei = value == "true",
@@ -188,7 +191,7 @@ impl UserConfig {
             _ => String::new(),
         };
         let text = format!(
-            "reduced_motion = {}\nno_animation = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\narena = {}\nrivals = {}\ndemo = {}\ngovernance = {}\nchisei = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}\ntutorial = {}\nreset_tutorial = {}\nnotify = {}\nnotify_build = {}\nnotify_raid = {}\nnotify_fleet = {}\ncommentary = {}\ncommentary_model_url = \"{}\"\nadvisor_model_url = \"{}\"\nadvisor_model_name = \"{}\"\nadvisor_allow_lan = {}\ncockpit_layout = \"{}\"\ncockpit_overview = \"{}\"\ncockpit_economy = \"{}\"\ncockpit_war = \"{}\"\ndetail_panel = {}\n{quiet}{}\n",
+            "reduced_motion = {}\nno_animation = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\narena = {}\nrivals = {}\nseason = {}\ndemo = {}\ngovernance = {}\nchisei = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}\ntutorial = {}\nreset_tutorial = {}\nnotify = {}\nnotify_build = {}\nnotify_raid = {}\nnotify_fleet = {}\ncommentary = {}\ncommentary_model_url = \"{}\"\nadvisor_model_url = \"{}\"\nadvisor_model_name = \"{}\"\nadvisor_allow_lan = {}\ncockpit_layout = \"{}\"\ncockpit_overview = \"{}\"\ncockpit_economy = \"{}\"\ncockpit_war = \"{}\"\ndetail_panel = {}\n{quiet}{}\n",
             self.reduced_motion,
             self.no_animation,
             self.high_contrast,
@@ -196,6 +199,7 @@ impl UserConfig {
             self.ai_advisor,
             self.arena,
             self.rivals,
+            self.season,
             self.demo,
             self.governance,
             self.chisei,
@@ -264,6 +268,7 @@ mod tests {
         assert!(!loaded.ai_advisor);
         assert!(!loaded.arena);
         assert!(!loaded.rivals);
+        assert!(loaded.season);
         assert!(!loaded.demo);
         assert!(!loaded.governance);
         assert!(!loaded.chisei);
@@ -291,6 +296,7 @@ mod tests {
         cfg.advisor_allow_lan = true;
         cfg.arena = true;
         cfg.rivals = true;
+        cfg.season = false;
         cfg.demo = true;
         cfg.governance = true;
         cfg.chisei = true;
@@ -304,6 +310,7 @@ mod tests {
         assert!(!again.bridge);
         assert!(again.arena);
         assert!(again.rivals);
+        assert!(!again.season);
         assert!(again.demo);
         assert!(again.governance);
         assert!(again.chisei);

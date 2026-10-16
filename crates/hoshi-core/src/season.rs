@@ -124,6 +124,16 @@ impl SeasonCatalog {
         window_at(now, self.epoch_unix, self.duration_secs)
     }
 
+    /// Rule set for the UTC window containing `now`. None before epoch or with an empty catalog.
+    pub fn current(&self, now: u64) -> Option<&SeasonRuleset> {
+        if self.is_empty() || now < self.epoch_unix {
+            return None;
+        }
+        let window = self.window(now);
+        let n = self.rulesets.len();
+        self.rulesets.get((window.index as usize) % n)
+    }
+
     pub fn seed_for(&self, ruleset_id: &str, window: &SeasonWindow) -> Result<u64, SeasonError> {
         if self.get(ruleset_id).is_none() {
             return Err(SeasonError::UnknownRuleset(ruleset_id.into()));
@@ -432,6 +442,18 @@ narnia = true
         assert_eq!(state.prestige.currency, 0);
         assert_eq!(state.galaxy_seed, run.seed);
         assert!((state.config.expedition.reward_mult - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn current_rotates_with_the_utc_window() {
+        let cat = SeasonCatalog::default();
+        assert!(cat.current(cat.epoch_unix.saturating_sub(1)).is_none());
+        let first = cat.current(cat.epoch_unix).expect("first window");
+        assert_eq!(first.id, "double_haul");
+        let second = cat
+            .current(cat.epoch_unix + cat.duration_secs)
+            .expect("second window");
+        assert_eq!(second.id, "closed_market");
     }
 
     #[test]

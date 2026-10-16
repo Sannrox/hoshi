@@ -182,6 +182,8 @@ pub(crate) fn inspect_backend_save(path: &Path) -> Result<crate::SaveGlance, Sav
             .iter()
             .map(|row| row.personality.clone())
             .collect(),
+        seasonal: state.season.is_some(),
+        season_id: state.season.as_ref().map(|run| run.ruleset_id.clone()),
     })
 }
 

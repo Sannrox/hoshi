@@ -2217,6 +2217,8 @@ pub struct SaveGlance {
     pub species_id: Option<String>,
     pub rivals_enabled: bool,
     pub rival_personalities: Vec<String>,
+    pub seasonal: bool,
+    pub season_id: Option<String>,
 }
 
 pub fn inspect_save(path: &Path) -> Result<SaveGlance, SaveError> {
@@ -2340,6 +2342,14 @@ pub fn inspect_save(path: &Path) -> Result<SaveGlance, SaveError> {
     } else {
         Vec::new()
     };
+    let season_id = if table_exists(&conn, "season") {
+        conn.query_row("SELECT ruleset_id FROM season WHERE id = 1", [], |row| {
+            row.get::<_, String>(0)
+        })
+        .optional()?
+    } else {
+        None
+    };
     Ok(SaveGlance {
         schema,
         last_tick_unix: unix_ts(last_tick)?,
@@ -2351,6 +2361,8 @@ pub fn inspect_save(path: &Path) -> Result<SaveGlance, SaveError> {
         species_id,
         rivals_enabled,
         rival_personalities,
+        seasonal: season_id.is_some(),
+        season_id,
     })
 }
 
@@ -8312,6 +8324,8 @@ mod tests {
         assert_eq!(glance.species_id, None);
         assert!(!glance.rivals_enabled);
         assert!(glance.rival_personalities.is_empty());
+        assert!(!glance.seasonal);
+        assert_eq!(glance.season_id, None);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(save_lock_path(&path));
     }
@@ -8335,6 +8349,27 @@ mod tests {
         drop(conn);
         let glance = inspect_save(&path).unwrap();
         assert_eq!(glance.species_id.as_deref(), Some("aurelians"));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(save_lock_path(&path));
+    }
+
+    #[test]
+    fn inspect_save_reads_the_season_run() {
+        let path = unique_path("inspect-season");
+        let mut conn = open_save(&path).unwrap();
+        let cat = crate::SeasonCatalog::default();
+        let state = crate::GameState::new_season(
+            1_800_000_000,
+            &cat,
+            "closed_market",
+            crate::BalanceConfig::default(),
+        )
+        .unwrap();
+        save_state(&mut conn, &state).unwrap();
+        drop(conn);
+        let glance = inspect_save(&path).unwrap();
+        assert!(glance.seasonal);
+        assert_eq!(glance.season_id.as_deref(), Some("closed_market"));
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(save_lock_path(&path));
     }

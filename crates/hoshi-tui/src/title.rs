@@ -5,11 +5,11 @@ use crate::config::UserConfig;
 use crate::keymap::{Binding, HelpContext, Keymap};
 use crate::portraits::{self, Mood, PortraitView, Slot as PortraitSlot};
 use hoshi_core::{
-    AchievementConfig, BalanceConfig, CareerGlance, Prestige, PrestigeConfig, PrestigeError,
-    RivalCatalog, RivalSettings, SaveError, SaveGlance, SeasonCatalog, SpeciesCatalog, SpeciesSpec,
-    advisor_endpoint_allowed, encode_galaxy_seed, inspect_career, inspect_save, lock_save,
-    open_storage, parse_galaxy_seed, preview_galaxy, probe_model_endpoint, save_is_locked,
-    season_slot_name,
+    AchievementCondition, AchievementConfig, BalanceConfig, CareerGlance, Prestige, PrestigeConfig,
+    PrestigeError, RivalCatalog, RivalSettings, SaveError, SaveGlance, SeasonCatalog,
+    SpeciesCatalog, SpeciesSpec, advisor_endpoint_allowed, encode_galaxy_seed, inspect_career,
+    inspect_save, lock_save, open_storage, parse_galaxy_seed, preview_galaxy, probe_model_endpoint,
+    save_is_locked, season_slot_name,
 };
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
@@ -314,21 +314,28 @@ impl Title {
         self.balance = balance;
     }
 
+    fn season_visible(&self) -> bool {
+        self.config.season && SeasonCatalog::default().current(self.now_unix).is_some()
+    }
+
     fn menu_items(&self) -> Vec<&'static str> {
-        let mut items = vec![
-            "Continue",
-            "New game",
-            "Season",
-            "Load game",
-            "Settings",
-            "Achievements",
-        ];
+        let mut items = vec!["Continue", "New game"];
+        if self.season_visible() {
+            items.push("Season");
+        }
+        items.extend(["Load game", "Settings", "Achievements"]);
         if self.prestige_visible() {
             items.push("Prestige");
         }
         items.push("Credits");
         items.push("Quit");
         items
+    }
+
+    fn select_menu_item(&mut self, name: &str) {
+        if let Some(idx) = self.menu_items().iter().position(|item| *item == name) {
+            self.selected = idx;
+        }
     }
 
     fn prestige_visible(&self) -> bool {
@@ -386,6 +393,11 @@ impl Title {
 
     fn refresh_slots(&mut self) {
         self.slots = list_slots(&self.dir, self.now_unix);
+        self.slots.sort_by(|a, b| {
+            slot_is_seasonal(a)
+                .cmp(&slot_is_seasonal(b))
+                .then_with(|| a.name.cmp(&b.name))
+        });
         self.career = CareerGlance::default();
         self.prestige_source = None;
         self.prestige_menu = false;
@@ -1008,20 +1020,10 @@ impl Title {
     }
 
     fn handle_season(&mut self, code: KeyCode) -> TitleAction {
-        let cat = SeasonCatalog::default();
-        let n = cat.len().max(1);
         match self.config.keys.lookup(HelpContext::TitleSeason, code) {
             Some(Binding::Cancel) => {
                 self.page = Page::Menu;
-                self.selected = 2;
-                TitleAction::None
-            }
-            Some(Binding::SelectNext) => {
-                self.selected = (self.selected + 1) % n;
-                TitleAction::None
-            }
-            Some(Binding::SelectPrev) => {
-                self.selected = (self.selected + n - 1) % n;
+                self.select_menu_item("Season");
                 TitleAction::None
             }
             Some(Binding::Confirm) => self.start_season(),
@@ -1031,8 +1033,8 @@ impl Title {
 
     fn start_season(&mut self) -> TitleAction {
         let cat = SeasonCatalog::default();
-        let Some(ruleset) = cat.iter().nth(self.selected) else {
-            self.status = "no seasonal rule set".into();
+        let Some(ruleset) = cat.current(self.now_unix) else {
+            self.status = "no season is active".into();
             return TitleAction::None;
         };
         let window = cat.window(self.now_unix);
@@ -1071,13 +1073,14 @@ impl Title {
         if self.slots.is_empty() {
             if self.config.keys.lookup(HelpContext::TitleLoad, code) == Some(Binding::Cancel) {
                 self.page = Page::Menu;
+                self.select_menu_item("Load game");
             }
             return TitleAction::None;
         }
         match self.config.keys.lookup(HelpContext::TitleLoad, code) {
             Some(Binding::Cancel) => {
                 self.page = Page::Menu;
-                self.selected = 2;
+                self.select_menu_item("Load game");
                 TitleAction::None
             }
             Some(Binding::SelectNext) => {
@@ -1426,7 +1429,7 @@ impl Title {
         {
             Some(Binding::Cancel) => {
                 self.page = Page::Menu;
-                self.selected = 4;
+                self.select_menu_item("Achievements");
                 self.status.clear();
             }
             Some(Binding::SelectNext) => {
@@ -1445,7 +1448,7 @@ impl Title {
         match self.config.keys.lookup(HelpContext::TitleSettings, code) {
             Some(Binding::Cancel) => {
                 self.page = Page::Menu;
-                self.selected = 3;
+                self.select_menu_item("Settings");
             }
             Some(Binding::SelectNext) => {
                 self.selected = (self.selected + 1) % items;
@@ -1745,25 +1748,50 @@ impl Title {
             Page::Season => {
                 let cat = SeasonCatalog::default();
                 let window = cat.window(self.now_unix);
-                lines.push(Line::from(format!(
-                    "Season  window {}–{}s UTC",
-                    window.start, window.end
-                )));
-                lines.push(Line::from(
-                    "Local date window; galaxy seed is derived from the rule set.",
-                ));
+                match cat.current(self.now_unix) {
+                    None => lines.push(Line::from("no season is active")),
+                    Some(ruleset) => {
+                        let left = format_remaining(window.end.saturating_sub(self.now_unix));
+                        let seed = cat.seed_for(&ruleset.id, &window).unwrap_or(0);
+                        let prestige = if ruleset.prestige {
+                            "shares prestige"
+                        } else {
+                            "prestige isolated"
+                        };
+                        lines.push(Line::from(format!(
+                            "Season  {}  {left}  {prestige}",
+                            ruleset.name
+                        )));
+                        lines.push(Line::from(ruleset.blurb.clone()));
+                        lines.push(Line::from(format!(
+                            "seed {}  local UTC window, no network",
+                            encode_galaxy_seed(seed)
+                        )));
+                        lines.push(Line::from(format!(
+                            "{} starts this window. {} back. {} help.",
+                            self.config.keys.primary(Binding::Confirm),
+                            self.config.keys.primary(Binding::Cancel),
+                            self.config.keys.primary(Binding::Help)
+                        )));
+                    }
+                }
                 lines.push(Line::from(""));
-                for (i, ruleset) in cat.iter().enumerate() {
-                    let mark = if i == self.selected { "> " } else { "  " };
-                    let prestige = if ruleset.prestige {
-                        "shares prestige"
+                lines.push(Line::from("Past seasons"));
+                let mut any = false;
+                for spec in self.achievements.iter() {
+                    if !matches!(spec.condition, AchievementCondition::SeasonComplete { .. }) {
+                        continue;
+                    }
+                    any = true;
+                    let mark = if self.career.unlocks.contains_key(&spec.id) {
+                        "finished"
                     } else {
-                        "prestige isolated"
+                        "—"
                     };
-                    lines.push(Line::from(format!(
-                        "{mark}{} — {} ({prestige})",
-                        ruleset.name, ruleset.blurb
-                    )));
+                    lines.push(Line::from(format!("  {}  {mark}", spec.title)));
+                }
+                if !any {
+                    lines.push(Line::from("  none recorded"));
                 }
             }
             Page::New => {
@@ -1860,11 +1888,21 @@ impl Title {
                 if self.slots.is_empty() {
                     lines.push(Line::from("no saves yet"));
                 }
+                let grouped = self.slots.iter().any(slot_is_seasonal);
+                let mut last_seasonal: Option<bool> = None;
                 for (i, slot) in self.slots.iter().enumerate() {
+                    let seasonal = slot_is_seasonal(slot);
+                    if grouped && last_seasonal != Some(seasonal) {
+                        if last_seasonal.is_some() {
+                            lines.push(Line::from(""));
+                        }
+                        lines.push(Line::from(if seasonal { "Seasons" } else { "Galaxies" }));
+                        last_seasonal = Some(seasonal);
+                    }
                     let mark = if i == self.selected { ">" } else { " " };
                     lines.push(Line::from(format!(
                         "{mark} {}  {}",
-                        slot.name,
+                        slot_label(slot),
                         self.slot_status_line(&slot.status, self.now_unix)
                     )));
                 }
@@ -2141,6 +2179,36 @@ pub struct NewGameSpec {
 
 pub fn parse_seed(text: &str) -> Result<Option<u64>, String> {
     parse_galaxy_seed(text)
+}
+
+fn slot_is_seasonal(slot: &Slot) -> bool {
+    match &slot.status {
+        SlotStatus::Ready(g) | SlotStatus::Harness(g) => g.seasonal,
+        _ => slot.name.starts_with("season-"),
+    }
+}
+
+fn slot_label(slot: &Slot) -> String {
+    match &slot.status {
+        SlotStatus::Ready(g) | SlotStatus::Harness(g) if g.seasonal => g
+            .season_id
+            .as_deref()
+            .and_then(|id| SeasonCatalog::default().get(id).map(|row| row.name.clone()))
+            .unwrap_or_else(|| slot.name.clone()),
+        _ => slot.name.clone(),
+    }
+}
+
+fn format_remaining(secs: u64) -> String {
+    let days = secs / 86_400;
+    let hours = (secs % 86_400) / 3_600;
+    if days > 0 {
+        format!("{days}d {hours}h left")
+    } else if hours > 0 {
+        format!("{hours}h left")
+    } else {
+        format!("{}m left", secs / 60)
+    }
 }
 
 pub fn list_slots(dir: &Path, _now_unix: u64) -> Vec<Slot> {
@@ -2457,7 +2525,8 @@ mod tests {
     use super::*;
     use hoshi_core::{
         BalanceConfig, GameState, Prestige, RivalCatalog, RivalSettings, SCHEMA_VERSION,
-        SpeciesCatalog, load_state, lock_save, open_save, save_is_locked, save_state,
+        SeasonCatalog, SpeciesCatalog, load_state, lock_save, open_save, save_is_locked,
+        save_state,
     };
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -2520,16 +2589,65 @@ mod tests {
     }
 
     #[test]
-    fn season_page_lists_shipped_rule_sets() {
+    fn season_page_shows_the_current_window_seed_and_past_results() {
         let dir = unique_dir();
         let mut title = Title::new(dir.clone(), 1_800_000_000);
         title.handle_key(KeyCode::Char('j'));
         title.handle_key(KeyCode::Char('j'));
         title.handle_key(KeyCode::Enter);
         let text = render(&title, 80, 24);
-        assert!(text.contains("Double haul"), "{text}");
         assert!(text.contains("Closed markets"), "{text}");
+        assert!(text.contains("left"), "{text}");
+        assert!(text.contains("seed"), "{text}");
+        assert!(text.contains("Past seasons"), "{text}");
+        assert!(text.contains("Double haul"), "{text}");
         assert!(text.contains("Pirate weather"), "{text}");
+        assert!(text.contains("local UTC window, no network"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn season_menu_hides_when_disabled_or_before_epoch() {
+        let dir = unique_dir();
+        let mut title = Title::new(dir.clone(), 1_800_000_000);
+        let menu = render(&title, 80, 24);
+        assert!(menu.contains("Season"), "{menu}");
+        title.config.season = false;
+        let hidden = render(&title, 80, 24);
+        assert!(!hidden.contains("Season"), "{hidden}");
+        title.config.season = true;
+        title.now_unix = 1;
+        let early = render(&title, 80, 24);
+        assert!(!early.contains("Season"), "{early}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_groups_seasonal_saves_apart_from_galaxies() {
+        let dir = unique_dir();
+        write_save(&dir, "live", &GameState::new(10));
+        let cat = SeasonCatalog::default();
+        let seasonal =
+            GameState::new_season(1_800_000_000, &cat, "double_haul", BalanceConfig::default())
+                .unwrap();
+        write_save(&dir, "season-double_haul-1704067200", &seasonal);
+        let mut title = Title::new(dir.clone(), 1_800_000_000);
+        title.page = Page::Load;
+        let text = render(&title, 80, 24);
+        assert!(text.contains("Galaxies"), "{text}");
+        assert!(text.contains("Seasons"), "{text}");
+        assert!(text.contains("Double haul"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn past_season_results_use_stored_unlocks() {
+        let dir = unique_dir();
+        let mut title = Title::new(dir.clone(), 1_800_000_000);
+        title.page = Page::Season;
+        title.career.unlocks.insert("season_double_haul".into(), 1);
+        let text = render(&title, 80, 24);
+        assert!(text.contains("finished"), "{text}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2730,9 +2848,11 @@ mod tests {
         let _holder = lock_save(&locked_path).unwrap();
 
         let mut title = Title::new(dir.clone(), 40);
-        title.handle_key(KeyCode::Down);
-        title.handle_key(KeyCode::Down);
-        title.handle_key(KeyCode::Down);
+        title.selected = title
+            .menu_items()
+            .iter()
+            .position(|item| *item == "Load game")
+            .expect("Load game");
         title.handle_key(KeyCode::Enter);
         let text = render(&title, 100, 30);
         assert!(text.contains("in use by another hoshi process"), "{text}");
@@ -3055,9 +3175,11 @@ mod tests {
         beta.completed_wonders.push("observatory".into());
         write_save(&dir, "beta", &beta);
         let mut title = Title::new(dir.clone(), 200);
-        for _ in 0..5 {
-            title.handle_key(KeyCode::Down);
-        }
+        title.selected = title
+            .menu_items()
+            .iter()
+            .position(|item| *item == "Achievements")
+            .expect("Achievements");
         title.handle_key(KeyCode::Enter);
         let text = render(&title, 80, 24);
         assert!(text.contains("Achievements and stats"), "{text}");
