@@ -28,17 +28,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # Oldest supported Ubuntu LTS: its glibc is the floor for the Linux binaries and .debs.
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             artifact: hoshi-x86_64-unknown-linux-gnu
             native: "true"
             linux_state: "true"
-          - os: ubuntu-latest
+            deb_arch: amd64
+          - os: ubuntu-22.04
             target: aarch64-unknown-linux-gnu
             artifact: hoshi-aarch64-unknown-linux-gnu
             native: "false"
             linux_state: "false"
             cross: "true"
+            deb_arch: arm64
           - os: macos-13
             target: x86_64-apple-darwin
             artifact: hoshi-x86_64-apple-darwin
@@ -107,10 +110,25 @@ jobs:
           src="target/${{ matrix.target }}/release/hoshi${{ matrix.ext }}"
           dest="dist/${{ matrix.artifact }}${{ matrix.ext }}"
           cp "${src}" "${dest}"
+      - name: Debian package
+        if: matrix.deb_arch != ''
+        run: bash scripts/build-deb.sh "${GITHUB_REF_NAME}" "${{ matrix.deb_arch }}" "target/${{ matrix.target }}/release/hoshi" dist
+      - name: Smoke .deb install
+        if: matrix.deb_arch == 'amd64'
+        run: |
+          set -euo pipefail
+          deb="dist/hoshi_${GITHUB_REF_NAME#v}_amd64.deb"
+          dpkg-deb --info "${deb}"
+          sudo apt-get install -y "./${deb}"
+          /usr/bin/hoshi --version | grep -F "hoshi ${GITHUB_REF_NAME#v}"
+          sudo apt-get remove -y hoshi
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: dist/${{ matrix.artifact }}${{ matrix.ext }}
+          path: |
+            dist/${{ matrix.artifact }}${{ matrix.ext }}
+            dist/*.deb
+          if-no-files-found: error
 
   release:
     needs: [verify-tag, build]
@@ -125,7 +143,7 @@ jobs:
         working-directory: dist
         run: |
           set -euo pipefail
-          sha256sum hoshi-* | tee SHA256SUMS
+          sha256sum hoshi-* hoshi_*.deb | tee SHA256SUMS
       - name: Release notes
         run: |
           set -euo pipefail

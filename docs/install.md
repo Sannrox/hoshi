@@ -3,7 +3,7 @@
 The playable crate is `hoshi` (the binary lives in `crates/hoshi-tui`).
 `cargo install --git … hoshi` is the cargo path. `hoshi-core` stays unpublished
 while an optional git-pinned backend remains in its manifest. This repository's
-release workflow publishes GitHub Release binaries and the Homebrew formula;
+release workflow publishes GitHub Release binaries, Ubuntu `.deb` packages and the Homebrew formula;
 it does not upload crates.
 
 ## Git
@@ -29,7 +29,27 @@ Release attaches five binaries and `SHA256SUMS`:
 | `hoshi-x86_64-pc-windows-msvc.exe` | Windows x86_64 |
 
 Each binary is started with `--version` in that workflow. Linux x86_64 also
-runs a headless `hoshi --save PATH --seed 1 state`.
+runs a headless `hoshi --save PATH --seed 1 state`. Linux binaries are built on
+Ubuntu 22.04, so they need glibc 2.35 or newer.
+
+## Ubuntu
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Sannrox/hoshi/main/scripts/install.sh | sh
+```
+
+The script picks `amd64` or `arm64`, downloads `hoshi_X.Y.Z_<arch>.deb` from
+the latest GitHub Release, checks it against `SHA256SUMS`, and installs it
+with `apt-get` (asks for `sudo`). Pin a release with `HOSHI_VERSION=vX.Y.Z`.
+Manual install from a downloaded package:
+
+```sh
+sudo apt install ./hoshi_X.Y.Z_amd64.deb
+```
+
+Supported on Ubuntu 22.04 and newer. `sudo apt remove hoshi` uninstalls; the
+save in `~/.local/share/hoshi/` is kept. The release workflow builds the
+packages with `scripts/build-deb.sh` and installs the amd64 one as a smoke test.
 
 Release notes are the Unreleased (or matching version) changelog section plus a
 **Saves** paragraph: current `SCHEMA_VERSION`, older saves migrate in place,
@@ -54,4 +74,4 @@ After `hoshi` and `hoshi-core` are on a crate registry:
 cargo install hoshi --locked
 ```
 
-Until then, use git, a GitHub Release binary, or Homebrew.
+Until then, use git, a GitHub Release binary, the Ubuntu package, or Homebrew.
