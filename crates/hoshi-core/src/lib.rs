@@ -4,6 +4,7 @@ mod achievements;
 mod activity;
 mod advisor;
 mod balance;
+mod blueprint;
 mod buildings;
 mod chains;
 mod classification;
@@ -63,6 +64,10 @@ pub use advisor::{
 pub use balance::{
     BalanceConfig, BalanceError, BuildingCatalog, BuildingSpec, EnergyProducerSpec, PacingTargets,
     ProducerSpec, RaidConfig, StorageSpec,
+};
+pub use blueprint::{
+    APPLY_ORDER, Blueprint, BlueprintApply, BlueprintCatalog, BlueprintError, BlueprintMismatch,
+    BlueprintPreview, BlueprintStep, blueprint_dir,
 };
 pub use buildings::{BuildError, BuildJob, BuildingKind, Buildings};
 pub use chains::{ChainConfig, GoodKind, GoodSpec, Recipe, component_kind};

@@ -8,6 +8,8 @@
 
 ### Added
 
+- Planet blueprints: capture a world's building levels, export/import as text, and apply to another colony. Apply queues only missing upgrades in power-then-extraction order through the normal build path, lists mismatches (wrong planet type, solar too far from the star) before queueing, and stops when resources or the queue cap run out. Stored per player beside the save as `blueprints/*.toml`. `hoshi blueprint list|show|capture|apply|export|import`.
+
 - Context-aware detail side panel: one key (`d`) toggles a read-only card for the selected building, tech, ship, defence, wonder, law, market pair, faction or map world. Wide terminals dock it; 80-column sessions open the same content as an overlay. Costs, time-until-affordable (including never), energy/heat deltas, exclusive-branch warnings and ship travel all come from hoshi-core `describe`. Preference persists in `config.toml` as `detail_panel`.
 
 - Frontier galaxy: a second, richer galaxy (`2:s:p`) unlocks through impulse drive plus astrophysics, or by completing a wonder. Reaching it needs that drive and longer inter-galaxy flights. Worlds are seeded with higher rare chance, extra fields and a production bonus shown on the map before colonizing. Optional bridge `release_published` and `epic_closed` events can reveal extra sectors early, capped so they never open anything the normal path cannot. Save schema v38. See `[frontier]` in `balance.toml`.

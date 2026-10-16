@@ -57,6 +57,12 @@ hoshi --save PATH flagship relocate <coord>
 hoshi --save PATH flagship anchor
 hoshi --save PATH goals
 hoshi --save PATH goals keep
+hoshi --save PATH blueprint list
+hoshi --save PATH blueprint show <name>
+hoshi --save PATH blueprint capture <planet> <name>
+hoshi --save PATH blueprint apply <name> <planet>
+hoshi --save PATH blueprint export <name>
+hoshi --save PATH blueprint import <path>
 hoshi --save PATH law propose <template> [--param N] [--jurisdiction empire|home|g:s:p] [--effective <dur>]
 hoshi --save PATH law approve <id>
 hoshi --save PATH law repeal <id> [--effective <dur>]
