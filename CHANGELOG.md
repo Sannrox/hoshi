@@ -22,6 +22,10 @@
 
 - Release and install: the playable crate is named `hoshi` (`cargo install --git … --locked hoshi`). Version tags `vX.Y.Z` publish GitHub Release binaries for Linux (x86_64, aarch64), macOS (Intel and Apple Silicon) and Windows with `SHA256SUMS`, and the Homebrew tap formula is regenerated from the same tag. Release notes copy the changelog and state the save schema (v39; older saves migrate).
 
+- Ubuntu packages: each release attaches `hoshi_X.Y.Z_amd64.deb` and `hoshi_X.Y.Z_arm64.deb` (Ubuntu 22.04+; Linux binaries now build on 22.04 for the glibc 2.35 floor). `curl -fsSL https://raw.githubusercontent.com/Sannrox/hoshi/main/scripts/install.sh | sh` picks the architecture, verifies `SHA256SUMS` and installs with `apt-get`.
+
+- Nightly builds for alpha testers: `main` is built every night into a rolling `nightly` prerelease (Linux binaries, amd64/arm64 `.deb`, `SHA256SUMS`). Install or update with `HOSHI_CHANNEL=nightly` on the Ubuntu install script. `hoshi --version` shows the nightly stamp and commit; package versions `X.Y.Z~nightly.STAMP.SHA` sort before the `X.Y.Z` release.
+
 - Self-play balance checks: `hoshi --self-play self-play --matrix pr|nightly` runs every species through the wonder, diplomacy and conquest strategies, prints win shares, time-to-victory and resource curves, and fails when a path drifts outside the casual band or one species pulls more than 25% ahead of the median. Off until `self_play = true` or `--self-play`. Pull requests run seed 1; the scheduled job runs the nightly seed list. Replay a flagged seed with `--seed N`. Sample path bots live in `examples/bots/`.
 
 - Title Season page shows the current UTC window rule set, remaining time and derived seed, starts a save kept apart from the main slots, and lists past results from stored unlocks. Seasonal saves are grouped under Seasons in Load game. The menu hides the page when seasons are off in config or before the catalog epoch.

@@ -1,0 +1,171 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  plan:
+    name: Plan
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      version: ${{ steps.plan.outputs.version }}
+      label: ${{ steps.plan.outputs.label }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: plan
+        env:
+          MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          set -euo pipefail
+          prev="$(git ls-remote origin refs/tags/nightly | cut -f1)"
+          if [ "${prev}" = "${GITHUB_SHA}" ] && [ "${MANUAL}" != "true" ]; then
+            echo "nightly already at ${GITHUB_SHA}"
+            echo "build=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          base="$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)"
+          stamp="$(date -u +%Y%m%d%H%M)"
+          short="${GITHUB_SHA::7}"
+          {
+            echo "build=true"
+            echo "version=v${base}~nightly.${stamp}.${short}"
+            echo "label=nightly ${stamp} ${short}"
+          } >> "${GITHUB_OUTPUT}"
+
+  build:
+    name: ${{ matrix.target }}
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            deb_arch: amd64
+            native: "true"
+          - target: aarch64-unknown-linux-gnu
+            deb_arch: arm64
+            native: "false"
+    env:
+      HOSHI_BUILD: ${{ needs.plan.outputs.label }}
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+          targets: ${{ matrix.target }}
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: nightly-${{ matrix.target }}
+      - name: Cross linker (Linux aarch64)
+        if: matrix.native != 'true'
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu qemu-user-static
+      - name: Build
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: cargo build --locked --release --target ${{ matrix.target }} -p hoshi --bin hoshi
+      - name: Smoke --version
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/hoshi"
+          if [ "${{ matrix.native }}" = "true" ]; then
+            out="$("${bin}" --version)"
+          else
+            out="$(qemu-aarch64-static "${bin}" --version)"
+          fi
+          printf '%s\n' "${out}"
+          printf '%s\n' "${out}" | grep -F "(${HOSHI_BUILD})"
+      - name: Headless state
+        if: matrix.native == 'true'
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/hoshi"
+          tmp="$(mktemp "${RUNNER_TEMP}/hoshi-smoke-XXXXXX.sqlite")"
+          "${bin}" --save "${tmp}" --seed 1 state
+          rm -f "${tmp}" "${tmp}.lock"
+      - name: Stage artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/hoshi" "dist/hoshi-${{ matrix.target }}"
+          bash scripts/build-deb.sh "${VERSION}" "${{ matrix.deb_arch }}" "target/${{ matrix.target }}/release/hoshi" dist
+      - name: Smoke .deb install
+        if: matrix.native == 'true'
+        run: |
+          set -euo pipefail
+          deb="$(ls dist/hoshi_*_amd64.deb)"
+          dpkg-deb --info "${deb}"
+          sudo apt-get install -y "./${deb}"
+          /usr/bin/hoshi --version | grep -F "(${HOSHI_BUILD})"
+          sudo apt-get remove -y hoshi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nightly-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: nightly-*
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum hoshi-* hoshi_*.deb | tee SHA256SUMS
+      - name: Release notes
+        run: |
+          set -euo pipefail
+          cat > notes.md << EOF
+          Automated build of \`main\` at ${GITHUB_SHA}. Not a release: expect bugs.
+
+          Ubuntu 22.04+:
+
+          \`\`\`sh
+          curl -fsSL https://raw.githubusercontent.com/${GH_REPO}/main/scripts/install.sh | HOSHI_CHANNEL=nightly sh
+          \`\`\`
+
+          Package version \`${VERSION#v}\`. A nightly can migrate your save to a newer schema;
+          stable releases older than that schema refuse to open it. Back up
+          \`~/.local/share/hoshi/\` before switching between channels.
+          EOF
+      - name: Replace nightly release
+        run: |
+          set -euo pipefail
+          if gh release view nightly > /dev/null 2>&1; then
+            gh release delete nightly --cleanup-tag --yes
+          fi
+          if gh api "repos/${GH_REPO}/git/ref/tags/nightly" > /dev/null 2>&1; then
+            gh api -X DELETE "repos/${GH_REPO}/git/refs/tags/nightly"
+          fi
+          gh release create nightly dist/* \
+            --prerelease --latest=false \
+            --target "${GITHUB_SHA}" \
+            --title "hoshi nightly ${VERSION#v}" \
+            --notes-file notes.md

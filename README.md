@@ -65,7 +65,15 @@ cargo install --git https://github.com/Sannrox/hoshi --locked hoshi
 ```
 
 Version tags (`vX.Y.Z`) publish GitHub Release binaries for Linux (x86_64, aarch64),
-macOS (Intel and Apple Silicon) and Windows, plus `SHA256SUMS`. Homebrew:
+macOS (Intel and Apple Silicon) and Windows, Ubuntu `.deb` packages (22.04+,
+amd64 and arm64), plus `SHA256SUMS`. Ubuntu:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Sannrox/hoshi/main/scripts/install.sh | sh
+```
+
+Alpha testers can take the nightly build of `main` with `HOSHI_CHANNEL=nightly`
+before `sh` ([docs/install.md](docs/install.md#nightly-builds)). Homebrew:
 
 ```sh
 brew tap Sannrox/tap
