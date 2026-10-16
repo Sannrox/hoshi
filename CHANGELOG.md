@@ -8,6 +8,8 @@
 
 ### Added
 
+- Title New game lists every playable species from the data files. Locked empires stay visible with their prestige cost and cannot start a galaxy; 80-column sessions keep a compact list, wider terminals open a card with portrait fallback, victory lean, strengths and starting faction standing. Load game shows the species saved on the slot.
+
 - Planet blueprints: capture a world's building levels, export/import as text, and apply to another colony. Apply queues only missing upgrades in power-then-extraction order through the normal build path, lists mismatches (wrong planet type, solar too far from the star) before queueing, and stops when resources or the queue cap run out. Stored per player beside the save as `blueprints/*.toml`. `hoshi blueprint list|show|capture|apply|export|import`.
 
 - Context-aware detail side panel: one key (`d`) toggles a read-only card for the selected building, tech, ship, defence, wonder, law, market pair, faction or map world. Wide terminals dock it; 80-column sessions open the same content as an overlay. Costs, time-until-affordable (including never), energy/heat deltas, exclusive-branch warnings and ship travel all come from hoshi-core `describe`. Preference persists in `config.toml` as `detail_panel`.
