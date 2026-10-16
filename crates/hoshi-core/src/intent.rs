@@ -168,8 +168,8 @@ fn proposal_id(intent: &Intent, now_unix: u64, tick: u64) -> String {
             contract,
         } => format!(
             "ship_goods:{now_unix}:{tick}:{origin}:{dest}:{}:{}:{}:{}",
-            cargo.metal,
-            cargo.crystal,
+            cargo.iron,
+            cargo.silicon,
             cargo.deuterium,
             contract.map(|id| id.to_string()).unwrap_or_default(),
         ),
@@ -294,7 +294,7 @@ mod tests {
             Intent::PlaceOrder {
                 region: Coord::HOME,
                 side: OrderSide::Buy,
-                good: ResourceKind::Crystal,
+                good: ResourceKind::Silicon,
                 amount: 1.0,
                 limit: Some(2.0),
                 ttl_secs: 1,
@@ -339,8 +339,8 @@ mod tests {
         let mut cfg = BalanceConfig::default();
         cfg.raid.enabled = false;
         let mut state = GameState::with_config(1_000, cfg);
-        state.resources.metal = 80_000.0;
-        state.resources.crystal = 40_000.0;
+        state.resources.iron = 80_000.0;
+        state.resources.silicon = 40_000.0;
         let metal = propose(
             &state,
             &Intent::Build {
@@ -369,8 +369,8 @@ mod tests {
         let mut cfg = BalanceConfig::default();
         cfg.raid.enabled = false;
         let mut state = GameState::with_config(1_000, cfg);
-        state.resources.metal = 40_000.0;
-        state.resources.crystal = 20_000.0;
+        state.resources.iron = 40_000.0;
+        state.resources.silicon = 20_000.0;
         state.resources.deuterium = 10_000.0;
         let intent = Intent::Build {
             planet: Coord::HOME,
@@ -382,7 +382,7 @@ mod tests {
         assert_eq!(state, snapshot, "propose is a dry run");
         apply(&mut state, &proposal, 1_000).unwrap();
         assert_eq!(state.build_queue.len(), 1);
-        assert!(state.resources.metal < snapshot.resources.metal);
+        assert!(state.resources.iron < snapshot.resources.iron);
     }
 
     #[test]

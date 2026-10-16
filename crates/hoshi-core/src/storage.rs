@@ -316,7 +316,7 @@ pub(crate) fn assert_storage_contract(store: &mut dyn Storage) {
     cfg.raid.enabled = false;
     let now = 1_000u64;
     let mut original = GameState::with_config(now, cfg.clone());
-    original.resources.metal = 12_345.0;
+    original.resources.iron = 12_345.0;
     original.fleet.add(ShipKind::SmallCargo, 3);
     store.save(&original).unwrap();
     let loaded = store.load(cfg.clone()).unwrap();
@@ -361,18 +361,18 @@ pub(crate) fn assert_storage_contract(store: &mut dyn Storage) {
         "atomic outposts"
     );
     assert_eq!(batched.fleet.get(ShipKind::SmallCargo), 3, "atomic fleet");
-    assert_eq!(batched.resources.metal, 12_345.0);
+    assert_eq!(batched.resources.iron, 12_345.0);
 
     let clock = FakeClock::new(now);
     let mut live = batched;
     clock.advance(3_600);
     live.catch_up(clock.now_unix());
-    let metal_after = live.resources.metal;
+    let metal_after = live.resources.iron;
     let tick_after = live.last_tick_unix;
     store.save(&live).unwrap();
     let caught = store.load(cfg.clone()).unwrap();
     assert_eq!(caught.last_tick_unix, tick_after);
-    assert!((caught.resources.metal - metal_after).abs() < 1e-9);
+    assert!((caught.resources.iron - metal_after).abs() < 1e-9);
 
     let mut colony = GameState::with_config(now, cfg.clone());
     colony.tech_levels.insert("colonization".into(), 1);

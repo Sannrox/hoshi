@@ -284,7 +284,7 @@ fn score_state(
         .as_array()
         .map(|rows| rows.len().saturating_sub(1) as f64)
         .unwrap_or(0.0);
-    let metal = state["resources"]["metal"].as_f64().unwrap_or(0.0);
+    let metal = state["resources"]["iron"].as_f64().unwrap_or(0.0);
     let eligible = state["prestige"]["eligible"].as_bool().unwrap_or(false);
     let mut score = prestige
         + 10.0 * f64::from(metal_mine)

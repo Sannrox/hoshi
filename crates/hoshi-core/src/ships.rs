@@ -113,8 +113,8 @@ impl fmt::Display for ShipKind {
 pub struct ShipSpec {
     pub kind: ShipKind,
     pub name: String,
-    pub metal: f64,
-    pub crystal: f64,
+    pub iron: f64,
+    pub silicon: f64,
     pub deuterium: f64,
     pub base_seconds: f64,
     pub attack: f64,
@@ -132,11 +132,7 @@ pub struct ShipSpec {
 
 impl ShipSpec {
     pub fn unit_cost(&self) -> Resources {
-        Resources {
-            metal: self.metal,
-            crystal: self.crystal,
-            deuterium: self.deuterium,
-        }
+        Resources::from_parts(self.iron, self.silicon, self.deuterium)
     }
 
     pub fn duration_secs(&self) -> u64 {
@@ -189,8 +185,8 @@ impl ShipCatalog {
                 ShipSpec {
                     kind,
                     name: raw.name,
-                    metal: raw.metal,
-                    crystal: raw.crystal,
+                    iron: raw.iron,
+                    silicon: raw.silicon,
                     deuterium: raw.deuterium,
                     base_seconds: raw.base_seconds,
                     attack: raw.attack,
@@ -331,11 +327,11 @@ impl fmt::Display for ShipError {
             ShipError::InsufficientResources { missing, cost } => write!(
                 f,
                 "not enough resources (missing metal {:.0}, crystal {:.0}, deuterium {:.0}; cost metal {:.0}, crystal {:.0}, deuterium {:.0})",
-                missing.metal,
-                missing.crystal,
+                missing.iron,
+                missing.silicon,
                 missing.deuterium,
-                cost.metal,
-                cost.crystal,
+                cost.iron,
+                cost.silicon,
                 cost.deuterium
             ),
             ShipError::EmptySlot { index, len } => {
@@ -383,10 +379,10 @@ struct File {
 struct RawShip {
     id: String,
     name: String,
-    #[serde(alias = "frames")]
-    metal: f64,
-    #[serde(alias = "electronics")]
-    crystal: f64,
+    #[serde(alias = "frames", alias = "metal")]
+    iron: f64,
+    #[serde(alias = "electronics", alias = "crystal")]
+    silicon: f64,
     #[serde(alias = "propellant")]
     deuterium: f64,
     base_seconds: f64,

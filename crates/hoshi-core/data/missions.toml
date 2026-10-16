@@ -8,8 +8,8 @@ description = "Complete a metal, crystal or deuterium mine upgrade."
 kind = "upgrade_mine"
 weight = 4
 target = 1
-metal = 40.0
-crystal = 20.0
+iron = 40.0
+silicon = 20.0
 deuterium = 0.0
 
 [[mission]]
@@ -19,8 +19,8 @@ description = "Complete one research job."
 kind = "finish_research"
 weight = 3
 target = 1
-metal = 20.0
-crystal = 40.0
+iron = 20.0
+silicon = 40.0
 deuterium = 0.0
 min_lab = 1
 
@@ -31,8 +31,8 @@ description = "Win or draw a pirate raid on home."
 kind = "win_raid"
 weight = 3
 target = 1
-metal = 50.0
-crystal = 25.0
+iron = 50.0
+silicon = 25.0
 deuterium = 10.0
 
 [[mission]]
@@ -42,8 +42,8 @@ description = "Complete one market trade."
 kind = "send_trade"
 weight = 3
 target = 1
-metal = 10.0
-crystal = 10.0
+iron = 10.0
+silicon = 10.0
 deuterium = 0.0
 
 [[mission]]
@@ -53,6 +53,6 @@ description = "Send a fleet to the expedition slot."
 kind = "send_expedition"
 weight = 2
 target = 1
-metal = 30.0
-crystal = 15.0
+iron = 30.0
+silicon = 15.0
 deuterium = 15.0

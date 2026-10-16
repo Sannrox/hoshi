@@ -226,18 +226,13 @@ pub fn spend_of(state: &GameState, intent: &Intent, _now: u64) -> f64 {
             dest,
             cargo,
             ..
-        } => {
-            cargo.metal
-                + cargo.crystal
-                + cargo.deuterium
-                + state.shipment_fuel(*origin, *dest, *cargo)
-        }
+        } => cargo.total() + state.shipment_fuel(*origin, *dest, *cargo),
         Intent::AcceptContract { .. } | Intent::FulfilContract { .. } => 0.0,
     }
 }
 
 fn stock_of(resources: Resources) -> f64 {
-    resources.metal + resources.crystal + resources.deuterium
+    resources.total()
 }
 
 fn fuel_of(state: &GameState, ships: Fleet, dest: Coord, speed_percent: u8) -> f64 {
@@ -418,8 +413,8 @@ mod tests {
         let mut cfg = BalanceConfig::default();
         cfg.raid.enabled = false;
         let mut state = GameState::with_config(1_000, cfg);
-        state.resources.metal = 80_000.0;
-        state.resources.crystal = 40_000.0;
+        state.resources.iron = 80_000.0;
+        state.resources.silicon = 40_000.0;
         state.resources.deuterium = 10_000.0;
         state
     }
@@ -608,13 +603,13 @@ mod tests {
         let intent = Intent::PlaceOrder {
             region: Coord::HOME,
             side: crate::OrderSide::Buy,
-            good: crate::ResourceKind::Crystal,
+            good: crate::ResourceKind::Silicon,
             amount: 10.0,
             limit: None,
             ttl_secs: 86_400,
         };
         let spent = spend_of(&state, &intent, 1_000);
-        let escrow = state.buy_order_escrow(crate::ResourceKind::Crystal, 10.0, None);
+        let escrow = state.buy_order_escrow(crate::ResourceKind::Silicon, 10.0, None);
         assert!((spent - escrow).abs() < 1e-9);
         assert!(
             spent > 10.0,
@@ -641,7 +636,7 @@ mod tests {
     fn ship_goods_spend_includes_fuel() {
         let state = quiet_state();
         let cargo = Resources {
-            metal: 20.0,
+            iron: 20.0,
             ..Resources::ZERO
         };
         let dest = state.config.market.hub();

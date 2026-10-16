@@ -208,10 +208,10 @@ mod tests {
     #[test]
     fn full_storage_suggests_upgrade_or_trade() {
         let mut state = close_state();
-        state.resources.metal = state.storage_cap(ResourceKind::Metal);
+        state.resources.iron = state.storage_cap(ResourceKind::Iron);
         let hit = advise(&state).into_iter().find(|a| a.id == "storage");
         assert!(hit.is_some(), "{hit:?}");
-        assert!(hit.unwrap().text.contains("metal"));
+        assert!(hit.unwrap().text.contains("iron"));
     }
 
     #[test]

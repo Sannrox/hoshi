@@ -102,11 +102,11 @@ pub struct BuildingSpec {
 impl BuildingSpec {
     pub fn cost(&self, from_level: u32) -> Resources {
         let g = self.cost_growth.powi(from_level as i32);
-        Resources {
-            metal: self.metal_base * g,
-            crystal: self.crystal_base * g,
-            deuterium: self.deuterium_base * g,
-        }
+        Resources::from_parts(
+            self.metal_base * g,
+            self.crystal_base * g,
+            self.deuterium_base * g,
+        )
     }
 
     pub fn raw_seconds(&self, from_level: u32) -> f64 {
@@ -115,8 +115,8 @@ impl BuildingSpec {
 }
 
 fn spec(
-    metal: f64,
-    crystal: f64,
+    iron: f64,
+    silicon: f64,
     deuterium: f64,
     cost_growth: f64,
     base_seconds: f64,
@@ -124,8 +124,8 @@ fn spec(
     prerequisites: Vec<(BuildingKind, u32)>,
 ) -> BuildingSpec {
     BuildingSpec {
-        metal_base: metal,
-        crystal_base: crystal,
+        metal_base: iron,
+        crystal_base: silicon,
         deuterium_base: deuterium,
         cost_growth,
         base_seconds,
@@ -238,11 +238,7 @@ impl RaidConfig {
             min_ships: 1,
             max_rounds: 6,
             plunder_share: 0.5,
-            plunder_cap: Resources {
-                metal: 10_000.0,
-                crystal: 10_000.0,
-                deuterium: 5_000.0,
-            },
+            plunder_cap: Resources::from_parts(10_000.0, 10_000.0, 5_000.0),
         }
     }
 
@@ -1002,10 +998,10 @@ struct FileRarePlanet {
     name: String,
     #[serde(default = "default_rare_weight")]
     weight: u32,
-    #[serde(default)]
-    metal: f64,
-    #[serde(default)]
-    crystal: f64,
+    #[serde(default, alias = "metal")]
+    iron: f64,
+    #[serde(default, alias = "crystal")]
+    silicon: f64,
     #[serde(default)]
     deuterium: f64,
     #[serde(default)]
@@ -1039,8 +1035,10 @@ struct FileTechPrereq {
 
 #[derive(Deserialize)]
 struct FileWonderStage {
-    metal: f64,
-    crystal: f64,
+    #[serde(alias = "metal")]
+    iron: f64,
+    #[serde(alias = "crystal")]
+    silicon: f64,
     deuterium: f64,
     duration_secs: u64,
     #[serde(default)]
@@ -1146,9 +1144,9 @@ struct FileBuildings {
 
 #[derive(Deserialize)]
 struct FileBuilding {
-    #[serde(alias = "frames")]
+    #[serde(alias = "frames", alias = "metal", alias = "iron")]
     metal_base: f64,
-    #[serde(alias = "electronics")]
+    #[serde(alias = "electronics", alias = "crystal", alias = "silicon")]
     crystal_base: f64,
     #[serde(alias = "fuel")]
     deuterium_base: f64,
@@ -1174,10 +1172,10 @@ struct FileQueues {
 
 #[derive(Deserialize)]
 struct FileResources {
-    #[serde(alias = "frames")]
-    metal: f64,
-    #[serde(alias = "electronics")]
-    crystal: f64,
+    #[serde(alias = "frames", alias = "metal")]
+    iron: f64,
+    #[serde(alias = "electronics", alias = "crystal")]
+    silicon: f64,
     #[serde(alias = "fuel")]
     deuterium: f64,
 }
@@ -1307,8 +1305,16 @@ struct FilePlanetTypes {
 
 #[derive(Deserialize)]
 struct FileBonus {
-    metal: f64,
-    crystal: f64,
+    #[serde(alias = "metal")]
+    iron: f64,
+    #[serde(alias = "crystal")]
+    silicon: f64,
+    #[serde(default)]
+    rare_earths: f64,
+    #[serde(default)]
+    water_ice: f64,
+    #[serde(default)]
+    helium_3: f64,
     deuterium: f64,
     energy: f64,
 }
@@ -1457,8 +1463,8 @@ impl File {
                             id: row.id,
                             name: row.name,
                             weight: row.weight,
-                            metal: row.metal,
-                            crystal: row.crystal,
+                            iron: row.iron,
+                            silicon: row.silicon,
                             deuterium: row.deuterium,
                             energy: row.energy,
                             shipyard_speed: row.shipyard_speed,
@@ -1497,11 +1503,7 @@ impl File {
                         .stages
                         .into_iter()
                         .map(|s| WonderStage {
-                            cost: Resources {
-                                metal: s.metal,
-                                crystal: s.crystal,
-                                deuterium: s.deuterium,
-                            },
+                            cost: Resources::from_parts(s.iron, s.silicon, s.deuterium),
                             duration_secs: s.duration_secs,
                             require_tier: s.require_tier,
                         })
@@ -1559,11 +1561,11 @@ impl File {
                     daily.reset_offset_secs = file.reset_offset_secs;
                     daily.slots = file.slots.max(1);
                     daily.streak_cap = file.streak_cap.max(1);
-                    daily.streak_reward = Resources {
-                        metal: file.streak_metal,
-                        crystal: file.streak_crystal,
-                        deuterium: file.streak_deuterium,
-                    };
+                    daily.streak_reward = Resources::from_parts(
+                        file.streak_metal,
+                        file.streak_crystal,
+                        file.streak_deuterium,
+                    );
                 }
                 daily
             },
@@ -1665,11 +1667,7 @@ impl FileBuilding {
 
 impl FileResources {
     fn into_resources(self) -> Resources {
-        Resources {
-            metal: self.metal,
-            crystal: self.crystal,
-            deuterium: self.deuterium,
-        }
+        Resources::from_parts(self.iron, self.silicon, self.deuterium)
     }
 }
 
@@ -1700,8 +1698,11 @@ impl FileWaste {
 impl FileBonus {
     fn into_bonus(self) -> PlanetTypeBonus {
         PlanetTypeBonus {
-            metal: self.metal,
-            crystal: self.crystal,
+            iron: self.iron,
+            silicon: self.silicon,
+            rare_earths: self.rare_earths,
+            water_ice: self.water_ice,
+            helium_3: self.helium_3,
             deuterium: self.deuterium,
             energy: self.energy,
         }
@@ -1789,8 +1790,8 @@ impl BalanceConfig {
                 "daily.streak_cap must be >= 1".into(),
             ));
         }
-        nonneg_finite("daily.streak_metal", self.daily.streak_reward.metal)?;
-        nonneg_finite("daily.streak_crystal", self.daily.streak_reward.crystal)?;
+        nonneg_finite("daily.streak_metal", self.daily.streak_reward.iron)?;
+        nonneg_finite("daily.streak_crystal", self.daily.streak_reward.silicon)?;
         nonneg_finite("daily.streak_deuterium", self.daily.streak_reward.deuterium)?;
         check_producer("metal_mine", &self.metal_mine)?;
         check_producer("crystal_mine", &self.crystal_mine)?;
@@ -1806,10 +1807,10 @@ impl BalanceConfig {
             "queues.robotics_speed_per_level",
             self.robotics_speed_per_level,
         )?;
-        nonneg_finite("starting_resources.metal", self.starting_resources.metal)?;
+        nonneg_finite("starting_resources.iron", self.starting_resources.iron)?;
         nonneg_finite(
-            "starting_resources.crystal",
-            self.starting_resources.crystal,
+            "starting_resources.silicon",
+            self.starting_resources.silicon,
         )?;
         nonneg_finite(
             "starting_resources.deuterium",
@@ -1848,11 +1849,11 @@ impl BalanceConfig {
                 }
                 nonneg_finite(
                     &format!("wonder {} stage {i} metal", spec.id),
-                    stage.cost.metal,
+                    stage.cost.iron,
                 )?;
                 nonneg_finite(
                     &format!("wonder {} stage {i} crystal", spec.id),
-                    stage.cost.crystal,
+                    stage.cost.silicon,
                 )?;
                 nonneg_finite(
                     &format!("wonder {} stage {i} deuterium", spec.id),
@@ -1866,8 +1867,8 @@ impl BalanceConfig {
                         spec.id
                     )));
                 }
-                if stage.cost.metal <= 0.0
-                    && stage.cost.crystal <= 0.0
+                if stage.cost.iron <= 0.0
+                    && stage.cost.silicon <= 0.0
                     && stage.cost.deuterium <= 0.0
                 {
                     return Err(BalanceError::Invalid(format!(
@@ -2004,8 +2005,8 @@ impl BalanceConfig {
                     row.id
                 )));
             }
-            nonneg_finite(&format!("outposts.rare {}.metal", row.id), row.metal)?;
-            nonneg_finite(&format!("outposts.rare {}.crystal", row.id), row.crystal)?;
+            nonneg_finite(&format!("outposts.rare {}.iron", row.id), row.iron)?;
+            nonneg_finite(&format!("outposts.rare {}.silicon", row.id), row.silicon)?;
             nonneg_finite(
                 &format!("outposts.rare {}.deuterium", row.id),
                 row.deuterium,
@@ -2189,7 +2190,7 @@ mod tests {
         assert_eq!(cfg.crystal_mine.base_per_hour, 20.0);
         assert_eq!(cfg.buildings, BuildingCatalog::default());
         assert_eq!(cfg.max_build_queue, 5);
-        assert_eq!(cfg.starting_resources.metal, 500.0);
+        assert_eq!(cfg.starting_resources.iron, 500.0);
         assert_eq!(cfg.starting_buildings.metal_mine, 1);
         assert_eq!(cfg.starting_buildings.solar_plant, 1);
         assert_eq!(cfg.raid, RaidConfig::default_active());

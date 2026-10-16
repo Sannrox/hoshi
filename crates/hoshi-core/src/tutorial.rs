@@ -245,8 +245,8 @@ impl GameState {
             HintTrigger::EnergyShort => self.energy_balance() < 0.0,
             HintTrigger::LabReady => self.buildings.research_lab >= 1,
             HintTrigger::StorageHigh => {
-                let cap = self.storage_cap(crate::ResourceKind::Metal);
-                cap > 0.0 && self.resources.metal >= cap * 0.9
+                let cap = self.storage_cap(crate::ResourceKind::Iron);
+                cap > 0.0 && self.resources.iron >= cap * 0.9
             }
             HintTrigger::ResearchDone => self.tech_levels.values().any(|&lv| lv > 0),
             HintTrigger::RaidSoon => self.next_raid_at.is_some(),

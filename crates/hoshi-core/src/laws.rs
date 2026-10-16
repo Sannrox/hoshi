@@ -1296,7 +1296,7 @@ mod tests {
         };
         let mut state = crate::GameState::with_config(0, cfg);
         state.buildings = crate::Buildings::default();
-        state.resources.metal = 500.0;
+        state.resources.iron = 500.0;
         let id = state
             .propose_law("tax_rate", 100.0, Jurisdiction::Empire, 0, 0)
             .unwrap();
@@ -1362,17 +1362,17 @@ mod tests {
         state.buildings.crystal_mine = 18;
         state.buildings.deuterium_synthesizer = 12;
         state.buildings.solar_plant = 24;
-        let before_out = state.production_per_hour(crate::ResourceKind::Metal);
+        let before_out = state.production_per_hour(crate::ResourceKind::Iron);
         let before_pollution = state.waste_home().pollution_load;
-        let uncapped = state.resources.metal;
+        let uncapped = state.resources.iron;
         let id = state
             .propose_law("emission_cap", 0.2, Jurisdiction::Planet(Coord::HOME), 0, 0)
             .unwrap();
         state.approve_law(id, 0).unwrap();
         state.catch_up(3_600);
-        let after_out = state.production_per_hour(crate::ResourceKind::Metal);
+        let after_out = state.production_per_hour(crate::ResourceKind::Iron);
         let emitted = state.waste_home().pollution_load * state.emission_factor(Coord::HOME);
-        let gained = state.resources.metal - uncapped;
+        let gained = state.resources.iron - uncapped;
         assert!(
             after_out < before_out,
             "output {after_out} should drop from {before_out}"
@@ -1410,18 +1410,18 @@ mod tests {
         };
         let mut state = crate::GameState::with_config(0, cfg);
         state.buildings = crate::Buildings::default();
-        state.resources.metal = 500.0;
+        state.resources.iron = 500.0;
         let id = state
             .propose_law("tax_rate", 100.0, Jurisdiction::Empire, 0, 0)
             .unwrap();
         state.approve_law(id, 0).unwrap();
-        let before = state.resources.metal;
+        let before = state.resources.iron;
         state.catch_up(3_600);
-        let drained = before - state.resources.metal;
+        let drained = before - state.resources.iron;
         assert!(
             (drained - 100.0).abs() < 1.0,
             "drained {drained} metal now {}",
-            state.resources.metal
+            state.resources.iron
         );
         let revenue = state
             .laws
@@ -1440,10 +1440,10 @@ mod tests {
         state.repeal_law(id, 0, 3_600).unwrap();
         state.approve_law(id, 3_600).unwrap();
         assert_eq!(state.laws.get(id).unwrap().status, LawStatus::Repealed);
-        let metal = state.resources.metal;
+        let metal = state.resources.iron;
         state.catch_up(7_200);
         assert!(
-            (state.resources.metal - metal).abs() < 1e-6,
+            (state.resources.iron - metal).abs() < 1e-6,
             "tax should stop after repeal"
         );
     }
@@ -1469,10 +1469,10 @@ mod tests {
             stepped.catch_up(t);
         }
         assert!(
-            (one_shot.resources.metal - stepped.resources.metal).abs() < 1e-6,
+            (one_shot.resources.iron - stepped.resources.iron).abs() < 1e-6,
             "one-shot {} vs stepped {}",
-            one_shot.resources.metal,
-            stepped.resources.metal
+            one_shot.resources.iron,
+            stepped.resources.iron
         );
     }
 
@@ -1480,7 +1480,7 @@ mod tests {
     fn research_priority_raises_research_speed() {
         let mut state = crate::GameState::new(0);
         state.buildings.research_lab = 1;
-        state.resources.crystal = 1_000.0;
+        state.resources.silicon = 1_000.0;
         state.resources.deuterium = 1_000.0;
         state.start_research("energy", 0).unwrap();
         let before = state.research.as_ref().unwrap().completes_at;
@@ -1555,10 +1555,10 @@ mod tests {
             stepped.catch_up(t);
         }
         assert!(
-            (one_shot.resources.metal - stepped.resources.metal).abs() < 1e-4,
+            (one_shot.resources.iron - stepped.resources.iron).abs() < 1e-4,
             "one-shot {} vs stepped {}",
-            one_shot.resources.metal,
-            stepped.resources.metal
+            one_shot.resources.iron,
+            stepped.resources.iron
         );
     }
 }

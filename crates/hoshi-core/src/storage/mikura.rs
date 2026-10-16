@@ -464,14 +464,14 @@ mod tests {
         let mut cfg = BalanceConfig::default();
         cfg.raid.enabled = false;
         let mut committed = GameState::with_config(10, cfg.clone());
-        committed.resources.metal = 111.0;
+        committed.resources.iron = 111.0;
         store.save(&committed).unwrap();
         let mut stray = committed.clone();
-        stray.resources.metal = 999.0;
+        stray.resources.iron = 999.0;
         let bytes = encode_state_sqlite(&stray).unwrap();
         write_atomic(&sidecar_path(&path, 99), &bytes).unwrap();
         let loaded = store.load(cfg).unwrap();
-        assert!((loaded.resources.metal - 111.0).abs() < 1e-9);
+        assert!((loaded.resources.iron - 111.0).abs() < 1e-9);
         drop(store);
         cleanup(&path);
     }

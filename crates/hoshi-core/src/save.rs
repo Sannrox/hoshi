@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 39;
+pub const SCHEMA_VERSION: u32 = 40;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -238,11 +238,15 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
         ],
     )?;
     tx.execute(
-        "INSERT INTO resources (planet_id, metal, crystal, deuterium) VALUES (1, ?1, ?2, ?3)",
+        "INSERT INTO resources (planet_id, metal, crystal, deuterium, rare_earths, water_ice, helium_3)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)",
         params![
-            state.resources.metal,
-            state.resources.crystal,
-            state.resources.deuterium
+            state.resources.iron,
+            state.resources.silicon,
+            state.resources.deuterium,
+            state.resources.rare_earths,
+            state.resources.water_ice,
+            state.resources.helium_3,
         ],
     )?;
     insert_goods(&tx, 1, &state.goods)?;
@@ -274,8 +278,8 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
             params![
                 job.tech,
                 job.from_level,
-                job.paid.metal,
-                job.paid.crystal,
+                job.paid.iron,
+                job.paid.silicon,
                 job.paid.deuterium,
                 job.started_at as i64,
                 job.completes_at as i64,
@@ -300,8 +304,8 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 i as i64,
                 job.kind_key(),
                 job.remaining,
-                job.unit_paid.metal,
-                job.unit_paid.crystal,
+                job.unit_paid.iron,
+                job.unit_paid.silicon,
                 job.unit_paid.deuterium,
                 job.started_at.map(|t| t as i64),
                 job.completes_at.map(|t| t as i64),
@@ -314,8 +318,10 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 id, origin_g, origin_s, origin_p, dest_g, dest_s, dest_p,
                 speed_percent, phase, launched_at, outbound_secs, hold_secs,
                 phase_ends_at, fuel_paid, colonize, expedition_seed, expedition_applied,
-                cargo_metal, cargo_crystal, cargo_deuterium, transport, attack, invade, spy
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
+                cargo_metal, cargo_crystal, cargo_deuterium,
+                cargo_rare_earths, cargo_water_ice, cargo_helium_3,
+                transport, attack, invade, spy
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
             params![
                 mission.id as i64,
                 mission.origin.galaxy as i64,
@@ -334,9 +340,12 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 mission.colonize as i64,
                 mission.expedition_seed.map(|s| s as i64),
                 mission.expedition_applied as i64,
-                mission.cargo.metal,
-                mission.cargo.crystal,
+                mission.cargo.iron,
+                mission.cargo.silicon,
                 mission.cargo.deuterium,
+                mission.cargo.rare_earths,
+                mission.cargo.water_ice,
+                mission.cargo.helium_3,
                 mission.transport as i64,
                 mission.attack as i64,
                 mission.invade as i64,
@@ -359,8 +368,9 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
             "INSERT INTO routes (
                 id, origin_g, origin_s, origin_p, dest_g, dest_s, dest_p,
                 cargo_metal, cargo_crystal, cargo_deuterium,
+                cargo_rare_earths, cargo_water_ice, cargo_helium_3,
                 speed_percent, interval_secs, next_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 route.id as i64,
                 route.origin.galaxy as i64,
@@ -369,9 +379,12 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 route.dest.galaxy as i64,
                 route.dest.system as i64,
                 route.dest.position as i64,
-                route.cargo.metal,
-                route.cargo.crystal,
+                route.cargo.iron,
+                route.cargo.silicon,
                 route.cargo.deuterium,
+                route.cargo.rare_earths,
+                route.cargo.water_ice,
+                route.cargo.helium_3,
                 route.speed_percent as i64,
                 route.interval_secs as i64,
                 route.next_at as i64,
@@ -490,7 +503,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
             ],
         )?;
     }
-    for kind in crate::ResourceKind::ALL {
+    for kind in crate::ResourceKind::QUOTED {
         tx.execute(
             "INSERT INTO market_prices (kind, price) VALUES (?1, ?2)",
             params![kind.as_key(), state.market.price(kind)],
@@ -539,8 +552,8 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 i64::from(report.detected),
                 report.score,
                 report.tier,
-                report.resources.map(|r| r.metal).unwrap_or(0.0),
-                report.resources.map(|r| r.crystal).unwrap_or(0.0),
+                report.resources.map(|r| r.iron).unwrap_or(0.0),
+                report.resources.map(|r| r.silicon).unwrap_or(0.0),
                 report.resources.map(|r| r.deuterium).unwrap_or(0.0),
                 report.garrison.map(|g| g as i64).unwrap_or(0),
                 report.kind.map(|k| k.as_key()),
@@ -597,12 +610,16 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
             ],
         )?;
         tx.execute(
-            "INSERT INTO resources (planet_id, metal, crystal, deuterium) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO resources (planet_id, metal, crystal, deuterium, rare_earths, water_ice, helium_3)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 planet_id,
-                colony.resources.metal,
-                colony.resources.crystal,
-                colony.resources.deuterium
+                colony.resources.iron,
+                colony.resources.silicon,
+                colony.resources.deuterium,
+                colony.resources.rare_earths,
+                colony.resources.water_ice,
+                colony.resources.helium_3,
             ],
         )?;
         insert_goods(&tx, planet_id, &colony.goods)?;
@@ -629,8 +646,8 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
             params![
                 job.id,
                 job.stage as i64,
-                job.contributed.metal,
-                job.contributed.crystal,
+                job.contributed.iron,
+                job.contributed.silicon,
                 job.contributed.deuterium,
                 job.completes_at.map(|t| t as i64),
             ],
@@ -1038,8 +1055,8 @@ fn insert_rivals(conn: &Connection, state: &GameState) -> Result<(), SaveError> 
                 empire.home.galaxy as i64,
                 empire.home.system as i64,
                 empire.home.position as i64,
-                empire.resources.metal,
-                empire.resources.crystal,
+                empire.resources.iron,
+                empire.resources.silicon,
                 empire.resources.deuterium,
                 empire.last_tick as i64,
                 empire.next_act_at as i64,
@@ -1063,8 +1080,8 @@ fn insert_rivals(conn: &Connection, state: &GameState) -> Result<(), SaveError> 
                     i as i64,
                     job.building.as_key(),
                     job.from_level,
-                    job.paid.metal,
-                    job.paid.crystal,
+                    job.paid.iron,
+                    job.paid.silicon,
                     job.paid.deuterium,
                     job.started_at.map(|t| t as i64),
                     job.completes_at.map(|t| t as i64),
@@ -1096,8 +1113,8 @@ fn insert_rivals(conn: &Connection, state: &GameState) -> Result<(), SaveError> 
                     empire.id,
                     job.tech,
                     job.from_level,
-                    job.paid.metal,
-                    job.paid.crystal,
+                    job.paid.iron,
+                    job.paid.silicon,
                     job.paid.deuterium,
                     job.started_at as i64,
                     job.completes_at as i64,
@@ -1115,8 +1132,8 @@ fn insert_rivals(conn: &Connection, state: &GameState) -> Result<(), SaveError> 
                     i as i64,
                     job.kind_key(),
                     job.remaining,
-                    job.unit_paid.metal,
-                    job.unit_paid.crystal,
+                    job.unit_paid.iron,
+                    job.unit_paid.silicon,
                     job.unit_paid.deuterium,
                     job.started_at.map(|t| t as i64),
                     job.completes_at.map(|t| t as i64),
@@ -1230,11 +1247,7 @@ fn load_rivals(conn: &Connection, state: &mut GameState) -> Result<(), SaveError
                     build_queue.push(BuildJob {
                         building,
                         from_level,
-                        paid: Resources {
-                            metal,
-                            crystal,
-                            deuterium,
-                        },
+                        paid: Resources::from_parts(metal, crystal, deuterium),
                         started_at: unix_ts_opt(started)?,
                         completes_at: unix_ts_opt(completes)?,
                     });
@@ -1295,11 +1308,7 @@ fn load_rivals(conn: &Connection, state: &mut GameState) -> Result<(), SaveError
                             Ok::<_, SaveError>(ResearchJob {
                                 tech,
                                 from_level,
-                                paid: Resources {
-                                    metal,
-                                    crystal,
-                                    deuterium,
-                                },
+                                paid: Resources::from_parts(metal, crystal, deuterium),
                                 started_at: unix_ts(started)?,
                                 completes_at: unix_ts(completes)?,
                             })
@@ -1338,11 +1347,7 @@ fn load_rivals(conn: &Connection, state: &mut GameState) -> Result<(), SaveError
                         ship,
                         defence,
                         remaining,
-                        unit_paid: Resources {
-                            metal,
-                            crystal,
-                            deuterium,
-                        },
+                        unit_paid: Resources::from_parts(metal, crystal, deuterium),
                         started_at: unix_ts_opt(started)?,
                         completes_at: unix_ts_opt(completes)?,
                     });
@@ -1356,11 +1361,7 @@ fn load_rivals(conn: &Connection, state: &mut GameState) -> Result<(), SaveError
                     system: u16_coord(s)?,
                     position: u16_coord(p)?,
                 },
-                resources: Resources {
-                    metal,
-                    crystal,
-                    deuterium,
-                },
+                resources: Resources::from_parts(metal, crystal, deuterium),
                 buildings,
                 build_queue,
                 fleet,
@@ -1401,8 +1402,8 @@ fn insert_build_queue(
                 i as i64,
                 job.building.as_key(),
                 job.from_level,
-                job.paid.metal,
-                job.paid.crystal,
+                job.paid.iron,
+                job.paid.silicon,
                 job.paid.deuterium,
                 job.started_at.map(|t| t as i64),
                 job.completes_at.map(|t| t as i64),
@@ -1455,13 +1456,18 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
 
     let resources = conn
         .query_row(
-            "SELECT metal, crystal, deuterium FROM resources WHERE planet_id = 1",
+            "SELECT metal, crystal, deuterium,
+                    COALESCE(rare_earths, 0), COALESCE(water_ice, 0), COALESCE(helium_3, 0)
+             FROM resources WHERE planet_id = 1",
             [],
             |row| {
                 Ok(Resources {
-                    metal: row.get(0)?,
-                    crystal: row.get(1)?,
+                    iron: row.get(0)?,
+                    silicon: row.get(1)?,
                     deuterium: row.get(2)?,
+                    rare_earths: row.get(3)?,
+                    water_ice: row.get(4)?,
+                    helium_3: row.get(5)?,
                 })
             },
         )
@@ -1536,11 +1542,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             Some(ResearchJob {
                 tech,
                 from_level,
-                paid: Resources {
-                    metal,
-                    crystal,
-                    deuterium,
-                },
+                paid: Resources::from_parts(metal, crystal, deuterium),
                 started_at: unix_ts(started_at)?,
                 completes_at: unix_ts(completes_at)?,
             })
@@ -1589,11 +1591,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             ship,
             defence,
             remaining,
-            unit_paid: Resources {
-                metal,
-                crystal,
-                deuterium,
-            },
+            unit_paid: Resources::from_parts(metal, crystal, deuterium),
             started_at: unix_ts_opt(started_at)?,
             completes_at: unix_ts_opt(completes_at)?,
         });
@@ -1604,7 +1602,9 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         "SELECT id, origin_g, origin_s, origin_p, dest_g, dest_s, dest_p,
                 speed_percent, phase, launched_at, outbound_secs, hold_secs,
                 phase_ends_at, fuel_paid, colonize, expedition_seed, expedition_applied,
-                cargo_metal, cargo_crystal, cargo_deuterium, transport, attack, invade, spy
+                cargo_metal, cargo_crystal, cargo_deuterium,
+                cargo_rare_earths, cargo_water_ice, cargo_helium_3,
+                transport, attack, invade, spy
          FROM missions ORDER BY id",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -1629,10 +1629,13 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             row.get::<_, f64>(17)?,
             row.get::<_, f64>(18)?,
             row.get::<_, f64>(19)?,
-            row.get::<_, i64>(20)?,
-            row.get::<_, i64>(21)?,
-            row.get::<_, i64>(22)?,
+            row.get::<_, f64>(20)?,
+            row.get::<_, f64>(21)?,
+            row.get::<_, f64>(22)?,
             row.get::<_, i64>(23)?,
+            row.get::<_, i64>(24)?,
+            row.get::<_, i64>(25)?,
+            row.get::<_, i64>(26)?,
         ))
     })?;
     let mut missions = Vec::new();
@@ -1658,6 +1661,9 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             cargo_metal,
             cargo_crystal,
             cargo_deuterium,
+            cargo_rare_earths,
+            cargo_water_ice,
+            cargo_helium_3,
             transport,
             attack,
             invade,
@@ -1699,11 +1705,14 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             colonize: colonize != 0,
             expedition_seed: expedition_seed.map(|s| s as u64),
             expedition_applied: expedition_applied != 0,
-            cargo: Resources {
-                metal: cargo_metal,
-                crystal: cargo_crystal,
-                deuterium: cargo_deuterium,
-            },
+            cargo: sql_resources(
+                cargo_metal,
+                cargo_crystal,
+                cargo_deuterium,
+                cargo_rare_earths,
+                cargo_water_ice,
+                cargo_helium_3,
+            ),
             transport: transport != 0,
             attack: attack != 0,
             invade: invade != 0,
@@ -1846,13 +1855,18 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         let kind =
             PlanetType::from_key(&kind).ok_or(SaveError::Corrupt("unknown colony planet type"))?;
         let resources = conn.query_row(
-            "SELECT metal, crystal, deuterium FROM resources WHERE planet_id = ?1",
+            "SELECT metal, crystal, deuterium,
+                    COALESCE(rare_earths, 0), COALESCE(water_ice, 0), COALESCE(helium_3, 0)
+             FROM resources WHERE planet_id = ?1",
             params![planet_id],
             |row| {
                 Ok(Resources {
-                    metal: row.get(0)?,
-                    crystal: row.get(1)?,
+                    iron: row.get(0)?,
+                    silicon: row.get(1)?,
                     deuterium: row.get(2)?,
+                    rare_earths: row.get(3)?,
+                    water_ice: row.get(4)?,
+                    helium_3: row.get(5)?,
                 })
             },
         )?;
@@ -1960,11 +1974,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         Some((id, stage, metal, crystal, deuterium, completes_at)) => Some(WonderJob {
             id,
             stage: usize::try_from(stage).map_err(|_| SaveError::Corrupt("wonder stage"))?,
-            contributed: Resources {
-                metal,
-                crystal,
-                deuterium,
-            },
+            contributed: Resources::from_parts(metal, crystal, deuterium),
             completes_at: unix_ts_opt(completes_at)?,
         }),
     };
@@ -3144,6 +3154,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     if found < 39 {
         migrate_v39(conn)?;
     }
+    if found < 40 {
+        migrate_v40(conn)?;
+    }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
 }
@@ -4136,6 +4149,135 @@ fn migrate_v35(conn: &Connection) -> Result<(), SaveError> {
     Ok(())
 }
 
+fn resources_has_column(conn: &Connection, column: &str) -> Result<bool, SaveError> {
+    table_has_column(conn, "resources", column)
+}
+
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, SaveError> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let names = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for name in names {
+        if name? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn add_real_column(conn: &Connection, table: &str, column: &str) -> Result<bool, SaveError> {
+    if !table_exists(conn, table) {
+        return Ok(false);
+    }
+    if table_has_column(conn, table, column)? {
+        return Ok(false);
+    }
+    conn.execute(
+        &format!("ALTER TABLE {table} ADD COLUMN {column} REAL NOT NULL DEFAULT 0"),
+        [],
+    )?;
+    Ok(true)
+}
+
+fn sql_resources(
+    iron: f64,
+    silicon: f64,
+    deuterium: f64,
+    rare_earths: f64,
+    water_ice: f64,
+    helium_3: f64,
+) -> Resources {
+    Resources {
+        iron,
+        silicon,
+        rare_earths,
+        water_ice,
+        helium_3,
+        deuterium,
+    }
+}
+
+fn migrate_v40(conn: &Connection) -> Result<(), SaveError> {
+    let added_rare = !resources_has_column(conn, "rare_earths")?;
+    for (column, sql) in [
+        (
+            "rare_earths",
+            "ALTER TABLE resources ADD COLUMN rare_earths REAL NOT NULL DEFAULT 0",
+        ),
+        (
+            "water_ice",
+            "ALTER TABLE resources ADD COLUMN water_ice REAL NOT NULL DEFAULT 0",
+        ),
+        (
+            "helium_3",
+            "ALTER TABLE resources ADD COLUMN helium_3 REAL NOT NULL DEFAULT 0",
+        ),
+    ] {
+        if !resources_has_column(conn, column)? {
+            conn.execute(sql, [])?;
+        }
+    }
+    // Split the old metal column once, when we first add rare_earths.
+    if added_rare {
+        conn.execute(
+            "UPDATE resources SET rare_earths = metal * 0.05, metal = metal * 0.95",
+            [],
+        )?;
+    }
+    for (table, column) in [
+        ("missions", "cargo_rare_earths"),
+        ("missions", "cargo_water_ice"),
+        ("missions", "cargo_helium_3"),
+        ("routes", "cargo_rare_earths"),
+        ("routes", "cargo_water_ice"),
+        ("routes", "cargo_helium_3"),
+        ("planned_missions", "cargo_rare_earths"),
+        ("planned_missions", "cargo_water_ice"),
+        ("planned_missions", "cargo_helium_3"),
+        ("market_shipments", "rare_earths"),
+        ("market_shipments", "water_ice"),
+        ("market_shipments", "helium_3"),
+        ("market_regions", "npc_rare_earths"),
+        ("market_regions", "npc_water_ice"),
+        ("market_regions", "npc_helium_3"),
+        ("market_regions", "player_rare_earths"),
+        ("market_regions", "player_water_ice"),
+        ("market_regions", "player_helium_3"),
+    ] {
+        add_real_column(conn, table, column)?;
+    }
+    // One-shot metal split for in-flight cargo and market warehouses.
+    // Guarded by the new rare-earth column being empty (just added, or already split).
+    split_legacy_metal(conn, "missions", "cargo_metal", "cargo_rare_earths")?;
+    split_legacy_metal(conn, "routes", "cargo_metal", "cargo_rare_earths")?;
+    split_legacy_metal(conn, "planned_missions", "cargo_metal", "cargo_rare_earths")?;
+    split_legacy_metal(conn, "market_shipments", "metal", "rare_earths")?;
+    split_legacy_metal(conn, "market_regions", "npc_metal", "npc_rare_earths")?;
+    split_legacy_metal(conn, "market_regions", "player_metal", "player_rare_earths")?;
+    Ok(())
+}
+
+fn split_legacy_metal(
+    conn: &Connection,
+    table: &str,
+    metal: &str,
+    rare: &str,
+) -> Result<(), SaveError> {
+    if !table_exists(conn, table) {
+        return Ok(());
+    }
+    if !table_has_column(conn, table, metal)? || !table_has_column(conn, table, rare)? {
+        return Ok(());
+    }
+    conn.execute(
+        &format!(
+            "UPDATE {table} SET {rare} = {metal} * 0.05, {metal} = {metal} * 0.95
+             WHERE {rare} = 0 AND {metal} != 0"
+        ),
+        [],
+    )?;
+    Ok(())
+}
+
 fn migrate_v39(conn: &Connection) -> Result<(), SaveError> {
     conn.execute_batch(
         "
@@ -4952,8 +5094,9 @@ fn insert_planning(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<
             "INSERT INTO planned_missions (
                 id, vehicle_id, origin_g, origin_s, origin_p, dest_g, dest_s, dest_p,
                 transfer, customer, window_opens, window_closes, launched_at, arrives_at,
-                delta_v, fuel_mass, cargo_metal, cargo_crystal, cargo_deuterium
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+                delta_v, fuel_mass, cargo_metal, cargo_crystal, cargo_deuterium,
+                cargo_rare_earths, cargo_water_ice, cargo_helium_3
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
             params![
                 mission.id as i64,
                 mission.vehicle_id as i64,
@@ -4971,9 +5114,12 @@ fn insert_planning(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<
                 mission.arrives_at as i64,
                 mission.delta_v,
                 mission.fuel_mass,
-                mission.payload.cargo.metal,
-                mission.payload.cargo.crystal,
+                mission.payload.cargo.iron,
+                mission.payload.cargo.silicon,
                 mission.payload.cargo.deuterium,
+                mission.payload.cargo.rare_earths,
+                mission.payload.cargo.water_ice,
+                mission.payload.cargo.helium_3,
             ],
         )?;
     }
@@ -5056,21 +5202,29 @@ fn insert_board(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<(),
         tx.execute(
             "INSERT INTO market_regions (
                 galaxy, system, position, npc_metal, npc_crystal, npc_deuterium,
-                player_metal, player_crystal, player_deuterium
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                npc_rare_earths, npc_water_ice, npc_helium_3,
+                player_metal, player_crystal, player_deuterium,
+                player_rare_earths, player_water_ice, player_helium_3
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 region.coord.galaxy as i64,
                 region.coord.system as i64,
                 region.coord.position as i64,
-                region.npc_warehouse.metal,
-                region.npc_warehouse.crystal,
+                region.npc_warehouse.iron,
+                region.npc_warehouse.silicon,
                 region.npc_warehouse.deuterium,
-                region.player_warehouse.metal,
-                region.player_warehouse.crystal,
+                region.npc_warehouse.rare_earths,
+                region.npc_warehouse.water_ice,
+                region.npc_warehouse.helium_3,
+                region.player_warehouse.iron,
+                region.player_warehouse.silicon,
                 region.player_warehouse.deuterium,
+                region.player_warehouse.rare_earths,
+                region.player_warehouse.water_ice,
+                region.player_warehouse.helium_3,
             ],
         )?;
-        for kind in crate::ResourceKind::ALL {
+        for kind in crate::ResourceKind::QUOTED {
             for (i, price) in region.history(kind).iter().enumerate() {
                 tx.execute(
                     "INSERT INTO market_region_history (
@@ -5140,9 +5294,10 @@ fn insert_board(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<(),
         tx.execute(
             "INSERT INTO market_shipments (
                 id, origin_g, origin_s, origin_p, dest_g, dest_s, dest_p,
-                metal, crystal, deuterium, fuel, launched_at, arrives_at,
+                metal, crystal, deuterium, rare_earths, water_ice, helium_3,
+                fuel, launched_at, arrives_at,
                 contract_id, trader, delivered
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
             params![
                 ship.id as i64,
                 ship.origin.galaxy as i64,
@@ -5151,9 +5306,12 @@ fn insert_board(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<(),
                 ship.dest.galaxy as i64,
                 ship.dest.system as i64,
                 ship.dest.position as i64,
-                ship.cargo.metal,
-                ship.cargo.crystal,
+                ship.cargo.iron,
+                ship.cargo.silicon,
                 ship.cargo.deuterium,
+                ship.cargo.rare_earths,
+                ship.cargo.water_ice,
+                ship.cargo.helium_3,
                 ship.fuel,
                 ship.launched_at as i64,
                 ship.arrives_at as i64,
@@ -5233,7 +5391,8 @@ fn load_planning(conn: &Connection, state: &mut GameState) -> Result<(), SaveErr
     let mut stmt = conn.prepare(
         "SELECT id, vehicle_id, origin_g, origin_s, origin_p, dest_g, dest_s, dest_p,
                 transfer, customer, window_opens, window_closes, launched_at, arrives_at,
-                delta_v, fuel_mass, cargo_metal, cargo_crystal, cargo_deuterium
+                delta_v, fuel_mass, cargo_metal, cargo_crystal, cargo_deuterium,
+                cargo_rare_earths, cargo_water_ice, cargo_helium_3
          FROM planned_missions ORDER BY id",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -5257,6 +5416,9 @@ fn load_planning(conn: &Connection, state: &mut GameState) -> Result<(), SaveErr
             row.get::<_, f64>(16)?,
             row.get::<_, f64>(17)?,
             row.get::<_, f64>(18)?,
+            row.get::<_, f64>(19)?,
+            row.get::<_, f64>(20)?,
+            row.get::<_, f64>(21)?,
         ))
     })?;
     state.planned.clear();
@@ -5281,6 +5443,9 @@ fn load_planning(conn: &Connection, state: &mut GameState) -> Result<(), SaveErr
             metal,
             crystal,
             deuterium,
+            rare_earths,
+            water_ice,
+            helium_3,
         ) = row?;
         let transfer = crate::TransferKind::from_key(&transfer)
             .ok_or(SaveError::Corrupt("planned transfer"))?;
@@ -5313,11 +5478,7 @@ fn load_planning(conn: &Connection, state: &mut GameState) -> Result<(), SaveErr
             delta_v,
             fuel_mass,
             payload: crate::Payload {
-                cargo: Resources {
-                    metal,
-                    crystal,
-                    deuterium,
-                },
+                cargo: sql_resources(metal, crystal, deuterium, rare_earths, water_ice, helium_3),
             },
         });
     }
@@ -5484,7 +5645,9 @@ fn load_board(conn: &Connection, state: &mut GameState) -> Result<(), SaveError>
     if table_exists(conn, "market_regions") {
         let mut stmt = conn.prepare(
             "SELECT galaxy, system, position, npc_metal, npc_crystal, npc_deuterium,
-                    player_metal, player_crystal, player_deuterium
+                    npc_rare_earths, npc_water_ice, npc_helium_3,
+                    player_metal, player_crystal, player_deuterium,
+                    player_rare_earths, player_water_ice, player_helium_3
              FROM market_regions",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -5498,11 +5661,17 @@ fn load_board(conn: &Connection, state: &mut GameState) -> Result<(), SaveError>
                 row.get::<_, f64>(6)?,
                 row.get::<_, f64>(7)?,
                 row.get::<_, f64>(8)?,
+                row.get::<_, f64>(9)?,
+                row.get::<_, f64>(10)?,
+                row.get::<_, f64>(11)?,
+                row.get::<_, f64>(12)?,
+                row.get::<_, f64>(13)?,
+                row.get::<_, f64>(14)?,
             ))
         })?;
         state.board.regions.clear();
         for row in rows {
-            let (g, s, p, nm, nc, nd, pm, pc, pd) = row?;
+            let (g, s, p, nm, nc, nd, nr, ni, nh, pm, pc, pd, pr, pi, ph) = row?;
             let coord = Coord {
                 galaxy: u16_coord(g)?,
                 system: u16_coord(s)?,
@@ -5512,16 +5681,8 @@ fn load_board(conn: &Connection, state: &mut GameState) -> Result<(), SaveError>
                 coord,
                 crate::RegionMarket {
                     coord,
-                    npc_warehouse: Resources {
-                        metal: nm,
-                        crystal: nc,
-                        deuterium: nd,
-                    },
-                    player_warehouse: Resources {
-                        metal: pm,
-                        crystal: pc,
-                        deuterium: pd,
-                    },
+                    npc_warehouse: sql_resources(nm, nc, nd, nr, ni, nh),
+                    player_warehouse: sql_resources(pm, pc, pd, pr, pi, ph),
                     metal_hist: Vec::new(),
                     crystal_hist: Vec::new(),
                     deuterium_hist: Vec::new(),
@@ -5560,9 +5721,13 @@ fn load_board(conn: &Connection, state: &mut GameState) -> Result<(), SaveError>
                 .ok_or(SaveError::Corrupt("region market history kind"))?;
             if let Some(region) = state.board.regions.get_mut(&coord) {
                 match kind {
-                    crate::ResourceKind::Metal => region.metal_hist.push(price),
-                    crate::ResourceKind::Crystal => region.crystal_hist.push(price),
-                    crate::ResourceKind::Deuterium => region.deuterium_hist.push(price),
+                    crate::ResourceKind::Iron | crate::ResourceKind::RareEarths => {
+                        region.metal_hist.push(price)
+                    }
+                    crate::ResourceKind::Silicon => region.crystal_hist.push(price),
+                    crate::ResourceKind::Deuterium
+                    | crate::ResourceKind::WaterIce
+                    | crate::ResourceKind::Helium3 => region.deuterium_hist.push(price),
                 }
             }
         }
@@ -5714,7 +5879,8 @@ fn load_board(conn: &Connection, state: &mut GameState) -> Result<(), SaveError>
     if table_exists(conn, "market_shipments") {
         let mut stmt = conn.prepare(
             "SELECT id, origin_g, origin_s, origin_p, dest_g, dest_s, dest_p,
-                    metal, crystal, deuterium, fuel, launched_at, arrives_at,
+                    metal, crystal, deuterium, rare_earths, water_ice, helium_3,
+                    fuel, launched_at, arrives_at,
                     contract_id, trader, delivered
              FROM market_shipments ORDER BY id",
         )?;
@@ -5731,11 +5897,14 @@ fn load_board(conn: &Connection, state: &mut GameState) -> Result<(), SaveError>
                 row.get::<_, f64>(8)?,
                 row.get::<_, f64>(9)?,
                 row.get::<_, f64>(10)?,
-                row.get::<_, i64>(11)?,
-                row.get::<_, i64>(12)?,
-                row.get::<_, Option<i64>>(13)?,
-                row.get::<_, String>(14)?,
+                row.get::<_, f64>(11)?,
+                row.get::<_, f64>(12)?,
+                row.get::<_, f64>(13)?,
+                row.get::<_, i64>(14)?,
                 row.get::<_, i64>(15)?,
+                row.get::<_, Option<i64>>(16)?,
+                row.get::<_, String>(17)?,
+                row.get::<_, i64>(18)?,
             ))
         })?;
         state.board.shipments.clear();
@@ -5751,6 +5920,9 @@ fn load_board(conn: &Connection, state: &mut GameState) -> Result<(), SaveError>
                 metal,
                 crystal,
                 deuterium,
+                rare_earths,
+                water_ice,
+                helium_3,
                 fuel,
                 launched,
                 arrives,
@@ -5771,11 +5943,7 @@ fn load_board(conn: &Connection, state: &mut GameState) -> Result<(), SaveError>
                     system: u16_coord(ds)?,
                     position: u16_coord(dp)?,
                 },
-                cargo: Resources {
-                    metal,
-                    crystal,
-                    deuterium,
-                },
+                cargo: sql_resources(metal, crystal, deuterium, rare_earths, water_ice, helium_3),
                 fuel,
                 launched_at: unix_ts(launched)?,
                 arrives_at: unix_ts(arrives)?,
@@ -5826,8 +5994,8 @@ fn insert_history(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<(
             params![
                 snap.at as i64,
                 snap.event_id as i64,
-                snap.metal,
-                snap.crystal,
+                snap.iron,
+                snap.silicon,
                 snap.deuterium,
                 snap.energy,
                 snap.heat,
@@ -5927,8 +6095,8 @@ fn load_history(conn: &Connection, state: &mut GameState) -> Result<(), SaveErro
             state.history.snapshots.push(crate::EmpireSnapshot {
                 at: unix_ts(at)?,
                 event_id: unix_ts(event_id)?,
-                metal,
-                crystal,
+                iron: metal,
+                silicon: crystal,
                 deuterium,
                 energy,
                 heat,
@@ -6281,11 +6449,8 @@ fn load_spy_reports(conn: &Connection, state: &mut GameState) -> Result<(), Save
             detected: detected != 0,
             score,
             tier,
-            resources: (revealed_resources != 0).then_some(Resources {
-                metal,
-                crystal,
-                deuterium,
-            }),
+            resources: (revealed_resources != 0)
+                .then_some(Resources::from_parts(metal, crystal, deuterium)),
             fleet,
             defences,
             garrison: if revealed_garrison != 0 {
@@ -6627,9 +6792,11 @@ fn load_market(conn: &Connection, state: &mut GameState) -> Result<(), SaveError
             return Err(SaveError::Corrupt("market history price"));
         }
         match kind {
-            crate::ResourceKind::Metal => metal.push(price),
-            crate::ResourceKind::Crystal => crystal.push(price),
-            crate::ResourceKind::Deuterium => deuterium.push(price),
+            crate::ResourceKind::Iron | crate::ResourceKind::RareEarths => metal.push(price),
+            crate::ResourceKind::Silicon => crystal.push(price),
+            crate::ResourceKind::Deuterium
+            | crate::ResourceKind::WaterIce
+            | crate::ResourceKind::Helium3 => deuterium.push(price),
         }
     }
     if !metal.is_empty() {
@@ -6761,11 +6928,7 @@ fn read_build_queue(conn: &Connection, planet_id: i64) -> Result<Vec<BuildJob>, 
         queue.push(BuildJob {
             building,
             from_level,
-            paid: Resources {
-                metal,
-                crystal,
-                deuterium,
-            },
+            paid: Resources::from_parts(metal, crystal, deuterium),
             started_at: unix_ts_opt(started_at)?,
             completes_at: unix_ts_opt(completes_at)?,
         });
@@ -6887,6 +7050,7 @@ fn read_routes(conn: &Connection) -> Result<Vec<TradeRoute>, SaveError> {
     let mut stmt = conn.prepare(
         "SELECT id, origin_g, origin_s, origin_p, dest_g, dest_s, dest_p,
                 cargo_metal, cargo_crystal, cargo_deuterium,
+                cargo_rare_earths, cargo_water_ice, cargo_helium_3,
                 speed_percent, interval_secs, next_at
          FROM routes ORDER BY id",
     )?;
@@ -6902,9 +7066,12 @@ fn read_routes(conn: &Connection) -> Result<Vec<TradeRoute>, SaveError> {
             row.get::<_, f64>(7)?,
             row.get::<_, f64>(8)?,
             row.get::<_, f64>(9)?,
-            row.get::<_, i64>(10)?,
-            row.get::<_, i64>(11)?,
-            row.get::<_, i64>(12)?,
+            row.get::<_, f64>(10)?,
+            row.get::<_, f64>(11)?,
+            row.get::<_, f64>(12)?,
+            row.get::<_, i64>(13)?,
+            row.get::<_, i64>(14)?,
+            row.get::<_, i64>(15)?,
         ))
     })?;
     let mut pending = Vec::new();
@@ -6924,6 +7091,9 @@ fn read_routes(conn: &Connection) -> Result<Vec<TradeRoute>, SaveError> {
         cargo_metal,
         cargo_crystal,
         cargo_deuterium,
+        cargo_rare_earths,
+        cargo_water_ice,
+        cargo_helium_3,
         speed,
         interval_secs,
         next_at,
@@ -6953,11 +7123,14 @@ fn read_routes(conn: &Connection) -> Result<Vec<TradeRoute>, SaveError> {
                 position: u16_coord(dp)?,
             },
             ships,
-            cargo: Resources {
-                metal: cargo_metal,
-                crystal: cargo_crystal,
-                deuterium: cargo_deuterium,
-            },
+            cargo: sql_resources(
+                cargo_metal,
+                cargo_crystal,
+                cargo_deuterium,
+                cargo_rare_earths,
+                cargo_water_ice,
+                cargo_helium_3,
+            ),
             speed_percent: u8::try_from(speed).map_err(|_| SaveError::Corrupt("speed percent"))?,
             interval_secs: unix_ts(interval_secs)?,
             next_at: unix_ts(next_at)?,
@@ -6986,8 +7159,8 @@ mod tests {
 
     fn sample_state() -> GameState {
         let mut state = GameState::new(1_700_000_000);
-        state.resources.metal = 10_000.0;
-        state.resources.crystal = 10_000.0;
+        state.resources.iron = 10_000.0;
+        state.resources.silicon = 10_000.0;
         state.resources.deuterium = 10_000.0;
         state.buildings.metal_mine = 3;
         state.buildings.research_lab = 1;
@@ -7017,11 +7190,7 @@ mod tests {
             coord: dest,
             kind,
             size,
-            resources: Resources {
-                metal: 50.0,
-                crystal: 20.0,
-                deuterium: 5.0,
-            },
+            resources: Resources::from_parts(50.0, 20.0, 5.0),
             buildings: crate::Buildings {
                 metal_mine: 1,
                 ..crate::Buildings::default()
@@ -7033,11 +7202,7 @@ mod tests {
             build_queue: vec![BuildJob {
                 building: BuildingKind::SolarPlant,
                 from_level: 0,
-                paid: Resources {
-                    metal: 1.0,
-                    crystal: 1.0,
-                    deuterium: 0.0,
-                },
+                paid: Resources::from_parts(1.0, 1.0, 0.0),
                 started_at: Some(1_700_000_000),
                 completes_at: Some(1_700_000_040),
             }],
@@ -7049,11 +7214,7 @@ mod tests {
             origin: crate::Coord::HOME,
             dest,
             ships: route_ships,
-            cargo: Resources {
-                metal: 10.0,
-                crystal: 0.0,
-                deuterium: 0.0,
-            },
+            cargo: Resources::from_parts(10.0, 0.0, 0.0),
             speed_percent: 100,
             interval_secs: 60,
             next_at: 1_700_000_000,
@@ -7081,21 +7242,13 @@ mod tests {
         if let Some(mission) = state.missions.last_mut() {
             mission.colonize = true;
             mission.transport = true;
-            mission.cargo = Resources {
-                metal: 3.0,
-                crystal: 2.0,
-                deuterium: 1.0,
-            };
+            mission.cargo = Resources::from_parts(3.0, 2.0, 1.0);
         }
         state.completed_wonders.push("observatory".into());
         state.wonder = Some(crate::WonderJob {
             id: "dyson_ring".into(),
             stage: 0,
-            contributed: Resources {
-                metal: 100.0,
-                crystal: 50.0,
-                deuterium: 10.0,
-            },
+            contributed: Resources::from_parts(100.0, 50.0, 10.0),
             completes_at: Some(1_700_000_100),
         });
         state
@@ -7164,7 +7317,10 @@ mod tests {
         let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
         assert_eq!(loaded.last_tick_unix, 99);
         assert_eq!(loaded.rng_seed, 7);
-        assert_eq!(loaded.resources.metal, 10.0);
+        assert!((loaded.resources.iron - 9.5).abs() < 1e-9);
+        assert!((loaded.resources.rare_earths - 0.5).abs() < 1e-9);
+        assert_eq!(loaded.resources.silicon, 20.0);
+        assert_eq!(loaded.resources.deuterium, 30.0);
         assert!(loaded.goods.is_empty());
         assert_eq!(loaded.generator_version, 1);
         assert_eq!(loaded.last_story_at, 0);
@@ -7389,7 +7545,7 @@ mod tests {
             ..default
         };
         let mut state = GameState::with_config(50, config.clone());
-        state.resources.metal = 123.0;
+        state.resources.iron = 123.0;
         let mut conn = open_save(Path::new(":memory:")).unwrap();
         save_state(&mut conn, &state).unwrap();
         let loaded = load_state(&conn, config.clone()).unwrap();
@@ -7455,11 +7611,7 @@ mod tests {
         state.wonder = Some(crate::WonderJob {
             id: "dyson_ring".into(),
             stage: 1,
-            contributed: Resources {
-                metal: 5.0,
-                crystal: 4.0,
-                deuterium: 3.0,
-            },
+            contributed: Resources::from_parts(5.0, 4.0, 3.0),
             completes_at: None,
         });
         save_state(&mut conn, &state).unwrap();
@@ -7498,14 +7650,14 @@ mod tests {
             Err(SaveError::Corrupt("missing meta row")) => {}
             other => panic!("expected corrupt, got {other:?}"),
         }
-        let metal: f64 = conn
+        let iron: f64 = conn
             .query_row(
                 "SELECT metal FROM resources WHERE planet_id = 1",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(metal, original.resources.metal);
+        assert_eq!(iron, original.resources.iron);
     }
 
     #[test]
@@ -7612,8 +7764,8 @@ mod tests {
         migrate_v16(&conn).unwrap();
         let mut state = GameState::new(3);
         state.last_market_at = 44;
-        state.market.metal = 1.4;
-        state.market.crystal = 1.7;
+        state.market.iron = 1.4;
+        state.market.silicon = 1.7;
         state.market.deuterium = 3.6;
         state.market.metal_hist = vec![1.0, 1.2, 1.4];
         state.market.crystal_hist = vec![2.0, 1.8, 1.7];
@@ -7708,11 +7860,7 @@ mod tests {
             ship: None,
             defence: Some(crate::DefenceKind::IonCannon),
             remaining: 2,
-            unit_paid: Resources {
-                metal: 200.0,
-                crystal: 600.0,
-                deuterium: 0.0,
-            },
+            unit_paid: Resources::from_parts(200.0, 600.0, 0.0),
             started_at: Some(10),
             completes_at: Some(190),
         });
@@ -7885,8 +8033,8 @@ mod tests {
         migrate_v29(&conn).unwrap();
         migrate_v29(&conn).unwrap();
         let mut state = GameState::new(10);
-        state.resources.metal = 5_000.0;
-        state.resources.crystal = 5_000.0;
+        state.resources.iron = 5_000.0;
+        state.resources.silicon = 5_000.0;
         let id = state.recruit_leader("Kai", "logistics", 10).unwrap();
         state
             .assign_leader(
@@ -7987,11 +8135,7 @@ mod tests {
             delta_v: 1_234.0,
             fuel_mass: 50.0,
             payload: crate::Payload {
-                cargo: Resources {
-                    metal: 10.0,
-                    crystal: 0.0,
-                    deuterium: 0.0,
-                },
+                cargo: Resources::from_parts(10.0, 0.0, 0.0),
             },
         });
         state.next_planned_id = 8;
@@ -8082,14 +8226,14 @@ mod tests {
         let mut cfg = BalanceConfig::default();
         cfg.raid.enabled = false;
         let mut state = GameState::with_config(1_000, cfg);
-        state.resources.metal = 50_000.0;
-        state.resources.crystal = 50_000.0;
+        state.resources.iron = 50_000.0;
+        state.resources.silicon = 50_000.0;
         state.resources.deuterium = 50_000.0;
         state
             .place_order(
                 Coord::HOME,
                 crate::OrderSide::Buy,
-                crate::ResourceKind::Crystal,
+                crate::ResourceKind::Silicon,
                 5.0,
                 Some(2.0),
                 1_000,
@@ -8161,8 +8305,8 @@ mod tests {
         state.deterministic = true;
         state
             .transmute(
-                crate::ResourceKind::Metal,
-                crate::ResourceKind::Crystal,
+                crate::ResourceKind::Iron,
+                crate::ResourceKind::Silicon,
                 10.0,
             )
             .unwrap();
@@ -8214,6 +8358,44 @@ mod tests {
     }
 
     #[test]
+    fn migrate_v40_splits_metal_into_iron_and_rare_earths() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE resources (
+                planet_id INTEGER PRIMARY KEY,
+                metal REAL NOT NULL,
+                crystal REAL NOT NULL,
+                deuterium REAL NOT NULL
+             );
+             INSERT INTO resources (planet_id, metal, crystal, deuterium)
+             VALUES (1, 100.0, 40.0, 10.0);",
+        )
+        .unwrap();
+        migrate_v40(&conn).unwrap();
+        migrate_v40(&conn).unwrap();
+        let (metal, crystal, deuterium, rare, ice, he3): (f64, f64, f64, f64, f64, f64) = conn
+            .query_row(
+                "SELECT metal, crystal, deuterium, rare_earths, water_ice, helium_3 FROM resources WHERE planet_id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+            )
+            .unwrap();
+        assert!((metal - 95.0).abs() < 1e-9);
+        assert!((rare - 5.0).abs() < 1e-9);
+        assert!((crystal - 40.0).abs() < 1e-9);
+        assert!((deuterium - 10.0).abs() < 1e-9);
+        assert_eq!(ice, 0.0);
+        assert_eq!(he3, 0.0);
+        let mapped = crate::Resources::from_legacy(100.0, 40.0, 10.0);
+        assert!((mapped.iron - 95.0).abs() < 1e-9);
+        assert!((mapped.rare_earths - 5.0).abs() < 1e-9);
+        assert!((mapped.silicon - 40.0).abs() < 1e-9);
+        assert!((mapped.deuterium - 10.0).abs() < 1e-9);
+        assert_eq!(mapped.water_ice, 0.0);
+        assert_eq!(mapped.helium_3, 0.0);
+    }
+
+    #[test]
     fn migrate_v39_round_trips_automation_rules() {
         let mut conn = open_save(Path::new(":memory:")).unwrap();
         migrate_v39(&conn).unwrap();
@@ -8229,7 +8411,7 @@ mod tests {
                 crate::RuleCondition {
                     kind: crate::RuleConditionKind::StockBelow,
                     planet: state.home,
-                    resource: crate::ResourceKind::Metal,
+                    resource: crate::ResourceKind::Iron,
                     amount: 2_000.0,
                 },
                 crate::RuleAction::QueueBuild {
@@ -8311,8 +8493,8 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert_eq!(
-            loaded.rivals.empires[0].resources.metal,
-            state.rivals.empires[0].resources.metal
+            loaded.rivals.empires[0].resources.iron,
+            state.rivals.empires[0].resources.iron
         );
         assert_eq!(count_rows(&conn, "rivals_meta").unwrap(), 1);
         assert_eq!(count_rows(&conn, "rivals").unwrap(), 3);

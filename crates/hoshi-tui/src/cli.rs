@@ -214,8 +214,8 @@ enum Command {
         vehicle: u64,
         transfer: TransferKind,
         customer: Customer,
-        metal: String,
-        crystal: String,
+        iron: String,
+        silicon: String,
         deuterium: String,
         window: Option<usize>,
     },
@@ -240,8 +240,8 @@ enum Command {
     MarketShip {
         from: Coord,
         to: Coord,
-        metal: String,
-        crystal: String,
+        iron: String,
+        silicon: String,
         deuterium: String,
         contract: Option<u64>,
     },
@@ -979,17 +979,17 @@ fn apply(
             vehicle,
             transfer,
             customer,
-            metal,
-            crystal,
+            iron,
+            silicon,
             deuterium,
             window,
         } => {
             let payload = Payload {
-                cargo: hoshi_core::Resources {
-                    metal: parse_amount(metal)?,
-                    crystal: parse_amount(crystal)?,
-                    deuterium: parse_amount(deuterium)?,
-                },
+                cargo: hoshi_core::Resources::from_parts(
+                    parse_amount(iron)?,
+                    parse_amount(silicon)?,
+                    parse_amount(deuterium)?,
+                ),
             };
             state
                 .plan_mission(
@@ -1087,8 +1087,8 @@ fn apply(
         Command::MarketShip {
             from,
             to,
-            metal,
-            crystal,
+            iron,
+            silicon,
             deuterium,
             contract,
         } => {
@@ -1097,11 +1097,11 @@ fn apply(
                 Intent::ShipGoods {
                     origin: *from,
                     dest: *to,
-                    cargo: hoshi_core::Resources {
-                        metal: parse_amount(metal)?,
-                        crystal: parse_amount(crystal)?,
-                        deuterium: parse_amount(deuterium)?,
-                    },
+                    cargo: hoshi_core::Resources::from_parts(
+                        parse_amount(iron)?,
+                        parse_amount(silicon)?,
+                        parse_amount(deuterium)?,
+                    ),
                     contract: *contract,
                 },
                 now,
@@ -1556,6 +1556,17 @@ fn marking_value(state: &GameState, kind: ClassifiedKind, id: &str) -> Value {
     })
 }
 
+fn resources_json(r: hoshi_core::Resources) -> Value {
+    json!({
+        "iron": r.iron,
+        "silicon": r.silicon,
+        "rare_earths": r.rare_earths,
+        "water_ice": r.water_ice,
+        "helium_3": r.helium_3,
+        "deuterium": r.deuterium,
+    })
+}
+
 fn state_value(state: &GameState, actor: Actor) -> Value {
     let raid = state.next_raid_at.map(|at| {
         json!({
@@ -1691,14 +1702,13 @@ fn state_value(state: &GameState, actor: Actor) -> Value {
         "now": state.last_tick_unix,
         "deterministic": state.deterministic,
         "save_schema": SAVE_SCHEMA,
-        "resources": {
-            "metal": state.resources.metal,
-            "crystal": state.resources.crystal,
-            "deuterium": state.resources.deuterium,
-        },
+        "resources": resources_json(state.resources),
         "rates": {
-            "metal": state.production_per_hour(ResourceKind::Metal),
-            "crystal": state.production_per_hour(ResourceKind::Crystal),
+            "iron": state.production_per_hour(ResourceKind::Iron),
+            "silicon": state.production_per_hour(ResourceKind::Silicon),
+            "rare_earths": state.production_per_hour(ResourceKind::RareEarths),
+            "water_ice": state.production_per_hour(ResourceKind::WaterIce),
+            "helium_3": state.production_per_hour(ResourceKind::Helium3),
             "deuterium": state.production_per_hour(ResourceKind::Deuterium),
         },
         "energy": {
@@ -1837,11 +1847,7 @@ fn state_value(state: &GameState, actor: Actor) -> Value {
             "name": row.name,
             "home": row.home.to_string(),
             "last_action": row.last_action,
-            "resources": row.resources.map(|r| json!({
-                "metal": r.metal,
-                "crystal": r.crystal,
-                "deuterium": r.deuterium,
-            })),
+            "resources": row.resources.map(resources_json),
             "fleet": row.fleet.map(fleet_counts),
             "buildings": row.buildings.map(|b| json!({
                 "metal_mine": b.metal_mine,
@@ -1876,11 +1882,7 @@ fn spy_report_value(report: &SpyReport, now: u64, state: &GameState) -> Value {
         "score": report.score,
         "kind": report.kind.map(|k| k.as_key()),
         "size": report.size,
-        "resources": report.resources.map(|r| json!({
-            "metal": r.metal,
-            "crystal": r.crystal,
-            "deuterium": r.deuterium,
-        })),
+        "resources": report.resources.map(resources_json),
         "fleet": report.fleet.map(fleet_counts),
         "defences": report.defences.map(fleet_counts),
         "garrison": report.garrison,
@@ -2892,8 +2894,8 @@ fn apply_log(
         json!({
             "at": snap.at,
             "event_id": snap.event_id,
-            "metal": snap.metal,
-            "crystal": snap.crystal,
+            "iron": snap.iron,
+            "silicon": snap.silicon,
             "deuterium": snap.deuterium,
             "energy": snap.energy,
             "heat": snap.heat,
@@ -3196,8 +3198,8 @@ fn parse_mission_command(args: &[String]) -> Result<Command, CliError> {
             let mut vehicle = None;
             let mut transfer = TransferKind::Hohmann;
             let mut customer = Customer::Colony;
-            let mut metal = "0".to_string();
-            let mut crystal = "0".to_string();
+            let mut iron = "0".to_string();
+            let mut silicon = "0".to_string();
             let mut deuterium = "0".to_string();
             let mut window = None;
             let mut i = 3;
@@ -3226,13 +3228,13 @@ fn parse_mission_command(args: &[String]) -> Result<Command, CliError> {
                     i += 2;
                     continue;
                 }
-                if a == "--metal" {
-                    metal = nth(args, i + 1, "mission plan --metal <n>")?.to_string();
+                if a == "--iron" || a == "--metal" {
+                    iron = nth(args, i + 1, "mission plan --metal <n>")?.to_string();
                     i += 2;
                     continue;
                 }
-                if a == "--crystal" {
-                    crystal = nth(args, i + 1, "mission plan --crystal <n>")?.to_string();
+                if a == "--silicon" || a == "--crystal" {
+                    silicon = nth(args, i + 1, "mission plan --crystal <n>")?.to_string();
                     i += 2;
                     continue;
                 }
@@ -3258,8 +3260,8 @@ fn parse_mission_command(args: &[String]) -> Result<Command, CliError> {
                     .ok_or_else(|| CliError::Invalid("mission plan needs --vehicle".into()))?,
                 transfer,
                 customer,
-                metal,
-                crystal,
+                iron,
+                silicon,
                 deuterium,
                 window,
             })
@@ -3368,20 +3370,20 @@ fn parse_market_command(args: &[String]) -> Result<Command, CliError> {
         Some("ship") => {
             let from = parse_coord(nth(args, 2, "market ship <from> <to>")?)?;
             let to = parse_coord(nth(args, 3, "market ship <from> <to>")?)?;
-            let mut metal = "0".to_string();
-            let mut crystal = "0".to_string();
+            let mut iron = "0".to_string();
+            let mut silicon = "0".to_string();
             let mut deuterium = "0".to_string();
             let mut contract = None;
             let mut i = 4;
             while i < args.len() {
                 let a = args[i].as_str();
-                if a == "--metal" {
-                    metal = nth(args, i + 1, "market ship --metal <n>")?.to_string();
+                if a == "--iron" || a == "--metal" {
+                    iron = nth(args, i + 1, "market ship --metal <n>")?.to_string();
                     i += 2;
                     continue;
                 }
-                if a == "--crystal" {
-                    crystal = nth(args, i + 1, "market ship --crystal <n>")?.to_string();
+                if a == "--silicon" || a == "--crystal" {
+                    silicon = nth(args, i + 1, "market ship --crystal <n>")?.to_string();
                     i += 2;
                     continue;
                 }
@@ -3403,8 +3405,8 @@ fn parse_market_command(args: &[String]) -> Result<Command, CliError> {
             Ok(Command::MarketShip {
                 from,
                 to,
-                metal,
-                crystal,
+                iron,
+                silicon,
                 deuterium,
                 contract,
             })
@@ -3495,8 +3497,11 @@ fn market_region_value(state: &GameState, filter: Option<Coord>) -> Value {
                 "id": s.id,
                 "origin": s.origin.to_string(),
                 "dest": s.dest.to_string(),
-                "metal": s.cargo.metal,
-                "crystal": s.cargo.crystal,
+                "iron": s.cargo.iron,
+                "silicon": s.cargo.silicon,
+                "rare_earths": s.cargo.rare_earths,
+                "water_ice": s.cargo.water_ice,
+                "helium_3": s.cargo.helium_3,
                 "deuterium": s.cargo.deuterium,
                 "fuel": s.fuel,
                 "arrives_at": s.arrives_at,
@@ -3513,16 +3518,8 @@ fn market_region_value(state: &GameState, filter: Option<Coord>) -> Value {
         .map(|r| {
             json!({
                 "coord": r.coord.to_string(),
-                "npc": {
-                    "metal": r.npc_warehouse.metal,
-                    "crystal": r.npc_warehouse.crystal,
-                    "deuterium": r.npc_warehouse.deuterium,
-                },
-                "player": {
-                    "metal": r.player_warehouse.metal,
-                    "crystal": r.player_warehouse.crystal,
-                    "deuterium": r.player_warehouse.deuterium,
-                },
+                "npc": resources_json(r.npc_warehouse),
+                "player": resources_json(r.player_warehouse),
             })
         })
         .collect();
@@ -3533,8 +3530,8 @@ fn market_region_value(state: &GameState, filter: Option<Coord>) -> Value {
         "now": state.last_tick_unix,
         "hub": state.config.market.hub().to_string(),
         "mids": {
-            "metal": state.market.metal,
-            "crystal": state.market.crystal,
+            "iron": state.market.iron,
+            "silicon": state.market.silicon,
             "deuterium": state.market.deuterium,
         },
         "regions": regions,
@@ -3954,7 +3951,7 @@ mod tests {
             Command::MarketOrder {
                 region: Coord::HOME,
                 side: OrderSide::Buy,
-                good: ResourceKind::Crystal,
+                good: ResourceKind::Silicon,
                 amount: "10".into(),
                 limit: Some("2".into()),
                 ttl: None,
@@ -4055,7 +4052,7 @@ mod tests {
         core.enqueue_build(BuildingKind::MetalMine, 0).unwrap();
         core.catch_up(180);
         assert_eq!(core.buildings.metal_mine, 2);
-        assert!((core.resources.metal - a["resources"]["metal"].as_f64().unwrap()).abs() < 1e-6);
+        assert!((core.resources.iron - a["resources"]["iron"].as_f64().unwrap()).abs() < 1e-6);
 
         let _ = std::fs::remove_file(&save_a);
         let _ = std::fs::remove_file(&save_b);
@@ -4179,9 +4176,9 @@ mod tests {
         assert_eq!(line["state"]["save_schema"], SAVE_SCHEMA);
         assert!(line.get("galaxy_seed").is_none());
         assert!(line["state"].get("galaxy_seed").is_none());
-        let before = created["resources"]["metal"].clone();
+        let before = created["resources"]["iron"].clone();
         let (after, _) = run_on(&save, &["state"]);
-        assert_eq!(after["resources"]["metal"], before);
+        assert_eq!(after["resources"]["iron"], before);
         let _ = std::fs::remove_file(&save);
         let _ = std::fs::remove_file(&log);
     }
@@ -4191,7 +4188,7 @@ mod tests {
         let save = unique_save("advise");
         let (created, exit) = run_on(&save, &["--seed=1", "state"]);
         assert_eq!(exit, EXIT_OK);
-        let metal = created["resources"]["metal"].clone();
+        let metal = created["resources"]["iron"].clone();
         let (value, exit) = run_on(&save, &["advise"]);
         assert_eq!(exit, EXIT_OK, "{value}");
         assert_eq!(value["ok"], true);
@@ -4203,7 +4200,7 @@ mod tests {
                 .all(|row| row.get("id").is_some() && row.get("text").is_some())
         );
         let (after, _) = run_on(&save, &["state"]);
-        assert_eq!(after["resources"]["metal"], metal);
+        assert_eq!(after["resources"]["iron"], metal);
         assert_eq!(after["build_queue"], created["build_queue"]);
         let _ = std::fs::remove_file(&save);
     }
@@ -4240,8 +4237,8 @@ mod tests {
         let mut conn = open_save(&save).unwrap();
         let mut seeded = GameState::with_seed(0, BalanceConfig::default(), 1);
         seeded.fleet.add(ShipKind::SmallCargo, 2);
-        seeded.resources.metal = 50_000.0;
-        seeded.resources.crystal = 50_000.0;
+        seeded.resources.iron = 50_000.0;
+        seeded.resources.silicon = 50_000.0;
         seeded.resources.deuterium = 50_000.0;
         save_state(&mut conn, &seeded).unwrap();
         drop(conn);
@@ -4276,7 +4273,7 @@ mod tests {
                 "hohmann",
                 "--customer",
                 "colony",
-                "--metal",
+                "--iron",
                 "1",
             ],
         );

@@ -211,11 +211,7 @@ impl Default for DailyConfig {
             reset_offset_secs: 0,
             slots: 3,
             streak_cap: 7,
-            streak_reward: Resources {
-                metal: 80.0,
-                crystal: 40.0,
-                deuterium: 0.0,
-            },
+            streak_reward: Resources::from_parts(80.0, 40.0, 0.0),
             catalog,
         }
     }
@@ -260,11 +256,7 @@ impl File {
                 kind: row.kind,
                 weight: row.weight,
                 target: row.target,
-                reward: Resources {
-                    metal: row.metal,
-                    crystal: row.crystal,
-                    deuterium: row.deuterium,
-                },
+                reward: Resources::from_parts(row.iron, row.silicon, row.deuterium),
                 min_lab: row.min_lab,
             });
         }
@@ -282,10 +274,10 @@ struct FileMission {
     weight: u32,
     #[serde(default = "one")]
     target: u32,
-    #[serde(default)]
-    metal: f64,
-    #[serde(default)]
-    crystal: f64,
+    #[serde(default, alias = "metal")]
+    iron: f64,
+    #[serde(default, alias = "crystal")]
+    silicon: f64,
     #[serde(default)]
     deuterium: f64,
     #[serde(default)]
@@ -357,8 +349,8 @@ impl GameState {
             slot.progress = slot.progress.saturating_add(1).min(slot.target);
             if slot.done() && !slot.rewarded {
                 slot.rewarded = true;
-                grant.metal += spec.reward.metal;
-                grant.crystal += spec.reward.crystal;
+                grant.iron += spec.reward.iron;
+                grant.silicon += spec.reward.silicon;
                 grant.deuterium += spec.reward.deuterium;
                 completed_id = Some(spec.name.clone());
             }
@@ -386,11 +378,11 @@ impl GameState {
         }
         if streak_grant != Resources::ZERO {
             let n = f64::from(self.daily.streak);
-            self.grant_capped(Resources {
-                metal: streak_grant.metal * n,
-                crystal: streak_grant.crystal * n,
-                deuterium: streak_grant.deuterium * n,
-            });
+            self.grant_capped(Resources::from_parts(
+                streak_grant.iron * n,
+                streak_grant.silicon * n,
+                streak_grant.deuterium * n,
+            ));
         }
         if let Some(name) = completed_id {
             self.push_event(now, format!("daily: {name} complete"));
@@ -441,8 +433,8 @@ mod tests {
     fn catch_up_counts_a_finished_mine() {
         let mut cfg = BalanceConfig::default();
         cfg.daily.day_secs = 86_400;
-        cfg.starting_resources.metal = 5_000.0;
-        cfg.starting_resources.crystal = 5_000.0;
+        cfg.starting_resources.iron = 5_000.0;
+        cfg.starting_resources.silicon = 5_000.0;
         cfg.starting_resources.deuterium = 5_000.0;
         let mut state = GameState::with_seed(0, cfg, 1);
         state.sync_daily(0);

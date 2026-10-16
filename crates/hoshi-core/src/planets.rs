@@ -37,19 +37,34 @@ impl PlanetType {
 /// Production multipliers added through [`crate::GameState::modifier_for`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlanetTypeBonus {
-    pub metal: f64,
-    pub crystal: f64,
+    pub iron: f64,
+    pub silicon: f64,
+    pub rare_earths: f64,
+    pub water_ice: f64,
+    pub helium_3: f64,
     pub deuterium: f64,
     pub energy: f64,
 }
 
 impl PlanetTypeBonus {
     pub const ZERO: Self = Self {
-        metal: 0.0,
-        crystal: 0.0,
+        iron: 0.0,
+        silicon: 0.0,
+        rare_earths: 0.0,
+        water_ice: 0.0,
+        helium_3: 0.0,
         deuterium: 0.0,
         energy: 0.0,
     };
+
+    pub(crate) fn chain_deposit_factor(&self, good: &str) -> f64 {
+        match good {
+            "rare_earths" => 1.0 + self.rare_earths,
+            "water_ice" => 1.0 + self.water_ice,
+            "helium_3" => 1.0 + self.helium_3,
+            _ => 1.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -73,21 +88,30 @@ impl Default for PlanetTypeCatalog {
     fn default() -> Self {
         Self {
             rocky: PlanetTypeBonus {
-                metal: 0.10,
-                crystal: 0.10,
+                iron: 0.10,
+                silicon: 0.10,
+                rare_earths: 0.10,
+                water_ice: 0.0,
+                helium_3: 0.0,
                 deuterium: 0.0,
                 energy: 0.0,
             },
             ice: PlanetTypeBonus {
-                metal: 0.0,
-                crystal: 0.0,
+                iron: 0.0,
+                silicon: 0.0,
+                rare_earths: 0.0,
+                water_ice: 0.25,
+                helium_3: 0.0,
                 deuterium: 0.25,
                 energy: -0.10,
             },
             gas_giant: PlanetTypeBonus {
-                metal: 0.0,
-                crystal: 0.0,
-                deuterium: 0.50,
+                iron: 0.0,
+                silicon: 0.0,
+                rare_earths: 0.0,
+                water_ice: 0.0,
+                helium_3: 0.50,
+                deuterium: 0.0,
                 energy: 0.0,
             },
         }

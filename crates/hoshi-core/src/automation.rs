@@ -606,7 +606,7 @@ mod tests {
     #[test]
     fn adaptive_cargo_is_fixed_until_auto_routes_research() {
         let mut state = state_at(1_000);
-        state.resources.metal = 5_000.0;
+        state.resources.iron = 5_000.0;
         let dest = Coord {
             galaxy: 1,
             system: 1,
@@ -622,17 +622,13 @@ mod tests {
                 f.add(ShipKind::SmallCargo, 1);
                 f
             },
-            cargo: Resources {
-                metal: 500.0,
-                crystal: 0.0,
-                deuterium: 0.0,
-            },
+            cargo: Resources::from_parts(500.0, 0.0, 0.0),
             speed_percent: 100,
             interval_secs: 60,
             next_at: 1_000,
         };
         let before = state.adapt_route_cargo(&route);
-        assert_eq!(before.metal, 500.0);
+        assert_eq!(before.iron, 500.0);
         state.tech_levels.insert("auto_routes".into(), 1);
         let after = state.adapt_route_cargo(&route);
         assert_eq!(after, Resources::ZERO);
@@ -641,7 +637,7 @@ mod tests {
     #[test]
     fn adaptive_cargo_follows_surplus_on_owned_dest() {
         let mut state = state_at(1_000);
-        state.resources.metal = 5_000.0;
+        state.resources.iron = 5_000.0;
         let dest = Coord {
             galaxy: 1,
             system: 1,
@@ -651,11 +647,7 @@ mod tests {
             coord: dest,
             kind: crate::PlanetType::Rocky,
             size: 3,
-            resources: Resources {
-                metal: 100.0,
-                crystal: 0.0,
-                deuterium: 0.0,
-            },
+            resources: Resources::from_parts(100.0, 0.0, 0.0),
             buildings: crate::Buildings::default(),
             fleet: Fleet::default(),
             defences: crate::DefenceGrid::default(),
@@ -672,19 +664,15 @@ mod tests {
                 f.add(ShipKind::SmallCargo, 1);
                 f
             },
-            cargo: Resources {
-                metal: 500.0,
-                crystal: 0.0,
-                deuterium: 0.0,
-            },
+            cargo: Resources::from_parts(500.0, 0.0, 0.0),
             speed_percent: 100,
             interval_secs: 60,
             next_at: 1_000,
         };
         state.tech_levels.insert("auto_routes".into(), 1);
         let cargo = state.adapt_route_cargo(&route);
-        assert!(cargo.metal > 0.0, "{cargo:?}");
-        assert!(cargo.metal <= 500.0);
+        assert!(cargo.iron > 0.0, "{cargo:?}");
+        assert!(cargo.iron <= 500.0);
     }
 
     #[test]
@@ -695,7 +683,7 @@ mod tests {
                 RuleCondition {
                     kind: RuleConditionKind::StockBelow,
                     planet: state.home,
-                    resource: ResourceKind::Metal,
+                    resource: ResourceKind::Iron,
                     amount: 100.0,
                 },
                 RuleAction::QueueBuild {
@@ -733,13 +721,13 @@ mod tests {
                 RuleCondition {
                     kind: RuleConditionKind::StockAbove,
                     planet: state.home,
-                    resource: ResourceKind::Metal,
+                    resource: ResourceKind::Iron,
                     amount: 100.0,
                 },
                 RuleAction::Transfer {
                     from: state.home,
                     to: neighbor,
-                    resource: ResourceKind::Metal,
+                    resource: ResourceKind::Iron,
                     amount: 50.0,
                 },
             )
@@ -749,13 +737,13 @@ mod tests {
                 RuleCondition {
                     kind: RuleConditionKind::StockBelow,
                     planet: neighbor,
-                    resource: ResourceKind::Metal,
+                    resource: ResourceKind::Iron,
                     amount: 10.0,
                 },
                 RuleAction::Transfer {
                     from: neighbor,
                     to: state.home,
-                    resource: ResourceKind::Metal,
+                    resource: ResourceKind::Iron,
                     amount: 50.0,
                 },
             )
@@ -768,13 +756,13 @@ mod tests {
         let mut state = state_at(1_000);
         state.tech_levels.insert("logistics_rules".into(), 1);
         state.tech_levels.insert("energy".into(), 1);
-        state.resources.metal = 50.0;
+        state.resources.iron = 50.0;
         let id = state
             .add_automation_rule(
                 RuleCondition {
                     kind: RuleConditionKind::StockBelow,
                     planet: state.home,
-                    resource: ResourceKind::Metal,
+                    resource: ResourceKind::Iron,
                     amount: 10_000.0,
                 },
                 RuleAction::QueueBuild {
@@ -798,7 +786,7 @@ mod tests {
         clock.set(1_000 + 1_500);
         once.catch_up(clock.now_unix());
         assert_eq!(once.build_queue, stepped.build_queue);
-        assert!((once.resources.metal - stepped.resources.metal).abs() < 1e-6);
+        assert!((once.resources.iron - stepped.resources.iron).abs() < 1e-6);
     }
 
     #[test]

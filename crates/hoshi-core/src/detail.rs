@@ -522,15 +522,19 @@ fn material_from_stock(stockpile: Resources, cost: Resources) -> Vec<MaterialLin
     ResourceKind::ALL
         .iter()
         .copied()
-        .map(|kind| {
+        .filter_map(|kind| {
             let need = cost.get(kind);
+            let quoted = ResourceKind::QUOTED.contains(&kind);
+            if need <= 1e-12 && !quoted {
+                return None;
+            }
             let stock = stockpile.get(kind);
-            MaterialLine {
+            Some(MaterialLine {
                 id: kind.as_key(),
                 stock,
                 cost: need,
                 missing: (need - stock).max(0.0),
-            }
+            })
         })
         .collect()
 }
@@ -656,8 +660,8 @@ mod tests {
         cfg.starting_buildings.crystal_mine = 0;
         cfg.starting_buildings.deuterium_synthesizer = 0;
         cfg.starting_buildings.solar_plant = 0;
-        cfg.starting_resources.metal = 0.0;
-        cfg.starting_resources.crystal = 0.0;
+        cfg.starting_resources.iron = 0.0;
+        cfg.starting_resources.silicon = 0.0;
         cfg.starting_resources.deuterium = 0.0;
         let state = GameState::with_config(0, cfg);
         let detail = state
@@ -716,7 +720,7 @@ mod tests {
             detail
                 .costs
                 .iter()
-                .any(|row| row.id == "metal" && row.cost > 0.0)
+                .any(|row| row.id == "iron" && row.cost > 0.0)
         );
         assert!(matches!(
             detail.afford,
@@ -736,11 +740,7 @@ mod tests {
             coord: dest,
             kind: crate::PlanetType::Rocky,
             size: 120,
-            resources: Resources {
-                metal: 50.0,
-                crystal: 0.0,
-                deuterium: 0.0,
-            },
+            resources: Resources::from_parts(50.0, 0.0, 0.0),
             buildings: crate::Buildings {
                 metal_mine: 4,
                 ..crate::Buildings::default()
@@ -774,8 +774,8 @@ mod tests {
         let metal = colony
             .costs
             .iter()
-            .find(|row| row.id == "metal")
-            .expect("metal");
+            .find(|row| row.id == "iron")
+            .expect("iron");
         assert!((metal.stock - 50.0).abs() < 1e-9, "{metal:?}");
         assert_eq!(
             colony.afford,
@@ -807,8 +807,8 @@ mod tests {
         let metal = active
             .costs
             .iter()
-            .find(|row| row.id == "metal")
-            .expect("metal");
+            .find(|row| row.id == "iron")
+            .expect("iron");
         assert!((metal.cost - 40000.0).abs() < 1e-6, "{metal:?}");
         state.wonder = None;
         state.completed_wonders.push("dyson_ring".into());
@@ -852,17 +852,17 @@ mod tests {
         after_next.buildings.increment(BuildingKind::MetalMine);
         let want = format!(
             "{:.1}",
-            after_queue.production_at(state.home, ResourceKind::Metal)
+            after_queue.production_at(state.home, ResourceKind::Iron)
         );
         let got = detail
             .deltas
             .iter()
-            .find(|row| row.label == "metal /h")
-            .expect("metal /h");
+            .find(|row| row.label == "iron /h")
+            .expect("iron /h");
         assert_eq!(got.from, want);
         let want_to = format!(
             "{:.1}",
-            after_next.production_at(state.home, ResourceKind::Metal)
+            after_next.production_at(state.home, ResourceKind::Iron)
         );
         assert_eq!(got.to, want_to);
     }

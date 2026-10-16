@@ -208,7 +208,7 @@ impl SelfPlayReport {
             for snap in &cell.curve {
                 out.push_str(&format!(
                     "| {} | {} | {} | {:.0} | {:.0} | {:.0} |\n",
-                    cell.seed, cell.species, snap.day, snap.metal, snap.crystal, snap.deuterium
+                    cell.seed, cell.species, snap.day, snap.iron, snap.silicon, snap.deuterium
                 ));
             }
         }

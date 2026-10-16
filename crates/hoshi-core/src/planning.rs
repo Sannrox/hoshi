@@ -93,11 +93,11 @@ pub struct Payload {
 
 impl Payload {
     pub fn mass_kg(&self, kg_per_cargo: f64) -> f64 {
-        (self.cargo.metal + self.cargo.crystal + self.cargo.deuterium) * kg_per_cargo
+        self.cargo.total() * kg_per_cargo
     }
 
     pub fn volume_m3(&self, m3_per_cargo: f64) -> f64 {
-        (self.cargo.metal + self.cargo.crystal + self.cargo.deuterium) * m3_per_cargo
+        self.cargo.total() * m3_per_cargo
     }
 }
 
@@ -252,7 +252,7 @@ impl fmt::Display for PlanError {
             PlanError::CannotAfford { missing } => write!(
                 f,
                 "not enough resources (missing metal {:.0}, crystal {:.0}, deuterium {:.0})",
-                missing.metal, missing.crystal, missing.deuterium
+                missing.iron, missing.silicon, missing.deuterium
             ),
             PlanError::PayloadVolume { need, have } => {
                 write!(f, "payload volume {need:.0} exceeds cargo {have:.0}")
@@ -415,13 +415,7 @@ impl GameState {
     }
 
     pub fn check_mission(&self, plan: &MissionPlan, now: u64) -> Result<(), PlanError> {
-        if !plan.payload.cargo.metal.is_finite()
-            || !plan.payload.cargo.crystal.is_finite()
-            || !plan.payload.cargo.deuterium.is_finite()
-            || plan.payload.cargo.metal < 0.0
-            || plan.payload.cargo.crystal < 0.0
-            || plan.payload.cargo.deuterium < 0.0
-        {
+        if !plan.payload.cargo.is_finite_nonneg() {
             return Err(PlanError::InvalidCargo);
         }
         match &plan.customer {
@@ -489,18 +483,11 @@ impl GameState {
             .resources_at(plan.route.origin)
             .copied()
             .ok_or(PlanError::UnknownPlanet)?;
-        let need = Resources {
-            metal: plan.payload.cargo.metal,
-            crystal: plan.payload.cargo.crystal,
-            deuterium: plan.payload.cargo.deuterium + fuel_units,
-        };
-        let missing = Resources {
-            metal: (need.metal - origin_stock.metal).max(0.0),
-            crystal: (need.crystal - origin_stock.crystal).max(0.0),
-            deuterium: (need.deuterium - origin_stock.deuterium).max(0.0),
-        };
-        if missing.metal > 1e-9 || missing.crystal > 1e-9 || missing.deuterium > 1e-9 {
-            return Err(PlanError::CannotAfford { missing });
+        let need = plan.payload.cargo.with_fuel(fuel_units);
+        if !origin_stock.can_afford(need) {
+            return Err(PlanError::CannotAfford {
+                missing: origin_stock.missing(need),
+            });
         }
         Ok(())
     }
@@ -511,14 +498,7 @@ impl GameState {
         let physics = self.physics_for(&plan, now)?;
         let cfg = self.config.orbits.clone();
         let fuel_units = physics.fuel_mass / cfg.kg_per_cargo;
-        self.debit_at(
-            plan.route.origin,
-            Resources {
-                metal: plan.payload.cargo.metal,
-                crystal: plan.payload.cargo.crystal,
-                deuterium: plan.payload.cargo.deuterium + fuel_units,
-            },
-        )?;
+        self.debit_at(plan.route.origin, plan.payload.cargo.with_fuel(fuel_units))?;
         let launched = now.max(plan.window.opens_at);
         let arrives = launched.saturating_add(physics.coast_secs);
         let free_at = arrives.saturating_add(cfg.turnaround_secs);
@@ -848,20 +828,20 @@ impl GameState {
         let stock = self
             .resources_at_mut(planet)
             .map_err(|_| PlanError::UnknownPlanet)?;
-        if stock.metal + 1e-9 < cost.metal
-            || stock.crystal + 1e-9 < cost.crystal
+        if stock.iron + 1e-9 < cost.iron
+            || stock.silicon + 1e-9 < cost.silicon
             || stock.deuterium + 1e-9 < cost.deuterium
         {
             return Err(PlanError::CannotAfford {
-                missing: Resources {
-                    metal: (cost.metal - stock.metal).max(0.0),
-                    crystal: (cost.crystal - stock.crystal).max(0.0),
-                    deuterium: (cost.deuterium - stock.deuterium).max(0.0),
-                },
+                missing: Resources::from_parts(
+                    (cost.iron - stock.iron).max(0.0),
+                    (cost.silicon - stock.silicon).max(0.0),
+                    (cost.deuterium - stock.deuterium).max(0.0),
+                ),
             });
         }
-        stock.metal = (stock.metal - cost.metal).max(0.0);
-        stock.crystal = (stock.crystal - cost.crystal).max(0.0);
+        stock.iron = (stock.iron - cost.iron).max(0.0);
+        stock.silicon = (stock.silicon - cost.silicon).max(0.0);
         stock.deuterium = (stock.deuterium - cost.deuterium).max(0.0);
         Ok(())
     }
@@ -877,8 +857,8 @@ mod tests {
     fn ready(now: u64) -> GameState {
         let mut state = GameState::with_seed(now, BalanceConfig::default(), 1);
         state.fleet.add(ShipKind::SmallCargo, 2);
-        state.resources.metal = 50_000.0;
-        state.resources.crystal = 50_000.0;
+        state.resources.iron = 50_000.0;
+        state.resources.silicon = 50_000.0;
         state.resources.deuterium = 50_000.0;
         state
     }
@@ -954,7 +934,7 @@ mod tests {
                     customer: Customer::Colony,
                     payload: Payload {
                         cargo: Resources {
-                            metal: 10.0,
+                            iron: 10.0,
                             ..Resources::ZERO
                         },
                     },
@@ -1021,11 +1001,7 @@ mod tests {
             state.last_tick_unix = windows.windows[open].opens_at;
         }
         let payload = Payload {
-            cargo: Resources {
-                metal: 10.0,
-                crystal: 0.0,
-                deuterium: 0.0,
-            },
+            cargo: Resources::from_parts(10.0, 0.0, 0.0),
         };
         let req = PlanRequest {
             vehicle_id: id,
@@ -1104,7 +1080,7 @@ mod tests {
                     customer: Customer::Colony,
                     payload: Payload {
                         cargo: Resources {
-                            metal: 10.0,
+                            iron: 10.0,
                             ..Resources::ZERO
                         },
                     },
@@ -1122,7 +1098,7 @@ mod tests {
                     customer: Customer::Colony,
                     payload: Payload {
                         cargo: Resources {
-                            metal: 800.0,
+                            iron: 800.0,
                             ..Resources::ZERO
                         },
                     },
@@ -1146,7 +1122,7 @@ mod tests {
             .find(|c| c.coord == dest)
             .unwrap()
             .resources
-            .metal;
+            .iron;
         assert!((delivered - 10.0).abs() < 1e-6, "{delivered}");
         assert_eq!(light.vehicles[0].coord, dest);
         assert!(light.planned.is_empty());
@@ -1352,7 +1328,7 @@ mod tests {
                     customer: Customer::Faction("traders".into()),
                     payload: Payload {
                         cargo: Resources {
-                            metal: 10.0,
+                            iron: 10.0,
                             ..Resources::ZERO
                         },
                     },
@@ -1363,12 +1339,12 @@ mod tests {
             .unwrap();
         let arrives = state.planned[0].arrives_at;
         let free_at = state.vehicles[0].free_at;
-        let metal_after_launch = state.resources.metal;
+        let metal_after_launch = state.resources.iron;
         state.catch_up(arrives);
         assert_eq!(state.vehicles[0].coord, Coord::HOME);
         assert!(state.planned.is_empty());
         assert!(
-            (state.resources.metal - metal_after_launch).abs() < 1e-9,
+            (state.resources.iron - metal_after_launch).abs() < 1e-9,
             "faction cargo is delivered, not refunded"
         );
         assert!(

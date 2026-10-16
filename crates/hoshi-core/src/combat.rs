@@ -481,8 +481,11 @@ pub fn resolve_combat_with(
 pub fn plunder_from(stock: Resources, share: f64, cap: Resources) -> Resources {
     let take = |have: f64, cap: f64| (have * share).max(0.0).min(cap).min(have);
     Resources {
-        metal: take(stock.metal, cap.metal),
-        crystal: take(stock.crystal, cap.crystal),
+        iron: take(stock.iron, cap.iron),
+        silicon: take(stock.silicon, cap.silicon),
+        rare_earths: take(stock.rare_earths, cap.rare_earths),
+        water_ice: take(stock.water_ice, cap.water_ice),
+        helium_3: take(stock.helium_3, cap.helium_3),
         deuterium: take(stock.deuterium, cap.deuterium),
     }
 }
@@ -686,19 +689,11 @@ mod tests {
 
     #[test]
     fn plunder_is_share_then_cap() {
-        let stock = Resources {
-            metal: 1_000.0,
-            crystal: 400.0,
-            deuterium: 50.0,
-        };
-        let cap = Resources {
-            metal: 200.0,
-            crystal: 1_000.0,
-            deuterium: 1_000.0,
-        };
+        let stock = Resources::from_parts(1_000.0, 400.0, 50.0);
+        let cap = Resources::from_parts(200.0, 1_000.0, 1_000.0);
         let taken = plunder_from(stock, 0.5, cap);
-        assert!((taken.metal - 200.0).abs() < 1e-9);
-        assert!((taken.crystal - 200.0).abs() < 1e-9);
+        assert!((taken.iron - 200.0).abs() < 1e-9);
+        assert!((taken.silicon - 200.0).abs() < 1e-9);
         assert!((taken.deuterium - 25.0).abs() < 1e-9);
     }
 

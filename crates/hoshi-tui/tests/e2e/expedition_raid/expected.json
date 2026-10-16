@@ -83,7 +83,7 @@
     },
     {
       "at": 3600,
-      "text": "raid: pirates 900 light fighter vs 5 light fighter. 1 rounds. lost 5 light fighter. pirates lost none. plunder M816 C536 D5000. winner attacker"
+      "text": "raid: pirates 900 light fighter vs 5 light fighter. 1 rounds. lost 5 light fighter. pirates lost none. plunder M803 C536 D5000. winner attacker"
     },
     {
       "at": 3600,
@@ -95,7 +95,7 @@
     },
     {
       "at": 32400,
-      "text": "raid: pirates 900 light fighter vs 5 light fighter. 1 rounds. lost 5 light fighter. pirates lost none. plunder M540 C356 D2500. winner attacker"
+      "text": "raid: pirates 900 light fighter vs 5 light fighter. 1 rounds. lost 5 light fighter. pirates lost none. plunder M534 C356 D2500. winner attacker"
     }
   ],
   "fleet": {
@@ -245,9 +245,12 @@
     "lands_in_secs": 18000
   },
   "rates": {
-    "crystal": 22.0,
     "deuterium": 0.0,
-    "metal": 33.0
+    "helium_3": 0.0,
+    "iron": 33.0,
+    "rare_earths": 1.9571853884275328,
+    "silicon": 22.0,
+    "water_ice": 0.0
   },
   "research": {
     "current": null,
@@ -285,15 +288,18 @@
     }
   },
   "resources": {
-    "crystal": 421.74999999999994,
     "deuterium": 2500.0,
-    "metal": 638.75
+    "helium_3": 0.0,
+    "iron": 632.5,
+    "rare_earths": 48.4862246611304,
+    "silicon": 421.74999999999994,
+    "water_ice": 0.0
   },
   "rivals": {
     "empires": [],
     "enabled": false
   },
-  "save_schema": 39,
+  "save_schema": 40,
   "schema_version": 1,
   "season": null,
   "species": null,

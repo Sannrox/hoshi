@@ -50,7 +50,7 @@ impl fmt::Display for LeaderError {
             LeaderError::CannotAfford { missing } => write!(
                 f,
                 "not enough resources (missing metal {:.0}, crystal {:.0}, deuterium {:.0})",
-                missing.metal, missing.crystal, missing.deuterium
+                missing.iron, missing.silicon, missing.deuterium
             ),
             LeaderError::Unassigned(id) => write!(f, "leader #{id} has no assignment"),
         }
@@ -415,11 +415,11 @@ impl File {
             period_secs: self.period_secs.max(1),
             empty_governor: self.empty_governor.clamp(0.0, 1.0),
             empty_admiral: self.empty_admiral.clamp(0.0, 1.0),
-            recruit_cost: crate::state::Resources {
-                metal: self.recruit_metal.max(0.0),
-                crystal: self.recruit_crystal.max(0.0),
-                deuterium: self.recruit_deuterium.max(0.0),
-            },
+            recruit_cost: crate::state::Resources::from_parts(
+                self.recruit_metal.max(0.0),
+                self.recruit_crystal.max(0.0),
+                self.recruit_deuterium.max(0.0),
+            ),
             traits,
         })
     }

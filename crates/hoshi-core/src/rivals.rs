@@ -322,8 +322,8 @@ impl GameState {
                 .ok_or_else(|| RivalError::Unknown(id.clone()))?;
             let home = rival_home(self.galaxy_seed, i, self.home, self.pirate_home);
             let mut resources = self.config.starting_resources;
-            resources.metal *= bonus;
-            resources.crystal *= bonus;
+            resources.iron *= bonus;
+            resources.silicon *= bonus;
             resources.deuterium *= bonus;
             let mut fleet = Fleet::default();
             if spec.raid > spec.build {
@@ -543,7 +543,7 @@ impl GameState {
                 at,
                 format!(
                     "rival {}: raid won, took {:.0} metal",
-                    self.rivals.empires[index].id, loot.metal
+                    self.rivals.empires[index].id, loot.iron
                 ),
             );
         } else {
@@ -608,8 +608,8 @@ fn choose_action(
         consider(&mut best, spec.research, 2, Act::Intent(intent));
     }
     if spec.trade > 0.0 && pocket.config.market.enabled {
-        let amount = (pocket.resources.metal * 0.1).clamp(1.0, pocket.config.market.npc_order_size);
-        if amount + 1e-9 <= pocket.resources.metal {
+        let amount = (pocket.resources.iron * 0.1).clamp(1.0, pocket.config.market.npc_order_size);
+        if amount + 1e-9 <= pocket.resources.iron {
             let intent = Intent::PlaceOrder {
                 region: Coord {
                     galaxy: pocket.config.market.hub_galaxy,
@@ -617,7 +617,7 @@ fn choose_action(
                     position: pocket.config.market.hub_position,
                 },
                 side: OrderSide::Sell,
-                good: ResourceKind::Metal,
+                good: ResourceKind::Iron,
                 amount,
                 limit: None,
                 ttl_secs: pocket.config.market.order_ttl_secs,
@@ -798,7 +798,7 @@ mod tests {
                 (
                     e.last_action.clone(),
                     e.buildings.metal_mine,
-                    e.resources.metal,
+                    e.resources.iron,
                 )
             })
             .collect();
@@ -810,7 +810,7 @@ mod tests {
                 (
                     e.last_action.clone(),
                     e.buildings.metal_mine,
-                    e.resources.metal,
+                    e.resources.iron,
                 )
             })
             .collect();
@@ -826,7 +826,7 @@ mod tests {
             step.catch_up(1_000 + 30 * i);
         }
         assert_eq!(bulk.rivals, step.rivals);
-        assert_eq!(bulk.resources.metal, step.resources.metal);
+        assert_eq!(bulk.resources.iron, step.resources.iron);
     }
 
     #[test]

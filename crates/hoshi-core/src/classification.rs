@@ -849,8 +849,8 @@ mod tests {
         assert_eq!(state.classification.incidents[0].via, "pirates");
         assert!(state.faction_can_see("pirates", ClassifiedKind::Report, "4"));
 
-        state.resources.metal = 5_000.0;
-        state.resources.crystal = 5_000.0;
+        state.resources.iron = 5_000.0;
+        state.resources.silicon = 5_000.0;
         let id = state.recruit_leader("mole", DISLOYAL, 10).unwrap();
         state.classification.next_disloyal_at = 10;
         state.tick_classification_leaks(10);

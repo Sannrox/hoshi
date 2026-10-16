@@ -84,9 +84,11 @@ impl MarketConfig {
 
     pub fn mean(&self, kind: ResourceKind) -> f64 {
         match kind {
-            ResourceKind::Metal => self.metal_mean,
-            ResourceKind::Crystal => self.crystal_mean,
-            ResourceKind::Deuterium => self.deuterium_mean,
+            ResourceKind::Iron | ResourceKind::RareEarths => self.metal_mean,
+            ResourceKind::Silicon => self.crystal_mean,
+            ResourceKind::Deuterium | ResourceKind::WaterIce | ResourceKind::Helium3 => {
+                self.deuterium_mean
+            }
         }
     }
 
@@ -264,8 +266,8 @@ pub struct TradeQuote {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MarketState {
-    pub metal: f64,
-    pub crystal: f64,
+    pub iron: f64,
+    pub silicon: f64,
     pub deuterium: f64,
     pub metal_hist: Vec<f64>,
     pub crystal_hist: Vec<f64>,
@@ -275,8 +277,8 @@ pub struct MarketState {
 impl MarketState {
     pub fn from_config(cfg: &MarketConfig) -> Self {
         let mut state = Self {
-            metal: cfg.metal_mean,
-            crystal: cfg.crystal_mean,
+            iron: cfg.metal_mean,
+            silicon: cfg.crystal_mean,
             deuterium: cfg.deuterium_mean,
             metal_hist: Vec::new(),
             crystal_hist: Vec::new(),
@@ -288,25 +290,31 @@ impl MarketState {
 
     pub fn price(&self, kind: ResourceKind) -> f64 {
         match kind {
-            ResourceKind::Metal => self.metal,
-            ResourceKind::Crystal => self.crystal,
-            ResourceKind::Deuterium => self.deuterium,
+            ResourceKind::Iron | ResourceKind::RareEarths => self.iron,
+            ResourceKind::Silicon => self.silicon,
+            ResourceKind::Deuterium | ResourceKind::WaterIce | ResourceKind::Helium3 => {
+                self.deuterium
+            }
         }
     }
 
     pub fn set_price(&mut self, kind: ResourceKind, value: f64) {
         match kind {
-            ResourceKind::Metal => self.metal = value,
-            ResourceKind::Crystal => self.crystal = value,
-            ResourceKind::Deuterium => self.deuterium = value,
+            ResourceKind::Iron | ResourceKind::RareEarths => self.iron = value,
+            ResourceKind::Silicon => self.silicon = value,
+            ResourceKind::Deuterium | ResourceKind::WaterIce | ResourceKind::Helium3 => {
+                self.deuterium = value
+            }
         }
     }
 
     pub fn history(&self, kind: ResourceKind) -> &[f64] {
         match kind {
-            ResourceKind::Metal => &self.metal_hist,
-            ResourceKind::Crystal => &self.crystal_hist,
-            ResourceKind::Deuterium => &self.deuterium_hist,
+            ResourceKind::Iron | ResourceKind::RareEarths => &self.metal_hist,
+            ResourceKind::Silicon => &self.crystal_hist,
+            ResourceKind::Deuterium | ResourceKind::WaterIce | ResourceKind::Helium3 => {
+                &self.deuterium_hist
+            }
         }
     }
 
@@ -343,7 +351,7 @@ impl MarketState {
 
     /// One scheduled tick: mean-reverting noise, rare shock, clamp, record history.
     pub fn tick(&mut self, cfg: &MarketConfig, rng: &mut u64) {
-        for kind in ResourceKind::ALL {
+        for kind in ResourceKind::QUOTED {
             let mean = cfg.mean(kind);
             let price = self.price(kind);
             let noise = unit_noise(rng) * cfg.volatility;
@@ -381,12 +389,14 @@ impl MarketState {
 
     fn push_history(&mut self, cfg: &MarketConfig) {
         let cap = cfg.history_len.max(1);
-        for kind in ResourceKind::ALL {
+        for kind in ResourceKind::QUOTED {
             let price = self.price(kind);
             let hist = match kind {
-                ResourceKind::Metal => &mut self.metal_hist,
-                ResourceKind::Crystal => &mut self.crystal_hist,
-                ResourceKind::Deuterium => &mut self.deuterium_hist,
+                ResourceKind::Iron | ResourceKind::RareEarths => &mut self.metal_hist,
+                ResourceKind::Silicon => &mut self.crystal_hist,
+                ResourceKind::Deuterium | ResourceKind::WaterIce | ResourceKind::Helium3 => {
+                    &mut self.deuterium_hist
+                }
             };
             hist.push(price);
             if hist.len() > cap {
@@ -424,17 +434,21 @@ pub struct RegionMarket {
 impl RegionMarket {
     pub fn history(&self, kind: ResourceKind) -> &[f64] {
         match kind {
-            ResourceKind::Metal => &self.metal_hist,
-            ResourceKind::Crystal => &self.crystal_hist,
-            ResourceKind::Deuterium => &self.deuterium_hist,
+            ResourceKind::Iron | ResourceKind::RareEarths => &self.metal_hist,
+            ResourceKind::Silicon => &self.crystal_hist,
+            ResourceKind::Deuterium | ResourceKind::WaterIce | ResourceKind::Helium3 => {
+                &self.deuterium_hist
+            }
         }
     }
 
     fn push_price(&mut self, kind: ResourceKind, price: f64, cap: usize) {
         let hist = match kind {
-            ResourceKind::Metal => &mut self.metal_hist,
-            ResourceKind::Crystal => &mut self.crystal_hist,
-            ResourceKind::Deuterium => &mut self.deuterium_hist,
+            ResourceKind::Iron | ResourceKind::RareEarths => &mut self.metal_hist,
+            ResourceKind::Silicon => &mut self.crystal_hist,
+            ResourceKind::Deuterium | ResourceKind::WaterIce | ResourceKind::Helium3 => {
+                &mut self.deuterium_hist
+            }
         };
         hist.push(price);
         if hist.len() > cap.max(1) {
@@ -508,8 +522,11 @@ fn unit_unit(rng: &mut u64) -> f64 {
 
 fn traded_good(kind: ResourceKind) -> Result<ResourceKind, MarketError> {
     match kind {
-        ResourceKind::Metal => Err(MarketError::QuoteGood),
-        ResourceKind::Crystal | ResourceKind::Deuterium => Ok(kind),
+        ResourceKind::Iron | ResourceKind::RareEarths => Err(MarketError::QuoteGood),
+        ResourceKind::Silicon
+        | ResourceKind::Deuterium
+        | ResourceKind::WaterIce
+        | ResourceKind::Helium3 => Ok(kind),
     }
 }
 
@@ -686,15 +703,7 @@ impl GameState {
                 kind: ResourceKind::Deuterium,
             });
         }
-        self.debit_trader(
-            TraderId::Player,
-            origin,
-            Resources {
-                metal: cargo.metal,
-                crystal: cargo.crystal,
-                deuterium: cargo.deuterium + fuel,
-            },
-        )?;
+        self.debit_trader(TraderId::Player, origin, cargo.with_fuel(fuel))?;
         self.ensure_region(origin);
         self.ensure_region(dest);
         let id = self.board.next_shipment_id.max(1);
@@ -729,7 +738,7 @@ impl GameState {
                 dest.to_string(),
             ],
             outcome: format!("fuel {fuel:.1}"),
-            mass: cargo.metal + cargo.crystal + cargo.deuterium,
+            mass: cargo.total(),
             ..crate::HistoryDraft::default()
         });
         Ok(id)
@@ -784,7 +793,7 @@ impl GameState {
                 trader,
                 region,
                 Resources {
-                    metal: escrow_metal,
+                    iron: escrow_metal,
                     ..Resources::ZERO
                 },
             )?;
@@ -958,7 +967,7 @@ impl GameState {
                 buy.trader,
                 buy.region,
                 Resources {
-                    metal: refund,
+                    iron: refund,
                     ..Resources::ZERO
                 },
             );
@@ -967,19 +976,21 @@ impl GameState {
             sell.trader,
             sell.region,
             Resources {
-                metal,
+                iron: metal,
                 ..Resources::ZERO
             },
         );
         if let Some(region) = self.board.regions.get_mut(&buy.region) {
             match buy.good {
-                ResourceKind::Crystal => region.last_crystal = Some(price),
-                ResourceKind::Deuterium => region.last_deuterium = Some(price),
-                ResourceKind::Metal => {}
+                ResourceKind::Silicon => region.last_crystal = Some(price),
+                ResourceKind::Deuterium | ResourceKind::WaterIce | ResourceKind::Helium3 => {
+                    region.last_deuterium = Some(price)
+                }
+                ResourceKind::Iron | ResourceKind::RareEarths => {}
             }
         }
         let impact = TradeQuote {
-            pay: ResourceKind::Metal,
+            pay: ResourceKind::Iron,
             recv: buy.good,
             pay_amount: metal,
             recv_amount: qty,
@@ -1064,7 +1075,7 @@ impl GameState {
                 order.trader,
                 order.region,
                 Resources {
-                    metal: order.escrow_metal,
+                    iron: order.escrow_metal,
                     ..Resources::ZERO
                 },
             );
@@ -1130,14 +1141,14 @@ impl GameState {
             } else {
                 contract.region
             };
-            let have = self.trader_stock(holder, pay_at).metal;
+            let have = self.trader_stock(holder, pay_at).iron;
             let take = contract.penalty.min(have).max(0.0);
             if take > 1e-12 {
                 let _ = self.debit_trader(
                     holder,
                     pay_at,
                     Resources {
-                        metal: take,
+                        iron: take,
                         ..Resources::ZERO
                     },
                 );
@@ -1145,7 +1156,7 @@ impl GameState {
                     contract.issuer,
                     contract.region,
                     Resources {
-                        metal: take,
+                        iron: take,
                         ..Resources::ZERO
                     },
                 );
@@ -1195,14 +1206,14 @@ impl GameState {
         let pay = qty * contract.price;
         let issuer_metal = self
             .trader_stock(contract.issuer, contract.region)
-            .metal
+            .iron
             .min(pay);
         if issuer_metal > 1e-12 {
             let _ = self.debit_trader(
                 contract.issuer,
                 contract.region,
                 Resources {
-                    metal: issuer_metal,
+                    iron: issuer_metal,
                     ..Resources::ZERO
                 },
             );
@@ -1210,7 +1221,7 @@ impl GameState {
                 holder,
                 contract.region,
                 Resources {
-                    metal: issuer_metal,
+                    iron: issuer_metal,
                     ..Resources::ZERO
                 },
             );
@@ -1277,10 +1288,10 @@ impl GameState {
             if live_npc >= 4 {
                 continue;
             }
-            for good in [ResourceKind::Crystal, ResourceKind::Deuterium] {
+            for good in [ResourceKind::Silicon, ResourceKind::Deuterium] {
                 let mid = self.metal_price(good);
                 let has_good = self.trader_stock(TraderId::Npc, venue).get(good);
-                let has_metal = self.trader_stock(TraderId::Npc, venue).metal;
+                let has_metal = self.trader_stock(TraderId::Npc, venue).iron;
                 if has_good + 1e-9 >= size {
                     let _ = self.place_order_as(
                         TraderId::Npc,
@@ -1314,7 +1325,7 @@ impl GameState {
             .filter(|c| !c.status.is_terminal())
             .count();
         if open < 2 {
-            self.post_npc_contract(ContractKind::Delivery, ResourceKind::Crystal, at);
+            self.post_npc_contract(ContractKind::Delivery, ResourceKind::Silicon, at);
             self.post_npc_contract(ContractKind::Procurement, ResourceKind::Deuterium, at);
         }
     }
@@ -1351,16 +1362,18 @@ impl GameState {
 
     fn record_region_mids(&mut self) {
         let cap = self.config.market.history_len.max(1);
-        let mids: Vec<(ResourceKind, f64)> = ResourceKind::ALL
+        let mids: Vec<(ResourceKind, f64)> = ResourceKind::QUOTED
             .iter()
             .map(|&kind| (kind, self.market.price(kind)))
             .collect();
         for region in self.board.regions.values_mut() {
             for (kind, mid) in &mids {
                 let px = match kind {
-                    ResourceKind::Crystal => region.last_crystal.unwrap_or(*mid),
-                    ResourceKind::Deuterium => region.last_deuterium.unwrap_or(*mid),
-                    ResourceKind::Metal => *mid,
+                    ResourceKind::Silicon => region.last_crystal.unwrap_or(*mid),
+                    ResourceKind::Deuterium | ResourceKind::WaterIce | ResourceKind::Helium3 => {
+                        region.last_deuterium.unwrap_or(*mid)
+                    }
+                    ResourceKind::Iron | ResourceKind::RareEarths => *mid,
                 };
                 region.push_price(*kind, px, cap);
             }
@@ -1383,22 +1396,22 @@ impl GameState {
             last_deuterium: None,
         };
         region.npc_warehouse = if coord == self.config.market.hub() {
-            Resources {
-                metal: self.config.market.hub_metal,
-                crystal: self.config.market.hub_crystal,
-                deuterium: self.config.market.hub_deuterium,
-            }
+            Resources::from_parts(
+                self.config.market.hub_metal,
+                self.config.market.hub_crystal,
+                self.config.market.hub_deuterium,
+            )
         } else {
             Resources::ZERO
         };
-        for kind in ResourceKind::ALL {
+        for kind in ResourceKind::QUOTED {
             region.push_price(kind, self.market.price(kind), cap);
         }
         self.board.regions.insert(coord, region);
     }
 
     fn metal_price(&self, good: ResourceKind) -> f64 {
-        let metal = self.market.price(ResourceKind::Metal).max(1e-9);
+        let metal = self.market.price(ResourceKind::Iron).max(1e-9);
         (self.market.price(good) / metal).max(1e-9)
     }
 
@@ -1479,24 +1492,23 @@ impl GameState {
     }
 
     fn take_player_at(&mut self, coord: Coord, mut cost: Resources) {
-        if coord == self.home {
-            let from = Resources {
-                metal: cost.metal.min(self.resources.metal),
-                crystal: cost.crystal.min(self.resources.crystal),
-                deuterium: cost.deuterium.min(self.resources.deuterium),
-            };
-            self.resources = self.resources.saturating_sub(from);
-            cost = cost.saturating_sub(from);
-        } else if let Some(colony) = self.colonies.iter_mut().find(|c| c.coord == coord) {
-            let from = Resources {
-                metal: cost.metal.min(colony.resources.metal),
-                crystal: cost.crystal.min(colony.resources.crystal),
-                deuterium: cost.deuterium.min(colony.resources.deuterium),
-            };
-            colony.resources = colony.resources.saturating_sub(from);
+        let stock = if coord == self.home {
+            Some(&mut self.resources)
+        } else {
+            self.colonies
+                .iter_mut()
+                .find(|c| c.coord == coord)
+                .map(|c| &mut c.resources)
+        };
+        if let Some(stock) = stock {
+            let mut from = Resources::ZERO;
+            for kind in ResourceKind::ALL {
+                from.set(kind, cost.get(kind).min(stock.get(kind)));
+            }
+            *stock = stock.saturating_sub(from);
             cost = cost.saturating_sub(from);
         }
-        if cost.metal + cost.crystal + cost.deuterium > 1e-12 {
+        if cost.total() > 1e-12 {
             self.ensure_region(coord);
             if let Some(region) = self.board.regions.get_mut(&coord) {
                 region.player_warehouse = region.player_warehouse.saturating_sub(cost);
@@ -1511,12 +1523,12 @@ impl GameState {
             let before = self.trader_stock(TraderId::Player, coord);
             self.credit_at(coord, found);
             let after = self.trader_stock(TraderId::Player, coord);
-            let overflow = Resources {
-                metal: (found.metal - (after.metal - before.metal)).max(0.0),
-                crystal: (found.crystal - (after.crystal - before.crystal)).max(0.0),
-                deuterium: (found.deuterium - (after.deuterium - before.deuterium)).max(0.0),
-            };
-            if overflow.metal + overflow.crystal + overflow.deuterium > 1e-12 {
+            let mut overflow = Resources::ZERO;
+            for kind in ResourceKind::ALL {
+                let gained = after.get(kind) - before.get(kind);
+                overflow.set(kind, (found.get(kind) - gained).max(0.0));
+            }
+            if overflow.total() > 1e-12 {
                 self.ensure_region(coord);
                 if let Some(region) = self.board.regions.get_mut(&coord) {
                     region.player_warehouse = region.player_warehouse.saturating_add(overflow);
@@ -1587,11 +1599,11 @@ fn cargo_ok(cargo: Resources) -> bool {
             return false;
         }
     }
-    cargo.metal + cargo.crystal + cargo.deuterium > 1e-9
+    cargo.total() > 1e-9
 }
 
 fn cargo_ships(state: &GameState, cargo: Resources) -> u32 {
-    let mass = cargo.metal + cargo.crystal + cargo.deuterium;
+    let mass = cargo.total();
     let cap = state.ship_stats(ShipKind::SmallCargo).cargo.max(1.0);
     (mass / cap).ceil().max(1.0) as u32
 }
@@ -1616,7 +1628,7 @@ mod tests {
         for _ in 0..10_000 {
             market.tick(&cfg, &mut rng);
         }
-        for kind in ResourceKind::ALL {
+        for kind in ResourceKind::QUOTED {
             let mean = cfg.mean(kind);
             let p = market.price(kind);
             assert!(p >= mean * cfg.min_mult - 1e-9, "{kind:?} {p}");
@@ -1644,14 +1656,14 @@ mod tests {
         let cfg = MarketConfig::default_active();
         let market = MarketState::from_config(&cfg);
         let buy = market
-            .quote(ResourceKind::Metal, ResourceKind::Crystal, 100.0, &cfg)
+            .quote(ResourceKind::Iron, ResourceKind::Silicon, 100.0, &cfg)
             .unwrap();
         let mut after = market.clone();
         after.apply_trade_impact(&buy, &cfg);
         let sell = after
             .quote(
-                ResourceKind::Crystal,
-                ResourceKind::Metal,
+                ResourceKind::Silicon,
+                ResourceKind::Iron,
                 buy.recv_amount,
                 &cfg,
             )
@@ -1670,7 +1682,7 @@ mod tests {
         let market = MarketState::from_config(&cfg);
         let amount = 100.0;
         let q = market
-            .quote(ResourceKind::Metal, ResourceKind::Crystal, amount, &cfg)
+            .quote(ResourceKind::Iron, ResourceKind::Silicon, amount, &cfg)
             .unwrap();
         let gross = amount * (cfg.metal_mean / cfg.crystal_mean);
         let slip = (amount / cfg.impact_unit) * cfg.slippage;
@@ -1691,8 +1703,8 @@ mod tests {
         cfg.market = MarketConfig::default_active();
         cfg.daily = crate::DailyConfig::empty();
         let mut state = GameState::with_config(now, cfg);
-        state.resources.metal = 2_000.0;
-        state.resources.crystal = 2_000.0;
+        state.resources.iron = 2_000.0;
+        state.resources.silicon = 2_000.0;
         state.resources.deuterium = 5_000.0;
         state
     }
@@ -1708,34 +1720,34 @@ mod tests {
     fn limit_orders_match_at_the_resting_price() {
         let mut state = ready(1_000);
         let home = Coord::HOME;
-        stock_npc(&mut state, home, ResourceKind::Crystal, 10.0);
+        stock_npc(&mut state, home, ResourceKind::Silicon, 10.0);
         state
             .place_order_as(
                 TraderId::Npc,
                 home,
                 OrderSide::Sell,
-                ResourceKind::Crystal,
+                ResourceKind::Silicon,
                 10.0,
                 Some(2.0),
                 86_400,
                 1_000,
             )
             .unwrap();
-        let before_metal = state.resources.metal;
-        let before_crystal = state.resources.crystal;
+        let before_metal = state.resources.iron;
+        let before_crystal = state.resources.silicon;
         state
             .place_order(
                 home,
                 OrderSide::Buy,
-                ResourceKind::Crystal,
+                ResourceKind::Silicon,
                 10.0,
                 Some(2.5),
                 86_400,
                 1_000,
             )
             .unwrap();
-        assert!((state.resources.crystal - (before_crystal + 10.0)).abs() < 1e-6);
-        assert!((state.resources.metal - (before_metal - 20.0)).abs() < 1e-6);
+        assert!((state.resources.silicon - (before_crystal + 10.0)).abs() < 1e-6);
+        assert!((state.resources.iron - (before_metal - 20.0)).abs() < 1e-6);
         assert!(
             state
                 .board
@@ -1749,13 +1761,13 @@ mod tests {
     fn partial_fill_leaves_the_rest_on_the_book() {
         let mut state = ready(1_000);
         let home = Coord::HOME;
-        stock_npc(&mut state, home, ResourceKind::Crystal, 4.0);
+        stock_npc(&mut state, home, ResourceKind::Silicon, 4.0);
         state
             .place_order_as(
                 TraderId::Npc,
                 home,
                 OrderSide::Sell,
-                ResourceKind::Crystal,
+                ResourceKind::Silicon,
                 4.0,
                 Some(2.0),
                 86_400,
@@ -1766,7 +1778,7 @@ mod tests {
             .place_order(
                 home,
                 OrderSide::Buy,
-                ResourceKind::Crystal,
+                ResourceKind::Silicon,
                 10.0,
                 Some(2.0),
                 86_400,
@@ -1786,23 +1798,23 @@ mod tests {
     fn expired_order_refunds_escrow_in_catch_up() {
         let mut state = ready(1_000);
         let home = Coord::HOME;
-        let metal = state.resources.metal;
+        let metal = state.resources.iron;
         state
             .place_order(
                 home,
                 OrderSide::Buy,
-                ResourceKind::Crystal,
+                ResourceKind::Silicon,
                 5.0,
                 Some(2.0),
                 10,
                 1_000,
             )
             .unwrap();
-        let escrowed = metal - state.resources.metal;
+        let escrowed = metal - state.resources.iron;
         assert!(escrowed > 9.0);
-        let after_place = state.resources.metal;
+        let after_place = state.resources.iron;
         state.catch_up(1_010);
-        assert!(state.resources.metal + 1e-6 >= after_place + escrowed);
+        assert!(state.resources.iron + 1e-6 >= after_place + escrowed);
         assert!(state.board.orders.is_empty());
     }
 
@@ -1813,23 +1825,23 @@ mod tests {
             cfg.raid.enabled = false;
             cfg.market = MarketConfig::default_active();
             let mut state = GameState::with_seed(1_000, cfg, seed);
-            state.resources.metal = 50_000.0;
-            state.resources.crystal = 50_000.0;
+            state.resources.iron = 50_000.0;
+            state.resources.silicon = 50_000.0;
             state.resources.deuterium = 50_000.0;
             let home = Coord::HOME;
             state.catch_up(1_000 + state.config.market.tick_secs);
             let _ = state.place_order(
                 home,
                 OrderSide::Buy,
-                ResourceKind::Crystal,
+                ResourceKind::Silicon,
                 8.0,
                 Some(3.0),
                 86_400,
                 state.last_tick_unix,
             );
             (
-                state.resources.metal,
-                state.resources.crystal,
+                state.resources.iron,
+                state.resources.silicon,
                 state.board.orders.len(),
             )
         }
@@ -1840,21 +1852,21 @@ mod tests {
     fn shipment_takes_transit_time_and_fuel() {
         let mut state = ready(1_000);
         let hub = state.config.market.hub();
-        let metal = state.resources.metal;
+        let metal = state.resources.iron;
         let deut = state.resources.deuterium;
         let id = state
             .ship_goods(
                 Coord::HOME,
                 hub,
                 Resources {
-                    metal: 20.0,
+                    iron: 20.0,
                     ..Resources::ZERO
                 },
                 None,
                 1_000,
             )
             .unwrap();
-        assert!(state.resources.metal < metal);
+        assert!(state.resources.iron < metal);
         assert!(state.resources.deuterium < deut);
         let ship = &state.board.shipments[&id];
         assert!(ship.arrives_at > 1_000);
@@ -1862,7 +1874,7 @@ mod tests {
         let eta = ship.arrives_at;
         state.catch_up(eta);
         assert!(state.board.shipments[&id].delivered);
-        let parked = state.board.regions[&hub].player_warehouse.metal;
+        let parked = state.board.regions[&hub].player_warehouse.iron;
         assert!((parked - 20.0).abs() < 1e-6);
     }
 
@@ -1877,7 +1889,7 @@ mod tests {
                 id: 1,
                 kind: ContractKind::Delivery,
                 region: hub,
-                good: ResourceKind::Crystal,
+                good: ResourceKind::Silicon,
                 amount: 10.0,
                 remaining: 10.0,
                 price: 2.0,
@@ -1889,10 +1901,10 @@ mod tests {
             },
         );
         state.ensure_region(hub);
-        let metal = state.resources.metal;
+        let metal = state.resources.iron;
         state.catch_up(1_050);
         assert_eq!(state.board.contracts[&1].status, ContractStatus::Failed);
-        let after = state.resources.metal;
+        let after = state.resources.iron;
         assert!(after < metal);
     }
 
@@ -1907,7 +1919,7 @@ mod tests {
                 id: 1,
                 kind: ContractKind::Delivery,
                 region: hub,
-                good: ResourceKind::Crystal,
+                good: ResourceKind::Silicon,
                 amount: 10.0,
                 remaining: 10.0,
                 price: 2.0,
@@ -1922,7 +1934,7 @@ mod tests {
             Coord::HOME,
             hub,
             Resources {
-                metal: 10.0,
+                iron: 10.0,
                 ..Resources::ZERO
             },
             Some(1),
@@ -1931,7 +1943,7 @@ mod tests {
         assert!(matches!(
             wrong,
             Err(MarketError::Insufficient {
-                kind: ResourceKind::Crystal,
+                kind: ResourceKind::Silicon,
                 ..
             })
         ));
@@ -1939,7 +1951,7 @@ mod tests {
             Coord::HOME,
             hub,
             Resources {
-                crystal: 20.0,
+                silicon: 20.0,
                 ..Resources::ZERO
             },
             Some(1),
@@ -1970,49 +1982,49 @@ mod tests {
     fn fill_overflow_parks_in_the_region_warehouse() {
         let mut state = ready(1_000);
         let home = Coord::HOME;
-        let cap = state.storage_cap(ResourceKind::Crystal);
-        state.resources.crystal = cap;
-        stock_npc(&mut state, home, ResourceKind::Crystal, 10.0);
+        let cap = state.storage_cap(ResourceKind::Silicon);
+        state.resources.silicon = cap;
+        stock_npc(&mut state, home, ResourceKind::Silicon, 10.0);
         state
             .place_order_as(
                 TraderId::Npc,
                 home,
                 OrderSide::Sell,
-                ResourceKind::Crystal,
+                ResourceKind::Silicon,
                 10.0,
                 Some(2.0),
                 86_400,
                 1_000,
             )
             .unwrap();
-        let metal = state.resources.metal;
+        let metal = state.resources.iron;
         state
             .place_order(
                 home,
                 OrderSide::Buy,
-                ResourceKind::Crystal,
+                ResourceKind::Silicon,
                 10.0,
                 Some(2.5),
                 86_400,
                 1_000,
             )
             .unwrap();
-        assert!((state.resources.crystal - cap).abs() < 1e-6);
-        assert!((state.board.regions[&home].player_warehouse.crystal - 10.0).abs() < 1e-6);
-        assert!(state.resources.metal < metal);
+        assert!((state.resources.silicon - cap).abs() < 1e-6);
+        assert!((state.board.regions[&home].player_warehouse.silicon - 10.0).abs() < 1e-6);
+        assert!(state.resources.iron < metal);
     }
 
     #[test]
     fn market_buy_cannot_mint_metal_against_a_high_ask() {
         let mut state = ready(1_000);
         let home = Coord::HOME;
-        stock_npc(&mut state, home, ResourceKind::Crystal, 10.0);
+        stock_npc(&mut state, home, ResourceKind::Silicon, 10.0);
         state
             .place_order_as(
                 TraderId::Npc,
                 home,
                 OrderSide::Sell,
-                ResourceKind::Crystal,
+                ResourceKind::Silicon,
                 10.0,
                 Some(1_000_000.0),
                 86_400,
@@ -2022,14 +2034,14 @@ mod tests {
         let pool = |s: &GameState| {
             let region = &s.board.regions[&home];
             let escrow: f64 = s.board.orders.values().map(|o| o.escrow_metal).sum();
-            s.resources.metal + region.player_warehouse.metal + region.npc_warehouse.metal + escrow
+            s.resources.iron + region.player_warehouse.iron + region.npc_warehouse.iron + escrow
         };
         let before = pool(&state);
         state
             .place_order(
                 home,
                 OrderSide::Buy,
-                ResourceKind::Crystal,
+                ResourceKind::Silicon,
                 10.0,
                 None,
                 86_400,
@@ -2050,21 +2062,21 @@ mod tests {
             .get_mut(&home)
             .unwrap()
             .player_warehouse
-            .crystal = 10.0;
-        state.resources.crystal = 0.0;
+            .silicon = 10.0;
+        state.resources.silicon = 0.0;
         state
             .place_order(
                 home,
                 OrderSide::Sell,
-                ResourceKind::Crystal,
+                ResourceKind::Silicon,
                 5.0,
                 Some(2.0),
                 86_400,
                 1_000,
             )
             .unwrap();
-        assert!((state.board.regions[&home].player_warehouse.crystal - 5.0).abs() < 1e-6);
-        assert!(state.resources.crystal.abs() < 1e-9);
+        assert!((state.board.regions[&home].player_warehouse.silicon - 5.0).abs() < 1e-6);
+        assert!(state.resources.silicon.abs() < 1e-9);
     }
 
     #[test]
@@ -2078,7 +2090,7 @@ mod tests {
         };
         state.ensure_region(hub);
         state.ensure_region(elsewhere);
-        assert!(state.board.regions[&hub].npc_warehouse.metal > 0.0);
+        assert!(state.board.regions[&hub].npc_warehouse.iron > 0.0);
         assert_eq!(
             state.board.regions[&elsewhere].npc_warehouse,
             Resources::ZERO
@@ -2093,7 +2105,7 @@ mod tests {
         gap.place_order(
             home,
             OrderSide::Buy,
-            ResourceKind::Crystal,
+            ResourceKind::Silicon,
             3.0,
             Some(2.0),
             25,
@@ -2103,7 +2115,7 @@ mod tests {
         step.place_order(
             home,
             OrderSide::Buy,
-            ResourceKind::Crystal,
+            ResourceKind::Silicon,
             3.0,
             Some(2.0),
             25,
@@ -2116,7 +2128,7 @@ mod tests {
             step.catch_up(t);
             t += 1;
         }
-        assert!((gap.resources.metal - step.resources.metal).abs() < 1e-6);
+        assert!((gap.resources.iron - step.resources.iron).abs() < 1e-6);
         assert_eq!(gap.board.orders.len(), step.board.orders.len());
     }
 }

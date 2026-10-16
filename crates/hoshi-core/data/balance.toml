@@ -260,8 +260,8 @@ research = 0.0
 queue_slots = 1
 
 [starting_resources]
-metal = 500.0
-crystal = 500.0
+iron = 500.0
+silicon = 500.0
 deuterium = 0.0
 
 [starting_buildings]
@@ -280,8 +280,8 @@ max_rounds = 6
 plunder_share = 0.5
 
 [raid.plunder_cap]
-metal = 10000.0
-crystal = 10000.0
+iron = 10000.0
+silicon = 10000.0
 deuterium = 5000.0
 
 [activity]
@@ -384,21 +384,30 @@ assist_dv = 0.82
 turnaround_secs = 120
 
 [planet_types.rocky]
-metal = 0.10
-crystal = 0.10
+iron = 0.10
+silicon = 0.10
+rare_earths = 0.10
+water_ice = 0.0
+helium_3 = 0.0
 deuterium = 0.0
 energy = 0.0
 
 [planet_types.ice]
-metal = 0.0
-crystal = 0.0
+iron = 0.0
+silicon = 0.0
+rare_earths = 0.0
+water_ice = 0.25
+helium_3 = 0.0
 deuterium = 0.25
 energy = -0.10
 
 [planet_types.gas_giant]
-metal = 0.0
-crystal = 0.0
-deuterium = 0.50
+iron = 0.0
+silicon = 0.0
+rare_earths = 0.0
+water_ice = 0.0
+helium_3 = 0.50
+deuterium = 0.0
 energy = 0.0
 
 [espionage]
@@ -446,8 +455,8 @@ rare_chance = 0.25
 id = "rich_vein"
 name = "Rich vein"
 weight = 3
-metal = 0.25
-crystal = 0.0
+iron = 0.25
+silicon = 0.0
 deuterium = 0.0
 energy = 0.0
 shipyard_speed = 0.0
@@ -457,8 +466,8 @@ fields = 0
 id = "crystal_garden"
 name = "Crystal garden"
 weight = 2
-metal = 0.0
-crystal = 0.30
+iron = 0.0
+silicon = 0.30
 deuterium = 0.0
 energy = 0.0
 shipyard_speed = 0.0
@@ -468,8 +477,8 @@ fields = 0
 id = "shipyard_world"
 name = "Shipyard world"
 weight = 1
-metal = 0.0
-crystal = 0.0
+iron = 0.0
+silicon = 0.0
 deuterium = 0.0
 energy = 0.0
 shipyard_speed = 0.25
@@ -479,8 +488,8 @@ fields = 0
 id = "wide_fields"
 name = "Wide fields"
 weight = 2
-metal = 0.0
-crystal = 0.0
+iron = 0.0
+silicon = 0.0
 deuterium = 0.0
 energy = 0.0
 shipyard_speed = 0.0
@@ -491,8 +500,8 @@ id = "dyson_ring"
 name = "Dyson ring"
 prereq_techs = [{ id = "energy", level = 8 }]
 stages = [
-  { metal = 20000.0, crystal = 10000.0, deuterium = 2000.0, duration_secs = 86400, require_tier = "wonder_supply" },
-  { metal = 40000.0, crystal = 20000.0, deuterium = 4000.0, duration_secs = 172800, require_tier = "wonder_supply" },
+  { iron = 20000.0, silicon = 10000.0, deuterium = 2000.0, duration_secs = 86400, require_tier = "wonder_supply" },
+  { iron = 40000.0, silicon = 20000.0, deuterium = 4000.0, duration_secs = 172800, require_tier = "wonder_supply" },
 ]
 modifiers = [{ kind = "energy_output", value = 0.25 }]
 
@@ -501,8 +510,8 @@ id = "stellar_gate"
 name = "Stellar gate"
 prereq_techs = [{ id = "hyperspace_drive", level = 4 }]
 stages = [
-  { metal = 15000.0, crystal = 15000.0, deuterium = 8000.0, duration_secs = 86400, require_tier = "logistics" },
-  { metal = 30000.0, crystal = 30000.0, deuterium = 16000.0, duration_secs = 172800, require_tier = "logistics" },
+  { iron = 15000.0, silicon = 15000.0, deuterium = 8000.0, duration_secs = 86400, require_tier = "logistics" },
+  { iron = 30000.0, silicon = 30000.0, deuterium = 16000.0, duration_secs = 172800, require_tier = "logistics" },
 ]
 modifiers = [{ kind = "drive_speed", value = 0.20 }]
 
@@ -511,7 +520,7 @@ id = "observatory"
 name = "Deep-space observatory"
 prereq_techs = [{ id = "espionage", level = 4 }]
 stages = [
-  { metal = 8000.0, crystal = 16000.0, deuterium = 2000.0, duration_secs = 86400, require_tier = "steel_electronics" },
+  { iron = 8000.0, silicon = 16000.0, deuterium = 2000.0, duration_secs = 86400, require_tier = "steel_electronics" },
 ]
 modifiers = [{ kind = "espionage", value = 2.0 }]
 

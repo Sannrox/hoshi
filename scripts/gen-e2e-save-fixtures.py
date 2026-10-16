@@ -1031,6 +1031,38 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             );
             """
         )
+    elif version == 39:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS automation_rules (
+                id INTEGER PRIMARY KEY,
+                enabled INTEGER NOT NULL,
+                cond_kind TEXT NOT NULL,
+                cond_g INTEGER NOT NULL,
+                cond_s INTEGER NOT NULL,
+                cond_p INTEGER NOT NULL,
+                cond_resource TEXT NOT NULL,
+                cond_amount REAL NOT NULL,
+                act_kind TEXT NOT NULL,
+                from_g INTEGER,
+                from_s INTEGER,
+                from_p INTEGER,
+                to_g INTEGER,
+                to_s INTEGER,
+                to_p INTEGER,
+                act_resource TEXT,
+                act_amount REAL,
+                act_g INTEGER,
+                act_s INTEGER,
+                act_p INTEGER,
+                act_building TEXT
+            );
+            CREATE TABLE IF NOT EXISTS automation_meta (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                next_at INTEGER
+            );
+            """
+        )
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"
