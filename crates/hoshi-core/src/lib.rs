@@ -12,6 +12,7 @@ mod combat;
 mod commentary;
 mod daily;
 mod defences;
+mod detail;
 mod diplomacy;
 mod espionage;
 mod expedition;
@@ -86,6 +87,9 @@ pub use daily::{
 pub use defences::{
     DEFENCE_KINDS, DefenceConfig, DefenceGrid, DefenceKind, DefenceRole, DefenceSpec, PlanetBattle,
     apply_rebuild, intercept_missiles, resolve_planet_battle,
+};
+pub use detail::{
+    AffordEta, DeltaLine, Detail, DetailSubject, MaterialLine, RequirementLine, ShipTravel,
 };
 pub use diplomacy::{
     DiplomacyConfig, DiplomacyError, DiplomacyState, FactionSpec, FactionTier, StandingChange,

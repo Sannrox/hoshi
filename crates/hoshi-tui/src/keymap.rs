@@ -28,6 +28,7 @@ pub enum Binding {
     Activity,
     Advisor,
     Cockpit,
+    Detail,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +109,7 @@ impl Binding {
         Binding::Activity,
         Binding::Advisor,
         Binding::Cockpit,
+        Binding::Detail,
     ];
 
     pub fn config_key(self) -> &'static str {
@@ -136,6 +138,7 @@ impl Binding {
             Binding::Activity => "activity",
             Binding::Advisor => "advisor",
             Binding::Cockpit => "cockpit",
+            Binding::Detail => "detail",
         }
     }
 
@@ -172,6 +175,7 @@ impl Binding {
             Binding::Activity => vec![KeyCode::Char('a')],
             Binding::Advisor => vec![KeyCode::Char('i')],
             Binding::Cockpit => vec![KeyCode::Char('c')],
+            Binding::Detail => vec![KeyCode::Char('d')],
         }
     }
 }
@@ -226,6 +230,7 @@ impl HelpContext {
                 Binding::Quit,
                 Binding::NextScreen,
                 Binding::Cockpit,
+                Binding::Detail,
                 Binding::PrevPlanet,
                 Binding::NextPlanet,
                 Binding::SelectNext,
@@ -243,6 +248,7 @@ impl HelpContext {
                 Binding::Quit,
                 Binding::NextScreen,
                 Binding::Cockpit,
+                Binding::Detail,
                 Binding::PrevPlanet,
                 Binding::NextPlanet,
                 Binding::SelectNext,
@@ -271,6 +277,7 @@ impl HelpContext {
                 Binding::Quit,
                 Binding::NextScreen,
                 Binding::Cockpit,
+                Binding::Detail,
                 Binding::SelectNext,
                 Binding::SelectPrev,
                 Binding::CopySeed,
@@ -280,6 +287,7 @@ impl HelpContext {
                 Binding::Quit,
                 Binding::NextScreen,
                 Binding::Cockpit,
+                Binding::Detail,
                 Binding::SelectNext,
                 Binding::SelectPrev,
                 Binding::Confirm,
@@ -292,6 +300,7 @@ impl HelpContext {
                 Binding::Quit,
                 Binding::NextScreen,
                 Binding::Cockpit,
+                Binding::Detail,
                 Binding::SelectNext,
                 Binding::SelectPrev,
                 Binding::Confirm,
@@ -348,6 +357,7 @@ impl HelpContext {
                 Binding::Quit,
                 Binding::NextScreen,
                 Binding::Cockpit,
+                Binding::Detail,
                 Binding::Toggle,
                 Binding::SelectNext,
                 Binding::SelectPrev,
@@ -515,6 +525,7 @@ impl HelpContext {
             Binding::Activity => "activity log",
             Binding::Advisor => "advisor",
             Binding::Cockpit => "cockpit dashboard",
+            Binding::Detail => "toggle detail panel",
         }
     }
 }
@@ -959,6 +970,7 @@ mod tests {
         assert!(overview.contains("?"), "{overview}");
         assert!(overview.contains("copy galaxy seed"), "{overview}");
         assert!(overview.contains("replay last combat"), "{overview}");
+        assert!(overview.contains("toggle detail panel"), "{overview}");
         let market = km.help_lines(HelpContext::Market).join("\n");
         assert!(market.contains("increase amount"), "{market}");
         assert!(!market.contains("send spy probe"), "{market}");

@@ -7,6 +7,7 @@ mod clip;
 mod cockpit;
 mod config;
 mod demo;
+mod detail_panel;
 mod keymap;
 mod notify;
 mod portraits;
@@ -912,6 +913,11 @@ fn play_path(
                     }
                     if let Some(layout) = app.take_cockpit_layout() {
                         user.cockpit_layout = layout;
+                        let dir = path.parent().unwrap_or_else(|| Path::new("."));
+                        let _ = user.save(dir);
+                    }
+                    if let Some(on) = app.take_detail_panel() {
+                        user.detail_panel = on;
                         let dir = path.parent().unwrap_or_else(|| Path::new("."));
                         let _ = user.save(dir);
                     }
