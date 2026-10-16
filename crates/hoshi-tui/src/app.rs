@@ -46,6 +46,7 @@ pub enum Screen {
     Ops,
     Automation,
     Finance,
+    Kpis,
     Map,
     Cockpit,
 }
@@ -821,6 +822,7 @@ impl App {
             Screen::Ops => HelpContext::Ops,
             Screen::Automation => HelpContext::Automation,
             Screen::Finance => HelpContext::Finance,
+            Screen::Kpis => HelpContext::Kpis,
             Screen::Map => HelpContext::Map,
             Screen::Cockpit => HelpContext::Cockpit,
         }
@@ -1100,6 +1102,7 @@ impl App {
             Screen::Automation => "dry-run",
             Screen::Map => "dispatch",
             Screen::Finance => "approve",
+            Screen::Kpis => "events",
             Screen::Cockpit
             | Screen::Achievements
             | Screen::Daily
@@ -1525,6 +1528,7 @@ impl App {
             | Screen::Ops => {}
             Screen::Automation => self.activate_automation(),
             Screen::Finance => self.activate_finance(now_unix),
+            Screen::Kpis => self.activate_kpi(),
             Screen::Market => self.activate_market(now_unix),
             Screen::Diplomacy => self.activate_diplomacy(now_unix),
             Screen::Laws => self.activate_law(now_unix),
@@ -1899,7 +1903,8 @@ impl App {
             | Screen::Laws
             | Screen::Reports
             | Screen::Ops
-            | Screen::Finance => {}
+            | Screen::Finance
+            | Screen::Kpis => {}
             Screen::Automation => self.remove_selected_automation_rule(),
         }
     }
@@ -1931,6 +1936,7 @@ impl App {
                 self.state.automation_catalog().tier.len() + self.state.automation_rules.len()
             }
             Screen::Finance => self.state.finance.pending.len() + self.state.finance.budgets.len(),
+            Screen::Kpis => self.state.kpi_snapshot().measurements.len(),
             Screen::Ops => {
                 self.state.vehicles.len()
                     + self.state.planned.len()
@@ -2123,6 +2129,9 @@ impl App {
             Screen::Finance => {
                 format!("{select}  {confirm} approve")
             }
+            Screen::Kpis => {
+                format!("{select}  {confirm} events")
+            }
             Screen::Ops => {
                 format!("{select}  schedule")
             }
@@ -2263,6 +2272,7 @@ impl App {
             Screen::Ops => self.ops_lines(height),
             Screen::Automation => self.automation_lines(height),
             Screen::Finance => self.finance_lines(height),
+            Screen::Kpis => self.kpi_lines(height),
             Screen::Map => self.map_lines(height),
             Screen::Cockpit => Vec::new(),
         }
@@ -3570,6 +3580,74 @@ impl App {
             entries.push(Line::from(
                 "Unlock logistics_rules, then hoshi automation add from the CLI. Enter dry-runs.",
             ));
+        }
+        append_windowed(&mut rows, &entries, self.selected, height)
+    }
+
+    fn activate_kpi(&mut self) {
+        let snap = self.state.kpi_snapshot();
+        let Some(row) = snap.measurements.get(self.selected) else {
+            self.status = "select a kpi".into();
+            return;
+        };
+        if row.event_ids.is_empty() {
+            self.status = format!(
+                "{} {} no source events",
+                row.kpi.as_key(),
+                row.owner.as_key()
+            );
+        } else {
+            let ids = row
+                .event_ids
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            self.status = format!("{} {} events {ids}", row.kpi.as_key(), row.owner.as_key());
+        }
+    }
+
+    fn kpi_lines(&self, height: usize) -> Vec<Line<'static>> {
+        let snap = self.state.kpi_snapshot();
+        let due = snap
+            .next_report_at
+            .saturating_sub(self.state.last_tick_unix);
+        let mut rows = vec![Line::from(format!(
+            "[kpi] next report {due}s  {} targets  {} archived",
+            snap.targets.len(),
+            snap.reports.len()
+        ))];
+        if let Some(report) = snap.reports.last() {
+            rows.push(Line::from(format!(
+                "period #{} at {}  pending {}  {}",
+                report.id,
+                report.at,
+                report.pending_decisions,
+                report.highlights.first().cloned().unwrap_or_default()
+            )));
+        }
+        let mut entries = Vec::new();
+        for (i, row) in snap.measurements.iter().enumerate() {
+            let mark = if i == self.selected { '>' } else { ' ' };
+            let target = row
+                .target
+                .map(|t| format!("{t:.1}"))
+                .unwrap_or_else(|| "-".into());
+            let var = row
+                .variance()
+                .map(|v| format!("{v:+.1}"))
+                .unwrap_or_else(|| "-".into());
+            let progress = row
+                .progress()
+                .map(|p| format!("{:.0}%", p * 100.0))
+                .unwrap_or_else(|| "-".into());
+            entries.push(Line::from(format!(
+                "{mark} {} [{}] {:.1}  target {target}  var {var}  {progress}  events {}",
+                row.kpi.as_key(),
+                row.owner.as_key(),
+                row.value,
+                row.event_ids.len()
+            )));
         }
         append_windowed(&mut rows, &entries, self.selected, height)
     }
@@ -5020,6 +5098,32 @@ mod tests {
     }
 
     #[test]
+    fn kpi_screen_lists_formulas_and_drills_to_events() {
+        let mut state = GameState::new(1_000);
+        state
+            .set_kpi_target(
+                hoshi_core::KpiId::Output,
+                hoshi_core::TargetOwner::Empire,
+                1_000.0,
+                hoshi_core::Actor::Player,
+                1_000,
+            )
+            .unwrap();
+        let mut app = App::new(state);
+        app.open(Screen::Kpis);
+        assert_eq!(app.screen, Screen::Kpis);
+        let text = render_text(&app, 120, 32);
+        assert!(text.contains("KPIs"), "{text}");
+        assert!(text.contains("output"), "{text}");
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(
+            app.status.contains("events") || app.status.contains("no source"),
+            "{}",
+            app.status
+        );
+    }
+
+    #[test]
     fn victory_overlay_enter_keeps_playing() {
         let mut app = App::new(GameState::new(1_000));
         app.state.victory = Some(VictoryRecord {
@@ -5998,10 +6102,12 @@ mod tests {
         assert_eq!(app.screen, Screen::Market);
         app.handle_key(KeyCode::Char('4'), 1_000);
         assert_eq!(app.screen, Screen::Finance);
+        app.handle_key(KeyCode::Char('4'), 1_000);
+        assert_eq!(app.screen, Screen::Kpis);
         app.handle_key(KeyCode::Tab, 1_000);
         assert_eq!(app.screen, Screen::Diplomacy);
         app.handle_key(KeyCode::BackTab, 1_000);
-        assert_eq!(app.screen, Screen::Finance);
+        assert_eq!(app.screen, Screen::Kpis);
         app.handle_key(KeyCode::Char('1'), 1_000);
         assert_eq!(app.screen, Screen::Cockpit);
         let text = render_text(&app, 80, 24);

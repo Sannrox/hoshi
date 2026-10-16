@@ -102,6 +102,14 @@ enum Command {
     FinanceApprove {
         id: u64,
     },
+    Kpis,
+    KpisSet {
+        kpi: String,
+        value: String,
+        owner: String,
+    },
+    KpisReport,
+    KpisGenerate,
     AutomationAdd {
         cond: String,
         planet: Coord,
@@ -764,6 +772,37 @@ fn apply(
                 .approve_spend(*id, Actor::Player, now)
                 .map_err(|e| CliError::Refused(e.to_string()))?;
             Ok(ok_state(state, "spend approved"))
+        }
+        Command::Kpis | Command::KpisReport => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            Ok(kpis_value(state))
+        }
+        Command::KpisSet { kpi, value, owner } => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            let parsed = hoshi_core::KpiId::from_key(kpi)
+                .ok_or_else(|| CliError::Invalid(format!("unknown kpi {kpi}")))?;
+            let owner = hoshi_core::TargetOwner::parse(owner)
+                .ok_or_else(|| CliError::Invalid(format!("unknown target owner {owner}")))?;
+            let amount = value
+                .parse::<f64>()
+                .map_err(|_| CliError::Invalid(format!("bad kpi target {value}")))?;
+            state
+                .set_kpi_target(parsed, owner, amount, Actor::Player, now)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, "target set"))
+        }
+        Command::KpisGenerate => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            state
+                .generate_kpi_report(Actor::Player, now)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(kpis_value(state))
         }
         Command::Automation | Command::AutomationDryRun => {
             if !state.deterministic {
@@ -1451,6 +1490,46 @@ fn automation_value(state: &hoshi_core::GameState) -> serde_json::Value {
     })
 }
 
+fn kpis_value(state: &hoshi_core::GameState) -> serde_json::Value {
+    let snap = state.kpi_snapshot();
+    json!({
+        "ok": true,
+        "schema_version": SCHEMA_VERSION,
+        "next_report_at": snap.next_report_at,
+        "markdown": state.kpi_report_markdown(),
+        "measurements": snap.measurements.iter().map(|m| json!({
+            "kpi": m.kpi.as_key(),
+            "owner": m.owner.as_key(),
+            "value": m.value,
+            "target": m.target,
+            "variance": m.variance(),
+            "progress": m.progress(),
+            "event_ids": m.event_ids,
+        })).collect::<Vec<_>>(),
+        "targets": snap.targets.iter().map(|t| json!({
+            "kpi": t.kpi.as_key(),
+            "owner": t.owner.as_key(),
+            "value": t.value,
+            "set_at": t.set_at,
+        })).collect::<Vec<_>>(),
+        "reports": snap.reports.iter().map(|r| json!({
+            "id": r.id,
+            "at": r.at,
+            "pending_decisions": r.pending_decisions,
+            "highlights": r.highlights,
+            "measurements": r.measurements.iter().map(|m| json!({
+                "kpi": m.kpi.as_key(),
+                "owner": m.owner.as_key(),
+                "value": m.value,
+                "target": m.target,
+                "variance": m.variance(),
+                "progress": m.progress(),
+                "event_ids": m.event_ids,
+            })).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+    })
+}
+
 fn finance_value(state: &hoshi_core::GameState) -> serde_json::Value {
     let report = state.finance_report();
     json!({
@@ -1972,6 +2051,11 @@ fn state_value(state: &GameState, actor: Actor) -> Value {
         "debt": state.finance.treasury.debt(),
         "pending": state.finance.pending.len(),
     });
+    value["kpis"] = json!({
+        "next_report_at": state.kpis.next_report_at,
+        "targets": state.kpis.targets.len(),
+        "reports": state.kpis.reports.len(),
+    });
     value["season"] = match &state.season {
         Some(run) => json!({
             "id": run.ruleset_id,
@@ -2226,6 +2310,32 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
             Some(other) => Err(CliError::Invalid(format!(
                 "unknown finance command {other}"
             ))),
+        },
+        "kpis" => match args.get(1).map(String::as_str) {
+            None => {
+                expect_end(args, 1)?;
+                Ok(Command::Kpis)
+            }
+            Some("set") => {
+                let kpi = nth(args, 2, "kpis set <kpi> <value> [owner]")?.to_string();
+                let value = nth(args, 3, "kpis set <kpi> <value> [owner]")?.to_string();
+                let owner = args.get(4).cloned().unwrap_or_else(|| "empire".into());
+                if args.get(4).is_some() {
+                    expect_end(args, 5)?;
+                } else {
+                    expect_end(args, 4)?;
+                }
+                Ok(Command::KpisSet { kpi, value, owner })
+            }
+            Some("report") => {
+                expect_end(args, 2)?;
+                Ok(Command::KpisReport)
+            }
+            Some("generate") => {
+                expect_end(args, 2)?;
+                Ok(Command::KpisGenerate)
+            }
+            Some(other) => Err(CliError::Invalid(format!("unknown kpis command {other}"))),
         },
         "automation" => match args.get(1).map(String::as_str) {
             None => {

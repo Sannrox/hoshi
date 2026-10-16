@@ -12,7 +12,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 pub const OVERVIEW_PANELS: &str = "map,gauges,queues,fleets,timeline";
-pub const ECONOMY_PANELS: &str = "gauges,queues,market";
+pub const ECONOMY_PANELS: &str = "gauges,kpis,queues,market";
 pub const WAR_PANELS: &str = "map,fleets,raids,tactics";
 
 const MAP_SYSTEM_MAX: u16 = 81;
@@ -61,6 +61,7 @@ pub enum Panel {
     Fleets,
     Timeline,
     Market,
+    Kpis,
     Raids,
     Tactics,
 }
@@ -74,6 +75,7 @@ impl Panel {
             Self::Fleets => "fleets",
             Self::Timeline => "timeline",
             Self::Market => "market",
+            Self::Kpis => "kpis",
             Self::Raids => "raids",
             Self::Tactics => "tactics",
         }
@@ -87,6 +89,7 @@ impl Panel {
             "fleets" => Self::Fleets,
             "timeline" => Self::Timeline,
             "market" => Self::Market,
+            "kpis" => Self::Kpis,
             "raids" => Self::Raids,
             "tactics" => Self::Tactics,
             _ => return None,
@@ -567,6 +570,7 @@ fn render_panel(frame: &mut Frame<'_>, area: Rect, panel: Panel, focused: bool, 
         Panel::Fleets => fleet_lines(view.state, height, selected, t),
         Panel::Timeline => timeline_lines(view.state, height, t),
         Panel::Market => market_lines(view.state, height, t),
+        Panel::Kpis => kpi_lines(view.state, height, t),
         Panel::Raids => raid_lines(view.state, height, t),
         Panel::Tactics => tactics_lines(view.state, height, t),
     };
@@ -901,6 +905,32 @@ fn market_lines(state: &GameState, height: usize, _t: &Theme) -> Vec<Line<'stati
         "Fe {}",
         sparkline(market.history(ResourceKind::Iron), 16)
     )));
+    lines.truncate(height.max(1));
+    lines
+}
+
+fn kpi_lines(state: &GameState, height: usize, _t: &Theme) -> Vec<Line<'static>> {
+    let snap = state.kpi_snapshot();
+    let mut lines = Vec::new();
+    for row in snap.measurements.iter().take(height.max(1)) {
+        let target = row
+            .target
+            .map(|t| format!("{t:.0}"))
+            .unwrap_or_else(|| "-".into());
+        let var = row
+            .variance()
+            .map(|v| format!("{v:+.0}"))
+            .unwrap_or_else(|| "-".into());
+        lines.push(Line::from(format!(
+            "{} {} {:.0}/{target} {var}",
+            row.kpi.as_key(),
+            row.owner.as_key(),
+            row.value
+        )));
+    }
+    if lines.is_empty() {
+        lines.push(Line::from("no kpis"));
+    }
     lines.truncate(height.max(1));
     lines
 }

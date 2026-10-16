@@ -88,6 +88,22 @@
     {
       "name": "Approval",
       "description": "A decision that releases a held spend over a budget or role limit."
+    },
+    {
+      "name": "Kpi",
+      "description": "A named series computed from live production, energy, waste, treasury, incidents, missions or trade."
+    },
+    {
+      "name": "Target",
+      "description": "A goal value on a KPI owned by the empire, a colony or a role."
+    },
+    {
+      "name": "Measurement",
+      "description": "A period sample of a KPI with variance versus its target and source event ids."
+    },
+    {
+      "name": "Report",
+      "description": "An archived period of KPI measurements, highlights and pending decisions."
     }
   ],
   "relations": [
@@ -138,6 +154,30 @@
       "domain": "Approval",
       "range": "Player",
       "description": "The player or assigned leader who released a held spend."
+    },
+    {
+      "name": "measured-over",
+      "domain": "Measurement",
+      "range": "Kpi",
+      "description": "The series a measurement samples."
+    },
+    {
+      "name": "compared-with",
+      "domain": "Measurement",
+      "range": "Target",
+      "description": "The goal a measurement is scored against."
+    },
+    {
+      "name": "owned-by",
+      "domain": "Target",
+      "range": "Planet",
+      "description": "A colony or role that holds a KPI target. Empire targets have no planet owner."
+    },
+    {
+      "name": "generated-from",
+      "domain": "Report",
+      "range": "Measurement",
+      "description": "The samples archived into a periodic report."
     }
   ],
   "provenance": [

@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 41;
+pub const SCHEMA_VERSION: u32 = 42;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -222,7 +222,11 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM finance_job_credits;
          DELETE FROM finance_pending;
          DELETE FROM finance_budgets;
-         DELETE FROM finance_meta;",
+         DELETE FROM finance_meta;
+         DELETE FROM kpi_measurements;
+         DELETE FROM kpi_reports;
+         DELETE FROM kpi_targets;
+         DELETE FROM kpi_meta;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -465,6 +469,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
         params![state.next_automation_at.map(|t| t as i64)],
     )?;
     persist_finance(&tx, state)?;
+    persist_kpi(&tx, state)?;
     tx.execute(
         "INSERT INTO activity_boosts (id, prod_until, prod_factor, research_until, research_factor)
          VALUES (1, ?1, ?2, ?3, ?4)",
@@ -1766,6 +1771,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         }
     };
     read_finance(conn, &mut state)?;
+    read_kpi(conn, &mut state)?;
     state.next_route_id = state
         .routes
         .iter()
@@ -2947,6 +2953,10 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "finance_budgets" => "SELECT COUNT(*) FROM finance_budgets",
         "finance_pending" => "SELECT COUNT(*) FROM finance_pending",
         "finance_job_credits" => "SELECT COUNT(*) FROM finance_job_credits",
+        "kpi_meta" => "SELECT COUNT(*) FROM kpi_meta",
+        "kpi_targets" => "SELECT COUNT(*) FROM kpi_targets",
+        "kpi_reports" => "SELECT COUNT(*) FROM kpi_reports",
+        "kpi_measurements" => "SELECT COUNT(*) FROM kpi_measurements",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -3045,7 +3055,11 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "finance_meta")?
         + count_rows(conn, "finance_budgets")?
         + count_rows(conn, "finance_pending")?
-        + count_rows(conn, "finance_job_credits")?)
+        + count_rows(conn, "finance_job_credits")?
+        + count_rows(conn, "kpi_meta")?
+        + count_rows(conn, "kpi_targets")?
+        + count_rows(conn, "kpi_reports")?
+        + count_rows(conn, "kpi_measurements")?)
 }
 
 fn migrate(conn: &Connection) -> Result<(), SaveError> {
@@ -3178,6 +3192,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 41 {
         migrate_v41(conn)?;
+    }
+    if found < 42 {
+        migrate_v42(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -4270,6 +4287,43 @@ fn migrate_v41(conn: &Connection) -> Result<(), SaveError> {
             s INTEGER,
             p INTEGER,
             credits REAL NOT NULL
+        );
+        ",
+    )?;
+    Ok(())
+}
+
+fn migrate_v42(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS kpi_meta (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            next_report_at INTEGER NOT NULL,
+            next_id INTEGER NOT NULL,
+            period_trade REAL NOT NULL,
+            period_contract REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS kpi_targets (
+            kpi TEXT NOT NULL,
+            owner TEXT NOT NULL,
+            value REAL NOT NULL,
+            set_at INTEGER NOT NULL,
+            PRIMARY KEY (kpi, owner)
+        );
+        CREATE TABLE IF NOT EXISTS kpi_reports (
+            id INTEGER PRIMARY KEY,
+            at INTEGER NOT NULL,
+            pending INTEGER NOT NULL,
+            highlights TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS kpi_measurements (
+            report_id INTEGER NOT NULL,
+            kpi TEXT NOT NULL,
+            owner TEXT NOT NULL,
+            value REAL NOT NULL,
+            target REAL,
+            event_ids TEXT NOT NULL,
+            PRIMARY KEY (report_id, kpi, owner)
         );
         ",
     )?;
@@ -7141,6 +7195,173 @@ fn persist_job_credits(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Res
     Ok(())
 }
 
+fn persist_kpi(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<(), SaveError> {
+    tx.execute(
+        "INSERT INTO kpi_meta (id, next_report_at, next_id, period_trade, period_contract)
+         VALUES (1, ?1, ?2, ?3, ?4)",
+        params![
+            state.kpis.next_report_at as i64,
+            state.kpis.next_id as i64,
+            state.kpis.period_trade,
+            state.kpis.period_contract,
+        ],
+    )?;
+    for row in &state.kpis.targets {
+        tx.execute(
+            "INSERT INTO kpi_targets (kpi, owner, value, set_at) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                row.kpi.as_key(),
+                row.owner.as_key(),
+                row.value,
+                row.set_at as i64,
+            ],
+        )?;
+    }
+    for report in &state.kpis.reports {
+        tx.execute(
+            "INSERT INTO kpi_reports (id, at, pending, highlights) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                report.id as i64,
+                report.at as i64,
+                report.pending_decisions as i64,
+                report.highlights.join("\n"),
+            ],
+        )?;
+        for m in &report.measurements {
+            let ids = m
+                .event_ids
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            tx.execute(
+                "INSERT INTO kpi_measurements (report_id, kpi, owner, value, target, event_ids)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    report.id as i64,
+                    m.kpi.as_key(),
+                    m.owner.as_key(),
+                    m.value,
+                    m.target,
+                    ids,
+                ],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn read_kpi(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
+    let cfg = crate::KpiConfig::bundled();
+    state.kpis = crate::KpiState::new(state.last_tick_unix, &cfg);
+    let meta = conn
+        .query_row(
+            "SELECT next_report_at, next_id, period_trade, period_contract FROM kpi_meta WHERE id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, f64>(2)?,
+                    row.get::<_, f64>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((next_at, next_id, period_trade, period_contract)) = meta else {
+        return Ok(());
+    };
+    state.kpis.next_report_at = unix_ts(next_at)?;
+    state.kpis.next_id = u64::try_from(next_id).unwrap_or(1);
+    state.kpis.period_trade = period_trade;
+    state.kpis.period_contract = period_contract;
+    let mut stmt = conn.prepare("SELECT kpi, owner, value, set_at FROM kpi_targets")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, f64>(2)?,
+            row.get::<_, i64>(3)?,
+        ))
+    })?;
+    let mut targets = Vec::new();
+    for row in rows {
+        let (kpi, owner, value, set_at) = row?;
+        let kpi = crate::KpiId::from_key(&kpi).ok_or(SaveError::Corrupt("kpi id"))?;
+        let owner = crate::TargetOwner::parse(&owner).ok_or(SaveError::Corrupt("kpi owner"))?;
+        targets.push(crate::KpiTarget {
+            kpi,
+            owner,
+            value,
+            set_at: unix_ts(set_at)?,
+        });
+    }
+    state.kpis.targets = targets;
+    let mut stmt =
+        conn.prepare("SELECT id, at, pending, highlights FROM kpi_reports ORDER BY id")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    })?;
+    let mut reports = Vec::new();
+    for row in rows {
+        let (id, at, pending, highlights) = row?;
+        reports.push(crate::PeriodicReport {
+            id: u64::try_from(id).map_err(|_| SaveError::Corrupt("report id"))?,
+            at: unix_ts(at)?,
+            measurements: Vec::new(),
+            highlights: if highlights.is_empty() {
+                Vec::new()
+            } else {
+                highlights.split('\n').map(str::to_string).collect()
+            },
+            pending_decisions: usize::try_from(pending).unwrap_or(0),
+        });
+    }
+    let mut stmt = conn.prepare(
+        "SELECT report_id, kpi, owner, value, target, event_ids FROM kpi_measurements ORDER BY report_id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, f64>(3)?,
+            row.get::<_, Option<f64>>(4)?,
+            row.get::<_, String>(5)?,
+        ))
+    })?;
+    for row in rows {
+        let (report_id, kpi, owner, value, target, event_ids) = row?;
+        let id = u64::try_from(report_id).map_err(|_| SaveError::Corrupt("report id"))?;
+        let kpi = crate::KpiId::from_key(&kpi).ok_or(SaveError::Corrupt("kpi id"))?;
+        let owner = crate::TargetOwner::parse(&owner).ok_or(SaveError::Corrupt("kpi owner"))?;
+        let event_ids = if event_ids.is_empty() {
+            Vec::new()
+        } else {
+            event_ids
+                .split(',')
+                .filter_map(|s| s.parse::<u64>().ok())
+                .collect()
+        };
+        if let Some(report) = reports.iter_mut().find(|r| r.id == id) {
+            report.measurements.push(crate::Measurement {
+                kpi,
+                owner,
+                value,
+                target,
+                event_ids,
+            });
+        }
+    }
+    state.kpis.reports = reports;
+    Ok(())
+}
+
 fn read_finance(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
     let cfg = crate::FinanceConfig::bundled();
     state.finance = crate::FinanceState::new(state.last_tick_unix, &cfg);
@@ -8942,6 +9163,35 @@ mod tests {
             matches!(err, SaveError::Sqlite(_)),
             "expected sqlite error, got {err:?}"
         );
+    }
+
+    #[test]
+    fn migrate_v42_round_trips_kpis() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v42(&conn).unwrap();
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.enabled = false;
+        cfg.market.enabled = false;
+        let mut state = GameState::with_seed(1_000, cfg, 9);
+        state.deterministic = true;
+        state
+            .set_kpi_target(
+                crate::KpiId::Output,
+                crate::TargetOwner::Empire,
+                50.0,
+                crate::Actor::Player,
+                1_000,
+            )
+            .unwrap();
+        state.catch_up(state.kpis.next_report_at);
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.kpis.targets.len(), 1);
+        assert_eq!(loaded.kpis.targets[0].value, 50.0);
+        assert_eq!(loaded.kpis.reports.len(), 1);
+        assert_eq!(count_rows(&conn, "kpi_meta").unwrap(), 1);
+        assert_eq!(count_rows(&conn, "kpi_targets").unwrap(), 1);
+        assert_eq!(count_rows(&conn, "kpi_reports").unwrap(), 1);
     }
 
     #[test]

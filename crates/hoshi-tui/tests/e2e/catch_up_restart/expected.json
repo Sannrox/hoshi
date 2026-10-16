@@ -166,6 +166,11 @@
     "sink": 80.0
   },
   "incidents": [],
+  "kpis": {
+    "next_report_at": 259200,
+    "reports": 2,
+    "targets": 0
+  },
   "ladder": {
     "completed": [],
     "current": null,
@@ -356,7 +361,7 @@
     "empires": [],
     "enabled": false
   },
-  "save_schema": 41,
+  "save_schema": 42,
   "schema_version": 2,
   "season": null,
   "species": null,

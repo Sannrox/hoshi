@@ -68,6 +68,15 @@ pub enum Intent {
         id: u64,
         actor: Actor,
     },
+    SetTarget {
+        kpi: String,
+        owner: String,
+        value: f64,
+        actor: Actor,
+    },
+    GenerateReport {
+        actor: Actor,
+    },
 }
 
 impl Intent {
@@ -85,6 +94,8 @@ impl Intent {
             Intent::SetBudget { .. } => "set_budget",
             Intent::RequestSpend { .. } => "request_spend",
             Intent::ApproveSpend { .. } => "approve_spend",
+            Intent::SetTarget { .. } => "set_target",
+            Intent::GenerateReport { .. } => "generate_report",
         }
     }
 }
@@ -103,6 +114,7 @@ pub enum IntentError {
     Fleet(FleetError),
     Market(MarketError),
     Finance(crate::FinanceError),
+    Kpi(crate::KpiError),
     Save(String),
 }
 
@@ -114,6 +126,7 @@ impl fmt::Display for IntentError {
             IntentError::Fleet(e) => write!(f, "{e}"),
             IntentError::Market(e) => write!(f, "{e}"),
             IntentError::Finance(e) => write!(f, "{e}"),
+            IntentError::Kpi(e) => write!(f, "{e}"),
             IntentError::Save(e) => write!(f, "save backend: {e}"),
         }
     }
@@ -207,6 +220,18 @@ fn proposal_id(intent: &Intent, now_unix: u64, tick: u64) -> String {
         }
         Intent::ApproveSpend { id, actor } => {
             format!("approve_spend:{now_unix}:{tick}:{id}:{}", actor.as_key())
+        }
+        Intent::SetTarget {
+            kpi,
+            owner,
+            value,
+            actor,
+        } => format!(
+            "set_target:{now_unix}:{tick}:{kpi}:{owner}:{value}:{}",
+            actor.as_key()
+        ),
+        Intent::GenerateReport { actor } => {
+            format!("generate_report:{now_unix}:{tick}:{}", actor.as_key())
         }
     }
 }
@@ -302,6 +327,24 @@ fn apply_inner(state: &mut GameState, intent: &Intent, now_unix: u64) -> Result<
         Intent::ApproveSpend { id, actor } => state
             .approve_spend(*id, *actor, now_unix)
             .map_err(IntentError::Finance),
+        Intent::SetTarget {
+            kpi,
+            owner,
+            value,
+            actor,
+        } => {
+            let kpi =
+                crate::KpiId::from_key(kpi).ok_or(IntentError::Kpi(crate::KpiError::UnknownKpi))?;
+            let owner = crate::TargetOwner::parse(owner)
+                .ok_or(IntentError::Kpi(crate::KpiError::UnknownOwner))?;
+            state
+                .set_kpi_target(kpi, owner, *value, *actor, now_unix)
+                .map_err(IntentError::Kpi)
+        }
+        Intent::GenerateReport { actor } => state
+            .generate_kpi_report(*actor, now_unix)
+            .map(|_| ())
+            .map_err(IntentError::Kpi),
     }
 }
 
@@ -374,6 +417,17 @@ mod tests {
             .as_key(),
             Intent::ApproveSpend {
                 id: 1,
+                actor: Actor::Player,
+            }
+            .as_key(),
+            Intent::SetTarget {
+                kpi: "output".into(),
+                owner: "empire".into(),
+                value: 1.0,
+                actor: Actor::Player,
+            }
+            .as_key(),
+            Intent::GenerateReport {
                 actor: Actor::Player,
             }
             .as_key(),
