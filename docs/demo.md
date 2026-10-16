@@ -6,7 +6,7 @@ until you build with `--features chisei` **and** pass `--demo` or set
 never calls a model.
 
 ```sh
-cargo build -p hoshi-tui --features chisei
+cargo build -p hoshi --features chisei
 hoshi --demo demo governance --seed 7
 ```
 
@@ -65,5 +65,5 @@ JSON includes outcomes, blocks, an audit excerpt, `cost_per_win`,
 using the expensive model for every move). Markdown repeats that table.
 
 ```sh
-cargo test -p hoshi-tui --features chisei demo
+cargo test -p hoshi --features chisei demo
 ```

@@ -45,6 +45,10 @@ fn write_notify(bytes: Vec<u8>) {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("hoshi {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     if args.get(1).map(String::as_str) == Some("post") {
         match run_post(&args[2..]) {
             Ok(()) => return,

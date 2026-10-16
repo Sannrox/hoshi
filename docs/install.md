@@ -1,0 +1,57 @@
+# Install
+
+The playable crate is `hoshi` (the binary lives in `crates/hoshi-tui`).
+`cargo install --git … hoshi` is the cargo path. `hoshi-core` stays unpublished
+while an optional git-pinned backend remains in its manifest. This repository's
+release workflow publishes GitHub Release binaries and the Homebrew formula;
+it does not upload crates.
+
+## Git
+
+```sh
+cargo install --git https://github.com/Sannrox/hoshi --locked hoshi
+```
+
+Optional backends (`--features mikura`, `--features chisei`, `--features bridge`)
+are available from this install.
+
+## Prebuilt binaries
+
+Pushing a SemVer tag `vX.Y.Z` runs `.github/workflows/release.yml`. The GitHub
+Release attaches five binaries and `SHA256SUMS`:
+
+| File | Target |
+| --- | --- |
+| `hoshi-x86_64-unknown-linux-gnu` | Linux x86_64 |
+| `hoshi-aarch64-unknown-linux-gnu` | Linux aarch64 |
+| `hoshi-x86_64-apple-darwin` | macOS Intel |
+| `hoshi-aarch64-apple-darwin` | macOS Apple Silicon |
+| `hoshi-x86_64-pc-windows-msvc.exe` | Windows x86_64 |
+
+Each binary is started with `--version` in that workflow. Linux x86_64 also
+runs a headless `hoshi --save PATH --seed 1 state`.
+
+Release notes are the Unreleased (or matching version) changelog section plus a
+**Saves** paragraph: current `SCHEMA_VERSION`, older saves migrate in place,
+newer saves are refused.
+
+## Homebrew
+
+```sh
+brew tap Sannrox/tap
+brew install hoshi
+```
+
+The formula (`Formula/hoshi.rb` in [Sannrox/homebrew-tap](https://github.com/Sannrox/homebrew-tap))
+is regenerated on each tag. `brew test` runs `hoshi --version`. If the tap token
+is not set, the same `hoshi.rb` is attached to the GitHub Release.
+
+## Crate registry
+
+After `hoshi` and `hoshi-core` are on a crate registry:
+
+```sh
+cargo install hoshi --locked
+```
+
+Until then, use git, a GitHub Release binary, or Homebrew.

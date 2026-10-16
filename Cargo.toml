@@ -19,3 +19,7 @@ edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/Sannrox/hoshi"
 publish = false
+
+[workspace.dependencies]
+hoshi-core = { version = "0.1.0", path = "crates/hoshi-core" }
+hoshi-bridge = { version = "0.1.0", path = "crates/hoshi-bridge" }

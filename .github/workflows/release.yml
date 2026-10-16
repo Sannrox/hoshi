@@ -1,0 +1,160 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify-tag:
+    name: Tag matches crate version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check tag
+        run: bash scripts/check-release-tag.sh "${GITHUB_REF_NAME}"
+
+  build:
+    name: ${{ matrix.target }}
+    needs: verify-tag
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: hoshi-x86_64-unknown-linux-gnu
+            native: "true"
+            linux_state: "true"
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact: hoshi-aarch64-unknown-linux-gnu
+            native: "false"
+            linux_state: "false"
+            cross: "true"
+          - os: macos-13
+            target: x86_64-apple-darwin
+            artifact: hoshi-x86_64-apple-darwin
+            native: "true"
+            linux_state: "false"
+          - os: macos-14
+            target: aarch64-apple-darwin
+            artifact: hoshi-aarch64-apple-darwin
+            native: "true"
+            linux_state: "false"
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: hoshi-x86_64-pc-windows-msvc
+            ext: .exe
+            native: "true"
+            linux_state: "false"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+          targets: ${{ matrix.target }}
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+      - name: Cross linker (Linux aarch64)
+        if: matrix.cross == 'true'
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu qemu-user-static
+      - name: Build
+        if: matrix.cross != 'true'
+        run: cargo build --locked --release --target ${{ matrix.target }} -p hoshi --bin hoshi
+      - name: Build (cross)
+        if: matrix.cross == 'true'
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: cargo build --locked --release --target ${{ matrix.target }} -p hoshi --bin hoshi
+      - name: Smoke --version
+        shell: bash
+        env:
+          BIN: target/${{ matrix.target }}/release/hoshi${{ matrix.ext }}
+        run: |
+          set -euo pipefail
+          want="hoshi ${GITHUB_REF_NAME#v}"
+          if [ "${{ matrix.native }}" = "true" ]; then
+            out="$("${BIN}" --version)"
+          else
+            out="$(qemu-aarch64-static "${BIN}" --version)"
+          fi
+          printf '%s\n' "${out}"
+          printf '%s\n' "${out}" | grep -F "${want}"
+      - name: Headless state
+        if: matrix.linux_state == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/hoshi"
+          tmp="$(mktemp "${RUNNER_TEMP}/hoshi-smoke-XXXXXX.sqlite")"
+          "${bin}" --save "${tmp}" --seed 1 state
+          rm -f "${tmp}" "${tmp}.lock"
+      - name: Stage artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          src="target/${{ matrix.target }}/release/hoshi${{ matrix.ext }}"
+          dest="dist/${{ matrix.artifact }}${{ matrix.ext }}"
+          cp "${src}" "${dest}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}${{ matrix.ext }}
+
+  release:
+    needs: [verify-tag, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          sha256sum hoshi-* | tee SHA256SUMS
+      - name: Release notes
+        run: |
+          set -euo pipefail
+          bash scripts/release-notes.sh "${GITHUB_REF_NAME}" > dist/RELEASE_NOTES.md
+          cat dist/RELEASE_NOTES.md
+      - name: Homebrew formula
+        run: bash scripts/homebrew-formula.sh "${GITHUB_REF_NAME}" dist
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" dist/* --title "hoshi ${GITHUB_REF_NAME}" --notes-file dist/RELEASE_NOTES.md
+      - name: Homebrew tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${HOMEBREW_TAP_TOKEN:-}" ]; then
+            echo "HOMEBREW_TAP_TOKEN unset; formula attached to the GitHub Release as hoshi.rb"
+            exit 0
+          fi
+          git clone --depth 1 "https://github.com/Sannrox/homebrew-tap.git" tap
+          mkdir -p tap/Formula
+          cp dist/hoshi.rb tap/Formula/hoshi.rb
+          git -C tap config user.name "github-actions[bot]"
+          git -C tap config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C tap add Formula/hoshi.rb
+          if git -C tap diff --cached --quiet; then
+            echo "tap formula already at ${GITHUB_REF_NAME}"
+            exit 0
+          fi
+          git -C tap commit -m "hoshi ${GITHUB_REF_NAME#v}"
+          git -C tap push "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/Sannrox/homebrew-tap.git" HEAD:main

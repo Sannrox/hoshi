@@ -35,7 +35,7 @@ jobs:
       - name: Chisei backend
         run: cargo test --locked -p hoshi-core --features chisei
       - name: Chisei TUI demo
-        run: cargo test --locked -p hoshi-tui --features chisei
+        run: cargo test --locked -p hoshi --features chisei
 
   fmt:
     name: Rustfmt
@@ -61,7 +61,7 @@ jobs:
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo clippy --locked -p hoshi-core --features mikura --all-targets -- -D warnings
       - run: cargo clippy --locked -p hoshi-core --features chisei --all-targets -- -D warnings
-      - run: cargo clippy --locked -p hoshi-tui --features chisei --all-targets -- -D warnings
+      - run: cargo clippy --locked -p hoshi --features chisei --all-targets -- -D warnings
 
   workflow-skills:
     name: Workflow Skills
@@ -83,8 +83,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: PR sample
         if: github.event_name != 'schedule'
-        run: cargo run --locked -p hoshi-tui --bin hoshi -- --self-play self-play --matrix pr --bots
+        run: cargo run --locked -p hoshi --bin hoshi -- --self-play self-play --matrix pr --bots
       - name: Nightly matrix
         if: github.event_name == 'schedule'
-        run: cargo run --locked -p hoshi-tui --bin hoshi -- --self-play self-play --matrix nightly --bots
+        run: cargo run --locked -p hoshi --bin hoshi -- --self-play self-play --matrix nightly --bots
 

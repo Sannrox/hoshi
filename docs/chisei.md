@@ -12,7 +12,7 @@ Ontology package: **hoshi-ontology/v1**, `schema_version: 1`, at
 `crates/hoshi-core/data/ontology/hoshi-v1.json`.
 
 ```sh
-cargo build -p hoshi-tui --features chisei
+cargo build -p hoshi --features chisei
 hoshi --features chisei --save empire.chisei state
 ```
 

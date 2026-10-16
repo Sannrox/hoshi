@@ -1,7 +1,7 @@
 # Playtest loop
 
 A short session should feel like a game, not a checklist. Run this after a
-fresh install (or `cargo run -p hoshi-tui`) and again after leaving the save
+fresh install (or `cargo run -p hoshi`) and again after leaving the save
 alone for hours.
 
 ## Checklist
