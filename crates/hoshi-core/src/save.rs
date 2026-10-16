@@ -2213,6 +2213,8 @@ pub struct SaveGlance {
     /// `None` when the save predates schema v5 and never stored a galaxy seed.
     pub galaxy_seed: Option<u64>,
     pub generator_version: u32,
+    /// Playable species id when the save has a `species_run` row.
+    pub species_id: Option<String>,
 }
 
 pub fn inspect_save(path: &Path) -> Result<SaveGlance, SaveError> {
@@ -2305,6 +2307,16 @@ pub fn inspect_save(path: &Path) -> Result<SaveGlance, SaveError> {
     } else {
         1
     };
+    let species_id = if table_exists(&conn, "species_run") {
+        conn.query_row(
+            "SELECT species_id FROM species_run WHERE id = 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+    } else {
+        None
+    };
     Ok(SaveGlance {
         schema,
         last_tick_unix: unix_ts(last_tick)?,
@@ -2313,6 +2325,7 @@ pub fn inspect_save(path: &Path) -> Result<SaveGlance, SaveError> {
         fleet_strength: u32::try_from(fleet).unwrap_or(0),
         galaxy_seed,
         generator_version,
+        species_id,
     })
 }
 
@@ -8271,6 +8284,30 @@ mod tests {
         assert_eq!(glance.fleet_strength, 4);
         assert_eq!(glance.galaxy_seed, Some(0));
         assert_eq!(glance.generator_version, crate::GALAXY_GENERATOR_VERSION);
+        assert_eq!(glance.species_id, None);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(save_lock_path(&path));
+    }
+
+    #[test]
+    fn inspect_save_reads_the_species_run() {
+        let path = unique_path("inspect-species");
+        let mut conn = open_save(&path).unwrap();
+        let mut prestige = crate::Prestige::default();
+        prestige.unlocked_species.insert("aurelians".into());
+        let state = crate::GameState::new_with_species(
+            50,
+            &crate::SpeciesCatalog::default(),
+            "aurelians",
+            crate::BalanceConfig::default(),
+            7,
+            prestige,
+        )
+        .unwrap();
+        save_state(&mut conn, &state).unwrap();
+        drop(conn);
+        let glance = inspect_save(&path).unwrap();
+        assert_eq!(glance.species_id.as_deref(), Some("aurelians"));
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(save_lock_path(&path));
     }

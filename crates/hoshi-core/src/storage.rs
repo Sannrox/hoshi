@@ -174,6 +174,7 @@ pub(crate) fn inspect_backend_save(path: &Path) -> Result<crate::SaveGlance, Sav
         fleet_strength: state.fleet.total(),
         galaxy_seed: Some(state.galaxy_seed),
         generator_version: state.generator_version,
+        species_id: state.species.as_ref().map(|run| run.id.clone()),
     })
 }
 

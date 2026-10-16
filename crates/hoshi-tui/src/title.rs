@@ -3,6 +3,7 @@
 use crate::clip::copy_to_clipboard;
 use crate::config::UserConfig;
 use crate::keymap::{Binding, HelpContext, Keymap};
+use crate::portraits::{self, Mood, PortraitView, Slot as PortraitSlot};
 use hoshi_core::{
     AchievementConfig, BalanceConfig, CareerGlance, Prestige, PrestigeConfig, PrestigeError,
     SaveError, SaveGlance, SeasonCatalog, SpeciesCatalog, SpeciesSpec, advisor_endpoint_allowed,
@@ -704,6 +705,14 @@ impl Title {
             self.status = msg;
             return TitleAction::None;
         }
+        let spec = self.selected_species();
+        if !self
+            .species_catalog
+            .is_unlocked(&spec.id, &self.career.prestige)
+        {
+            self.status = format!("{} locked ({} prestige)", spec.name, spec.unlock_cost);
+            return TitleAction::None;
+        }
         let path = self.dir.join(format!("{name}.sqlite"));
         if path.exists() {
             self.status = format!("{name} already exists");
@@ -717,18 +726,12 @@ impl Title {
         TitleAction::Play(0)
     }
 
-    fn unlocked_specs(&self) -> Vec<&SpeciesSpec> {
-        self.species_catalog
-            .iter()
-            .filter(|spec| {
-                self.species_catalog
-                    .is_unlocked(&spec.id, &self.career.prestige)
-            })
-            .collect()
+    fn catalog_specs(&self) -> Vec<&SpeciesSpec> {
+        self.species_catalog.iter().collect()
     }
 
     fn selected_species(&self) -> &SpeciesSpec {
-        let specs = self.unlocked_specs();
+        let specs = self.catalog_specs();
         specs
             .get(self.new_species)
             .copied()
@@ -741,8 +744,84 @@ impl Title {
     }
 
     fn cycle_species(&mut self) {
-        let n = self.unlocked_specs().len().max(1);
+        let n = self.catalog_specs().len().max(1);
         self.new_species = (self.new_species + 1) % n;
+    }
+
+    fn species_unlocked(&self, spec: &SpeciesSpec) -> bool {
+        self.species_catalog
+            .is_unlocked(&spec.id, &self.career.prestige)
+    }
+
+    fn species_card_lines(&self, spec: &SpeciesSpec, wide: bool) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+        if wide && self.config.portraits {
+            lines.extend(portraits::portrait_lines_for(
+                PortraitView {
+                    enabled: true,
+                    protocol: portraits::Protocol::None,
+                },
+                PortraitSlot::Commander,
+                Mood::Neutral,
+                Some(spec.portrait.as_str()),
+            ));
+        }
+        let lock = if self.species_unlocked(spec) {
+            "unlocked".to_string()
+        } else {
+            format!("locked, {} prestige", spec.unlock_cost)
+        };
+        lines.push(Line::from(format!(
+            "{}  {}  lean {}  {lock}",
+            spec.name,
+            spec.blurb,
+            spec.victory_lean.as_key()
+        )));
+        lines.push(Line::from(format!(
+            "+{}  -{}",
+            spec.strengths, spec.weaknesses
+        )));
+        if !spec.standing.is_empty() {
+            let standing = spec
+                .standing
+                .iter()
+                .map(|(faction, delta)| format!("{faction} {delta:+.0}"))
+                .collect::<Vec<_>>()
+                .join("  ");
+            lines.push(Line::from(format!("start standing  {standing}")));
+        }
+        lines
+    }
+
+    fn slot_status_line(&self, status: &SlotStatus, now_unix: u64) -> String {
+        match status {
+            SlotStatus::Ready(g) | SlotStatus::Harness(g) => {
+                let ago = now_unix.saturating_sub(g.last_tick_unix);
+                let species = g
+                    .species_id
+                    .as_deref()
+                    .and_then(|id| self.species_catalog.get(id).map(|s| s.name.as_str()))
+                    .unwrap_or("Humans");
+                let kind = if matches!(status, SlotStatus::Harness(_)) {
+                    "harness save (CLI only)"
+                } else {
+                    species
+                };
+                match g.galaxy_seed {
+                    Some(seed) => format!(
+                        "{kind}  planets {}  fleet {}  {}  {ago}s ago",
+                        g.planets,
+                        g.fleet_strength,
+                        encode_galaxy_seed(seed)
+                    ),
+                    None => format!(
+                        "{kind}  planets {}  fleet {}  {ago}s ago",
+                        g.planets, g.fleet_strength
+                    ),
+                }
+            }
+            _ => status.line(now_unix),
+        }
     }
 
     fn locked_species(&self) -> Vec<&SpeciesSpec> {
@@ -1515,6 +1594,7 @@ impl Title {
             }
             Page::New => {
                 let spec = self.selected_species();
+                let wide = inner.width >= 120;
                 lines.push(Line::from(format!("New game  {}", spec.name)));
                 lines.push(field_line(
                     "name",
@@ -1541,18 +1621,23 @@ impl Title {
                     if self.new_rivals { "on" } else { "off" },
                     self.new_field == NewField::Rivals,
                 ));
-                lines.push(Line::from(format!(
-                    "{}  lean {}  +{}  -{}",
-                    spec.blurb,
-                    spec.victory_lean.as_key(),
-                    spec.strengths,
-                    spec.weaknesses
-                )));
-                lines.push(Line::from(self.seed_preview_line()));
                 let summary = self.prestige_summary();
                 if !summary.is_empty() {
                     lines.push(Line::from(summary));
                 }
+                for (i, row) in self.species_catalog.iter().enumerate() {
+                    let mark = if i == self.new_species { ">" } else { " " };
+                    let lock = if self.species_unlocked(row) {
+                        String::new()
+                    } else {
+                        format!("  locked, {} prestige", row.unlock_cost)
+                    };
+                    lines.push(Line::from(format!("{mark} {}{lock}", row.name)));
+                }
+                if wide {
+                    lines.extend(self.species_card_lines(spec, true));
+                }
+                lines.push(Line::from(self.seed_preview_line()));
                 lines.push(Line::from(format!(
                     "{} on difficulty, species or rivals creates the slot. {} cycles species or rivals. {} back. {} help.",
                     self.config.keys.primary(Binding::Confirm),
@@ -1579,7 +1664,7 @@ impl Title {
                     lines.push(Line::from(format!(
                         "{mark} {}  {}",
                         slot.name,
-                        slot.status.line(self.now_unix)
+                        self.slot_status_line(&slot.status, self.now_unix)
                     )));
                 }
                 if let Some(from) = &self.rename_from {
@@ -2170,8 +2255,8 @@ pub fn research_levels(state: &hoshi_core::GameState) -> u32 {
 mod tests {
     use super::*;
     use hoshi_core::{
-        BalanceConfig, GameState, SCHEMA_VERSION, load_state, lock_save, open_save, save_is_locked,
-        save_state,
+        BalanceConfig, GameState, Prestige, SCHEMA_VERSION, SpeciesCatalog, load_state, lock_save,
+        open_save, save_is_locked, save_state,
     };
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -2278,6 +2363,69 @@ mod tests {
         title.tick();
         let b = render(&title, 80, 24);
         assert_eq!(a, b);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn new_game_lists_every_species_as_a_list_at_80x24() {
+        let dir = unique_dir();
+        let mut title = Title::new(dir.clone(), 100);
+        title.page = Page::New;
+        let text = render(&title, 80, 24);
+        for spec in SpeciesCatalog::default().iter() {
+            assert!(text.contains(&spec.name), "missing {} in {text}", spec.name);
+        }
+        assert!(text.contains("locked, 2 prestige"), "{text}");
+        assert!(!text.contains("start standing"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn new_game_shows_a_species_card_on_wide_terminals() {
+        let dir = unique_dir();
+        let mut title = Title::new(dir.clone(), 100);
+        title.page = Page::New;
+        let text = render(&title, 160, 48);
+        assert!(text.contains("lean diplomacy"), "{text}");
+        assert!(text.contains("start standing"), "{text}");
+        assert!(text.contains("trade and diplomacy"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn locked_species_are_visible_but_do_not_create_a_save() {
+        let dir = unique_dir();
+        let mut title = Title::new(dir.clone(), 100);
+        title.page = Page::New;
+        title.new_field = NewField::Species;
+        title.handle_key(KeyCode::Char(' '));
+        assert_eq!(title.selected_species().id, "kryth");
+        let action = title.handle_key(KeyCode::Enter);
+        assert_eq!(action, TitleAction::None);
+        assert!(title.status.contains("locked"), "{}", title.status);
+        assert!(!dir.join("save.sqlite").exists() && title.play_path.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_slot_shows_the_chosen_species() {
+        let dir = unique_dir();
+        let mut prestige = Prestige::default();
+        prestige.unlocked_species.insert("aurelians".into());
+        let state = GameState::new_with_species(
+            10,
+            &SpeciesCatalog::default(),
+            "aurelians",
+            BalanceConfig::default(),
+            7,
+            prestige,
+        )
+        .unwrap();
+        write_save(&dir, "alchemy", &state);
+        let mut title = Title::new(dir.clone(), 20);
+        title.page = Page::Load;
+        let text = render(&title, 80, 24);
+        assert!(text.contains("Aurelians"), "{text}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
