@@ -572,10 +572,10 @@ fn default_market_metal() -> f64 {
     1.0
 }
 fn default_market_crystal() -> f64 {
-    2.0
+    1.5
 }
 fn default_market_deut() -> f64 {
-    3.0
+    6.0
 }
 fn default_market_cargo() -> f64 {
     50.0
@@ -1176,6 +1176,12 @@ struct FileResources {
     iron: f64,
     #[serde(alias = "electronics", alias = "crystal")]
     silicon: f64,
+    #[serde(default)]
+    rare_earths: f64,
+    #[serde(default)]
+    water_ice: f64,
+    #[serde(default)]
+    helium_3: f64,
     #[serde(alias = "fuel")]
     deuterium: f64,
 }
@@ -1667,7 +1673,14 @@ impl FileBuilding {
 
 impl FileResources {
     fn into_resources(self) -> Resources {
-        Resources::from_parts(self.iron, self.silicon, self.deuterium)
+        Resources {
+            iron: self.iron,
+            silicon: self.silicon,
+            rare_earths: self.rare_earths,
+            water_ice: self.water_ice,
+            helium_3: self.helium_3,
+            deuterium: self.deuterium,
+        }
     }
 }
 
@@ -1811,6 +1824,18 @@ impl BalanceConfig {
         nonneg_finite(
             "starting_resources.silicon",
             self.starting_resources.silicon,
+        )?;
+        nonneg_finite(
+            "starting_resources.rare_earths",
+            self.starting_resources.rare_earths,
+        )?;
+        nonneg_finite(
+            "starting_resources.water_ice",
+            self.starting_resources.water_ice,
+        )?;
+        nonneg_finite(
+            "starting_resources.helium_3",
+            self.starting_resources.helium_3,
         )?;
         nonneg_finite(
             "starting_resources.deuterium",
@@ -2191,6 +2216,11 @@ mod tests {
         assert_eq!(cfg.buildings, BuildingCatalog::default());
         assert_eq!(cfg.max_build_queue, 5);
         assert_eq!(cfg.starting_resources.iron, 500.0);
+        assert_eq!(cfg.starting_resources.rare_earths, 0.0);
+        assert_eq!(cfg.starting_resources.water_ice, 0.0);
+        assert_eq!(cfg.starting_resources.helium_3, 0.0);
+        assert!((cfg.market.crystal_mean - 1.5).abs() < 1e-12);
+        assert!((cfg.market.deuterium_mean - 6.0).abs() < 1e-12);
         assert_eq!(cfg.starting_buildings.metal_mine, 1);
         assert_eq!(cfg.starting_buildings.solar_plant, 1);
         assert_eq!(cfg.raid, RaidConfig::default_active());
@@ -2213,6 +2243,30 @@ mod tests {
         assert_eq!(cfg.wonders[0].id, "dyson_ring");
         assert_eq!(cfg.wonders[0].prereq_techs[0].id, "energy");
         assert_eq!(cfg.wonders[0].prereq_techs[0].level, 8);
+    }
+
+    #[test]
+    fn market_mids_follow_extraction_energy() {
+        let cfg = BalanceConfig::default();
+        let iron = cfg.metal_mine.energy_use(1) / cfg.metal_mine.production_per_hour(1);
+        let silicon = cfg.crystal_mine.energy_use(1) / cfg.crystal_mine.production_per_hour(1);
+        let deuterium = cfg.deuterium_synthesizer.energy_use(1)
+            / cfg.deuterium_synthesizer.production_per_hour(1);
+        let unit = cfg.market.metal_mean / iron;
+        assert!(
+            (cfg.market.crystal_mean - silicon * unit).abs() < 1e-9,
+            "silicon mid {} vs energy {}",
+            cfg.market.crystal_mean,
+            silicon * unit
+        );
+        assert!(
+            (cfg.market.deuterium_mean - deuterium * unit).abs() < 1e-9,
+            "deuterium mid {} vs energy {}",
+            cfg.market.deuterium_mean,
+            deuterium * unit
+        );
+        assert!(cfg.market.deuterium_mean > cfg.market.crystal_mean);
+        assert!(cfg.market.crystal_mean > cfg.market.metal_mean);
     }
 
     #[test]

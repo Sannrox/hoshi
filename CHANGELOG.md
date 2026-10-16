@@ -8,6 +8,8 @@
 
 ### Added
 
+- Market mids follow L1 extraction energy (iron 1, silicon 1.5, deuterium 6). `hoshi simulate` reports per-material stock and rates; energy binds before any single material in the default early game.
+
 - Construction stockpiles are iron, silicon, rare earths, water ice, helium-3 and deuterium fuel. Rocky worlds carry iron and rare earths, ice worlds water ice, gas giants helium-3. Old metal/crystal/deuterium saves migrate (schema v40): metal splits 95% iron / 5% rare earths; crystal becomes silicon; deuterium tankage stays fuel. See `docs/realism.md`.
 
 - Automation as research progression: adaptive trade routes, multi-planet queues, then rule-based logistics (`keep metal on the capital`). Rules are data, conflict-checked, and evaluated on catch-up; control systems draw energy. The Automation screen dry-runs rules; `hoshi automation` adds, toggles and previews them. Save schema v39. See `crates/hoshi-core/data/automation.toml`.

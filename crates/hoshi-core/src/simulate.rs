@@ -19,7 +19,17 @@ pub struct PrestigeSimRow {
     pub first_upgrade_secs: Option<u64>,
     pub metal_mine_level: u32,
     pub iron: f64,
-    pub metal_per_hour: f64,
+    pub silicon: f64,
+    pub rare_earths: f64,
+    pub water_ice: f64,
+    pub helium_3: f64,
+    pub deuterium: f64,
+    pub iron_per_hour: f64,
+    pub silicon_per_hour: f64,
+    pub rare_earths_per_hour: f64,
+    pub water_ice_per_hour: f64,
+    pub helium_3_per_hour: f64,
+    pub deuterium_per_hour: f64,
 }
 
 /// One day's stockpile and mine level at the day boundary.
@@ -31,7 +41,16 @@ pub struct DaySnapshot {
     pub solar_plant: u32,
     pub iron: f64,
     pub silicon: f64,
+    pub rare_earths: f64,
+    pub water_ice: f64,
+    pub helium_3: f64,
     pub deuterium: f64,
+    pub iron_per_hour: f64,
+    pub silicon_per_hour: f64,
+    pub rare_earths_per_hour: f64,
+    pub water_ice_per_hour: f64,
+    pub helium_3_per_hour: f64,
+    pub deuterium_per_hour: f64,
 }
 
 /// Pacing report for a greedy N-day run.
@@ -43,6 +62,12 @@ pub struct SimReport {
     pub metal_without_bridge: f64,
     pub metal_with_bridge: f64,
     pub bridge_metal_ratio: f64,
+    pub iron_per_hour: f64,
+    pub silicon_per_hour: f64,
+    pub rare_earths_per_hour: f64,
+    pub water_ice_per_hour: f64,
+    pub helium_3_per_hour: f64,
+    pub deuterium_per_hour: f64,
     pub days_log: Vec<DaySnapshot>,
     pub pacing: PacingTargets,
     pub prestige_runs: Vec<PrestigeSimRow>,
@@ -250,16 +275,22 @@ impl SimReport {
         }
         if !self.prestige_runs.is_empty() {
             out.push_str("\n## Prestige runs\n\n");
-            out.push_str("| run | bonuses | first upgrade | metal mine | metal | metal/h |\n");
-            out.push_str("| --- | --- | --- | --- | --- | --- |\n");
+            out.push_str("| run | bonuses | first upgrade | metal mine | iron | iron/h | silicon/h | deuterium/h |\n");
+            out.push_str("| --- | --- | --- | --- | --- | --- | --- | --- |\n");
             for row in &self.prestige_runs {
                 let first = match row.first_upgrade_secs {
                     Some(s) => format!("{s}s"),
                     None => "never".into(),
                 };
                 out.push_str(&format!(
-                    "| {} | {} | {first} | {} | {:.0} | {:.0} |\n",
-                    row.run, row.bonuses, row.metal_mine_level, row.iron, row.metal_per_hour
+                    "| {} | {} | {first} | {} | {:.0} | {:.0} | {:.0} | {:.0} |\n",
+                    row.run,
+                    row.bonuses,
+                    row.metal_mine_level,
+                    row.iron,
+                    row.iron_per_hour,
+                    row.silicon_per_hour,
+                    row.deuterium_per_hour
                 ));
             }
             out.push('\n');
@@ -288,17 +319,55 @@ impl SimReport {
             if self.passed() { "pass" } else { "fail" }
         ));
         out.push_str("## Daily (activity off)\n\n");
-        out.push_str("| day | metal mine | crystal mine | solar | metal | crystal | deuterium |\n");
-        out.push_str("| --- | --- | --- | --- | --- | --- | --- |\n");
+        out.push_str("## Materials (activity off)\n\n");
+        out.push_str("| material | stock | /h |\n");
+        out.push_str("| --- | --- | --- |\n");
+        let last = self.days_log.last();
+        let stock = |get: fn(&DaySnapshot) -> f64| last.map(get).unwrap_or(0.0);
+        out.push_str(&format!(
+            "| iron | {:.0} | {:.1} |\n",
+            stock(|r| r.iron),
+            self.iron_per_hour
+        ));
+        out.push_str(&format!(
+            "| silicon | {:.0} | {:.1} |\n",
+            stock(|r| r.silicon),
+            self.silicon_per_hour
+        ));
+        out.push_str(&format!(
+            "| rare_earths | {:.0} | {:.1} |\n",
+            stock(|r| r.rare_earths),
+            self.rare_earths_per_hour
+        ));
+        out.push_str(&format!(
+            "| water_ice | {:.0} | {:.1} |\n",
+            stock(|r| r.water_ice),
+            self.water_ice_per_hour
+        ));
+        out.push_str(&format!(
+            "| helium_3 | {:.0} | {:.1} |\n",
+            stock(|r| r.helium_3),
+            self.helium_3_per_hour
+        ));
+        out.push_str(&format!(
+            "| deuterium | {:.0} | {:.1} |\n\n",
+            stock(|r| r.deuterium),
+            self.deuterium_per_hour
+        ));
+        out.push_str("| day | metal mine | crystal mine | solar | iron | silicon | rare earths | water ice | helium-3 | deuterium |\n");
+        out.push_str("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
         for row in &self.days_log {
             out.push_str(&format!(
-                "| {} | {} | {} | {} | {:.0} | {:.0} | {:.0} |\n",
+                "| {} | {} | {} | {} | {:.0} | {:.0} | {:.0} | {:.0} | {:.0} | {:.0} |\n",
                 row.day,
                 row.metal_mine,
                 row.crystal_mine,
                 row.solar_plant,
                 row.iron,
                 row.silicon,
+                row.rare_earths,
+                row.water_ice,
+                row.helium_3,
                 row.deuterium
             ));
         }
@@ -349,6 +418,12 @@ pub fn simulate_greedy(config: BalanceConfig, days: u32) -> SimReport {
         metal_without_bridge: quiet.iron,
         metal_with_bridge: busy.iron,
         bridge_metal_ratio: ratio,
+        iron_per_hour: quiet.iron_per_hour,
+        silicon_per_hour: quiet.silicon_per_hour,
+        rare_earths_per_hour: quiet.rare_earths_per_hour,
+        water_ice_per_hour: quiet.water_ice_per_hour,
+        helium_3_per_hour: quiet.helium_3_per_hour,
+        deuterium_per_hour: quiet.deuterium_per_hour,
         days_log: quiet.days_log,
         pacing,
         prestige_runs,
@@ -472,7 +547,17 @@ fn prestige_row(run: &Run, index: u32, bonuses: u32) -> PrestigeSimRow {
         first_upgrade_secs: run.first_upgrade_secs,
         metal_mine_level: run.metal_mine,
         iron: run.iron,
-        metal_per_hour: run.metal_per_hour,
+        silicon: run.silicon,
+        rare_earths: run.rare_earths,
+        water_ice: run.water_ice,
+        helium_3: run.helium_3,
+        deuterium: run.deuterium,
+        iron_per_hour: run.iron_per_hour,
+        silicon_per_hour: run.silicon_per_hour,
+        rare_earths_per_hour: run.rare_earths_per_hour,
+        water_ice_per_hour: run.water_ice_per_hour,
+        helium_3_per_hour: run.helium_3_per_hour,
+        deuterium_per_hour: run.deuterium_per_hour,
     }
 }
 
@@ -480,7 +565,17 @@ struct Run {
     first_upgrade_secs: Option<u64>,
     metal_mine: u32,
     iron: f64,
-    metal_per_hour: f64,
+    silicon: f64,
+    rare_earths: f64,
+    water_ice: f64,
+    helium_3: f64,
+    deuterium: f64,
+    iron_per_hour: f64,
+    silicon_per_hour: f64,
+    rare_earths_per_hour: f64,
+    water_ice_per_hour: f64,
+    helium_3_per_hour: f64,
+    deuterium_per_hour: f64,
     days_log: Vec<DaySnapshot>,
 }
 
@@ -551,7 +646,17 @@ fn run_once(mut config: BalanceConfig, days: u32, activity: bool, mine_focus: u3
         first_upgrade_secs,
         metal_mine: state.buildings.metal_mine,
         iron: state.resources.iron,
-        metal_per_hour: state.production_per_hour(ResourceKind::Iron),
+        silicon: state.resources.silicon,
+        rare_earths: state.resources.rare_earths,
+        water_ice: state.resources.water_ice,
+        helium_3: state.resources.helium_3,
+        deuterium: state.resources.deuterium,
+        iron_per_hour: state.production_per_hour(ResourceKind::Iron),
+        silicon_per_hour: state.production_per_hour(ResourceKind::Silicon),
+        rare_earths_per_hour: state.production_per_hour(ResourceKind::RareEarths),
+        water_ice_per_hour: state.production_per_hour(ResourceKind::WaterIce),
+        helium_3_per_hour: state.production_per_hour(ResourceKind::Helium3),
+        deuterium_per_hour: state.production_per_hour(ResourceKind::Deuterium),
         days_log,
     }
 }
@@ -564,7 +669,16 @@ fn snapshot(state: &GameState, day: u32) -> DaySnapshot {
         solar_plant: state.buildings.solar_plant,
         iron: state.resources.iron,
         silicon: state.resources.silicon,
+        rare_earths: state.resources.rare_earths,
+        water_ice: state.resources.water_ice,
+        helium_3: state.resources.helium_3,
         deuterium: state.resources.deuterium,
+        iron_per_hour: state.production_per_hour(ResourceKind::Iron),
+        silicon_per_hour: state.production_per_hour(ResourceKind::Silicon),
+        rare_earths_per_hour: state.production_per_hour(ResourceKind::RareEarths),
+        water_ice_per_hour: state.production_per_hour(ResourceKind::WaterIce),
+        helium_3_per_hour: state.production_per_hour(ResourceKind::Helium3),
+        deuterium_per_hour: state.production_per_hour(ResourceKind::Deuterium),
     }
 }
 
@@ -1487,11 +1601,11 @@ mod tests {
         let second = &report.prestige_runs[1];
         let third = &report.prestige_runs[2];
         assert!(
-            first.metal_per_hour + 1e-9 < second.metal_per_hour,
+            first.iron_per_hour + 1e-9 < second.iron_per_hour,
             "{first:?} {second:?}"
         );
         assert!(
-            second.metal_per_hour + 1e-9 < third.metal_per_hour,
+            second.iron_per_hour + 1e-9 < third.iron_per_hour,
             "{second:?} {third:?}"
         );
         let first_up = first.first_upgrade_secs.expect("run 1 upgrade");
@@ -1646,5 +1760,111 @@ mod tests {
                 row.path
             );
         }
+    }
+
+    #[test]
+    fn greedy_report_commits_per_material_output() {
+        let report = simulate_greedy(BalanceConfig::default(), 1);
+        assert!(report.passed(), "{}", report.to_markdown());
+        let md = report.to_markdown();
+        for name in [
+            "iron",
+            "silicon",
+            "rare_earths",
+            "water_ice",
+            "helium_3",
+            "deuterium",
+        ] {
+            assert!(md.contains(name), "missing {name} in {md}");
+        }
+        assert!(
+            report.iron_per_hour > 0.0,
+            "iron/h {}",
+            report.iron_per_hour
+        );
+        assert!(
+            report.silicon_per_hour > 0.0,
+            "silicon/h {}",
+            report.silicon_per_hour
+        );
+        let last = report.days_log.last().expect("day log");
+        assert!(last.iron > 0.0);
+        assert!(last.silicon > 0.0);
+        assert_eq!(last.iron_per_hour, report.iron_per_hour);
+    }
+
+    #[test]
+    fn energy_binds_before_any_material_in_early_game() {
+        let mut state = GameState::with_config(0, BalanceConfig::default());
+        assert!(
+            state.energy_factor() + 1e-9 >= 1.0,
+            "starter solar should cover starter mines"
+        );
+        state.buildings.metal_mine = 8;
+        state.buildings.crystal_mine = 8;
+        state.buildings.deuterium_synthesizer = 4;
+        let report = state.production_report();
+        assert_eq!(report.limited_by.as_key(), "energy");
+        assert!(report.energy_demand > report.energy_supply);
+        assert!(state.energy_factor() < 1.0);
+        assert_ne!(report.limited_by.as_key(), "input");
+    }
+
+    #[test]
+    fn default_seed_covers_every_material() {
+        let cfg = BalanceConfig::default();
+        let mut produced = Vec::new();
+        let mut consumed = Vec::new();
+        for recipe in &cfg.chains.recipes {
+            for id in recipe.outputs.keys() {
+                if let Some(kind) = crate::chains::component_kind(id) {
+                    produced.push(kind);
+                }
+            }
+            for id in recipe.inputs.keys() {
+                if let Some(kind) = crate::chains::component_kind(id) {
+                    consumed.push(kind);
+                }
+            }
+        }
+        for kind in ResourceKind::ALL {
+            assert!(
+                produced.contains(&kind) || cfg.starting_resources.get(kind) > 0.0,
+                "{kind:?} has no producer and no starting stock"
+            );
+        }
+        assert!(
+            consumed.contains(&ResourceKind::RareEarths),
+            "rare earths must feed a recipe"
+        );
+        assert!(
+            consumed.contains(&ResourceKind::WaterIce),
+            "water ice must feed a recipe"
+        );
+        assert!(
+            consumed.contains(&ResourceKind::Helium3),
+            "helium-3 must feed a recipe"
+        );
+        let rocky = cfg.chains.deposits.get(&crate::planets::PlanetType::Rocky);
+        let rocky = rocky.expect("rocky deposits");
+        for deposit in ["rare_earths", "water_ice", "helium_3"] {
+            let richness = *rocky.get(deposit).unwrap_or(&0.0);
+            assert!(
+                richness > 0.0,
+                "{deposit} unreachable on default rocky home ({richness})"
+            );
+        }
+        let report = simulate_greedy(cfg, 1);
+        let last = report.days_log.last().expect("day log");
+        assert!(last.rare_earths > 0.0 || last.rare_earths_per_hour > 0.0);
+        assert!(
+            last.deuterium > 0.0
+                || last.deuterium_per_hour > 0.0
+                || last.water_ice > 0.0
+                || last.water_ice_per_hour > 0.0
+                || last.helium_3 > 0.0
+                || last.helium_3_per_hour > 0.0,
+            "volatiles unused after a greedy day: {last:?}"
+        );
     }
 }

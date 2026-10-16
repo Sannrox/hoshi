@@ -92,6 +92,9 @@ pub struct ProductionReport {
     pub metal_per_hour: f64,
     pub crystal_per_hour: f64,
     pub deuterium_per_hour: f64,
+    pub rare_earths_per_hour: f64,
+    pub water_ice_per_hour: f64,
+    pub helium_3_per_hour: f64,
     pub limited_by: LimitingFactor,
 }
 
@@ -133,6 +136,9 @@ impl GameState {
             metal_per_hour: self.empire_production_per_hour(ResourceKind::Iron),
             crystal_per_hour: self.empire_production_per_hour(ResourceKind::Silicon),
             deuterium_per_hour: self.empire_production_per_hour(ResourceKind::Deuterium),
+            rare_earths_per_hour: self.empire_production_per_hour(ResourceKind::RareEarths),
+            water_ice_per_hour: self.empire_production_per_hour(ResourceKind::WaterIce),
+            helium_3_per_hour: self.empire_production_per_hour(ResourceKind::Helium3),
             limited_by,
         }
     }
