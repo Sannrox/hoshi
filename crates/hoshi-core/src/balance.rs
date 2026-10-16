@@ -353,6 +353,7 @@ pub struct BalanceConfig {
     pub victory: crate::VictoryConfig,
     pub ladder: crate::LadderConfig,
     pub frontier: crate::FrontierConfig,
+    pub self_play: crate::SelfPlayConfig,
 }
 
 impl BalanceConfig {
@@ -443,6 +444,8 @@ struct File {
     victory: FileVictory,
     #[serde(default)]
     frontier: crate::frontier::FileFrontier,
+    #[serde(default)]
+    self_play: FileSelfPlay,
 }
 
 #[derive(Deserialize)]
@@ -1064,6 +1067,48 @@ fn default_keystone_secs() -> u64 {
 }
 
 #[derive(Deserialize)]
+struct FileSelfPlay {
+    #[serde(default = "default_dominance_max")]
+    dominance_max: f64,
+    #[serde(default = "default_win_share_max")]
+    win_share_max: f64,
+    #[serde(default = "default_pr_seeds")]
+    pr_seeds: Vec<u64>,
+    #[serde(default = "default_nightly_seeds")]
+    nightly_seeds: Vec<u64>,
+    #[serde(default = "default_curve_days")]
+    curve_days: u32,
+}
+
+impl Default for FileSelfPlay {
+    fn default() -> Self {
+        Self {
+            dominance_max: default_dominance_max(),
+            win_share_max: default_win_share_max(),
+            pr_seeds: default_pr_seeds(),
+            nightly_seeds: default_nightly_seeds(),
+            curve_days: default_curve_days(),
+        }
+    }
+}
+
+fn default_dominance_max() -> f64 {
+    0.25
+}
+fn default_win_share_max() -> f64 {
+    0.55
+}
+fn default_pr_seeds() -> Vec<u64> {
+    vec![1]
+}
+fn default_nightly_seeds() -> Vec<u64> {
+    vec![1, 2, 3, 5, 8]
+}
+fn default_curve_days() -> u32 {
+    3
+}
+
+#[derive(Deserialize)]
 struct FileProducer {
     base_per_hour: f64,
     growth: f64,
@@ -1562,6 +1607,13 @@ impl File {
                 .frontier
                 .into_config()
                 .map_err(|e| BalanceError::Invalid(e.to_string()))?,
+            self_play: crate::SelfPlayConfig {
+                dominance_max: self.self_play.dominance_max,
+                win_share_max: self.self_play.win_share_max,
+                pr_seeds: self.self_play.pr_seeds,
+                nightly_seeds: self.self_play.nightly_seeds,
+                curve_days: self.self_play.curve_days,
+            },
         };
         let wonders = config.wonders.clone();
         config.achievements.drop_unknown_wonders(&wonders);
@@ -1675,6 +1727,31 @@ impl BalanceConfig {
         if self.pacing.first_upgrade_secs == 0 {
             return Err(BalanceError::Invalid(
                 "pacing.first_upgrade_secs must be > 0".into(),
+            ));
+        }
+        for (field, value) in [
+            ("self_play.dominance_max", self.self_play.dominance_max),
+            ("self_play.win_share_max", self.self_play.win_share_max),
+        ] {
+            if !(0.0..=1.0).contains(&value) {
+                return Err(BalanceError::Invalid(format!(
+                    "{field} must be a finite value in 0..=1"
+                )));
+            }
+        }
+        if self.self_play.pr_seeds.is_empty() {
+            return Err(BalanceError::Invalid(
+                "self_play.pr_seeds must not be empty".into(),
+            ));
+        }
+        if self.self_play.nightly_seeds.is_empty() {
+            return Err(BalanceError::Invalid(
+                "self_play.nightly_seeds must not be empty".into(),
+            ));
+        }
+        if self.self_play.curve_days < 1 {
+            return Err(BalanceError::Invalid(
+                "self_play.curve_days must be >= 1".into(),
             ));
         }
         if self.pacing.min_metal_mine_per_day == 0 {
@@ -2135,6 +2212,13 @@ mod tests {
         assert_eq!(cfg.wonders[0].id, "dyson_ring");
         assert_eq!(cfg.wonders[0].prereq_techs[0].id, "energy");
         assert_eq!(cfg.wonders[0].prereq_techs[0].level, 8);
+    }
+
+    #[test]
+    fn rejects_self_play_thresholds_outside_zero_to_one() {
+        let text = DEFAULT_BALANCE.replace("dominance_max = 0.25", "dominance_max = 1.5");
+        let err = BalanceConfig::parse(&text).unwrap_err();
+        assert!(err.to_string().contains("self_play.dominance_max"), "{err}");
     }
 
     #[test]

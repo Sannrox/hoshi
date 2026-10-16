@@ -39,6 +39,7 @@ mod research;
 mod rivals;
 mod save;
 mod season;
+mod self_play;
 mod ships;
 mod simulate;
 mod species;
@@ -187,14 +188,18 @@ pub use season::{
     SEASON_SYSTEMS, SeasonCatalog, SeasonError, SeasonRuleset, SeasonRun, SeasonWindow,
     season_slot_name,
 };
+pub use self_play::{
+    SelfPlayCell, SelfPlayConfig, SelfPlayReport, path_bot_relpaths, run_self_play,
+};
 pub use ships::{
     Fleet, SHIP_KINDS, ShipCatalog, ShipCatalogError, ShipError, ShipJob, ShipKind, ShipSpec,
     ShipStats,
 };
 pub use simulate::{
     DaySnapshot, HeavyIndustryReport, LadderSimRow, PrestigeSimRow, SimReport, VictorySimRow,
-    heavy_industry_check, simulate_greedy, simulate_species_victory_paths, simulate_victory_paths,
-    simulate_victory_paths_with_rivals, tactics_no_combo_dominates,
+    greedy_curve, heavy_industry_check, simulate_greedy, simulate_species_victory_paths,
+    simulate_victory_paths, simulate_victory_paths_for_seed, simulate_victory_paths_with_rivals,
+    tactics_no_combo_dominates,
 };
 pub use species::{Flagship, SpeciesCatalog, SpeciesError, SpeciesRun, SpeciesSpec};
 pub use state::{GameEvent, GameState, LogisticsGlance, ResourceKind, Resources};

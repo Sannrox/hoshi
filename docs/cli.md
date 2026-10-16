@@ -74,6 +74,7 @@ hoshi --save PATH tutorial reset
 hoshi --save PATH tactics set [formation <id>] [stance <id>] [retreat <0-1>]
 hoshi --save PATH tactics action hold|retreat|commit
 hoshi --save PATH feedback [note...]
+hoshi --self-play self-play [--matrix pr|nightly] [--seed N] [--report PATH] [--bots]
 hoshi [--save PATH] --arena arena run --seed N --days N [--actions N] [--timeout-ms N] [--board PATH] bot...
 hoshi [--save PATH] --arena arena board [--board PATH]
 hoshi [--save PATH] --demo demo governance --seed N [--report PATH]

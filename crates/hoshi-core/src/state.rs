@@ -6191,6 +6191,7 @@ mod tests {
             victory: crate::VictoryConfig::inactive(),
             ladder: crate::LadderConfig::default(),
             frontier: crate::FrontierConfig::default(),
+            self_play: crate::SelfPlayConfig::default(),
         }
     }
 

@@ -48,6 +48,7 @@ The save file lives in the user data directory (`hoshi/save.sqlite`). Override t
 
 ```sh
 hoshi simulate --days 3
+hoshi --self-play self-play --matrix pr
 ```
 
 prints a pacing report (first upgrade time, daily mine levels, bridge-effect ratio). Targets live in `docs/balance.md`.
