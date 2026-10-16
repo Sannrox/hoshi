@@ -730,12 +730,18 @@ fn apply(
             Ok(automation_value(state))
         }
         Command::AutomationToggle { id } => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
             let on = state
                 .toggle_automation_rule(*id)
                 .map_err(|e| CliError::Refused(e.to_string()))?;
             Ok(ok_state(state, if on { "rule on" } else { "rule off" }))
         }
         Command::AutomationRemove { id } => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
             state
                 .remove_automation_rule(*id)
                 .map_err(|e| CliError::Refused(e.to_string()))?;
