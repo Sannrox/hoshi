@@ -64,6 +64,30 @@
     {
       "name": "Shipment",
       "description": "Goods in transit between regions. Pays fuel and takes flight time."
+    },
+    {
+      "name": "Treasury",
+      "description": "Empire cash account. Income and expenses are valued materials, energy and labour."
+    },
+    {
+      "name": "Budget",
+      "description": "A period spending cap on a cost center, with forecast and actual."
+    },
+    {
+      "name": "CostCenter",
+      "description": "A department, fleet or colony that spending is charged to."
+    },
+    {
+      "name": "Expense",
+      "description": "A valued spend of materials, energy or labour in the current period."
+    },
+    {
+      "name": "Forecast",
+      "description": "Expected spend from queued work and held approvals."
+    },
+    {
+      "name": "Approval",
+      "description": "A decision that releases a held spend over a budget or role limit."
     }
   ],
   "relations": [
@@ -102,6 +126,18 @@
       "domain": "Shipment",
       "range": "Contract",
       "description": "A shipment that delivers against an accepted contract."
+    },
+    {
+      "name": "charged-to",
+      "domain": "Expense",
+      "range": "CostCenter",
+      "description": "The department, fleet or colony that bears the spend."
+    },
+    {
+      "name": "approved-by",
+      "domain": "Approval",
+      "range": "Player",
+      "description": "The player or assigned leader who released a held spend."
     }
   ],
   "provenance": [

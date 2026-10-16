@@ -403,6 +403,7 @@ pub struct ResearchJob {
     pub tech: String,
     pub from_level: u32,
     pub paid: Resources,
+    pub credits: f64,
     pub started_at: u64,
     pub completes_at: u64,
 }
@@ -417,6 +418,7 @@ pub enum ResearchError {
     Excluded { id: String, group: String },
     Hidden { id: String },
     Complete { id: String },
+    NeedsApproval { id: u64 },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -477,6 +479,9 @@ impl fmt::Display for ResearchError {
             }
             ResearchError::Hidden { id } => write!(f, "{id} is locked behind prestige"),
             ResearchError::Complete { id } => write!(f, "{id} is already complete"),
+            ResearchError::NeedsApproval { id } => {
+                write!(f, "spend waits for approval (#{id})")
+            }
         }
     }
 }

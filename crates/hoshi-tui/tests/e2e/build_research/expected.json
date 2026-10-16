@@ -94,6 +94,11 @@
       "text": "achievement: Energy I"
     }
   ],
+  "finance": {
+    "cash": -3710.108346616364,
+    "debt": 3710.108346616364,
+    "pending": 0
+  },
   "fleet": {
     "battleship": 0,
     "colony_ship": 0,
@@ -292,7 +297,7 @@
     "empires": [],
     "enabled": false
   },
-  "save_schema": 40,
+  "save_schema": 41,
   "schema_version": 2,
   "season": null,
   "species": null,

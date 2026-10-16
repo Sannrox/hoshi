@@ -134,6 +134,11 @@
       "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder Fe319 Si144 D0. winner attacker"
     }
   ],
+  "finance": {
+    "cash": 4233.107337862709,
+    "debt": 0.0,
+    "pending": 0
+  },
   "fleet": {
     "battleship": 0,
     "colony_ship": 0,
@@ -351,7 +356,7 @@
     "empires": [],
     "enabled": false
   },
-  "save_schema": 40,
+  "save_schema": 41,
   "schema_version": 2,
   "season": null,
   "species": null,

@@ -155,6 +155,10 @@ pub struct BuildJob {
     /// Level this job upgrades from (already counts earlier queue entries).
     pub from_level: u32,
     pub paid: Resources,
+    /// Treasury credits charged when this job was queued. Zero means the job
+    /// never hit the ledger (a migrated pre-finance queue). Refunds use this
+    /// amount so a later market move cannot mint or destroy cash.
+    pub credits: f64,
     pub started_at: Option<u64>,
     pub completes_at: Option<u64>,
 }
@@ -181,6 +185,9 @@ pub enum BuildError {
     UnknownPlanet,
     NeedLogistics,
     PermissionDenied(String),
+    NeedsApproval {
+        id: u64,
+    },
 }
 
 impl fmt::Display for BuildError {
@@ -217,6 +224,9 @@ impl fmt::Display for BuildError {
                 )
             }
             BuildError::PermissionDenied(msg) => write!(f, "{msg}"),
+            BuildError::NeedsApproval { id } => {
+                write!(f, "spend waits for approval (#{id})")
+            }
         }
     }
 }

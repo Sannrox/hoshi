@@ -832,6 +832,7 @@ mod tests {
             building: BuildingKind::MetalMine,
             from_level: 1,
             paid: Resources::ZERO,
+            credits: 0.0,
             started_at: None,
             completes_at: None,
         });

@@ -1063,6 +1063,95 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             );
             """
         )
+    elif version == 40:
+        conn.executescript(
+            """
+            ALTER TABLE resources ADD COLUMN rare_earths REAL NOT NULL DEFAULT 0;
+            ALTER TABLE resources ADD COLUMN water_ice REAL NOT NULL DEFAULT 0;
+            ALTER TABLE resources ADD COLUMN helium_3 REAL NOT NULL DEFAULT 0;
+            """
+        )
+        for table, column in (
+            ("missions", "cargo_rare_earths"),
+            ("missions", "cargo_water_ice"),
+            ("missions", "cargo_helium_3"),
+            ("routes", "cargo_rare_earths"),
+            ("routes", "cargo_water_ice"),
+            ("routes", "cargo_helium_3"),
+            ("planned_missions", "cargo_rare_earths"),
+            ("planned_missions", "cargo_water_ice"),
+            ("planned_missions", "cargo_helium_3"),
+            ("market_shipments", "rare_earths"),
+            ("market_shipments", "water_ice"),
+            ("market_shipments", "helium_3"),
+            ("market_regions", "npc_rare_earths"),
+            ("market_regions", "npc_water_ice"),
+            ("market_regions", "npc_helium_3"),
+            ("market_regions", "player_rare_earths"),
+            ("market_regions", "player_water_ice"),
+            ("market_regions", "player_helium_3"),
+        ):
+            add_column(
+                conn,
+                table,
+                column,
+                f"ALTER TABLE {table} ADD COLUMN {column} REAL NOT NULL DEFAULT 0",
+            )
+    elif version == 41:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS finance_meta (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                cash REAL NOT NULL,
+                reserve_target REAL NOT NULL,
+                period_started_at INTEGER NOT NULL,
+                next_period_at INTEGER NOT NULL,
+                next_spend_id INTEGER NOT NULL,
+                inc_production REAL NOT NULL,
+                inc_tax REAL NOT NULL,
+                inc_trade REAL NOT NULL,
+                inc_contract REAL NOT NULL,
+                exp_industry REAL NOT NULL,
+                exp_research REAL NOT NULL,
+                exp_military REAL NOT NULL,
+                exp_logistics REAL NOT NULL,
+                exp_interest REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS finance_budgets (
+                center TEXT PRIMARY KEY,
+                limit_val REAL,
+                actual REAL NOT NULL,
+                forecast REAL NOT NULL,
+                last_actual REAL NOT NULL,
+                last_forecast REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS finance_pending (
+                id INTEGER PRIMARY KEY,
+                center TEXT NOT NULL,
+                amount REAL NOT NULL,
+                actor TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                requested_at INTEGER NOT NULL,
+                g INTEGER,
+                s INTEGER,
+                p INTEGER,
+                building TEXT,
+                tech TEXT,
+                ship TEXT,
+                defence TEXT,
+                count INTEGER
+            );
+            CREATE TABLE IF NOT EXISTS finance_job_credits (
+                id INTEGER PRIMARY KEY,
+                scope TEXT NOT NULL,
+                idx INTEGER NOT NULL,
+                g INTEGER,
+                s INTEGER,
+                p INTEGER,
+                credits REAL NOT NULL
+            );
+            """
+        )
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"
