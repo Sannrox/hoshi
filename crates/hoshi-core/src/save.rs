@@ -7222,7 +7222,7 @@ mod tests {
         state.next_route_id = 1;
         state.events.push(crate::GameEvent {
             at: 1_700_000_000,
-            text: "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder M0 C0 D0".into(),
+            text: "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder Fe0 Si0 D0".into(),
         });
         let mut wing = crate::Fleet::default();
         wing.add(crate::ShipKind::LightFighter, 2);

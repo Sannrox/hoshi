@@ -142,6 +142,17 @@ impl Resources {
         }
     }
 
+    /// Compact Fe/Si/REE/H2O/He3/D label for logs, history and errors.
+    pub fn brief(self) -> String {
+        ResourceKind::ALL
+            .iter()
+            .copied()
+            .filter(|&kind| self.get(kind) > 0.5 || ResourceKind::QUOTED.contains(&kind))
+            .map(|kind| format!("{}{:.0}", kind.abbr(), self.get(kind)))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     pub fn set(&mut self, kind: ResourceKind, value: f64) {
         match kind {
             ResourceKind::Iron => self.iron = value,
@@ -1627,10 +1638,7 @@ impl GameState {
             actor: "player".into(),
             action: "start".into(),
             objects: vec![tech.to_string()],
-            inputs: format!(
-                "M{:.0} C{:.0} D{:.0}",
-                cost.iron, cost.silicon, cost.deuterium
-            ),
+            inputs: cost.brief(),
             outcome: "started".into(),
             cause_key: Some(format!("research:{tech}")),
             ..crate::HistoryDraft::default()
@@ -2261,10 +2269,7 @@ impl GameState {
             actor: "player".into(),
             action: "transport".into(),
             objects: vec![origin.to_string(), dest.to_string()],
-            inputs: format!(
-                "M{:.0} C{:.0} D{:.0}",
-                cargo.iron, cargo.silicon, cargo.deuterium
-            ),
+            inputs: cargo.brief(),
             outcome: "outbound".into(),
             cause_key: Some(format!("mission:{id}")),
             mass: Self::cargo_mass(cargo),
@@ -3510,13 +3515,7 @@ impl GameState {
             }
             ExpeditionResult::Resources(found) => {
                 self.credit_capped(found);
-                self.push_event(
-                    done_at,
-                    format!(
-                        "expedition: found M{:.0} C{:.0} D{:.0}",
-                        found.iron, found.silicon, found.deuterium
-                    ),
-                );
+                self.push_event(done_at, format!("expedition: found {}", found.brief()));
                 false
             }
             ExpeditionResult::Ships(found) => {
@@ -6035,15 +6034,13 @@ fn format_outpost_invade(report: &crate::CombatReport, dest: Coord) -> String {
 
 fn format_raid_report(report: &crate::CombatReport, plunder: Resources) -> String {
     format!(
-        "raid: pirates {} vs {}. {} rounds. lost {}. pirates lost {}. plunder M{:.0} C{:.0} D{:.0}. winner {}",
+        "raid: pirates {} vs {}. {} rounds. lost {}. pirates lost {}. plunder {}. winner {}",
         fleet_label(report.attacker_before),
         fleet_label(report.defender_before),
         report.rounds,
         fleet_label(fleet_losses(report.defender_before, report.defender_after)),
         fleet_label(fleet_losses(report.attacker_before, report.attacker_after)),
-        plunder.iron,
-        plunder.silicon,
-        plunder.deuterium,
+        plunder.brief(),
         report.winner.as_key(),
     )
 }
@@ -6079,7 +6076,7 @@ fn format_layered_raid(
         None => "ground none".into(),
     };
     format!(
-        "raid: pirates {} vs {}. {intercept}orbital stations {}->{} hangar {}->{} {} rounds. {dome}. batteries {}->{}. {ground}. lost {}. pirates lost {}. rebuilt {}. winner {}. plunder M{:.0} C{:.0} D{:.0}",
+        "raid: pirates {} vs {}. {intercept}orbital stations {}->{} hangar {}->{} {} rounds. {dome}. batteries {}->{}. {ground}. lost {}. pirates lost {}. rebuilt {}. winner {}. plunder {}",
         fleet_label(pirates),
         fleet_label(parked),
         battle.stations_before,
@@ -6093,9 +6090,7 @@ fn format_layered_raid(
         fleet_label(fleet_losses(pirates, battle.attacker_after)),
         battle.rebuilt,
         battle.winner.as_key(),
-        plunder.iron,
-        plunder.silicon,
-        plunder.deuterium
+        plunder.brief()
     )
 }
 
@@ -7871,7 +7866,24 @@ modifiers = []
             .expect("raid report")
             .text
             .as_str();
-        assert!(text.contains("plunder M0"), "{text}");
+        assert!(text.contains("plunder Fe0"), "{text}");
+    }
+
+    #[test]
+    fn resource_brief_uses_material_abbreviations() {
+        assert_eq!(
+            Resources::from_parts(40.0, 30.0, 5.0).brief(),
+            "Fe40 Si30 D5"
+        );
+        let extras = Resources {
+            iron: 10.0,
+            silicon: 0.0,
+            rare_earths: 3.0,
+            water_ice: 4.0,
+            helium_3: 0.0,
+            deuterium: 1.0,
+        };
+        assert_eq!(extras.brief(), "Fe10 Si0 REE3 H2O4 D1");
     }
 
     #[test]
@@ -7948,7 +7960,7 @@ modifiers = []
             state
                 .events
                 .iter()
-                .any(|e| e.text.contains("plunder M40 C30 D5")),
+                .any(|e| e.text.contains("plunder Fe40 Si30 D5")),
             "{:?}",
             state.events
         );

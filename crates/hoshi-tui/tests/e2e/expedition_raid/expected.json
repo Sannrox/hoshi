@@ -71,7 +71,7 @@
     },
     {
       "at": 1,
-      "text": "expedition: found M1068 C534 D213"
+      "text": "expedition: found Fe1068 Si534 D213"
     },
     {
       "at": 1,
@@ -83,7 +83,7 @@
     },
     {
       "at": 3600,
-      "text": "raid: pirates 900 light fighter vs 5 light fighter. 1 rounds. lost 5 light fighter. pirates lost none. plunder M803 C536 D5000. winner attacker"
+      "text": "raid: pirates 900 light fighter vs 5 light fighter. 1 rounds. lost 5 light fighter. pirates lost none. plunder Fe803 Si536 D5000. winner attacker"
     },
     {
       "at": 3600,
@@ -95,7 +95,7 @@
     },
     {
       "at": 32400,
-      "text": "raid: pirates 900 light fighter vs 5 light fighter. 1 rounds. lost 5 light fighter. pirates lost none. plunder M534 C356 D2500. winner attacker"
+      "text": "raid: pirates 900 light fighter vs 5 light fighter. 1 rounds. lost 5 light fighter. pirates lost none. plunder Fe534 Si356 D2500. winner attacker"
     }
   ],
   "fleet": {

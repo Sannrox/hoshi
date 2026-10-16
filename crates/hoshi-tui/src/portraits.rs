@@ -461,8 +461,9 @@ mod tests {
             },
             GameEvent {
                 at: 2,
-                text: "raid: pirates 3 vs 1. 6 rounds. lost none. pirates lost 3. plunder M0 C0 D0"
-                    .into(),
+                text:
+                    "raid: pirates 3 vs 1. 6 rounds. lost none. pirates lost 3. plunder Fe0 Si0 D0"
+                        .into(),
             },
         ];
         assert_eq!(mood_for(Slot::Commander, &events), Mood::Alarmed);
