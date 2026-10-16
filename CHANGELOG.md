@@ -8,6 +8,8 @@
 
 ### Added
 
+- Treasury, department/fleet/colony budgets, forecast vs actual, and spending approvals. Construction, research and ships that would exceed a set limit wait in a queue until the player or owning leader approves. Credits value materials at the live market mid and energy at `energy_credit`; interest is simple per period on negative cash. Finance screen and `hoshi finance`. Save schema v41. See `crates/hoshi-core/data/finance.toml`.
+
 - Event log, history and moon errors use Fe, Si, REE, H2O, He3 and D instead of M/C/D.
 
 - TUI cost rows, resource bar and help use Fe, Si, REE, H2O, He3 and D (full names in help) with energy and heat beside the stockpiles.

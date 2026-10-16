@@ -55,6 +55,19 @@ pub enum Intent {
         cargo: Resources,
         contract: Option<u64>,
     },
+    SetBudget {
+        center: String,
+        limit: Option<f64>,
+        actor: Actor,
+    },
+    RequestSpend {
+        center: String,
+        amount: f64,
+    },
+    ApproveSpend {
+        id: u64,
+        actor: Actor,
+    },
 }
 
 impl Intent {
@@ -69,6 +82,9 @@ impl Intent {
             Intent::AcceptContract { .. } => "accept_contract",
             Intent::FulfilContract { .. } => "fulfil_contract",
             Intent::ShipGoods { .. } => "ship_goods",
+            Intent::SetBudget { .. } => "set_budget",
+            Intent::RequestSpend { .. } => "request_spend",
+            Intent::ApproveSpend { .. } => "approve_spend",
         }
     }
 }
@@ -86,6 +102,7 @@ pub enum IntentError {
     Research(ResearchError),
     Fleet(FleetError),
     Market(MarketError),
+    Finance(crate::FinanceError),
     Save(String),
 }
 
@@ -96,6 +113,7 @@ impl fmt::Display for IntentError {
             IntentError::Research(e) => write!(f, "{e}"),
             IntentError::Fleet(e) => write!(f, "{e}"),
             IntentError::Market(e) => write!(f, "{e}"),
+            IntentError::Finance(e) => write!(f, "{e}"),
             IntentError::Save(e) => write!(f, "save backend: {e}"),
         }
     }
@@ -173,6 +191,23 @@ fn proposal_id(intent: &Intent, now_unix: u64, tick: u64) -> String {
             cargo.deuterium,
             contract.map(|id| id.to_string()).unwrap_or_default(),
         ),
+        Intent::SetBudget {
+            center,
+            limit,
+            actor,
+        } => format!(
+            "set_budget:{now_unix}:{tick}:{center}:{}:{}",
+            limit
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "none".into()),
+            actor.as_key()
+        ),
+        Intent::RequestSpend { center, amount } => {
+            format!("request_spend:{now_unix}:{tick}:{center}:{amount}")
+        }
+        Intent::ApproveSpend { id, actor } => {
+            format!("approve_spend:{now_unix}:{tick}:{id}:{}", actor.as_key())
+        }
     }
 }
 
@@ -250,6 +285,23 @@ fn apply_inner(state: &mut GameState, intent: &Intent, now_unix: u64) -> Result<
             .ship_goods(*origin, *dest, *cargo, *contract, now_unix)
             .map(|_| ())
             .map_err(IntentError::Market),
+        Intent::SetBudget {
+            center,
+            limit,
+            actor,
+        } => {
+            let parsed = crate::CostCenter::parse(center)
+                .ok_or(IntentError::Finance(crate::FinanceError::UnknownCenter))?;
+            state
+                .set_budget(parsed, *limit, *actor, now_unix)
+                .map_err(IntentError::Finance)
+        }
+        Intent::RequestSpend { .. } => {
+            Err(IntentError::Finance(crate::FinanceError::RequestViaAction))
+        }
+        Intent::ApproveSpend { id, actor } => state
+            .approve_spend(*id, *actor, now_unix)
+            .map_err(IntentError::Finance),
     }
 }
 
@@ -309,6 +361,22 @@ mod tests {
                 contract: None,
             }
             .as_key(),
+            Intent::SetBudget {
+                center: "industry".into(),
+                limit: Some(1.0),
+                actor: Actor::Player,
+            }
+            .as_key(),
+            Intent::RequestSpend {
+                center: "industry".into(),
+                amount: 1.0,
+            }
+            .as_key(),
+            Intent::ApproveSpend {
+                id: 1,
+                actor: Actor::Player,
+            }
+            .as_key(),
         ];
         assert_eq!(names, ACTIONS);
     }
@@ -331,6 +399,31 @@ mod tests {
             err,
             IntentError::Research(ResearchError::UnknownTech { .. })
         ));
+        assert_eq!(state, before);
+    }
+
+    #[test]
+    fn request_spend_intent_is_refused() {
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.enabled = false;
+        let state = GameState::with_config(1_000, cfg);
+        let before = state.clone();
+        let err = propose(
+            &state,
+            &Intent::RequestSpend {
+                center: "industry".into(),
+                amount: 1.0,
+            },
+            1_000,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                IntentError::Finance(crate::FinanceError::RequestViaAction)
+            ),
+            "{err:?}"
+        );
         assert_eq!(state, before);
     }
 

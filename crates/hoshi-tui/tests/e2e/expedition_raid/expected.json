@@ -98,6 +98,11 @@
       "text": "raid: pirates 900 light fighter vs 5 light fighter. 1 rounds. lost 5 light fighter. pirates lost none. plunder Fe534 Si356 D2500. winner attacker"
     }
   ],
+  "finance": {
+    "cash": 790.902867553384,
+    "debt": 0.0,
+    "pending": 0
+  },
   "fleet": {
     "battleship": 0,
     "colony_ship": 0,
@@ -303,7 +308,7 @@
     "empires": [],
     "enabled": false
   },
-  "save_schema": 40,
+  "save_schema": 41,
   "schema_version": 2,
   "season": null,
   "species": null,

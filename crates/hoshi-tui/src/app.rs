@@ -40,6 +40,7 @@ pub enum Screen {
     Staff,
     Ops,
     Automation,
+    Finance,
     Map,
     Cockpit,
 }
@@ -744,7 +745,8 @@ impl App {
             Screen::History => Screen::Staff,
             Screen::Staff => Screen::Ops,
             Screen::Ops => Screen::Automation,
-            Screen::Automation => Screen::Map,
+            Screen::Automation => Screen::Finance,
+            Screen::Finance => Screen::Map,
             Screen::Map => Screen::Cockpit,
             Screen::Cockpit => Screen::Overview,
         };
@@ -797,6 +799,7 @@ impl App {
             Screen::Staff => HelpContext::Staff,
             Screen::Ops => HelpContext::Ops,
             Screen::Automation => HelpContext::Automation,
+            Screen::Finance => HelpContext::Finance,
             Screen::Map => HelpContext::Map,
             Screen::Cockpit => HelpContext::Cockpit,
         }
@@ -879,16 +882,19 @@ impl App {
                 " hoshi  overview planet yard wonder pres ach daily g prod market diplo laws rpt log [stf] ops map "
             }
             Screen::Automation => {
-                " hoshi  overview planet yard wonder pres ach daily g prod market diplo laws rpt log stf ops [auto] map "
+                " hoshi  yard wonder pres ach daily g prod market diplo laws rpt log stf ops [auto] fin map "
+            }
+            Screen::Finance => {
+                " hoshi  yard wonder pres ach daily g prod market diplo laws rpt log stf ops auto [fin] map "
             }
             Screen::Ops => {
                 " hoshi  overview planet yard wonder pres ach daily g prod market diplo laws rpt log stf [ops] map "
             }
             Screen::Map => {
-                " hoshi  overview planet yard wonder pres ach daily g prod market diplo laws rpt log stf ops [map] ckp "
+                " hoshi  yard wonder pres ach daily g prod market diplo laws rpt log stf ops auto fin [map] ckp "
             }
             Screen::Cockpit => {
-                " hoshi  overview planet yard wonder pres ach daily g prod market diplo laws rpt log stf ops map [ckp] "
+                " hoshi  yard wonder pres ach daily g prod market diplo laws rpt log stf ops auto fin map [ckp] "
             }
         };
         let block = Block::bordered().title(title);
@@ -1321,6 +1327,7 @@ impl App {
             | Screen::Production
             | Screen::Ops => {}
             Screen::Automation => self.activate_automation(),
+            Screen::Finance => self.activate_finance(now_unix),
             Screen::Market => self.activate_market(now_unix),
             Screen::Diplomacy => self.activate_diplomacy(now_unix),
             Screen::Laws => self.activate_law(now_unix),
@@ -1694,7 +1701,8 @@ impl App {
             | Screen::Diplomacy
             | Screen::Laws
             | Screen::Reports
-            | Screen::Ops => {}
+            | Screen::Ops
+            | Screen::Finance => {}
             Screen::Automation => self.remove_selected_automation_rule(),
         }
     }
@@ -1725,6 +1733,7 @@ impl App {
             Screen::Automation => {
                 self.state.automation_catalog().tier.len() + self.state.automation_rules.len()
             }
+            Screen::Finance => self.state.finance.pending.len() + self.state.finance.budgets.len(),
             Screen::Ops => {
                 self.state.vehicles.len()
                     + self.state.planned.len()
@@ -1959,6 +1968,9 @@ impl App {
                     k.primary(Binding::Increase)
                 )
             }
+            Screen::Finance => {
+                format!("{tab} screens  {select}  {confirm} approve  {quit}  {help}")
+            }
             Screen::Ops => {
                 format!("{tab} screens  {select}  schedule  {quit}  {help}")
             }
@@ -2086,6 +2098,7 @@ impl App {
             Screen::Staff => self.staff_lines(height),
             Screen::Ops => self.ops_lines(height),
             Screen::Automation => self.automation_lines(height),
+            Screen::Finance => self.finance_lines(height),
             Screen::Map => self.map_lines(height),
             Screen::Cockpit => Vec::new(),
         }
@@ -3349,6 +3362,75 @@ impl App {
         append_windowed(&mut rows, &entries, self.selected, height)
     }
 
+    fn activate_finance(&mut self, now_unix: u64) {
+        let Some(row) = self.state.finance.pending.get(self.selected) else {
+            self.status = "select a held spend".into();
+            return;
+        };
+        let id = row.id;
+        match self
+            .state
+            .approve_spend(id, hoshi_core::Actor::Player, now_unix)
+        {
+            Ok(()) => self.status = format!("approved spend #{id}"),
+            Err(e) => self.status = e.to_string(),
+        }
+    }
+
+    fn finance_lines(&self, height: usize) -> Vec<Line<'static>> {
+        let report = self.state.finance_report();
+        let cfg = self.state.finance_config();
+        let mut rows = vec![Line::from(format!(
+            "[fin] cash {:.0}  debt {:.0}  reserve {:.0} (gap {:.0})  period {}s",
+            report.cash, report.debt, report.reserve_target, report.reserve_gap, cfg.period_secs
+        ))];
+        rows.push(Line::from(format!(
+            "income {:.0} (prod {:.0} tax {:.0} trade {:.0} ctr {:.0})  expense {:.0} (ind {:.0} rs {:.0} mil {:.0} log {:.0} int {:.0})",
+            report.income.total(),
+            report.income.production,
+            report.income.tax,
+            report.income.trade,
+            report.income.contract,
+            report.expense.total(),
+            report.expense.industry,
+            report.expense.research,
+            report.expense.military,
+            report.expense.logistics,
+            report.expense.interest
+        )));
+        let mut entries = Vec::new();
+        let mut index = 0usize;
+        for pending in &report.pending {
+            let mark = if index == self.selected { '>' } else { ' ' };
+            index += 1;
+            entries.push(Line::from(format!(
+                "{mark} hold #{} {:.0} {}  {}",
+                pending.id,
+                pending.amount,
+                pending.center.as_key(),
+                pending.kind.summary()
+            )));
+        }
+        for budget in &report.budgets {
+            let mark = if index == self.selected { '>' } else { ' ' };
+            index += 1;
+            let limit = budget
+                .limit
+                .map(|v| format!("{v:.0}"))
+                .unwrap_or_else(|| "∞".into());
+            let run = budget.run_rate(report.elapsed_secs, cfg.period_secs);
+            entries.push(Line::from(format!(
+                "{mark} {} limit {limit}  actual {:.0}  forecast {:.0}  var {:+.0}  run {:.0}",
+                budget.center.as_key(),
+                budget.actual,
+                budget.forecast,
+                budget.variance(),
+                run
+            )));
+        }
+        append_windowed(&mut rows, &entries, self.selected, height)
+    }
+
     fn staff_lines(&self, height: usize) -> Vec<Line<'static>> {
         let mut rows = vec![Line::from(format!(
             "[stf] {} leaders  empty gov {:.0}%",
@@ -4197,6 +4279,7 @@ mod tests {
         app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
+        app.handle_key(KeyCode::Tab, clock.now_unix());
         assert_eq!(app.screen, Screen::Overview);
         let energy = app
             .overview_techs()
@@ -4271,7 +4354,7 @@ mod tests {
     }
 
     fn open_map(app: &mut App, now: u64) {
-        for _ in 0..17 {
+        for _ in 0..18 {
             app.handle_key(KeyCode::Tab, now);
         }
         assert_eq!(app.screen, Screen::Map);
@@ -4383,6 +4466,7 @@ mod tests {
         assert!(app.state.ship_queue.is_empty());
         assert_eq!(app.state.build_queue.len(), 1);
 
+        app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
@@ -4733,6 +4817,38 @@ mod tests {
         }
         app.handle_key(KeyCode::Char(' '), 1_000);
         assert!(app.status.contains("off"), "{}", app.status);
+    }
+
+    #[test]
+    fn finance_screen_lists_treasury_and_approves_held_spend() {
+        let mut state = GameState::new(1_000);
+        state.resources.iron = 50_000.0;
+        state.resources.silicon = 50_000.0;
+        state.resources.deuterium = 50_000.0;
+        state
+            .set_budget(
+                hoshi_core::CostCenter::Department(hoshi_core::Department::Industry),
+                Some(1.0),
+                hoshi_core::Actor::Player,
+                1_000,
+            )
+            .unwrap();
+        let err = state
+            .enqueue_build(BuildingKind::MetalMine, 1_000)
+            .unwrap_err();
+        assert!(matches!(err, hoshi_core::BuildError::NeedsApproval { .. }));
+        let mut app = App::new(state);
+        for _ in 0..17 {
+            app.handle_key(KeyCode::Tab, 1_000);
+        }
+        assert_eq!(app.screen, Screen::Finance);
+        let text = render_text(&app, 120, 32);
+        assert!(text.contains("[fin]"), "{text}");
+        assert!(text.contains("industry"), "{text}");
+        assert!(text.contains("hold #"), "{text}");
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.status.contains("approved"), "{}", app.status);
+        assert_eq!(app.state.build_queue.len(), 1);
     }
 
     #[test]

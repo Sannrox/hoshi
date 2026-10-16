@@ -94,6 +94,14 @@ enum Command {
     AutomationRemove {
         id: u64,
     },
+    Finance,
+    FinanceSet {
+        center: String,
+        limit: String,
+    },
+    FinanceApprove {
+        id: u64,
+    },
     AutomationAdd {
         cond: String,
         planet: Coord,
@@ -722,6 +730,40 @@ fn apply(
                 .keep_playing_after_victory()
                 .map_err(|e| CliError::Refused(e.to_string()))?;
             Ok(ok_state(state, "kept playing"))
+        }
+        Command::Finance => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            Ok(finance_value(state))
+        }
+        Command::FinanceSet { center, limit } => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            let parsed = hoshi_core::CostCenter::parse(center)
+                .ok_or_else(|| CliError::Invalid(format!("unknown cost center {center}")))?;
+            let cap = if limit == "unlimited" || limit == "none" {
+                None
+            } else {
+                let value = limit
+                    .parse::<f64>()
+                    .map_err(|_| CliError::Invalid(format!("bad budget limit {limit}")))?;
+                Some(value)
+            };
+            state
+                .set_budget(parsed, cap, Actor::Player, now)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, "budget set"))
+        }
+        Command::FinanceApprove { id } => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            state
+                .approve_spend(*id, Actor::Player, now)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, "spend approved"))
         }
         Command::Automation | Command::AutomationDryRun => {
             if !state.deterministic {
@@ -1409,6 +1451,53 @@ fn automation_value(state: &hoshi_core::GameState) -> serde_json::Value {
     })
 }
 
+fn finance_value(state: &hoshi_core::GameState) -> serde_json::Value {
+    let report = state.finance_report();
+    json!({
+        "ok": true,
+        "schema_version": SCHEMA_VERSION,
+        "cash": report.cash,
+        "debt": report.debt,
+        "reserve_target": report.reserve_target,
+        "reserve_gap": report.reserve_gap,
+        "period_started_at": report.period_started_at,
+        "next_period_at": report.next_period_at,
+        "elapsed_secs": report.elapsed_secs,
+        "income": {
+            "production": report.income.production,
+            "tax": report.income.tax,
+            "trade": report.income.trade,
+            "contract": report.income.contract,
+            "total": report.income.total(),
+        },
+        "expense": {
+            "industry": report.expense.industry,
+            "research": report.expense.research,
+            "military": report.expense.military,
+            "logistics": report.expense.logistics,
+            "interest": report.expense.interest,
+            "total": report.expense.total(),
+        },
+        "budgets": report.budgets.iter().map(|b| json!({
+            "center": b.center.as_key(),
+            "limit": b.limit,
+            "actual": b.actual,
+            "forecast": b.forecast,
+            "variance": b.variance(),
+            "run_rate": b.run_rate(report.elapsed_secs, state.finance_config().period_secs),
+        })).collect::<Vec<_>>(),
+        "pending": report.pending.iter().map(|p| json!({
+            "id": p.id,
+            "center": p.center.as_key(),
+            "amount": p.amount,
+            "actor": p.actor,
+            "kind": p.kind.as_key(),
+            "summary": p.kind.summary(),
+            "requested_at": p.requested_at,
+        })).collect::<Vec<_>>(),
+    })
+}
+
 fn add_automation_from_cli(
     state: &mut GameState,
     cond: &str,
@@ -1878,6 +1967,11 @@ fn state_value(state: &GameState, actor: Actor) -> Value {
             })),
         })).collect::<Vec<_>>(),
     });
+    value["finance"] = json!({
+        "cash": state.finance.treasury.cash,
+        "debt": state.finance.treasury.debt(),
+        "pending": state.finance.pending.len(),
+    });
     value["season"] = match &state.season {
         Some(run) => json!({
             "id": run.ruleset_id,
@@ -2113,6 +2207,26 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
                 ships,
             })
         }
+        "finance" => match args.get(1).map(String::as_str) {
+            None => {
+                expect_end(args, 1)?;
+                Ok(Command::Finance)
+            }
+            Some("set") => {
+                let center = nth(args, 2, "finance set <center> <limit>")?.to_string();
+                let limit = nth(args, 3, "finance set <center> <limit>")?.to_string();
+                expect_end(args, 4)?;
+                Ok(Command::FinanceSet { center, limit })
+            }
+            Some("approve") => {
+                let id = parse_law_id(nth(args, 2, "finance approve <id>")?)?;
+                expect_end(args, 3)?;
+                Ok(Command::FinanceApprove { id })
+            }
+            Some(other) => Err(CliError::Invalid(format!(
+                "unknown finance command {other}"
+            ))),
+        },
         "automation" => match args.get(1).map(String::as_str) {
             None => {
                 expect_end(args, 1)?;

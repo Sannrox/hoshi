@@ -173,9 +173,12 @@ pub fn dest_of(intent: &Intent) -> Option<Coord> {
         Intent::Build { planet, .. } => Some(*planet),
         Intent::PlaceOrder { region, .. } => Some(*region),
         Intent::ShipGoods { dest, .. } => Some(*dest),
-        Intent::Research { .. } | Intent::AcceptContract { .. } | Intent::FulfilContract { .. } => {
-            None
-        }
+        Intent::Research { .. }
+        | Intent::AcceptContract { .. }
+        | Intent::FulfilContract { .. }
+        | Intent::SetBudget { .. }
+        | Intent::RequestSpend { .. }
+        | Intent::ApproveSpend { .. } => None,
     }
 }
 
@@ -227,7 +230,11 @@ pub fn spend_of(state: &GameState, intent: &Intent, _now: u64) -> f64 {
             cargo,
             ..
         } => cargo.total() + state.shipment_fuel(*origin, *dest, *cargo),
-        Intent::AcceptContract { .. } | Intent::FulfilContract { .. } => 0.0,
+        Intent::AcceptContract { .. }
+        | Intent::FulfilContract { .. }
+        | Intent::SetBudget { .. }
+        | Intent::ApproveSpend { .. } => 0.0,
+        Intent::RequestSpend { amount, .. } => *amount,
     }
 }
 

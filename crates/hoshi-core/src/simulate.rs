@@ -852,7 +852,8 @@ fn fill_frontier_queue(state: &mut GameState) {
                 | Err(BuildError::EmptySlot { .. })
                 | Err(BuildError::UnknownPlanet)
                 | Err(BuildError::NeedLogistics)
-                | Err(BuildError::PermissionDenied(_)) => {}
+                | Err(BuildError::PermissionDenied(_))
+                | Err(BuildError::NeedsApproval { .. }) => {}
             }
         }
         if !enqueued {
@@ -1154,7 +1155,8 @@ fn fill_queue(state: &mut GameState) {
                 | Err(BuildError::EmptySlot { .. })
                 | Err(BuildError::UnknownPlanet)
                 | Err(BuildError::NeedLogistics)
-                | Err(BuildError::PermissionDenied(_)) => {}
+                | Err(BuildError::PermissionDenied(_))
+                | Err(BuildError::NeedsApproval { .. }) => {}
             }
         }
         if !enqueued {

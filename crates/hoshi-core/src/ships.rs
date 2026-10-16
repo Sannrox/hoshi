@@ -270,6 +270,7 @@ pub struct ShipJob {
     pub defence: Option<DefenceKind>,
     pub remaining: u32,
     pub unit_paid: Resources,
+    pub credits: f64,
     pub started_at: Option<u64>,
     pub completes_at: Option<u64>,
 }
@@ -304,6 +305,7 @@ pub enum ShipError {
     ZeroCount,
     InsufficientResources { missing: Resources, cost: Resources },
     EmptySlot { index: usize, len: usize },
+    NeedsApproval { id: u64 },
 }
 
 impl fmt::Display for ShipError {
@@ -336,6 +338,9 @@ impl fmt::Display for ShipError {
             ),
             ShipError::EmptySlot { index, len } => {
                 write!(f, "no ship job at index {index} (queue length {len})")
+            }
+            ShipError::NeedsApproval { id } => {
+                write!(f, "spend waits for approval (#{id})")
             }
         }
     }

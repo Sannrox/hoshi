@@ -10,7 +10,7 @@ pub const CHISEI_API_VERSION: &str = "1.3.0";
 /// Portable ontology document version accepted by `sekai import`.
 pub const ONTOLOGY_SCHEMA_VERSION: u32 = 1;
 
-pub const OBJECT_TYPES: [&str; 16] = [
+pub const OBJECT_TYPES: [&str; 22] = [
     "Player",
     "Planet",
     "Fleet",
@@ -27,16 +27,24 @@ pub const OBJECT_TYPES: [&str; 16] = [
     "Contract",
     "Trader",
     "Shipment",
+    "Treasury",
+    "Budget",
+    "CostCenter",
+    "Expense",
+    "Forecast",
+    "Approval",
 ];
-pub const RELATIONS: [&str; 6] = [
+pub const RELATIONS: [&str; 8] = [
     "owns",
     "stationed-at",
     "allied-with",
     "placed-in",
     "binds",
     "fulfils",
+    "charged-to",
+    "approved-by",
 ];
-pub const ACTIONS: [&str; 9] = [
+pub const ACTIONS: [&str; 12] = [
     "build",
     "research",
     "launch",
@@ -46,6 +54,9 @@ pub const ACTIONS: [&str; 9] = [
     "accept_contract",
     "fulfil_contract",
     "ship_goods",
+    "set_budget",
+    "request_spend",
+    "approve_spend",
 ];
 
 const ONTOLOGY_JSON: &str = include_str!("../data/ontology/hoshi-v1.json");
@@ -219,6 +230,12 @@ mod tests {
             .expect("build row");
         assert_eq!(build.count, 1);
         assert_eq!(build.event_ids.len(), 1);
-        assert_eq!(build.event_ids[0], state.history.events[0].id);
+        let build_event = state
+            .history
+            .events
+            .iter()
+            .find(|event| event.kind == HistoryKind::Build)
+            .expect("build event");
+        assert_eq!(build.event_ids[0], build_event.id);
     }
 }

@@ -1250,6 +1250,12 @@ impl GameState {
             outcome: format!("{qty:.1} {}", contract.good.as_key()),
             ..crate::HistoryDraft::default()
         });
+        if holder == TraderId::Player && issuer_metal > 0.0 {
+            let mut paid = Resources::ZERO;
+            paid.iron = issuer_metal;
+            let amount = self.value_resources(paid);
+            self.credit_income(amount, crate::finance::IncomeKind::Contract);
+        }
         Ok(())
     }
 

@@ -410,6 +410,8 @@ pub struct GameState {
     pub ladder: crate::LadderBoard,
     /// Frontier galaxy unlock, seen bridge ids, and generated worlds.
     pub frontier: crate::FrontierBoard,
+    /// Treasury, department budgets and held spends.
+    pub finance: crate::FinanceState,
     pub config: BalanceConfig,
 }
 
@@ -514,6 +516,7 @@ impl GameState {
             rivals: crate::RivalBoard::default(),
             ladder: crate::LadderBoard::default(),
             frontier: crate::FrontierBoard::default(),
+            finance: crate::FinanceState::new(now_unix, &crate::FinanceConfig::bundled()),
             config,
         };
         state.seed_pirate_home(now_unix);
@@ -663,7 +666,13 @@ impl GameState {
                                         self.next_victory_at(),
                                         min_time(
                                             self.next_ladder_at(),
-                                            min_time(rivals_at, self.next_automation_event()),
+                                            min_time(
+                                                rivals_at,
+                                                min_time(
+                                                    self.next_automation_event(),
+                                                    self.next_finance_event(),
+                                                ),
+                                            ),
                                         ),
                                     ),
                                 ),
@@ -675,6 +684,7 @@ impl GameState {
                 self.produce_until(now_unix);
                 self.apply_laws_at(now_unix);
                 self.apply_automation_at(now_unix);
+                self.apply_finance_at(now_unix);
                 self.tick_staff(now_unix);
                 self.resolve_story(now_unix);
                 self.evaluate_achievements(now_unix);
@@ -688,6 +698,7 @@ impl GameState {
                 self.produce_until(now_unix);
                 self.apply_laws_at(now_unix);
                 self.apply_automation_at(now_unix);
+                self.apply_finance_at(now_unix);
                 self.tick_staff(now_unix);
                 self.resolve_story(now_unix);
                 self.evaluate_achievements(now_unix);
@@ -700,6 +711,7 @@ impl GameState {
             self.produce_until(done_at);
             self.apply_laws_at(done_at);
             self.apply_automation_at(done_at);
+            self.apply_finance_at(done_at);
             self.tick_staff(done_at);
             if home_build_at == Some(done_at) {
                 let job = self.build_queue.remove(0);
@@ -1365,8 +1377,27 @@ impl GameState {
         let spend = cost.iron + cost.silicon + cost.deuterium;
         self.authorize(actor, crate::Permission::QueueBuild, Some(coord), spend)
             .map_err(|err| BuildError::PermissionDenied(err.to_string()))?;
-        let now = self.last_tick_unix;
         let cap = self.build_queue_cap();
+        let resources = if coord == self.home {
+            self.resources
+        } else {
+            self.colonies
+                .iter()
+                .find(|c| c.coord == coord)
+                .ok_or(BuildError::UnknownPlanet)?
+                .resources
+        };
+        Self::check_build_job_parts(kind, &buildings, &queue, &resources, cap, &self.config)?;
+        let amount = self.value_resources(cost);
+        let centers = crate::finance::build_centers(coord);
+        let pending = crate::PendingKind::Build {
+            coord,
+            building: kind,
+        };
+        if let Err(id) = self.hold_spend(&centers, amount, pending, actor) {
+            return Err(BuildError::NeedsApproval { id });
+        }
+        let now = self.last_tick_unix;
         let construction = self
             .species
             .as_ref()
@@ -1412,7 +1443,58 @@ impl GameState {
             )?;
         }
         self.charge_delegation(actor, crate::Permission::QueueBuild, spend);
+        self.commit_spend(
+            &centers,
+            amount,
+            &crate::PendingKind::Build {
+                coord,
+                building: kind,
+            },
+            actor,
+        );
+        if coord == self.home {
+            if let Some(job) = self.build_queue.last_mut() {
+                job.credits = amount;
+            }
+        } else if let Some(colony) = self.colonies.iter_mut().find(|c| c.coord == coord)
+            && let Some(job) = colony.build_queue.last_mut()
+        {
+            job.credits = amount;
+        }
         self.history_queue_build(coord, kind, now);
+        Ok(())
+    }
+
+    fn check_build_job_parts(
+        kind: BuildingKind,
+        buildings: &Buildings,
+        queue: &[BuildJob],
+        resources: &Resources,
+        cap: usize,
+        config: &BalanceConfig,
+    ) -> Result<(), BuildError> {
+        if queue.len() >= cap {
+            return Err(BuildError::QueueFull { cap });
+        }
+        let prereqs = config.buildings.get(kind).prerequisites.clone();
+        for &(req, required) in &prereqs {
+            let actual = projected_on(buildings, queue, req, queue.len());
+            if actual < required {
+                return Err(BuildError::MissingPrerequisite {
+                    building: req,
+                    required,
+                    actual,
+                });
+            }
+        }
+        let from_level = projected_on(buildings, queue, kind, queue.len());
+        let cost = config.buildings.get(kind).cost(from_level);
+        if !resources.can_afford(cost) {
+            return Err(BuildError::InsufficientResources {
+                missing: resources.missing(cost),
+                cost,
+            });
+        }
         Ok(())
     }
 
@@ -1423,33 +1505,22 @@ impl GameState {
         config: &BalanceConfig,
         construction: f64,
     ) -> Result<(), BuildError> {
-        if target.queue.len() >= target.cap {
-            return Err(BuildError::QueueFull { cap: target.cap });
-        }
-        let prereqs = config.buildings.get(kind).prerequisites.clone();
-        for &(req, required) in &prereqs {
-            let actual = projected_on(&target.buildings, target.queue, req, target.queue.len());
-            if actual < required {
-                return Err(BuildError::MissingPrerequisite {
-                    building: req,
-                    required,
-                    actual,
-                });
-            }
-        }
+        Self::check_build_job_parts(
+            kind,
+            &target.buildings,
+            target.queue,
+            target.resources,
+            target.cap,
+            config,
+        )?;
         let from_level = projected_on(&target.buildings, target.queue, kind, target.queue.len());
         let cost = config.buildings.get(kind).cost(from_level);
-        if !target.resources.can_afford(cost) {
-            return Err(BuildError::InsufficientResources {
-                missing: target.resources.missing(cost),
-                cost,
-            });
-        }
         *target.resources = target.resources.saturating_sub(cost);
         target.queue.push(BuildJob {
             building: kind,
             from_level,
             paid: cost,
+            credits: 0.0,
             started_at: None,
             completes_at: None,
         });
@@ -1509,6 +1580,10 @@ impl GameState {
                 .forget_cause_at(&format!("build:{coord}:{}", kind.as_key()), deque_idx);
             let job = self.build_queue.remove(index);
             self.resources = self.resources.saturating_add(job.paid);
+            self.refund_spend(
+                &crate::finance::build_centers(coord),
+                self.refund_credits(job.credits, job.paid),
+            );
             self.reprice_queue();
             if index == 0 {
                 if let Some(head) = self.build_queue.first_mut() {
@@ -1539,6 +1614,10 @@ impl GameState {
             .forget_cause_at(&format!("build:{coord}:{}", kind.as_key()), deque_idx);
         let job = self.colonies[idx].build_queue.remove(index);
         self.colonies[idx].resources = self.colonies[idx].resources.saturating_add(job.paid);
+        self.refund_spend(
+            &crate::finance::build_centers(coord),
+            self.refund_credits(job.credits, job.paid),
+        );
         self.reprice_colony_queue(idx);
         if index == 0 {
             if let Some(head) = self.colonies[idx].build_queue.first_mut() {
@@ -1616,6 +1695,14 @@ impl GameState {
                 cost,
             });
         }
+        let amount = self.value_resources(cost);
+        let centers = crate::finance::research_centers();
+        let pending = crate::PendingKind::Research {
+            tech: tech.to_string(),
+        };
+        if let Err(id) = self.hold_spend(&centers, amount, pending, crate::Actor::Player) {
+            return Err(ResearchError::NeedsApproval { id });
+        }
         self.resources = self.resources.saturating_sub(cost);
         if let Some(group) = self
             .config
@@ -1629,6 +1716,7 @@ impl GameState {
             tech: tech.to_string(),
             from_level,
             paid: cost,
+            credits: amount,
             started_at: now,
             completes_at: now.saturating_add(duration),
         });
@@ -1643,6 +1731,14 @@ impl GameState {
             cause_key: Some(format!("research:{tech}")),
             ..crate::HistoryDraft::default()
         });
+        self.commit_spend(
+            &centers,
+            amount,
+            &crate::PendingKind::Research {
+                tech: tech.to_string(),
+            },
+            crate::Actor::Player,
+        );
         Ok(())
     }
 
@@ -1651,6 +1747,10 @@ impl GameState {
         let job = self.research.take().ok_or(ResearchError::Idle)?;
         self.history.forget_cause(&format!("research:{}", job.tech));
         self.resources = self.resources.saturating_add(job.paid);
+        self.refund_spend(
+            &crate::finance::research_centers(),
+            self.refund_credits(job.credits, job.paid),
+        );
         Ok(job.paid)
     }
 
@@ -1692,12 +1792,19 @@ impl GameState {
                 cost,
             });
         }
+        let amount = self.value_resources(cost);
+        let centers = crate::finance::military_centers();
+        let pending = crate::PendingKind::Ships { kind, count };
+        if let Err(id) = self.hold_spend(&centers, amount, pending, crate::Actor::Player) {
+            return Err(ShipError::NeedsApproval { id });
+        }
         self.resources = self.resources.saturating_sub(cost);
         self.ship_queue.push(ShipJob {
             ship: Some(kind),
             defence: None,
             remaining: count,
             unit_paid: unit,
+            credits: amount,
             started_at: None,
             completes_at: None,
         });
@@ -1716,6 +1823,12 @@ impl GameState {
             mass: f64::from(count),
             ..crate::HistoryDraft::default()
         });
+        self.commit_spend(
+            &centers,
+            amount,
+            &crate::PendingKind::Ships { kind, count },
+            crate::Actor::Player,
+        );
         Ok(())
     }
 
@@ -1752,18 +1865,31 @@ impl GameState {
                 cost,
             });
         }
+        let amount = self.value_resources(cost);
+        let centers = crate::finance::military_centers();
+        let pending = crate::PendingKind::Defence { kind, count };
+        if let Err(id) = self.hold_spend(&centers, amount, pending, crate::Actor::Player) {
+            return Err(ShipError::NeedsApproval { id });
+        }
         self.resources = self.resources.saturating_sub(cost);
         self.ship_queue.push(ShipJob {
             ship: None,
             defence: Some(kind),
             remaining: count,
             unit_paid: unit,
+            credits: amount,
             started_at: None,
             completes_at: None,
         });
         if self.ship_queue.len() == 1 {
             self.start_ship_head(now);
         }
+        self.commit_spend(
+            &centers,
+            amount,
+            &crate::PendingKind::Defence { kind, count },
+            crate::Actor::Player,
+        );
         Ok(())
     }
 
@@ -1798,6 +1924,10 @@ impl GameState {
             job.unit_paid.deuterium * n,
         );
         self.resources = self.resources.saturating_add(refund);
+        self.refund_spend(
+            &crate::finance::military_centers(),
+            self.refund_credits(job.credits, refund),
+        );
         if index == 0 {
             self.start_ship_head(now);
         }
@@ -3298,25 +3428,31 @@ impl GameState {
     /// After a cancellation, drop jobs whose prereqs no longer hold and
     /// recompute `from_level` / paid cost for the rest.
     fn reprice_queue(&mut self) {
+        let centers = crate::finance::build_centers(self.home);
         let mut i = 0;
         while i < self.build_queue.len() {
             if !self.prereqs_ok_at(i) {
                 let job = self.build_queue.remove(i);
                 self.resources = self.resources.saturating_add(job.paid);
+                self.refund_spend(&centers, self.refund_credits(job.credits, job.paid));
                 continue;
             }
             let kind = self.build_queue[i].building;
             let from_level = self.projected_level_before(kind, i);
             let new_cost = self.config.buildings.get(kind).cost(from_level);
             let old_paid = self.build_queue[i].paid;
+            let old_credits = self.build_queue[i].credits;
             self.resources = self.resources.saturating_add(old_paid);
             if !self.resources.can_afford(new_cost) {
                 self.build_queue.remove(i);
+                self.refund_spend(&centers, self.refund_credits(old_credits, old_paid));
                 continue;
             }
             self.resources = self.resources.saturating_sub(new_cost);
             self.build_queue[i].from_level = from_level;
             self.build_queue[i].paid = new_cost;
+            self.build_queue[i].credits =
+                self.replace_spend(&centers, old_credits, old_paid, new_cost);
             i += 1;
         }
     }
@@ -3385,6 +3521,11 @@ impl GameState {
                 let job = self.colonies[index].build_queue.remove(i);
                 self.colonies[index].resources =
                     self.colonies[index].resources.saturating_add(job.paid);
+                let coord = self.colonies[index].coord;
+                self.refund_spend(
+                    &crate::finance::build_centers(coord),
+                    self.refund_credits(job.credits, job.paid),
+                );
                 continue;
             }
             let from_level = projected_on(
@@ -3395,16 +3536,22 @@ impl GameState {
             );
             let new_cost = self.config.buildings.get(kind).cost(from_level);
             let old_paid = self.colonies[index].build_queue[i].paid;
+            let old_credits = self.colonies[index].build_queue[i].credits;
             self.colonies[index].resources =
                 self.colonies[index].resources.saturating_add(old_paid);
+            let coord = self.colonies[index].coord;
+            let centers = crate::finance::build_centers(coord);
             if !self.colonies[index].resources.can_afford(new_cost) {
                 self.colonies[index].build_queue.remove(i);
+                self.refund_spend(&centers, self.refund_credits(old_credits, old_paid));
                 continue;
             }
             self.colonies[index].resources =
                 self.colonies[index].resources.saturating_sub(new_cost);
             self.colonies[index].build_queue[i].from_level = from_level;
             self.colonies[index].build_queue[i].paid = new_cost;
+            self.colonies[index].build_queue[i].credits =
+                self.replace_spend(&centers, old_credits, old_paid, new_cost);
             i += 1;
         }
     }
@@ -4812,8 +4959,9 @@ impl GameState {
         self.resources.set(pay, (have - quote.pay_amount).max(0.0));
         let got = self.resources.get(recv);
         let cap = self.storage_cap(recv);
-        self.resources
-            .set(recv, (got + quote.recv_amount).min(cap).max(got));
+        let stored = (got + quote.recv_amount).min(cap).max(got);
+        let added = (stored - got).max(0.0);
+        self.resources.set(recv, stored);
         self.market.apply_trade_impact(&quote, &self.config.market);
         self.apply_faction_delta("traders", |f| f.trade_delta, "trade", self.last_tick_unix);
         self.note_daily(DailyAction::Trade, self.last_tick_unix);
@@ -4838,6 +4986,17 @@ impl GameState {
             mass: quote.pay_amount,
             ..crate::HistoryDraft::default()
         });
+        let mut paid = Resources::ZERO;
+        paid.set(pay, quote.pay_amount);
+        let mut received = Resources::ZERO;
+        received.set(recv, added);
+        let net = self.value_resources(received) - self.value_resources(paid);
+        if net > 0.0 {
+            self.credit_income(net, crate::finance::IncomeKind::Trade);
+        } else if net < 0.0 {
+            self.finance.treasury.cash += net;
+            self.finance.income.trade += net;
+        }
         Ok(quote)
     }
 
@@ -5100,7 +5259,11 @@ impl GameState {
             self.fleet.add(kind, 1);
         }
         let job = &mut self.ship_queue[0];
-        job.remaining = job.remaining.saturating_sub(1);
+        let n = job.remaining;
+        if n > 0 {
+            job.credits *= f64::from(n.saturating_sub(1)) / f64::from(n);
+        }
+        job.remaining = n.saturating_sub(1);
         if job.remaining == 0 {
             let label = defence
                 .map(|kind| kind.to_string())
@@ -5148,6 +5311,8 @@ impl GameState {
         }
         let from = self.last_tick_unix;
         let hours = (now_unix - from) as f64 / 3600.0;
+        let before = self.resources;
+        let colony_before: Vec<Resources> = self.colonies.iter().map(|c| c.resources).collect();
         let factor = self.energy_factor()
             * self.unrest_factor()
             * self.emission_factor_range(self.home, from, now_unix);
@@ -5248,7 +5413,16 @@ impl GameState {
                     add_capped(colony.resources.deuterium, deut_rate, hours, deut_cap);
             }
         }
+        let mut produced = Resources::ZERO;
+        for kind in ResourceKind::ALL {
+            let mut added = (self.resources.get(kind) - before.get(kind)).max(0.0);
+            for (colony, prior) in self.colonies.iter().zip(&colony_before) {
+                added += (colony.resources.get(kind) - prior.get(kind)).max(0.0);
+            }
+            produced.set(kind, added);
+        }
         self.collect_law_tax(hours, from, now_unix);
+        self.accrue_production_income(hours, produced);
         self.tick_flagship(now_unix);
         self.last_tick_unix = now_unix;
         self.sync_daily(now_unix);
@@ -5655,6 +5829,10 @@ impl GameState {
                 law.revenue_accrued += take;
             }
         }
+        let mut taxed = Resources::ZERO;
+        taxed.iron = take;
+        let amount = self.value_resources(taxed);
+        self.credit_income(amount, crate::finance::IncomeKind::Tax);
     }
 
     /// Propose a law. `effective_in` is seconds from now.

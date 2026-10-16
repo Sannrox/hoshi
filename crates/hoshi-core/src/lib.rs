@@ -18,6 +18,7 @@ mod detail;
 mod diplomacy;
 mod espionage;
 mod expedition;
+mod finance;
 mod fleets;
 mod frontier;
 mod galaxy;
@@ -112,6 +113,10 @@ pub use espionage::{
 pub use expedition::{
     ExpeditionConfig, ExpeditionKind, ExpeditionResult, ExpeditionWeights, fleet_points,
     roll_expedition, scaled_weights,
+};
+pub use finance::{
+    Budget, CostCenter, Department, FinanceConfig, FinanceError, FinanceReport, FinanceState,
+    Ledger, PendingKind, PendingSpend, Treasury,
 };
 pub use fleets::{
     Coord, FleetError, FlightConfig, Mission, MissionPhase, TradeRoute, distance, flight_secs,

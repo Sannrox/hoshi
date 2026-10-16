@@ -1,0 +1,10 @@
+# Empire treasury and budgets. Credits are a unit of account: material
+# spends are valued at the live market mid, energy draw at energy_credit.
+# Interest is simple per period on negative cash. Numbers live here so
+# balance.toml can move without this file.
+
+period_secs = 3600
+energy_credit = 0.01
+interest_rate = 0.02
+reserve_target = 0.0
+starting_cash = 0.0

@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 40;
+pub const SCHEMA_VERSION: u32 = 41;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -218,7 +218,11 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM frontier_seen;
          DELETE FROM frontier_meta;
          DELETE FROM automation_rules;
-         DELETE FROM automation_meta;",
+         DELETE FROM automation_meta;
+         DELETE FROM finance_job_credits;
+         DELETE FROM finance_pending;
+         DELETE FROM finance_budgets;
+         DELETE FROM finance_meta;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -460,6 +464,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
         "INSERT INTO automation_meta (id, next_at) VALUES (1, ?1)",
         params![state.next_automation_at.map(|t| t as i64)],
     )?;
+    persist_finance(&tx, state)?;
     tx.execute(
         "INSERT INTO activity_boosts (id, prod_until, prod_factor, research_until, research_factor)
          VALUES (1, ?1, ?2, ?3, ?4)",
@@ -1248,6 +1253,7 @@ fn load_rivals(conn: &Connection, state: &mut GameState) -> Result<(), SaveError
                         building,
                         from_level,
                         paid: Resources::from_parts(metal, crystal, deuterium),
+                        credits: 0.0,
                         started_at: unix_ts_opt(started)?,
                         completes_at: unix_ts_opt(completes)?,
                     });
@@ -1309,6 +1315,7 @@ fn load_rivals(conn: &Connection, state: &mut GameState) -> Result<(), SaveError
                                 tech,
                                 from_level,
                                 paid: Resources::from_parts(metal, crystal, deuterium),
+                                credits: 0.0,
                                 started_at: unix_ts(started)?,
                                 completes_at: unix_ts(completes)?,
                             })
@@ -1348,6 +1355,7 @@ fn load_rivals(conn: &Connection, state: &mut GameState) -> Result<(), SaveError
                         defence,
                         remaining,
                         unit_paid: Resources::from_parts(metal, crystal, deuterium),
+                        credits: 0.0,
                         started_at: unix_ts_opt(started)?,
                         completes_at: unix_ts_opt(completes)?,
                     });
@@ -1543,6 +1551,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
                 tech,
                 from_level,
                 paid: Resources::from_parts(metal, crystal, deuterium),
+            credits: 0.0,
                 started_at: unix_ts(started_at)?,
                 completes_at: unix_ts(completes_at)?,
             })
@@ -1592,6 +1601,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             defence,
             remaining,
             unit_paid: Resources::from_parts(metal, crystal, deuterium),
+            credits: 0.0,
             started_at: unix_ts_opt(started_at)?,
             completes_at: unix_ts_opt(completes_at)?,
         });
@@ -1755,6 +1765,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             }
         }
     };
+    read_finance(conn, &mut state)?;
     state.next_route_id = state
         .routes
         .iter()
@@ -2932,6 +2943,10 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "frontier_worlds" => "SELECT COUNT(*) FROM frontier_worlds",
         "automation_rules" => "SELECT COUNT(*) FROM automation_rules",
         "automation_meta" => "SELECT COUNT(*) FROM automation_meta",
+        "finance_meta" => "SELECT COUNT(*) FROM finance_meta",
+        "finance_budgets" => "SELECT COUNT(*) FROM finance_budgets",
+        "finance_pending" => "SELECT COUNT(*) FROM finance_pending",
+        "finance_job_credits" => "SELECT COUNT(*) FROM finance_job_credits",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -3026,7 +3041,11 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "frontier_seen")?
         + count_rows(conn, "frontier_worlds")?
         + count_rows(conn, "automation_rules")?
-        + count_rows(conn, "automation_meta")?)
+        + count_rows(conn, "automation_meta")?
+        + count_rows(conn, "finance_meta")?
+        + count_rows(conn, "finance_budgets")?
+        + count_rows(conn, "finance_pending")?
+        + count_rows(conn, "finance_job_credits")?)
 }
 
 fn migrate(conn: &Connection) -> Result<(), SaveError> {
@@ -3156,6 +3175,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 40 {
         migrate_v40(conn)?;
+    }
+    if found < 41 {
+        migrate_v41(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -4194,6 +4216,64 @@ fn sql_resources(
         helium_3,
         deuterium,
     }
+}
+
+fn migrate_v41(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS finance_meta (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            cash REAL NOT NULL,
+            reserve_target REAL NOT NULL,
+            period_started_at INTEGER NOT NULL,
+            next_period_at INTEGER NOT NULL,
+            next_spend_id INTEGER NOT NULL,
+            inc_production REAL NOT NULL,
+            inc_tax REAL NOT NULL,
+            inc_trade REAL NOT NULL,
+            inc_contract REAL NOT NULL,
+            exp_industry REAL NOT NULL,
+            exp_research REAL NOT NULL,
+            exp_military REAL NOT NULL,
+            exp_logistics REAL NOT NULL,
+            exp_interest REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS finance_budgets (
+            center TEXT PRIMARY KEY,
+            limit_val REAL,
+            actual REAL NOT NULL,
+            forecast REAL NOT NULL,
+            last_actual REAL NOT NULL,
+            last_forecast REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS finance_pending (
+            id INTEGER PRIMARY KEY,
+            center TEXT NOT NULL,
+            amount REAL NOT NULL,
+            actor TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            requested_at INTEGER NOT NULL,
+            g INTEGER,
+            s INTEGER,
+            p INTEGER,
+            building TEXT,
+            tech TEXT,
+            ship TEXT,
+            defence TEXT,
+            count INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS finance_job_credits (
+            id INTEGER PRIMARY KEY,
+            scope TEXT NOT NULL,
+            idx INTEGER NOT NULL,
+            g INTEGER,
+            s INTEGER,
+            p INTEGER,
+            credits REAL NOT NULL
+        );
+        ",
+    )?;
+    Ok(())
 }
 
 fn migrate_v40(conn: &Connection) -> Result<(), SaveError> {
@@ -6929,11 +7009,380 @@ fn read_build_queue(conn: &Connection, planet_id: i64) -> Result<Vec<BuildJob>, 
             building,
             from_level,
             paid: Resources::from_parts(metal, crystal, deuterium),
+            credits: 0.0,
             started_at: unix_ts_opt(started_at)?,
             completes_at: unix_ts_opt(completes_at)?,
         });
     }
     Ok(queue)
+}
+
+fn persist_finance(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<(), SaveError> {
+    let inc = state.finance.income;
+    let exp = state.finance.expense;
+    tx.execute(
+        "INSERT INTO finance_meta (
+            id, cash, reserve_target, period_started_at, next_period_at, next_spend_id,
+            inc_production, inc_tax, inc_trade, inc_contract,
+            exp_industry, exp_research, exp_military, exp_logistics, exp_interest
+         ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        params![
+            state.finance.treasury.cash,
+            state.finance.treasury.reserve_target,
+            state.finance.period_started_at as i64,
+            state.finance.next_period_at as i64,
+            state.finance.next_spend_id as i64,
+            inc.production,
+            inc.tax,
+            inc.trade,
+            inc.contract,
+            exp.industry,
+            exp.research,
+            exp.military,
+            exp.logistics,
+            exp.interest,
+        ],
+    )?;
+    for budget in &state.finance.budgets {
+        tx.execute(
+            "INSERT INTO finance_budgets (
+                center, limit_val, actual, forecast, last_actual, last_forecast
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                budget.center.as_key(),
+                budget.limit,
+                budget.actual,
+                budget.forecast,
+                budget.last_actual,
+                budget.last_forecast,
+            ],
+        )?;
+    }
+    for row in &state.finance.pending {
+        let (coord, building, tech, ship, defence, count) = match &row.kind {
+            crate::PendingKind::Build { coord, building } => (
+                Some(*coord),
+                Some(building.as_key()),
+                None,
+                None,
+                None,
+                None,
+            ),
+            crate::PendingKind::Research { tech } => {
+                (None, None, Some(tech.as_str()), None, None, None)
+            }
+            crate::PendingKind::Ships { kind, count } => {
+                (None, None, None, Some(kind.as_key()), None, Some(*count))
+            }
+            crate::PendingKind::Defence { kind, count } => {
+                (None, None, None, None, Some(kind.as_key()), Some(*count))
+            }
+        };
+        tx.execute(
+            "INSERT INTO finance_pending (
+                id, center, amount, actor, kind, requested_at,
+                g, s, p, building, tech, ship, defence, count
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            params![
+                row.id as i64,
+                row.center.as_key(),
+                row.amount,
+                row.actor,
+                row.kind.as_key(),
+                row.requested_at as i64,
+                coord.map(|c| c.galaxy as i64),
+                coord.map(|c| c.system as i64),
+                coord.map(|c| c.position as i64),
+                building,
+                tech,
+                ship,
+                defence,
+                count.map(i64::from),
+            ],
+        )?;
+    }
+    persist_job_credits(tx, state)?;
+    Ok(())
+}
+
+fn persist_job_credits(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<(), SaveError> {
+    let mut id = 0i64;
+    let mut write = |scope: &str, idx: usize, coord: Option<crate::Coord>, credits: f64| {
+        id += 1;
+        tx.execute(
+            "INSERT INTO finance_job_credits (id, scope, idx, g, s, p, credits)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                id,
+                scope,
+                idx as i64,
+                coord.map(|c| c.galaxy as i64),
+                coord.map(|c| c.system as i64),
+                coord.map(|c| c.position as i64),
+                credits,
+            ],
+        )
+        .map(|_| ())
+    };
+    for (idx, job) in state.build_queue.iter().enumerate() {
+        write("build", idx, Some(state.home), job.credits)?;
+    }
+    for colony in &state.colonies {
+        for (idx, job) in colony.build_queue.iter().enumerate() {
+            write("build", idx, Some(colony.coord), job.credits)?;
+        }
+    }
+    if let Some(job) = &state.research {
+        write("research", 0, None, job.credits)?;
+    }
+    for (idx, job) in state.ship_queue.iter().enumerate() {
+        write("ship", idx, None, job.credits)?;
+    }
+    Ok(())
+}
+
+fn read_finance(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
+    let cfg = crate::FinanceConfig::bundled();
+    state.finance = crate::FinanceState::new(state.last_tick_unix, &cfg);
+    let meta = conn
+        .query_row(
+            "SELECT cash, reserve_target, period_started_at, next_period_at, next_spend_id,
+                    inc_production, inc_tax, inc_trade, inc_contract,
+                    exp_industry, exp_research, exp_military, exp_logistics, exp_interest
+             FROM finance_meta WHERE id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, f64>(0)?,
+                    row.get::<_, f64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, f64>(5)?,
+                    row.get::<_, f64>(6)?,
+                    row.get::<_, f64>(7)?,
+                    row.get::<_, f64>(8)?,
+                    row.get::<_, f64>(9)?,
+                    row.get::<_, f64>(10)?,
+                    row.get::<_, f64>(11)?,
+                    row.get::<_, f64>(12)?,
+                    row.get::<_, f64>(13)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some(meta) = meta else {
+        return Ok(());
+    };
+    state.finance.treasury.cash = meta.0;
+    state.finance.treasury.reserve_target = meta.1;
+    state.finance.period_started_at = unix_ts(meta.2)?;
+    state.finance.next_period_at = unix_ts(meta.3)?;
+    state.finance.next_spend_id = u64::try_from(meta.4).unwrap_or(0);
+    state.finance.income.production = meta.5;
+    state.finance.income.tax = meta.6;
+    state.finance.income.trade = meta.7;
+    state.finance.income.contract = meta.8;
+    state.finance.expense.industry = meta.9;
+    state.finance.expense.research = meta.10;
+    state.finance.expense.military = meta.11;
+    state.finance.expense.logistics = meta.12;
+    state.finance.expense.interest = meta.13;
+    {
+        let mut stmt = conn.prepare(
+            "SELECT center, limit_val, actual, forecast, last_actual, last_forecast
+         FROM finance_budgets",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<f64>>(1)?,
+                row.get::<_, f64>(2)?,
+                row.get::<_, f64>(3)?,
+                row.get::<_, f64>(4)?,
+                row.get::<_, f64>(5)?,
+            ))
+        })?;
+        let mut budgets = Vec::new();
+        for row in rows {
+            let (center, limit, actual, forecast, last_actual, last_forecast) = row?;
+            let center =
+                crate::CostCenter::parse(&center).ok_or(SaveError::Corrupt("finance center"))?;
+            budgets.push(crate::Budget {
+                center,
+                limit,
+                actual,
+                forecast,
+                last_actual,
+                last_forecast,
+            });
+        }
+        if !budgets.is_empty() {
+            state.finance.budgets = budgets;
+        }
+    }
+    {
+        let mut stmt = conn.prepare(
+            "SELECT id, center, amount, actor, kind, requested_at,
+                g, s, p, building, tech, ship, defence, count
+         FROM finance_pending ORDER BY id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, f64>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, Option<i64>>(6)?,
+                row.get::<_, Option<i64>>(7)?,
+                row.get::<_, Option<i64>>(8)?,
+                row.get::<_, Option<String>>(9)?,
+                row.get::<_, Option<String>>(10)?,
+                row.get::<_, Option<String>>(11)?,
+                row.get::<_, Option<String>>(12)?,
+                row.get::<_, Option<i64>>(13)?,
+            ))
+        })?;
+        let mut pending = Vec::new();
+        for row in rows {
+            let (
+                id,
+                center,
+                amount,
+                actor,
+                kind,
+                requested_at,
+                g,
+                s,
+                p,
+                building,
+                tech,
+                ship,
+                defence,
+                count,
+            ) = row?;
+            let center =
+                crate::CostCenter::parse(&center).ok_or(SaveError::Corrupt("finance center"))?;
+            let kind = decode_pending_kind(
+                &kind,
+                (g, s, p),
+                building.as_deref(),
+                tech.as_deref(),
+                ship.as_deref(),
+                defence.as_deref(),
+                count,
+            )?;
+            pending.push(crate::PendingSpend {
+                id: u64::try_from(id).map_err(|_| SaveError::Corrupt("spend id"))?,
+                center,
+                amount,
+                actor,
+                kind,
+                requested_at: unix_ts(requested_at)?,
+            });
+        }
+        state.finance.pending = pending;
+    }
+    apply_job_credits(conn, state)?;
+    Ok(())
+}
+
+fn apply_job_credits(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
+    let mut stmt =
+        conn.prepare("SELECT scope, idx, g, s, p, credits FROM finance_job_credits ORDER BY id")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, Option<i64>>(2)?,
+            row.get::<_, Option<i64>>(3)?,
+            row.get::<_, Option<i64>>(4)?,
+            row.get::<_, f64>(5)?,
+        ))
+    })?;
+    for row in rows {
+        let (scope, idx, g, s, p, credits) = row?;
+        let idx = usize::try_from(idx).unwrap_or(usize::MAX);
+        match scope.as_str() {
+            "build" => {
+                let coord = match (g, s, p) {
+                    (Some(g), Some(s), Some(p)) => crate::Coord {
+                        galaxy: u16::try_from(g).unwrap_or(0),
+                        system: u16::try_from(s).unwrap_or(0),
+                        position: u16::try_from(p).unwrap_or(0),
+                    },
+                    _ => continue,
+                };
+                if coord == state.home {
+                    if let Some(job) = state.build_queue.get_mut(idx) {
+                        job.credits = credits;
+                    }
+                } else if let Some(colony) = state.colonies.iter_mut().find(|c| c.coord == coord)
+                    && let Some(job) = colony.build_queue.get_mut(idx)
+                {
+                    job.credits = credits;
+                }
+            }
+            "research" => {
+                if let Some(job) = state.research.as_mut() {
+                    job.credits = credits;
+                }
+            }
+            "ship" => {
+                if let Some(job) = state.ship_queue.get_mut(idx) {
+                    job.credits = credits;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn decode_pending_kind(
+    kind: &str,
+    coord: (Option<i64>, Option<i64>, Option<i64>),
+    building: Option<&str>,
+    tech: Option<&str>,
+    ship: Option<&str>,
+    defence: Option<&str>,
+    count: Option<i64>,
+) -> Result<crate::PendingKind, SaveError> {
+    match kind {
+        "build" => {
+            let coord = Coord {
+                galaxy: u16::try_from(coord.0.unwrap_or(0))
+                    .map_err(|_| SaveError::Corrupt("spend coord"))?,
+                system: u16::try_from(coord.1.unwrap_or(0))
+                    .map_err(|_| SaveError::Corrupt("spend coord"))?,
+                position: u16::try_from(coord.2.unwrap_or(0))
+                    .map_err(|_| SaveError::Corrupt("spend coord"))?,
+            };
+            let building = BuildingKind::from_key(building.unwrap_or(""))
+                .ok_or(SaveError::Corrupt("spend building"))?;
+            Ok(crate::PendingKind::Build { coord, building })
+        }
+        "research" => Ok(crate::PendingKind::Research {
+            tech: tech.unwrap_or("").to_string(),
+        }),
+        "ships" => {
+            let kind = crate::ShipKind::from_key(ship.unwrap_or(""))
+                .ok_or(SaveError::Corrupt("spend ship"))?;
+            let count =
+                u32::try_from(count.unwrap_or(0)).map_err(|_| SaveError::Corrupt("spend count"))?;
+            Ok(crate::PendingKind::Ships { kind, count })
+        }
+        "defence" => {
+            let kind = crate::DefenceKind::from_key(defence.unwrap_or(""))
+                .ok_or(SaveError::Corrupt("spend defence"))?;
+            let count =
+                u32::try_from(count.unwrap_or(0)).map_err(|_| SaveError::Corrupt("spend count"))?;
+            Ok(crate::PendingKind::Defence { kind, count })
+        }
+        _ => Err(SaveError::Corrupt("spend kind")),
+    }
 }
 
 fn read_automation_rules(conn: &Connection) -> Result<Vec<crate::AutomationRule>, SaveError> {
@@ -7203,6 +7652,7 @@ mod tests {
                 building: BuildingKind::SolarPlant,
                 from_level: 0,
                 paid: Resources::from_parts(1.0, 1.0, 0.0),
+                credits: 0.0,
                 started_at: Some(1_700_000_000),
                 completes_at: Some(1_700_000_040),
             }],
@@ -7861,6 +8311,7 @@ mod tests {
             defence: Some(crate::DefenceKind::IonCannon),
             remaining: 2,
             unit_paid: Resources::from_parts(200.0, 600.0, 0.0),
+            credits: 0.0,
             started_at: Some(10),
             completes_at: Some(190),
         });
@@ -8429,6 +8880,68 @@ mod tests {
         assert_eq!(loaded.next_automation_at, Some(1_300));
         assert_eq!(count_rows(&conn, "automation_rules").unwrap(), 1);
         assert_eq!(count_rows(&conn, "automation_meta").unwrap(), 1);
+    }
+
+    #[test]
+    fn migrate_v41_round_trips_finance() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v41(&conn).unwrap();
+        migrate_v41(&conn).unwrap();
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.enabled = false;
+        cfg.market.enabled = false;
+        let mut state = GameState::with_seed(1_000, cfg, 9);
+        state.deterministic = true;
+        state.resources.iron = 50_000.0;
+        state.resources.silicon = 50_000.0;
+        state.resources.deuterium = 50_000.0;
+        state
+            .set_budget(
+                crate::CostCenter::Department(crate::Department::Industry),
+                Some(1.0),
+                crate::Actor::Player,
+                1_000,
+            )
+            .unwrap();
+        let err = state
+            .enqueue_build(crate::BuildingKind::MetalMine, 1_000)
+            .unwrap_err();
+        let crate::BuildError::NeedsApproval { id } = err else {
+            panic!("{err:?}");
+        };
+        state.finance.treasury.cash = 42.5;
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert!((loaded.finance.treasury.cash - 42.5).abs() < 1e-9);
+        assert_eq!(loaded.finance.pending.len(), 1);
+        assert_eq!(loaded.finance.pending[0].id, id);
+        let industry = loaded
+            .finance
+            .budgets
+            .iter()
+            .find(|b| b.center == crate::CostCenter::Department(crate::Department::Industry))
+            .unwrap();
+        assert_eq!(industry.limit, Some(1.0));
+        assert_eq!(count_rows(&conn, "finance_meta").unwrap(), 1);
+        assert_eq!(count_rows(&conn, "finance_pending").unwrap(), 1);
+    }
+
+    #[test]
+    fn corrupt_finance_meta_is_rejected() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.enabled = false;
+        cfg.market.enabled = false;
+        let mut state = GameState::with_seed(1_000, cfg, 9);
+        state.deterministic = true;
+        state.finance.treasury.cash = 42.5;
+        save_state(&mut conn, &state).unwrap();
+        conn.execute("DROP TABLE finance_meta", []).unwrap();
+        let err = load_state(&conn, BalanceConfig::default()).unwrap_err();
+        assert!(
+            matches!(err, SaveError::Sqlite(_)),
+            "expected sqlite error, got {err:?}"
+        );
     }
 
     #[test]

@@ -60,6 +60,11 @@
     "produced": 0.0
   },
   "events": [],
+  "finance": {
+    "cash": 0.0,
+    "debt": 0.0,
+    "pending": 0
+  },
   "fleet": {
     "battleship": 0,
     "colony_ship": 0,
@@ -258,7 +263,7 @@
     "empires": [],
     "enabled": false
   },
-  "save_schema": 40,
+  "save_schema": 41,
   "schema_version": 2,
   "season": null,
   "species": null,
