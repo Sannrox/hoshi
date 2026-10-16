@@ -229,6 +229,22 @@ prereq_buildings = [{ building = "research_lab", level = 1 }]
 prereq_techs = [{ id = "energy", level = 1 }]
 modifiers = [{ kind = "pollution_sink", per_level = 0.08 }]
 
+
+[[tech]]
+id = "auto_routes"
+name = "Adaptive routes"
+branch = "industry"
+tier = 3
+metal = 800.0
+crystal = 1200.0
+deuterium = 400.0
+cost_growth = 2.0
+base_seconds = 400.0
+time_growth = 2.0
+prereq_buildings = [{ building = "research_lab", level = 3 }]
+prereq_techs = [{ id = "colonization", level = 1 }]
+modifiers = []
+
 [[tech]]
 id = "logistics"
 name = "Logistics"
@@ -241,8 +257,23 @@ cost_growth = 2.0
 base_seconds = 600.0
 time_growth = 2.0
 prereq_buildings = [{ building = "research_lab", level = 4 }]
-prereq_techs = [{ id = "colonization", level = 1 }]
+prereq_techs = [{ id = "auto_routes", level = 1 }]
 modifiers = [{ kind = "logistics", per_level = 1.0 }]
+
+[[tech]]
+id = "logistics_rules"
+name = "Logistics rules"
+branch = "industry"
+tier = 4
+metal = 4000.0
+crystal = 8000.0
+deuterium = 2000.0
+cost_growth = 2.0
+base_seconds = 800.0
+time_growth = 2.0
+prereq_buildings = [{ building = "research_lab", level = 6 }]
+prereq_techs = [{ id = "logistics", level = 1 }, { id = "computer", level = 1 }]
+modifiers = []
 
 [[tech]]
 id = "deep_core"

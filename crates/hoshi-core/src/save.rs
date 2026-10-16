@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 38;
+pub const SCHEMA_VERSION: u32 = 39;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -216,7 +216,9 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM ladder_hold;
          DELETE FROM frontier_worlds;
          DELETE FROM frontier_seen;
-         DELETE FROM frontier_meta;",
+         DELETE FROM frontier_meta;
+         DELETE FROM automation_rules;
+         DELETE FROM automation_meta;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -386,6 +388,65 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
             )?;
         }
     }
+    for rule in state.automation_rules.iter() {
+        let (from, to, act_resource, act_amount, act_planet, act_building) = match &rule.action {
+            crate::RuleAction::Transfer {
+                from,
+                to,
+                resource,
+                amount,
+            } => (
+                Some(*from),
+                Some(*to),
+                Some(resource.as_key()),
+                Some(*amount),
+                None,
+                None,
+            ),
+            crate::RuleAction::QueueBuild { planet, building } => (
+                None,
+                None,
+                None,
+                None,
+                Some(*planet),
+                Some(building.as_key()),
+            ),
+        };
+        tx.execute(
+            "INSERT INTO automation_rules (
+                id, enabled, cond_kind, cond_g, cond_s, cond_p, cond_resource, cond_amount,
+                act_kind, from_g, from_s, from_p, to_g, to_s, to_p, act_resource, act_amount,
+                act_g, act_s, act_p, act_building
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+            params![
+                rule.id as i64,
+                rule.enabled as i64,
+                rule.condition.kind.as_key(),
+                rule.condition.planet.galaxy as i64,
+                rule.condition.planet.system as i64,
+                rule.condition.planet.position as i64,
+                rule.condition.resource.as_key(),
+                rule.condition.amount,
+                rule.action.kind().as_key(),
+                from.map(|c| c.galaxy as i64),
+                from.map(|c| c.system as i64),
+                from.map(|c| c.position as i64),
+                to.map(|c| c.galaxy as i64),
+                to.map(|c| c.system as i64),
+                to.map(|c| c.position as i64),
+                act_resource,
+                act_amount,
+                act_planet.map(|c| c.galaxy as i64),
+                act_planet.map(|c| c.system as i64),
+                act_planet.map(|c| c.position as i64),
+                act_building,
+            ],
+        )?;
+    }
+    tx.execute(
+        "INSERT INTO automation_meta (id, next_at) VALUES (1, ?1)",
+        params![state.next_automation_at.map(|t| t as i64)],
+    )?;
     tx.execute(
         "INSERT INTO activity_boosts (id, prod_until, prod_factor, research_until, research_factor)
          VALUES (1, ?1, ?2, ?3, ?4)",
@@ -1659,6 +1720,32 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         .unwrap_or(0);
 
     state.routes = read_routes(conn)?;
+    state.automation_rules = read_automation_rules(conn)?;
+    state.next_automation_id = state
+        .automation_rules
+        .iter()
+        .map(|r| r.id)
+        .max()
+        .unwrap_or(0);
+    let auto_at: Option<Option<i64>> = conn
+        .query_row(
+            "SELECT next_at FROM automation_meta WHERE id = 1",
+            [],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .optional()?;
+    state.next_automation_at = match auto_at {
+        Some(Some(ts)) => Some(unix_ts(ts)?),
+        Some(None) => None,
+        None => {
+            if state.automation_rules.iter().any(|r| r.enabled) {
+                let interval = crate::AutomationCatalog::bundled().interval_secs.max(1);
+                Some(state.last_tick_unix.saturating_add(interval))
+            } else {
+                None
+            }
+        }
+    };
     state.next_route_id = state
         .routes
         .iter()
@@ -2833,6 +2920,8 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "frontier_meta" => "SELECT COUNT(*) FROM frontier_meta",
         "frontier_seen" => "SELECT COUNT(*) FROM frontier_seen",
         "frontier_worlds" => "SELECT COUNT(*) FROM frontier_worlds",
+        "automation_rules" => "SELECT COUNT(*) FROM automation_rules",
+        "automation_meta" => "SELECT COUNT(*) FROM automation_meta",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -2925,7 +3014,9 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "ladder_hold")?
         + count_rows(conn, "frontier_meta")?
         + count_rows(conn, "frontier_seen")?
-        + count_rows(conn, "frontier_worlds")?)
+        + count_rows(conn, "frontier_worlds")?
+        + count_rows(conn, "automation_rules")?
+        + count_rows(conn, "automation_meta")?)
 }
 
 fn migrate(conn: &Connection) -> Result<(), SaveError> {
@@ -3049,6 +3140,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 38 {
         migrate_v38(conn)?;
+    }
+    if found < 39 {
+        migrate_v39(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -4036,6 +4130,41 @@ fn migrate_v35(conn: &Connection) -> Result<(), SaveError> {
         );
         CREATE TABLE IF NOT EXISTS prestige_species (
             species_id TEXT PRIMARY KEY
+        );
+        ",
+    )?;
+    Ok(())
+}
+
+fn migrate_v39(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS automation_rules (
+            id INTEGER PRIMARY KEY,
+            enabled INTEGER NOT NULL,
+            cond_kind TEXT NOT NULL,
+            cond_g INTEGER NOT NULL,
+            cond_s INTEGER NOT NULL,
+            cond_p INTEGER NOT NULL,
+            cond_resource TEXT NOT NULL,
+            cond_amount REAL NOT NULL,
+            act_kind TEXT NOT NULL,
+            from_g INTEGER,
+            from_s INTEGER,
+            from_p INTEGER,
+            to_g INTEGER,
+            to_s INTEGER,
+            to_p INTEGER,
+            act_resource TEXT,
+            act_amount REAL,
+            act_g INTEGER,
+            act_s INTEGER,
+            act_p INTEGER,
+            act_building TEXT
+        );
+        CREATE TABLE IF NOT EXISTS automation_meta (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            next_at INTEGER
         );
         ",
     )?;
@@ -6644,6 +6773,116 @@ fn read_build_queue(conn: &Connection, planet_id: i64) -> Result<Vec<BuildJob>, 
     Ok(queue)
 }
 
+fn read_automation_rules(conn: &Connection) -> Result<Vec<crate::AutomationRule>, SaveError> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT id, enabled, cond_kind, cond_g, cond_s, cond_p, cond_resource, cond_amount,
+                act_kind, from_g, from_s, from_p, to_g, to_s, to_p, act_resource, act_amount,
+                act_g, act_s, act_p, act_building
+         FROM automation_rules ORDER BY id",
+    ) else {
+        return Ok(Vec::new());
+    };
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, i64>(5)?,
+            row.get::<_, String>(6)?,
+            row.get::<_, f64>(7)?,
+            row.get::<_, String>(8)?,
+            row.get::<_, Option<i64>>(9)?,
+            row.get::<_, Option<i64>>(10)?,
+            row.get::<_, Option<i64>>(11)?,
+            row.get::<_, Option<i64>>(12)?,
+            row.get::<_, Option<i64>>(13)?,
+            row.get::<_, Option<i64>>(14)?,
+            row.get::<_, Option<String>>(15)?,
+            row.get::<_, Option<f64>>(16)?,
+            row.get::<_, Option<i64>>(17)?,
+            row.get::<_, Option<i64>>(18)?,
+            row.get::<_, Option<i64>>(19)?,
+            row.get::<_, Option<String>>(20)?,
+        ))
+    })?;
+    let mut rules = Vec::new();
+    for row in rows {
+        let (
+            id,
+            enabled,
+            cond_kind,
+            cg,
+            cs,
+            cp,
+            cond_resource,
+            cond_amount,
+            act_kind,
+            fg,
+            fs,
+            fp,
+            tg,
+            ts,
+            tp,
+            act_resource,
+            act_amount,
+            ag,
+            a_s,
+            ap,
+            act_building,
+        ) = row?;
+        let condition = crate::RuleCondition {
+            kind: crate::RuleConditionKind::parse(&cond_kind)
+                .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?,
+            planet: crate::Coord {
+                galaxy: cg as u16,
+                system: cs as u16,
+                position: cp as u16,
+            },
+            resource: crate::ResourceKind::from_key(&cond_resource)
+                .ok_or_else(|| rusqlite::Error::InvalidParameterName(cond_resource.clone()))?,
+            amount: cond_amount,
+        };
+        let action = match act_kind.as_str() {
+            "transfer" => crate::RuleAction::Transfer {
+                from: crate::Coord {
+                    galaxy: fg.unwrap_or(0) as u16,
+                    system: fs.unwrap_or(0) as u16,
+                    position: fp.unwrap_or(0) as u16,
+                },
+                to: crate::Coord {
+                    galaxy: tg.unwrap_or(0) as u16,
+                    system: ts.unwrap_or(0) as u16,
+                    position: tp.unwrap_or(0) as u16,
+                },
+                resource: crate::ResourceKind::from_key(act_resource.as_deref().unwrap_or(""))
+                    .ok_or_else(|| rusqlite::Error::InvalidParameterName("act_resource".into()))?,
+                amount: act_amount.unwrap_or(0.0),
+            },
+            "queue_build" => crate::RuleAction::QueueBuild {
+                planet: crate::Coord {
+                    galaxy: ag.unwrap_or(0) as u16,
+                    system: a_s.unwrap_or(0) as u16,
+                    position: ap.unwrap_or(0) as u16,
+                },
+                building: crate::BuildingKind::from_key(act_building.as_deref().unwrap_or(""))
+                    .ok_or_else(|| rusqlite::Error::InvalidParameterName("act_building".into()))?,
+            },
+            other => {
+                return Err(rusqlite::Error::InvalidParameterName(other.into()).into());
+            }
+        };
+        rules.push(crate::AutomationRule {
+            id: id as u64,
+            enabled: enabled != 0,
+            condition,
+            action,
+        });
+    }
+    Ok(rules)
+}
+
 fn read_routes(conn: &Connection) -> Result<Vec<TradeRoute>, SaveError> {
     let mut stmt = conn.prepare(
         "SELECT id, origin_g, origin_s, origin_p, dest_g, dest_s, dest_p,
@@ -7972,6 +8211,42 @@ mod tests {
             count_rows(&conn, "frontier_worlds").unwrap(),
             state.frontier.worlds.len() as i64
         );
+    }
+
+    #[test]
+    fn migrate_v39_round_trips_automation_rules() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v39(&conn).unwrap();
+        migrate_v39(&conn).unwrap();
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.enabled = false;
+        cfg.market.enabled = false;
+        let mut state = GameState::with_seed(1_000, cfg, 9);
+        state.deterministic = true;
+        state.tech_levels.insert("logistics_rules".into(), 1);
+        let id = state
+            .add_automation_rule(
+                crate::RuleCondition {
+                    kind: crate::RuleConditionKind::StockBelow,
+                    planet: state.home,
+                    resource: crate::ResourceKind::Metal,
+                    amount: 2_000.0,
+                },
+                crate::RuleAction::QueueBuild {
+                    planet: state.home,
+                    building: crate::BuildingKind::MetalMine,
+                },
+            )
+            .unwrap();
+        state.next_automation_at = Some(1_300);
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.automation_rules.len(), 1);
+        assert_eq!(loaded.automation_rules[0].id, id);
+        assert!(loaded.automation_rules[0].enabled);
+        assert_eq!(loaded.next_automation_at, Some(1_300));
+        assert_eq!(count_rows(&conn, "automation_rules").unwrap(), 1);
+        assert_eq!(count_rows(&conn, "automation_meta").unwrap(), 1);
     }
 
     #[test]

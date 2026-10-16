@@ -3,6 +3,7 @@
 mod achievements;
 mod activity;
 mod advisor;
+mod automation;
 mod balance;
 mod blueprint;
 mod buildings;
@@ -61,6 +62,10 @@ pub use activity::{
 };
 pub use advisor::{
     Advice, advise, advisor_endpoint_allowed, polish_advice, polish_all, polish_all_named,
+};
+pub use automation::{
+    AutomationCatalog, AutomationError, AutomationRule, AutomationTier, RuleAction, RuleActionKind,
+    RuleCondition, RuleConditionKind, RulePreview,
 };
 pub use balance::{
     BalanceConfig, BalanceError, BuildingCatalog, BuildingSpec, EnergyProducerSpec, PacingTargets,

@@ -39,6 +39,7 @@ pub enum Screen {
     History,
     Staff,
     Ops,
+    Automation,
     Map,
     Cockpit,
 }
@@ -644,6 +645,12 @@ impl App {
             Some(Binding::Increase) if self.screen == Screen::Market => {
                 self.trade_amount = (self.trade_amount + 10.0).min(1_000_000.0);
             }
+            Some(Binding::Increase) if self.screen == Screen::Automation => {
+                self.add_default_automation_rule();
+            }
+            Some(Binding::Toggle) if self.screen == Screen::Automation => {
+                self.toggle_selected_automation_rule();
+            }
             Some(Binding::Decrease) if self.screen == Screen::Market => {
                 self.trade_amount = (self.trade_amount - 10.0).max(10.0);
             }
@@ -736,7 +743,8 @@ impl App {
             Screen::Reports => Screen::History,
             Screen::History => Screen::Staff,
             Screen::Staff => Screen::Ops,
-            Screen::Ops => Screen::Map,
+            Screen::Ops => Screen::Automation,
+            Screen::Automation => Screen::Map,
             Screen::Map => Screen::Cockpit,
             Screen::Cockpit => Screen::Overview,
         };
@@ -788,6 +796,7 @@ impl App {
             Screen::History => HelpContext::History,
             Screen::Staff => HelpContext::Staff,
             Screen::Ops => HelpContext::Ops,
+            Screen::Automation => HelpContext::Automation,
             Screen::Map => HelpContext::Map,
             Screen::Cockpit => HelpContext::Cockpit,
         }
@@ -868,6 +877,9 @@ impl App {
             }
             Screen::Staff => {
                 " hoshi  overview planet yard wonder pres ach daily g prod market diplo laws rpt log [stf] ops map "
+            }
+            Screen::Automation => {
+                " hoshi  overview planet yard wonder pres ach daily g prod market diplo laws rpt log stf ops [auto] map "
             }
             Screen::Ops => {
                 " hoshi  overview planet yard wonder pres ach daily g prod market diplo laws rpt log stf [ops] map "
@@ -1308,6 +1320,7 @@ impl App {
             | Screen::Goals
             | Screen::Production
             | Screen::Ops => {}
+            Screen::Automation => self.activate_automation(),
             Screen::Market => self.activate_market(now_unix),
             Screen::Diplomacy => self.activate_diplomacy(now_unix),
             Screen::Laws => self.activate_law(now_unix),
@@ -1682,6 +1695,7 @@ impl App {
             | Screen::Laws
             | Screen::Reports
             | Screen::Ops => {}
+            Screen::Automation => self.remove_selected_automation_rule(),
         }
     }
 
@@ -1708,6 +1722,9 @@ impl App {
             Screen::Reports => self.state.outposts.len(),
             Screen::History => self.history_rows().len(),
             Screen::Staff => self.state.leaders.len(),
+            Screen::Automation => {
+                self.state.automation_catalog().tier.len() + self.state.automation_rules.len()
+            }
             Screen::Ops => {
                 self.state.vehicles.len()
                     + self.state.planned.len()
@@ -1933,6 +1950,13 @@ impl App {
                 "{tab} screens  {select}  {confirm} assign/delegate  {cancel} revoke  {} recruit  {quit}  {help}",
                 k.primary(Binding::Increase)
             ),
+            Screen::Automation => {
+                format!(
+                    "{tab} screens  {select}  {confirm} dry-run  {} toggle  {} add  {cancel} remove  {quit}  {help}",
+                    k.primary(Binding::Toggle),
+                    k.primary(Binding::Increase)
+                )
+            }
             Screen::Ops => {
                 format!("{tab} screens  {select}  schedule  {quit}  {help}")
             }
@@ -2056,6 +2080,7 @@ impl App {
             Screen::History => self.history_lines(height),
             Screen::Staff => self.staff_lines(height),
             Screen::Ops => self.ops_lines(height),
+            Screen::Automation => self.automation_lines(height),
             Screen::Map => self.map_lines(height),
             Screen::Cockpit => Vec::new(),
         }
@@ -3208,6 +3233,116 @@ impl App {
         append_windowed(&mut rows, &entries, self.selected, height)
     }
 
+    fn activate_automation(&mut self) {
+        let preview = self.state.preview_automation();
+        if preview.is_empty() {
+            self.status = "no rules".into();
+            return;
+        }
+        self.status = preview
+            .iter()
+            .map(|p| format!("#{} {}", p.rule_id, p.detail))
+            .collect::<Vec<_>>()
+            .join(" · ");
+    }
+
+    fn toggle_selected_automation_rule(&mut self) {
+        let tiers = self.state.automation_catalog().tier.len();
+        if self.selected < tiers {
+            self.status = "select a rule".into();
+            return;
+        }
+        let idx = self.selected - tiers;
+        let Some(id) = self.state.automation_rules.get(idx).map(|r| r.id) else {
+            return;
+        };
+        match self.state.toggle_automation_rule(id) {
+            Ok(on) => self.status = format!("rule #{id} {}", if on { "on" } else { "off" }),
+            Err(e) => self.status = e.to_string(),
+        }
+    }
+
+    fn add_default_automation_rule(&mut self) {
+        match self.state.add_automation_rule(
+            hoshi_core::RuleCondition {
+                kind: hoshi_core::RuleConditionKind::StockBelow,
+                planet: self.state.home,
+                resource: ResourceKind::Metal,
+                amount: 2_000.0,
+            },
+            hoshi_core::RuleAction::QueueBuild {
+                planet: self.state.home,
+                building: BuildingKind::MetalMine,
+            },
+        ) {
+            Ok(id) => self.status = format!("added rule #{id} keep metal on home"),
+            Err(e) => self.status = e.to_string(),
+        }
+    }
+
+    fn remove_selected_automation_rule(&mut self) {
+        let tiers = self.state.automation_catalog().tier.len();
+        if self.selected < tiers {
+            self.status = "select a rule".into();
+            return;
+        }
+        let idx = self.selected - tiers;
+        let Some(id) = self.state.automation_rules.get(idx).map(|r| r.id) else {
+            return;
+        };
+        match self.state.remove_automation_rule(id) {
+            Ok(()) => self.status = format!("removed rule #{id}"),
+            Err(e) => self.status = e.to_string(),
+        }
+    }
+
+    fn automation_lines(&self, height: usize) -> Vec<Line<'static>> {
+        let catalog = self.state.automation_catalog();
+        let mut rows = vec![Line::from(format!(
+            "[auto] control energy {:.0}  interval {}s",
+            self.state.automation_control_energy(),
+            catalog.interval_secs
+        ))];
+        let mut entries = Vec::new();
+        let mut index = 0usize;
+        for tier in &catalog.tier {
+            let mark = if index == self.selected { '>' } else { ' ' };
+            index += 1;
+            let lock = if self.state.automation_tier_unlocked(&tier.id) {
+                "unlocked"
+            } else {
+                "locked"
+            };
+            entries.push(Line::from(format!(
+                "{mark} {lock} {} ({})",
+                tier.name, tier.research
+            )));
+        }
+        let preview = self.state.preview_automation();
+        for rule in &self.state.automation_rules {
+            let mark = if index == self.selected { '>' } else { ' ' };
+            index += 1;
+            let pre = preview
+                .iter()
+                .find(|p| p.rule_id == rule.id)
+                .map(|p| p.detail.as_str())
+                .unwrap_or("");
+            let on = if rule.enabled { "on" } else { "off" };
+            entries.push(Line::from(format!(
+                "{mark} rule #{} {on}  {} → {}  {pre}",
+                rule.id,
+                rule.condition.describe(),
+                rule.action.describe()
+            )));
+        }
+        if self.state.automation_rules.is_empty() {
+            entries.push(Line::from(
+                "Unlock logistics_rules, then hoshi automation add from the CLI. Enter dry-runs.",
+            ));
+        }
+        append_windowed(&mut rows, &entries, self.selected, height)
+    }
+
     fn staff_lines(&self, height: usize) -> Vec<Line<'static>> {
         let mut rows = vec![Line::from(format!(
             "[stf] {} leaders  empty gov {:.0}%",
@@ -4032,6 +4167,7 @@ mod tests {
         app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
         app.handle_key(KeyCode::Tab, clock.now_unix());
+        app.handle_key(KeyCode::Tab, clock.now_unix());
         assert_eq!(app.screen, Screen::Overview);
         let energy = app
             .overview_techs()
@@ -4106,7 +4242,7 @@ mod tests {
     }
 
     fn open_map(app: &mut App, now: u64) {
-        for _ in 0..16 {
+        for _ in 0..17 {
             app.handle_key(KeyCode::Tab, now);
         }
         assert_eq!(app.screen, Screen::Map);
@@ -4218,6 +4354,7 @@ mod tests {
         assert!(app.state.ship_queue.is_empty());
         assert_eq!(app.state.build_queue.len(), 1);
 
+        app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
         app.handle_key(KeyCode::Tab, 1_000);
@@ -4530,6 +4667,47 @@ mod tests {
             text.contains("Self-sufficient volatiles") || text.contains("Next"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn automation_screen_lists_tiers_and_dry_runs() {
+        let mut state = GameState::new(1_000);
+        state.tech_levels.insert("logistics_rules".into(), 1);
+        state
+            .add_automation_rule(
+                hoshi_core::RuleCondition {
+                    kind: hoshi_core::RuleConditionKind::StockBelow,
+                    planet: state.home,
+                    resource: ResourceKind::Metal,
+                    amount: 2_000.0,
+                },
+                hoshi_core::RuleAction::QueueBuild {
+                    planet: state.home,
+                    building: BuildingKind::MetalMine,
+                },
+            )
+            .unwrap();
+        let mut app = App::new(state);
+        for _ in 0..16 {
+            app.handle_key(KeyCode::Tab, 1_000);
+        }
+        assert_eq!(app.screen, Screen::Automation);
+        let text = render_text(&app, 120, 32);
+        assert!(text.contains("[auto]"), "{text}");
+        assert!(text.contains("Adaptive routes"), "{text}");
+        assert!(text.contains("rule #1"), "{text}");
+        assert!(text.contains("stock_below"), "{text}");
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(
+            app.status.contains("rule #1") || app.status.contains("queue"),
+            "{}",
+            app.status
+        );
+        for _ in 0..3 {
+            app.handle_key(KeyCode::Down, 1_000);
+        }
+        app.handle_key(KeyCode::Char(' '), 1_000);
+        assert!(app.status.contains("off"), "{}", app.status);
     }
 
     #[test]

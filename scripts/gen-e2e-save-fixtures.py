@@ -1006,6 +1006,31 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             );
             """
         )
+    elif version == 38:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS frontier_meta (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                revealed INTEGER NOT NULL,
+                research_open INTEGER NOT NULL,
+                wonder_open INTEGER NOT NULL,
+                bridge_sectors INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS frontier_seen (
+                event_id TEXT PRIMARY KEY
+            );
+            CREATE TABLE IF NOT EXISTS frontier_worlds (
+                galaxy INTEGER NOT NULL,
+                system INTEGER NOT NULL,
+                position INTEGER NOT NULL,
+                sector INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                rare TEXT,
+                PRIMARY KEY (galaxy, system, position)
+            );
+            """
+        )
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"
