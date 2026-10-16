@@ -1,13 +1,15 @@
 //! Dense command-center screen. Core still owns the rules; this only renders.
 
+use crate::ui::chrome::Tile;
+use crate::ui::{Intent, Theme};
 use hoshi_core::{
     Coord, GameState, HistoryKind, MissionPhase, ResourceKind, Resources, RoleKind, ShipKind,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout as TuiLayout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 
 pub const OVERVIEW_PANELS: &str = "map,gauges,queues,fleets,timeline";
 pub const ECONOMY_PANELS: &str = "gauges,queues,market";
@@ -109,6 +111,14 @@ enum AlertKind {
 }
 
 impl AlertKind {
+    fn intent(self) -> Intent {
+        match self {
+            Self::Raid | Self::Defence => Intent::Danger,
+            Self::Hostile | Self::Storage => Intent::Warning,
+            Self::IdleQueue => Intent::Primary,
+        }
+    }
+
     fn severity(self) -> u8 {
         match self {
             Self::Raid => 0,
@@ -175,7 +185,6 @@ impl Presets {
 pub struct Cockpit {
     pub layout: CockpitLayout,
     pub presets: Presets,
-    pub high_contrast: bool,
     focus: usize,
     pub(crate) selected: usize,
     stack: Vec<Target>,
@@ -187,7 +196,6 @@ impl Default for Cockpit {
         Self {
             layout: CockpitLayout::Overview,
             presets: Presets::default(),
-            high_contrast: false,
             focus: 0,
             selected: 0,
             stack: Vec::new(),
@@ -419,6 +427,7 @@ pub enum SizeMode {
 }
 
 pub struct View<'a> {
+    pub theme: &'a Theme,
     pub state: &'a GameState,
     pub cockpit: &'a Cockpit,
     pub map_system: u16,
@@ -434,7 +443,7 @@ pub fn draw(
     alert_index: usize,
 ) {
     let mode = size_mode(area.width, area.height);
-    let high = view.cockpit.high_contrast;
+    let t = view.theme;
     let alert_rows = alerts(view.state);
     let panels = view.cockpit.panels();
     let chunks = TuiLayout::vertical([
@@ -444,23 +453,23 @@ pub fn draw(
     ])
     .split(area);
     frame.render_widget(
-        Paragraph::new(alert_lines(&alert_rows, alert_index, high, mode)),
+        Paragraph::new(alert_lines(&alert_rows, alert_index, t, mode)),
         chunks[0],
     );
     frame.render_widget(Paragraph::new(footer), chunks[2]);
     if let Some(target) = view.cockpit.stack.last() {
         frame.render_widget(
-            panel_block("detail", true, high).title(" detail "),
+            Tile {
+                theme: t,
+                title: "detail".into(),
+                right: None,
+                focused: true,
+            },
             chunks[1],
         );
-        let inner = inset(chunks[1]);
+        let inner = Tile::inner(chunks[1]);
         frame.render_widget(
-            Paragraph::new(detail_lines(
-                view.state,
-                target,
-                inner.height as usize,
-                high,
-            )),
+            Paragraph::new(detail_lines(view.state, target, inner.height as usize, t)),
             inner,
         );
         return;
@@ -471,7 +480,7 @@ pub fn draw(
             let inner_chunks =
                 TuiLayout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(chunks[1]);
             frame.render_widget(
-                Paragraph::new(tab_line(panels, view.cockpit.focus, high)),
+                Paragraph::new(tab_line(panels, view.cockpit.focus, t)),
                 inner_chunks[0],
             );
             render_panel(frame, inner_chunks[1], panel, true, &view);
@@ -534,14 +543,17 @@ fn render_stack(frame: &mut Frame<'_>, area: Rect, panels: &[Panel], view: &View
 }
 
 fn render_panel(frame: &mut Frame<'_>, area: Rect, panel: Panel, focused: bool, view: &View<'_>) {
-    let high = view.cockpit.high_contrast;
-    let title = if focused {
-        format!("[{}]", panel.title())
-    } else {
-        format!(" {} ", panel.title())
-    };
-    frame.render_widget(panel_block(&title, focused, high), area);
-    let inner = inset(area);
+    let t = view.theme;
+    frame.render_widget(
+        Tile {
+            theme: t,
+            title: panel.title().into(),
+            right: None,
+            focused,
+        },
+        area,
+    );
+    let inner = Tile::inner(area);
     let height = inner.height as usize;
     let selected = if focused {
         view.cockpit.selected
@@ -549,101 +561,59 @@ fn render_panel(frame: &mut Frame<'_>, area: Rect, panel: Panel, focused: bool, 
         usize::MAX
     };
     let lines = match panel {
-        Panel::Map => map_lines(view.state, view.map_system, view.map_position, height, high),
-        Panel::Gauges => gauge_lines(view.state, view.gauges, height, inner.width as usize, high),
-        Panel::Queues => queue_lines(view.state, height, selected, high),
-        Panel::Fleets => fleet_lines(view.state, height, selected, high),
-        Panel::Timeline => timeline_lines(view.state, height, high),
-        Panel::Market => market_lines(view.state, height, high),
-        Panel::Raids => raid_lines(view.state, height, high),
-        Panel::Tactics => tactics_lines(view.state, height, high),
+        Panel::Map => map_lines(view.state, view.map_system, view.map_position, height, t),
+        Panel::Gauges => gauge_lines(view.state, view.gauges, height, inner.width as usize, t),
+        Panel::Queues => queue_lines(view.state, height, selected, t),
+        Panel::Fleets => fleet_lines(view.state, height, selected, t),
+        Panel::Timeline => timeline_lines(view.state, height, t),
+        Panel::Market => market_lines(view.state, height, t),
+        Panel::Raids => raid_lines(view.state, height, t),
+        Panel::Tactics => tactics_lines(view.state, height, t),
     };
-    frame.render_widget(Paragraph::new(lines), inner);
+    frame.render_widget(Paragraph::new(lines).style(t.text()), inner);
 }
 
-fn panel_block(title: &str, focused: bool, high: bool) -> Block<'_> {
-    let mut style = Style::default().fg(if high { Color::White } else { Color::Gray });
-    if focused {
-        style = style
-            .fg(if high { Color::White } else { Color::Cyan })
-            .add_modifier(Modifier::BOLD);
-        if high {
-            style = style.add_modifier(Modifier::REVERSED);
-        }
-    }
-    Block::default()
-        .borders(Borders::ALL)
-        .border_style(style)
-        .title(title.to_string())
-}
-
-fn inset(area: Rect) -> Rect {
-    Rect {
-        x: area.x.saturating_add(1),
-        y: area.y.saturating_add(1),
-        width: area.width.saturating_sub(2),
-        height: area.height.saturating_sub(2),
-    }
-}
-
-fn alert_lines(rows: &[Alert], selected: usize, high: bool, mode: SizeMode) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::from(Span::styled(
-        "alerts",
-        Style::default().add_modifier(Modifier::BOLD),
-    ))];
+fn alert_lines(rows: &[Alert], selected: usize, t: &Theme, mode: SizeMode) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(vec![
+        Span::styled(" alerts", t.label()),
+        Span::styled(format!("  {}", rows.len()), t.muted()),
+    ])];
     if rows.is_empty() {
-        lines.push(Line::from("none"));
+        lines.push(Line::from(Span::styled(" none", t.muted())));
         return lines;
     }
     let take = if mode == SizeMode::Tabbed { 1 } else { 2 };
-    let mut parts = Vec::new();
+    let mut parts = vec![Span::raw(" ")];
     for (i, row) in rows.iter().take(take + 2).enumerate() {
-        let mark = if i == selected { '>' } else { ' ' };
-        let style = alert_style(row.kind, high);
-        parts.push(Span::styled(format!("{mark}{}", row.text), style));
+        if i > 0 {
+            parts.push(Span::raw("   "));
+        }
+        let intent = row.kind.intent();
+        let mut style = t.intent(intent);
+        if i == selected {
+            style = style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+        }
+        parts.push(Span::styled("▌", t.intent(intent)));
+        parts.push(Span::styled(row.text.clone(), style));
     }
-    lines.push(Line::from(parts.into_iter().fold(
-        Vec::new(),
-        |mut acc, span| {
-            if !acc.is_empty() {
-                acc.push(Span::raw("  "));
-            }
-            acc.push(span);
-            acc
-        },
-    )));
+    lines.push(Line::from(parts));
     lines
 }
 
-fn alert_style(kind: AlertKind, high: bool) -> Style {
-    let color = if high {
-        Color::White
-    } else {
-        match kind {
-            AlertKind::Raid | AlertKind::Defence => Color::Red,
-            AlertKind::Hostile => Color::Yellow,
-            AlertKind::IdleQueue => Color::Cyan,
-            AlertKind::Storage => Color::Yellow,
-        }
-    };
-    let mut style = Style::default().fg(color);
-    if matches!(kind, AlertKind::Raid | AlertKind::Defence) {
-        style = style.add_modifier(Modifier::BOLD);
-    }
-    style
-}
-
-fn tab_line(panels: &[Panel], focus: usize, high: bool) -> Line<'static> {
-    let mut spans = Vec::new();
+fn tab_line(panels: &[Panel], focus: usize, t: &Theme) -> Line<'static> {
+    let mut spans = vec![Span::raw(" ")];
     for (i, panel) in panels.iter().enumerate() {
-        let label = panel.title().to_uppercase();
-        let mut style = Style::default().fg(if high { Color::White } else { Color::Gray });
-        if i == focus {
-            style = style
-                .fg(if high { Color::White } else { Color::Cyan })
-                .add_modifier(Modifier::BOLD | Modifier::REVERSED);
+        if i > 0 {
+            spans.push(Span::raw("   "));
         }
-        spans.push(Span::styled(format!(" {label} "), style));
+        let label = panel.title().to_uppercase();
+        let style = if i == focus {
+            t.intent(Intent::Primary)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        } else {
+            t.muted()
+        };
+        spans.push(Span::styled(label, style));
     }
     Line::from(spans)
 }
@@ -653,7 +623,7 @@ fn map_lines(
     map_system: u16,
     map_position: u16,
     height: usize,
-    high: bool,
+    t: &Theme,
 ) -> Vec<Line<'static>> {
     let owned = state.owned_coords();
     let mut entries = Vec::new();
@@ -706,11 +676,9 @@ fn map_lines(
             format!("  {}", labels.join("  "))
         };
         let style = if system == map_system {
-            Style::default().add_modifier(Modifier::BOLD)
-        } else if high {
-            Style::default().fg(Color::White)
+            t.strong()
         } else {
-            Style::default()
+            t.text()
         };
         entries.push(Line::from(Span::styled(
             format!("{mark} {system:>3} {glyphs}{extra}"),
@@ -725,7 +693,7 @@ fn gauge_lines(
     gauges: &[Resources],
     height: usize,
     width: usize,
-    high: bool,
+    t: &Theme,
 ) -> Vec<Line<'static>> {
     let spark_w = width.saturating_sub(28).min(24);
     let use_spark = spark_w >= 8;
@@ -740,12 +708,10 @@ fn gauge_lines(
         } else {
             String::new()
         };
-        let style = if high {
-            Style::default().fg(Color::White)
-        } else if cap > 0.0 && stock / cap >= 0.95 {
-            Style::default().fg(Color::Yellow)
+        let style = if cap > 0.0 && stock / cap >= 0.95 {
+            t.intent(Intent::Warning)
         } else {
-            Style::default().fg(Color::Green)
+            t.intent(Intent::Success)
         };
         lines.push(Line::from(Span::styled(
             format!(
@@ -762,12 +728,7 @@ fn gauge_lines(
     lines
 }
 
-fn queue_lines(
-    state: &GameState,
-    height: usize,
-    selected: usize,
-    high: bool,
-) -> Vec<Line<'static>> {
+fn queue_lines(state: &GameState, height: usize, selected: usize, t: &Theme) -> Vec<Line<'static>> {
     let now = state.last_tick_unix;
     let mut entries = Vec::new();
     push_planet_queue(
@@ -777,7 +738,7 @@ fn queue_lines(
         now,
         selected,
         0,
-        high,
+        t,
     );
     for (idx, colony) in (1..).zip(state.colonies.iter()) {
         push_planet_queue(
@@ -787,7 +748,7 @@ fn queue_lines(
             now,
             selected,
             idx,
-            high,
+            t,
         );
     }
     if let Some(job) = &state.research {
@@ -808,15 +769,13 @@ fn push_planet_queue(
     now: u64,
     selected: usize,
     index: usize,
-    high: bool,
+    t: &Theme,
 ) {
     let mark = if index == selected { '>' } else { ' ' };
     let style = if index == selected {
-        Style::default().add_modifier(Modifier::BOLD)
-    } else if high {
-        Style::default().fg(Color::White)
+        t.selected()
     } else {
-        Style::default()
+        t.text()
     };
     if let Some(job) = queue.first() {
         let eta = job.completes_at.unwrap_or(now).saturating_sub(now);
@@ -836,20 +795,15 @@ fn push_planet_queue(
     }
 }
 
-fn fleet_lines(
-    state: &GameState,
-    height: usize,
-    selected: usize,
-    high: bool,
-) -> Vec<Line<'static>> {
+fn fleet_lines(state: &GameState, height: usize, selected: usize, t: &Theme) -> Vec<Line<'static>> {
     let mut entries = Vec::new();
     let parked = state.fleet.total();
     let mark = if selected == 0 { '>' } else { ' ' };
     entries.push(styled_row(
         format!("{mark} docked {parked} at {}", state.home),
         selected == 0,
-        high,
-        Color::Green,
+        t,
+        Intent::Success,
     ));
     for (i, mission) in state.missions.iter().enumerate() {
         let eta = mission.phase_ends_at.saturating_sub(state.last_tick_unix);
@@ -866,8 +820,12 @@ fn fleet_lines(
                 mission.id, phase, mission.origin, mission.dest
             ),
             selected == i + 1,
-            high,
-            if combat { Color::Red } else { Color::Cyan },
+            t,
+            if combat {
+                Intent::Danger
+            } else {
+                Intent::Primary
+            },
         ));
     }
     window(
@@ -877,13 +835,13 @@ fn fleet_lines(
     )
 }
 
-fn timeline_lines(state: &GameState, height: usize, _high: bool) -> Vec<Line<'static>> {
+fn timeline_lines(state: &GameState, height: usize, t: &Theme) -> Vec<Line<'static>> {
     let now = state.last_tick_unix;
     let mut entries = Vec::new();
     if !state.history.events.is_empty() {
         for event in state.history.events.iter().rev().take(height.max(1)) {
             let ago = now.saturating_sub(event.at);
-            let style = timeline_style(event.kind);
+            let style = timeline_style(event.kind, t);
             entries.push(Line::from(Span::styled(
                 format!(
                     "{ago}s {} {} {}",
@@ -900,39 +858,37 @@ fn timeline_lines(state: &GameState, height: usize, _high: bool) -> Vec<Line<'st
             entries.push(Line::from(format!("{ago}s {}", event.text)));
         }
     }
-    if let Some(line) = bridge_line(state) {
+    if let Some(line) = bridge_line(state, t) {
         entries.insert(0, line);
     }
     entries
 }
 
-fn bridge_line(state: &GameState) -> Option<Line<'static>> {
+fn bridge_line(state: &GameState, t: &Theme) -> Option<Line<'static>> {
     let now = state.last_tick_unix;
     if state.activity.prod_boost_until.is_some_and(|t| t > now)
         || state.activity.research_boost_until.is_some_and(|t| t > now)
     {
         Some(Line::from(Span::styled(
             "bridge boost active",
-            Style::default().fg(Color::Cyan),
+            t.intent(Intent::Primary),
         )))
     } else {
         None
     }
 }
 
-fn timeline_style(kind: HistoryKind) -> Style {
+fn timeline_style(kind: HistoryKind, t: &Theme) -> Style {
     match kind {
-        HistoryKind::Combat => Style::default().fg(Color::Red),
-        HistoryKind::Trade => Style::default().fg(Color::Yellow),
-        HistoryKind::Activity => Style::default().fg(Color::Cyan),
-        HistoryKind::Build | HistoryKind::Research | HistoryKind::Ship => {
-            Style::default().fg(Color::Green)
-        }
-        HistoryKind::Fleet | HistoryKind::Prestige | HistoryKind::Other => Style::default(),
+        HistoryKind::Combat => t.intent(Intent::Danger),
+        HistoryKind::Trade => t.intent(Intent::Warning),
+        HistoryKind::Activity => t.intent(Intent::Primary),
+        HistoryKind::Build | HistoryKind::Research | HistoryKind::Ship => t.intent(Intent::Success),
+        HistoryKind::Fleet | HistoryKind::Prestige | HistoryKind::Other => t.text(),
     }
 }
 
-fn market_lines(state: &GameState, height: usize, _high: bool) -> Vec<Line<'static>> {
+fn market_lines(state: &GameState, height: usize, _t: &Theme) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let market = &state.market;
     lines.push(Line::from(format!(
@@ -949,14 +905,14 @@ fn market_lines(state: &GameState, height: usize, _high: bool) -> Vec<Line<'stat
     lines
 }
 
-fn raid_lines(state: &GameState, height: usize, high: bool) -> Vec<Line<'static>> {
+fn raid_lines(state: &GameState, height: usize, t: &Theme) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     match state.raid_countdown_secs() {
         Some(secs) => lines.push(styled_row(
             format!("next raid {secs}s"),
             true,
-            high,
-            Color::Red,
+            t,
+            Intent::Danger,
         )),
         None => lines.push(Line::from("no raid timer")),
     }
@@ -964,8 +920,8 @@ fn raid_lines(state: &GameState, height: usize, high: bool) -> Vec<Line<'static>
         lines.push(styled_row(
             "tactical overlay pending".into(),
             false,
-            high,
-            Color::Yellow,
+            t,
+            Intent::Warning,
         ));
     }
     for mission in state.missions.iter().filter(|m| m.attack || m.invade) {
@@ -980,7 +936,7 @@ fn raid_lines(state: &GameState, height: usize, high: bool) -> Vec<Line<'static>
     lines
 }
 
-fn tactics_lines(state: &GameState, height: usize, _high: bool) -> Vec<Line<'static>> {
+fn tactics_lines(state: &GameState, height: usize, _t: &Theme) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(format!(
         "formation {}  stance {}",
         state.fleet_tactics.formation.as_key(),
@@ -1001,19 +957,19 @@ fn detail_lines(
     state: &GameState,
     target: &Target,
     height: usize,
-    high: bool,
+    t: &Theme,
 ) -> Vec<Line<'static>> {
     match target {
-        Target::Planet(coord) => planet_detail(state, *coord, height, high),
-        Target::Fleet { mission } => fleet_detail(state, *mission, height, high),
-        Target::Faction(id) => faction_detail(state, id, height, high),
+        Target::Planet(coord) => planet_detail(state, *coord, height, t),
+        Target::Fleet { mission } => fleet_detail(state, *mission, height, t),
+        Target::Faction(id) => faction_detail(state, id, height, t),
     }
 }
 
-fn planet_detail(state: &GameState, coord: Coord, height: usize, high: bool) -> Vec<Line<'static>> {
+fn planet_detail(state: &GameState, coord: Coord, height: usize, t: &Theme) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(Span::styled(
         format!("planet {coord}"),
-        Style::default().add_modifier(Modifier::BOLD),
+        t.strong(),
     ))];
     let owned = state.owned_coords().contains(&coord);
     if coord == state.home {
@@ -1057,14 +1013,6 @@ fn planet_detail(state: &GameState, coord: Coord, height: usize, high: bool) -> 
             mission.phase.as_key()
         )));
     }
-    if high {
-        for line in &mut lines {
-            *line = Line::from(Span::styled(
-                line.to_string(),
-                Style::default().fg(Color::White),
-            ));
-        }
-    }
     lines.truncate(height.max(1));
     lines
 }
@@ -1073,7 +1021,7 @@ fn fleet_detail(
     state: &GameState,
     mission_id: Option<u64>,
     height: usize,
-    _high: bool,
+    _t: &Theme,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let admiral_id = state
@@ -1119,7 +1067,7 @@ fn fleet_detail(
     lines
 }
 
-fn faction_detail(state: &GameState, id: &str, height: usize, _high: bool) -> Vec<Line<'static>> {
+fn faction_detail(state: &GameState, id: &str, height: usize, _t: &Theme) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if let Some(spec) = state.config.diplomacy.iter().find(|row| row.id == id) {
         let standing = state.diplomacy.standing(id);
@@ -1165,14 +1113,12 @@ fn faction_detail(state: &GameState, id: &str, height: usize, _high: bool) -> Ve
     lines
 }
 
-fn styled_row(text: String, selected: bool, high: bool, color: Color) -> Line<'static> {
-    let mut style = Style::default().fg(if high { Color::White } else { color });
-    if selected {
-        style = style.add_modifier(Modifier::BOLD);
-        if high {
-            style = style.add_modifier(Modifier::REVERSED);
-        }
-    }
+fn styled_row(text: String, selected: bool, t: &Theme, intent: Intent) -> Line<'static> {
+    let style = if selected {
+        t.selected().patch(t.intent(intent))
+    } else {
+        t.intent(intent)
+    };
     Line::from(Span::styled(text, style))
 }
 

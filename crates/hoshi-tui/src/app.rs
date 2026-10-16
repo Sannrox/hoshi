@@ -3,10 +3,15 @@
 
 use crate::clip::copy_to_clipboard;
 use crate::detail_panel::{self, DOCK_MIN_WIDTH};
+use crate::hubs::{self, Hub};
 use crate::keymap::{Binding, HelpContext, Keymap};
 use crate::notify::{self, Prefs as NotifyPrefs, Watch as NotifyWatch};
 use crate::portraits::{self, PortraitView, Protocol, Slot};
 use crate::title::AwaySummary;
+use crate::ui::chrome::{Dialog, Navbar, StatusBar, Tabs, Tile};
+use crate::ui::panels::{Metric, MetricStrip};
+use crate::ui::table::{Column, DataTable};
+use crate::ui::{self, Depth, Intent, Surface, Theme};
 use hoshi_core::{
     AssignmentTarget, BuildingKind, CombatLog, CombatWinner, CommentaryCatalog, Coord, DefenceKind,
     Detail, DetailSubject, Fleet, GameState, HintScreen, HistoryKind, HistoryQuery, Jurisdiction,
@@ -16,10 +21,10 @@ use hoshi_core::{
 };
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use std::cell::Cell;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
@@ -131,6 +136,7 @@ pub struct App {
     cockpit: crate::cockpit::Cockpit,
     gauge_history: Vec<Resources>,
     pub high_contrast: bool,
+    theme: Theme,
     detail_panel: bool,
     detail_overlay: bool,
     detail_dirty: bool,
@@ -147,7 +153,9 @@ struct BridgeLine {
 impl App {
     #[cfg(test)]
     pub fn new(state: GameState) -> Self {
-        Self::with_keymap(state, Keymap::defaults())
+        let mut app = Self::with_keymap(state, Keymap::defaults());
+        app.screen = Screen::Overview;
+        app
     }
 
     pub fn with_keymap(state: GameState, keymap: Keymap) -> Self {
@@ -157,7 +165,7 @@ impl App {
             portraits: PortraitView::default(),
             keymap,
             help_open: false,
-            screen: Screen::Overview,
+            screen: Screen::Cockpit,
             selected: 0,
             planet_index: 0,
             status: String::new(),
@@ -198,6 +206,7 @@ impl App {
             cockpit: crate::cockpit::Cockpit::default(),
             gauge_history: Vec::new(),
             high_contrast: false,
+            theme: Theme::default(),
             detail_panel: true,
             detail_overlay: false,
             detail_dirty: false,
@@ -330,6 +339,10 @@ impl App {
 
     pub fn apply_cockpit(&mut self, user: &crate::config::UserConfig) {
         self.high_contrast = user.high_contrast;
+        self.theme = Theme::resolve(
+            Depth::detect(|key| std::env::var(key).ok()),
+            user.high_contrast,
+        );
         self.detail_panel = user.detail_panel;
         if let Some(layout) = crate::cockpit::CockpitLayout::from_key(&user.cockpit_layout) {
             self.cockpit.layout = layout;
@@ -339,7 +352,6 @@ impl App {
             &user.cockpit_economy,
             &user.cockpit_war,
         );
-        self.cockpit.high_contrast = user.high_contrast;
     }
 
     #[cfg(any(test, feature = "bridge"))]
@@ -579,8 +591,23 @@ impl App {
             self.open_advisor();
             return Action::None;
         }
+        if self.dispatch.is_none()
+            && self.pending_invasion.is_none()
+            && self.keymap.lookup(ctx, code).is_none()
+        {
+            if let KeyCode::Char(c) = code
+                && let Some(hub) = Hub::from_digit(c)
+            {
+                self.open(hubs::enter(self.screen, hub));
+                return Action::None;
+            }
+            if code == KeyCode::BackTab {
+                self.cycle_screen(false);
+                return Action::None;
+            }
+        }
         if self.dispatch.is_none() && self.keymap.matches(Binding::Cockpit, code) {
-            self.screen = Screen::Cockpit;
+            self.open(Screen::Cockpit);
             return Action::None;
         }
         if self.screen == Screen::Cockpit && self.dispatch.is_none() {
@@ -597,7 +624,7 @@ impl App {
             Some(Binding::ShowAway) if self.screen == Screen::Overview && self.away.is_some() => {
                 self.away_hidden = false;
             }
-            Some(Binding::NextScreen) => self.cycle_screen(),
+            Some(Binding::NextScreen) => self.cycle_screen(true),
             Some(Binding::NextPlanet) => self.cycle_planet(1),
             Some(Binding::PrevPlanet) => self.cycle_planet(-1),
             Some(Binding::SelectNext) if self.dispatch.is_some() => self.nudge_dispatch(1),
@@ -663,6 +690,9 @@ impl App {
             Some(Binding::Cancel) if self.detail_overlay => {
                 self.detail_overlay = false;
             }
+            Some(Binding::Cancel) if code == KeyCode::Esc && self.esc_closes_window() => {
+                self.open(Screen::Cockpit);
+            }
             Some(Binding::Cancel) => self.cancel(now_unix),
             Some(Binding::CopySeed) => {
                 let seed = encode_galaxy_seed(self.state.galaxy_seed);
@@ -683,7 +713,7 @@ impl App {
         let len = crate::cockpit::select_len(&self.state, &self.cockpit);
         match self.keymap.lookup(ctx, code) {
             Some(Binding::Quit) => return Action::Quit,
-            Some(Binding::NextScreen) => self.cycle_screen(),
+            Some(Binding::NextScreen) => self.cycle_screen(true),
             Some(Binding::Toggle) => self.cockpit.cycle_layout(),
             Some(Binding::CursorLeft) if map => self.nudge_map_position(-1),
             Some(Binding::CursorRight) if map => self.nudge_map_position(1),
@@ -727,29 +757,20 @@ impl App {
         }
     }
 
-    fn cycle_screen(&mut self) {
-        self.screen = match self.screen {
-            Screen::Overview => Screen::Planet,
-            Screen::Planet => Screen::Shipyard,
-            Screen::Shipyard => Screen::Wonder,
-            Screen::Wonder => Screen::Prestige,
-            Screen::Prestige => Screen::Achievements,
-            Screen::Achievements => Screen::Daily,
-            Screen::Daily => Screen::Goals,
-            Screen::Goals => Screen::Production,
-            Screen::Production => Screen::Market,
-            Screen::Market => Screen::Diplomacy,
-            Screen::Diplomacy => Screen::Laws,
-            Screen::Laws => Screen::Reports,
-            Screen::Reports => Screen::History,
-            Screen::History => Screen::Staff,
-            Screen::Staff => Screen::Ops,
-            Screen::Ops => Screen::Automation,
-            Screen::Automation => Screen::Finance,
-            Screen::Finance => Screen::Map,
-            Screen::Map => Screen::Cockpit,
-            Screen::Cockpit => Screen::Overview,
-        };
+    fn cycle_screen(&mut self, forward: bool) {
+        self.open(hubs::step(self.screen, forward));
+    }
+
+    fn esc_closes_window(&self) -> bool {
+        self.screen != Screen::Cockpit
+            && self.dispatch.is_none()
+            && self.pending_invasion.is_none()
+            && !self.confirming_prestige
+            && self.history_pane == HistoryPane::List
+    }
+
+    pub(crate) fn open(&mut self, screen: Screen) {
+        self.screen = screen;
         self.selected = 0;
         self.status.clear();
         self.confirming_prestige = false;
@@ -829,110 +850,126 @@ impl App {
     }
 
     pub fn draw(&self, frame: &mut Frame<'_>) {
-        if self.screen == Screen::Cockpit {
-            self.last_width.set(frame.area().width);
-            self.draw_cockpit(frame);
-            self.draw_overlays(frame);
-            return;
-        }
-        let title = match self.screen {
-            Screen::Overview => {
-                " hoshi  [overview] planet yard wonder pres ach daily g prod market diplo laws rpt log stf ops map "
-            }
-            Screen::Planet => {
-                " hoshi  overview [planet] yard wonder pres ach daily g prod market diplo laws rpt log stf ops map "
-            }
-            Screen::Shipyard => {
-                " hoshi  overview planet [yard] wonder pres ach daily g prod market diplo laws rpt log stf ops map "
-            }
-            Screen::Wonder => {
-                " hoshi  overview planet yard [wonder] pres ach daily g prod market diplo laws rpt log stf ops map "
-            }
-            Screen::Prestige => {
-                " hoshi  overview planet yard wonder [prestige] ach daily g prod market diplo laws rpt log stf ops map "
-            }
-            Screen::Achievements => {
-                " hoshi  overview planet yard wonder pres [ach] daily g prod market diplo laws rpt log stf ops map "
-            }
-            Screen::Daily => {
-                " hoshi  overview planet yard wonder pres ach [daily] g prod market diplo laws rpt log stf ops map "
-            }
-            Screen::Goals => {
-                " hoshi  overview planet yard wonder pres ach daily [g] prod market diplo laws rpt log stf ops map "
-            }
-            Screen::Production => {
-                " hoshi  overview planet yard wonder pres ach daily g [prod] market diplo laws rpt log stf ops map "
-            }
-            Screen::Market => {
-                " hoshi  overview planet yard wonder pres ach daily g prod [market] diplo laws rpt log stf ops map "
-            }
-            Screen::Diplomacy => {
-                " hoshi  overview planet yard wonder pres ach daily g prod market [diplo] laws rpt log stf ops map "
-            }
-            Screen::Laws => {
-                " hoshi  overview planet yard wonder pres ach daily g prod market diplo [laws] rpt log stf ops map "
-            }
-            Screen::Reports => {
-                " hoshi  overview planet yard wonder pres ach daily g prod market diplo laws [reports] log stf ops map "
-            }
-            Screen::History => {
-                " hoshi  overview planet yard wonder pres ach daily g prod market diplo laws rpt [log] stf ops map "
-            }
-            Screen::Staff => {
-                " hoshi  overview planet yard wonder pres ach daily g prod market diplo laws rpt log [stf] ops map "
-            }
-            Screen::Automation => {
-                " hoshi  yard wonder pres ach daily g prod market diplo laws rpt log stf ops [auto] fin map "
-            }
-            Screen::Finance => {
-                " hoshi  yard wonder pres ach daily g prod market diplo laws rpt log stf ops auto [fin] map "
-            }
-            Screen::Ops => {
-                " hoshi  overview planet yard wonder pres ach daily g prod market diplo laws rpt log stf [ops] map "
-            }
-            Screen::Map => {
-                " hoshi  yard wonder pres ach daily g prod market diplo laws rpt log stf ops auto fin [map] ckp "
-            }
-            Screen::Cockpit => {
-                " hoshi  yard wonder pres ach daily g prod market diplo laws rpt log stf ops auto fin map [ckp] "
-            }
-        };
-        let block = Block::bordered().title(title);
-        let inner = block.inner(frame.area());
-        frame.render_widget(block, frame.area());
-        let (content, portrait) = portraits::split_area(inner);
-
-        let header = self.header_lines();
-        let footer = self.footer_lines(content.width as usize);
-        let header_h = header.len() as u16;
-        let footer_h = footer.len() as u16;
-        let chunks = Layout::vertical([
-            Constraint::Length(header_h.min(content.height)),
+        let area = frame.area();
+        self.last_width.set(area.width);
+        let t = &self.theme;
+        ui::chrome::fill(frame.buffer_mut(), area, t.surface(Surface::Base));
+        let [nav, metrics, body, status] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(MetricStrip::HEIGHT),
             Constraint::Min(1),
-            Constraint::Length(footer_h.min(content.height.saturating_sub(header_h))),
+            Constraint::Length(1),
         ])
-        .split(content);
+        .areas(area);
+        let hub = Hub::of(self.screen);
+        frame.render_widget(
+            Navbar {
+                theme: t,
+                mark: "HOSHI",
+                crumbs: vec![hub.title().into(), hubs::label(self.screen).into()],
+                right: self.navbar_right(),
+            },
+            nav,
+        );
+        frame.render_widget(
+            MetricStrip {
+                theme: t,
+                metrics: self.metrics(),
+            },
+            metrics,
+        );
+        frame.render_widget(
+            StatusBar {
+                theme: t,
+                mode: hub.title().to_uppercase(),
+                hints: self.global_hints(area.width),
+                right: Some(self.seed_line(area.width)),
+            },
+            status,
+        );
+        if self.screen == Screen::Cockpit {
+            let footer = self.footer_lines(body.width as usize);
+            self.cockpit_draw_inner(frame, body, footer);
+        } else {
+            let win = window_area(area, body);
+            if win != body {
+                self.cockpit_draw_inner(frame, body, Vec::new());
+                ui::chrome::dim(frame.buffer_mut(), body, t);
+            }
+            self.draw_window(frame, win, hub);
+        }
+        self.draw_overlays(frame);
+    }
 
-        self.last_width.set(frame.area().width);
-        frame.render_widget(Paragraph::new(header), chunks[0]);
-        let list_h = chunks[1].height as usize;
+    fn draw_window(&self, frame: &mut Frame<'_>, area: Rect, hub: Hub) {
+        let t = &self.theme;
+        let note = if !self.status.is_empty() {
+            Some(Line::styled(self.status.clone(), t.intent(Intent::Warning)))
+        } else {
+            self.state
+                .events
+                .last()
+                .map(|event| Line::styled(event.text.clone(), t.muted()))
+        };
+        let dialog = Dialog {
+            theme: t,
+            title: hub.title().into(),
+            subtitle: format!("{}  ·  Planet {}", hub.digit(), self.selected_coord()),
+            close_hint: "esc bridge".into(),
+            footer_note: note,
+            buttons: self.window_buttons(),
+        };
+        let inner = pad_x(dialog.inner(area), 1);
+        frame.render_widget(dialog, area);
+        let screens = hub.screens();
+        let glance = self.glance_lines(hub);
+        let footer = self.footer_lines(inner.width as usize);
+        let [tabs, glance_area, body, footer_area] = Layout::vertical([
+            Constraint::Length(Tabs::HEIGHT),
+            Constraint::Length(glance.len() as u16),
+            Constraint::Min(1),
+            Constraint::Length(footer.len() as u16),
+        ])
+        .areas(inner);
+        let (list_area, portrait) = portraits::split_area(body);
+        frame.render_widget(
+            Tabs {
+                theme: t,
+                items: screens
+                    .iter()
+                    .map(|s| hubs::label(*s).to_string())
+                    .collect(),
+                selected: screens.iter().position(|s| *s == self.screen).unwrap_or(0),
+            },
+            tabs,
+        );
+        frame.render_widget(Paragraph::new(glance).style(t.muted()), glance_area);
         if self.shows_docked_detail() {
-            let cols = Layout::horizontal([
+            let [list, card] = Layout::horizontal([
                 Constraint::Min(24),
-                Constraint::Length(detail_column_width(chunks[1].width)),
+                Constraint::Length(detail_column_width(list_area.width)),
             ])
-            .split(chunks[1]);
-            frame.render_widget(Paragraph::new(self.list_lines(list_h)), cols[0]);
-            let card = Block::bordered().title(" detail ");
-            let inner = card.inner(cols[1]);
-            frame.render_widget(card, cols[1]);
+            .areas(list_area);
+            self.draw_list(frame, list);
+            frame.render_widget(
+                Tile {
+                    theme: t,
+                    title: "detail".into(),
+                    right: None,
+                    focused: false,
+                },
+                card,
+            );
             if let Some(detail) = self.current_detail() {
-                frame.render_widget(Paragraph::new(detail_panel::paragraph(&detail)), inner);
+                frame.render_widget(
+                    Paragraph::new(detail_panel::inspector(&detail, t)).wrap(Wrap { trim: false }),
+                    pad_x(Tile::inner(card), 1),
+                );
             }
         } else {
-            frame.render_widget(Paragraph::new(self.list_lines(list_h)), chunks[1]);
+            self.draw_list(frame, list_area);
         }
-        frame.render_widget(Paragraph::new(footer), chunks[2]);
+        frame.render_widget(Paragraph::new(footer).style(t.muted()), footer_area);
         if let Some(area) = portrait {
             let art = Layout::vertical([
                 Constraint::Length(portraits::ASCII_ROWS as u16),
@@ -951,16 +988,177 @@ impl App {
                 art[0],
             );
         }
-        self.draw_overlays(frame);
     }
 
-    fn draw_cockpit(&self, frame: &mut Frame<'_>) {
-        let title = " hoshi  overview planet yard wonder pres ach daily g prod market diplo laws rpt log stf ops map [ckp] ";
-        let block = Block::bordered().title(title);
-        let inner = block.inner(frame.area());
-        frame.render_widget(block, frame.area());
-        let footer = self.footer_lines(inner.width as usize);
-        self.cockpit_draw_inner(frame, inner, footer);
+    fn navbar_right(&self) -> Vec<Span<'static>> {
+        let t = &self.theme;
+        let mut spans = Vec::new();
+        if let Some(secs) = self.state.raid_countdown_secs() {
+            spans.push(ui::spans::tag(
+                t,
+                &format!("RAID {}", ui::spans::countdown(secs)),
+                Intent::Danger,
+                false,
+            ));
+            spans.push(Span::raw("  "));
+        }
+        if let Some(run) = self.state.species.as_ref() {
+            spans.push(Span::styled(run.name.clone(), t.muted()));
+            spans.push(Span::raw("  "));
+        }
+        spans.push(Span::styled(self.selected_coord().to_string(), t.text()));
+        spans
+    }
+
+    fn metrics(&self) -> Vec<Metric> {
+        let t = &self.theme;
+        let s = &self.state;
+        let mut out: Vec<Metric> = ResourceKind::ALL
+            .iter()
+            .map(|&kind| {
+                let stock = s.resources.get(kind);
+                let cap = s.storage_cap(kind);
+                let rate = s.production_per_hour(kind);
+                let full = cap > 0.0 && stock / cap >= 0.95;
+                let value_style = if full {
+                    t.intent(Intent::Warning)
+                } else {
+                    t.strong()
+                };
+                let rate_style = if rate < 0.0 {
+                    t.intent(Intent::Danger)
+                } else if rate > 0.0 {
+                    t.intent(Intent::Success)
+                } else {
+                    t.label()
+                };
+                Metric {
+                    label: kind.abbr().into(),
+                    value: Line::styled(ui::spans::compact(stock), value_style),
+                    foot: Line::styled(
+                        format!(
+                            "{}{}/h",
+                            if rate > 0.0 { "+" } else { "" },
+                            ui::spans::compact(rate)
+                        ),
+                        rate_style,
+                    ),
+                }
+            })
+            .collect();
+        let waste = s.waste_home();
+        let balance = s.energy_balance();
+        out.push(Metric {
+            label: "Energy".into(),
+            value: Line::styled(
+                format!("{balance:+.0}"),
+                if balance < 0.0 {
+                    t.intent(Intent::Danger)
+                } else {
+                    t.strong()
+                },
+            ),
+            foot: Line::styled(
+                format!("heat {:.0}/{:.0}", waste.heat_load, waste.heat_sink),
+                if waste.overflowing() {
+                    t.intent(Intent::Danger)
+                } else {
+                    t.label()
+                },
+            ),
+        });
+        out
+    }
+
+    fn global_hints(&self, width: u16) -> Vec<(String, String)> {
+        let k = &self.keymap;
+        let mut hints = vec![("1-6".to_string(), "hubs".to_string())];
+        if width >= 100 {
+            hints.push((k.primary(Binding::NextScreen), "next".into()));
+        }
+        if self.screen != Screen::Cockpit {
+            hints.push(("esc".into(), "bridge".into()));
+        }
+        hints.push((k.primary(Binding::Help), "help".into()));
+        hints.push((k.primary(Binding::Quit), "quit".into()));
+        hints
+    }
+
+    fn window_buttons(&self) -> Vec<Span<'static>> {
+        let action = match self.screen {
+            Screen::Planet => "build",
+            Screen::Shipyard => "queue",
+            Screen::Overview => "research",
+            Screen::Wonder => "contribute",
+            Screen::Prestige => "buy",
+            Screen::Market => "trade",
+            Screen::Diplomacy => "tribute",
+            Screen::Laws => "propose",
+            Screen::Reports => "open report",
+            Screen::History => "lineage",
+            Screen::Staff => "assign",
+            Screen::Automation => "dry-run",
+            Screen::Map => "dispatch",
+            Screen::Finance => "approve",
+            Screen::Cockpit
+            | Screen::Achievements
+            | Screen::Daily
+            | Screen::Goals
+            | Screen::Production
+            | Screen::Ops => return Vec::new(),
+        };
+        let key = self.keymap.primary(Binding::Confirm);
+        vec![ui::spans::button(
+            &self.theme,
+            &format!("{key} {action}"),
+            true,
+        )]
+    }
+
+    fn seed_line(&self, width: u16) -> Line<'static> {
+        let t = &self.theme;
+        let code = Span::styled(encode_galaxy_seed(self.state.galaxy_seed), t.muted());
+        let gen_label = format!(" gen {} ", self.state.generator_version);
+        if width >= 100 {
+            Line::from(vec![
+                Span::styled("seed ", t.label()),
+                code,
+                Span::styled(format!(" {gen_label}"), t.label()),
+            ])
+        } else {
+            Line::from(vec![code, Span::styled(gen_label, t.label())])
+        }
+    }
+
+    fn glance_lines(&self, hub: Hub) -> Vec<Line<'static>> {
+        let mut lines = match hub {
+            Hub::Colony => vec![
+                Line::from(self.build_status()),
+                Line::from(self.research_status()),
+                Line::from(self.wonder_status()),
+            ],
+            Hub::Fleet => vec![
+                Line::from(self.ship_status()),
+                Line::from(self.raid_status()),
+            ],
+            Hub::Records => vec![Line::from(self.prestige_status())],
+            Hub::Bridge | Hub::Trade | Hub::Empire => Vec::new(),
+        };
+        if hub == Hub::Colony {
+            let waste = self.state.waste_home();
+            if self.screen != Screen::Planet
+                && (waste.overflowing() || waste.warns(self.state.config.waste.warn_ratio))
+            {
+                lines.push(Line::from(waste_header_line(&self.state)));
+            }
+            if self.state.owned_coords().len() > 1 || !self.state.moons.is_empty() {
+                lines.extend(self.planet_glance_lines());
+            }
+        }
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        lines
     }
 
     fn cockpit_draw_inner(
@@ -969,14 +1167,13 @@ impl App {
         area: ratatui::layout::Rect,
         footer: Vec<Line<'static>>,
     ) {
-        let mut cockpit = self.cockpit.clone();
-        cockpit.high_contrast = self.high_contrast;
         crate::cockpit::draw(
             frame,
             area,
             crate::cockpit::View {
+                theme: &self.theme,
                 state: &self.state,
-                cockpit: &cockpit,
+                cockpit: &self.cockpit,
                 map_system: self.map_system,
                 map_position: self.map_position,
                 gauges: &self.gauge_history,
@@ -1784,48 +1981,6 @@ impl App {
         self.selected = 0;
     }
 
-    fn header_lines(&self) -> Vec<Line<'static>> {
-        let s = &self.state;
-        let waste = s.waste_home();
-        let mut lines = vec![
-            Line::from(stockpile_label(s.resources)),
-            Line::from(rate_label(s)),
-            Line::from(format!(
-                "Energy     {:>7.0} / {:.0}  bal {:+.0}  heat {:.0}/{:.0}",
-                s.energy_produced(),
-                s.energy_consumed(),
-                s.energy_balance(),
-                waste.heat_load,
-                waste.heat_sink,
-            )),
-            Line::from(waste_header_line(s)),
-            Line::from(self.build_status()),
-            Line::from(self.research_status()),
-            Line::from(self.ship_status()),
-            Line::from(self.raid_status()),
-            Line::from(self.wonder_status()),
-            Line::from(self.prestige_status()),
-            Line::from(format!(
-                "Seed {}  gen {}",
-                encode_galaxy_seed(s.galaxy_seed),
-                s.generator_version
-            )),
-        ];
-        if let Some(run) = s.species.as_ref() {
-            lines.insert(lines.len() - 1, Line::from(format!("Species {}", run.name)));
-        }
-        lines.extend(self.planet_glance_lines());
-        if let Some(event) = s.events.last() {
-            for piece in event.text.split(". ") {
-                lines.push(Line::from(piece.to_string()));
-            }
-        }
-        if !self.status.is_empty() {
-            lines.push(Line::from(self.status.clone()));
-        }
-        lines
-    }
-
     fn bridge_bar(&self) -> Option<Line<'static>> {
         if !self.bridge_ui {
             return None;
@@ -1858,7 +2013,6 @@ impl App {
 
     fn footer_lines(&self, width: usize) -> Vec<Line<'static>> {
         let k = &self.keymap;
-        let tab = k.primary(Binding::NextScreen);
         let planets = format!(
             "{}/{} planet",
             k.primary(Binding::PrevPlanet),
@@ -1871,8 +2025,6 @@ impl App {
         );
         let confirm = k.primary(Binding::Confirm);
         let cancel = k.primary(Binding::Cancel);
-        let quit = format!("{} quit", k.primary(Binding::Quit));
-        let help = format!("{} help", k.primary(Binding::Help));
         let activity = if self.bridge_ui {
             format!("  {} log", k.primary(Binding::Activity))
         } else {
@@ -1902,7 +2054,7 @@ impl App {
         }
         rows.push(Line::from(format!("{}{activity}{advisor}", match self.screen {
             Screen::Overview => format!(
-                "{tab} screens  {planets}  {}/{} branch  {select}  {confirm} research  {} replay  {cancel}  {} copy seed  {} detail  {quit}  {help}",
+                "{planets}  {}/{} branch  {select}  {confirm} research  {} replay  {cancel}  {} copy seed  {} detail",
                 k.primary(Binding::CursorLeft),
                 k.primary(Binding::CursorRight),
                 k.primary(Binding::Replay),
@@ -1910,72 +2062,72 @@ impl App {
                 k.primary(Binding::Detail)
             ),
             Screen::Planet => format!(
-                "{tab} screens  {planets}  {select}  {confirm} build  {cancel} queue  {} detail  {quit}  {help}",
+                "{planets}  {select}  {confirm} build  {cancel} queue  {} detail",
                 k.primary(Binding::Detail)
             ),
             Screen::Shipyard => format!(
-                "{tab} screens  {planets}  {select}  {confirm} queue  {cancel} queue  {} detail  {quit}  {help}",
+                "{planets}  {select}  {confirm} queue  {cancel} queue  {} detail",
                 k.primary(Binding::Detail)
             ),
             Screen::Wonder => format!(
-                "{tab} screens  {planets}  {select}  {confirm} start/contribute  {} detail  {quit}  {help}",
+                "{planets}  {select}  {confirm} start/contribute  {} detail",
                 k.primary(Binding::Detail)
             ),
             Screen::Prestige => {
-                format!("{tab} screens  {select}  {confirm} buy/reset  {cancel}  {quit}  {help}")
+                format!("{select}  {confirm} buy/reset  {cancel}")
             }
             Screen::Achievements | Screen::Daily | Screen::Goals => {
-                format!("{tab} screens  {planets}  {select}  {quit}  {help}")
+                format!("{planets}  {select}")
             }
             Screen::Production => format!(
-                "{tab} screens  {planets}  {select}  {} detail  {quit}  {help}",
+                "{planets}  {select}  {} detail",
                 k.primary(Binding::Detail)
             ),
             Screen::Market => format!(
-                "{tab} screens  {select}  {}/{} amount  {confirm} trade  {} detail  {quit}  {help}",
+                "{select}  {}/{} amount  {confirm} trade  {} detail",
                 k.primary(Binding::Increase),
                 k.primary(Binding::Decrease),
                 k.primary(Binding::Detail)
             ),
             Screen::Diplomacy => {
                 format!(
-                    "{tab} screens  {select}  {confirm} tribute  {} detail  {quit}  {help}",
+                    "{select}  {confirm} tribute  {} detail",
                     k.primary(Binding::Detail)
                 )
             }
             Screen::Laws => {
                 format!(
-                    "{tab} screens  {select}  {confirm} propose/approve/repeal  {} detail  {quit}  {help}",
+                    "{select}  {confirm} propose/approve/repeal  {} detail",
                     k.primary(Binding::Detail)
                 )
             }
             Screen::Reports => format!(
-                "{tab} screens  {select}  {confirm} report  {} send probe  {quit}  {help}",
+                "{select}  {confirm} report  {} send probe",
                 k.primary(Binding::SendProbe)
             ),
             Screen::History => format!(
-                "{tab} screens  {select}  {confirm} lineage  {} glance  +/- filter  {quit}  {help}",
+                "{select}  {confirm} lineage  {} glance  +/- filter",
                 k.primary(Binding::Replay)
             ),
             Screen::Staff => format!(
-                "{tab} screens  {select}  {confirm} assign/delegate  {cancel} revoke  {} recruit  {quit}  {help}",
+                "{select}  {confirm} assign/delegate  {cancel} revoke  {} recruit",
                 k.primary(Binding::Increase)
             ),
             Screen::Automation => {
                 format!(
-                    "{tab} screens  {select}  {confirm} dry-run  {} toggle  {} add  {cancel} remove  {quit}  {help}",
+                    "{select}  {confirm} dry-run  {} toggle  {} add  {cancel} remove",
                     k.primary(Binding::Toggle),
                     k.primary(Binding::Increase)
                 )
             }
             Screen::Finance => {
-                format!("{tab} screens  {select}  {confirm} approve  {quit}  {help}")
+                format!("{select}  {confirm} approve")
             }
             Screen::Ops => {
-                format!("{tab} screens  {select}  schedule  {quit}  {help}")
+                format!("{select}  schedule")
             }
             Screen::Map => format!(
-                "{tab} screens  {}{}{}{} cursor  {confirm} dispatch  {} detail  {quit}  {help}",
+                "{}{}{}{} cursor  {confirm} dispatch  {} detail",
                 k.primary(Binding::CursorLeft),
                 k.primary(Binding::SelectNext),
                 k.primary(Binding::SelectPrev),
@@ -1983,11 +2135,10 @@ impl App {
                 k.primary(Binding::Detail)
             ),
             Screen::Cockpit => format!(
-                "{tab} screens  {} layout  {}/{} panel  {select}  {confirm} drill  {cancel} back  {} cockpit  {quit}  {help}",
+                "{} layout  {}/{} panel  {select}  {confirm} drill  {cancel} back",
                 k.primary(Binding::Toggle),
                 k.primary(Binding::CursorLeft),
-                k.primary(Binding::CursorRight),
-                k.primary(Binding::Cockpit)
+                k.primary(Binding::CursorRight)
             ),
         })));
         rows
@@ -2005,6 +2156,19 @@ impl App {
             lines.insert(
                 2,
                 format!("  {}  advisor", self.keymap.display(Binding::Advisor)),
+            );
+        }
+        if !matches!(
+            self.help_context(),
+            HelpContext::Story | HelpContext::Victory
+        ) {
+            lines.insert(
+                2,
+                "  1-6  hubs: bridge colony fleet trade empire records".into(),
+            );
+            lines.insert(
+                3,
+                "  shift+tab  previous screen   esc  back to bridge".into(),
             );
         }
         lines.insert(2, "Fe iron  Si silicon  REE rare earths".into());
@@ -2081,7 +2245,7 @@ impl App {
 
     fn list_lines(&self, height: usize) -> Vec<Line<'static>> {
         match self.screen {
-            Screen::Planet => self.planet_lines(height),
+            Screen::Planet => self.planet_info_lines(),
             Screen::Shipyard => self.shipyard_lines(height),
             Screen::Overview => self.research_lines(height),
             Screen::Wonder => self.wonder_lines(height),
@@ -2104,7 +2268,7 @@ impl App {
         }
     }
 
-    fn planet_lines(&self, height: usize) -> Vec<Line<'static>> {
+    fn planet_info_lines(&self) -> Vec<Line<'static>> {
         let coord = self.selected_coord();
         let queue = self.state.queue_at(coord).unwrap_or(&[]);
         let mut rows: Vec<Line<'static>> = Vec::new();
@@ -2198,13 +2362,75 @@ impl App {
                 job.from_level + 1
             )));
         }
-        rows.push(Line::from("Buildings"));
-        let entries: Vec<Line<'static>> = BuildingKind::ALL
+        rows
+    }
+
+    fn buildings_table(&self) -> DataTable<'_> {
+        let t = &self.theme;
+        let coord = self.selected_coord();
+        let levels = self
+            .state
+            .buildings_at(coord)
+            .unwrap_or(&self.state.buildings);
+        let rows = BuildingKind::ALL
             .iter()
-            .enumerate()
-            .map(|(i, &kind)| self.building_row(i, kind))
+            .map(|&kind| {
+                let reason = self.building_block_reason(kind);
+                let base = if reason.is_some() {
+                    t.label().add_modifier(Modifier::DIM)
+                } else {
+                    t.text()
+                };
+                let status = match reason {
+                    Some(reason) => Line::styled(
+                        reason,
+                        t.intent(Intent::Warning).add_modifier(Modifier::DIM),
+                    ),
+                    None => Line::styled("ready", t.intent(Intent::Success)),
+                };
+                vec![
+                    Line::styled(kind.to_string(), base),
+                    Line::styled(levels.get(kind).to_string(), base),
+                    Line::styled(cost_label(self.state.build_cost_on(coord, kind)), base),
+                    Line::styled(
+                        ui::spans::duration(self.state.build_time_secs_on(coord, kind)),
+                        base,
+                    ),
+                    status,
+                ]
+            })
             .collect();
-        append_windowed(&mut rows, &entries, self.selected, height)
+        DataTable {
+            theme: t,
+            columns: vec![
+                Column::left("building", 22),
+                Column::right("lv", 3),
+                Column::left("cost", 18),
+                Column::right("time", 7),
+                Column::fill("status"),
+            ],
+            rows,
+            selected: Some(self.selected),
+            striped: true,
+            surface: Surface::Raised,
+        }
+    }
+
+    fn draw_list(&self, frame: &mut Frame<'_>, area: Rect) {
+        let t = &self.theme;
+        if self.screen == Screen::Planet {
+            let info = self.planet_info_lines();
+            let top_h = (info.len() as u16 + 1).min(area.height / 2);
+            let [top, table] =
+                Layout::vertical([Constraint::Length(top_h), Constraint::Min(2)]).areas(area);
+            frame.render_widget(Paragraph::new(info).style(t.text()), top);
+            frame.render_widget(self.buildings_table(), table);
+        } else {
+            frame.render_widget(
+                Paragraph::new(self.list_lines(area.height as usize)).style(t.text()),
+                area,
+            );
+        }
     }
 
     fn shipyard_lines(&self, height: usize) -> Vec<Line<'static>> {
@@ -2322,20 +2548,6 @@ impl App {
             }
         }
         None
-    }
-
-    fn building_row(&self, index: usize, kind: BuildingKind) -> Line<'static> {
-        let coord = self.selected_coord();
-        let level = self
-            .state
-            .buildings_at(coord)
-            .unwrap_or(&self.state.buildings)
-            .get(kind);
-        let cost = self.state.build_cost_on(coord, kind);
-        let secs = self.state.build_time_secs_on(coord, kind);
-        let mark = if index == self.selected { '>' } else { ' ' };
-        let text = format!("{mark} {kind}  lv{level}  {}  {secs}s", cost_label(cost));
-        styled_row(text, self.building_block_reason(kind))
     }
 
     fn ship_row(&self, index: usize, kind: ShipKind) -> Line<'static> {
@@ -3712,6 +3924,27 @@ fn push_away_section(lines: &mut Vec<Line<'static>>, title: &str, items: &[Strin
     }
 }
 
+fn pad_x(area: Rect, n: u16) -> Rect {
+    Rect {
+        x: area.x + n.min(area.width),
+        width: area.width.saturating_sub(2 * n),
+        ..area
+    }
+}
+
+fn window_area(frame: Rect, body: Rect) -> Rect {
+    if frame.width >= 120 && frame.height >= 40 {
+        Rect {
+            x: body.x + 4,
+            y: body.y + 1,
+            width: body.width - 8,
+            height: body.height - 2,
+        }
+    } else {
+        body
+    }
+}
+
 fn detail_column_width(total: u16) -> u16 {
     total
         .saturating_sub(24)
@@ -3781,14 +4014,6 @@ fn stockpile_label(stock: Resources) -> String {
     ResourceKind::ALL
         .iter()
         .map(|&kind| format!("{} {:.0}", kind.abbr(), stock.get(kind)))
-        .collect::<Vec<_>>()
-        .join("  ")
-}
-
-fn rate_label(state: &GameState) -> String {
-    ResourceKind::ALL
-        .iter()
-        .map(|&kind| format!("{} {:+.0}/h", kind.abbr(), state.production_per_hour(kind)))
         .collect::<Vec<_>>()
         .join("  ")
 }
@@ -4013,15 +4238,20 @@ mod tests {
             assert!(text.contains("Energy"), "{w}x{h}: {text}");
             assert!(text.contains("Build:"), "{w}x{h}: {text}");
             assert!(text.contains("Research:"), "{w}x{h}: {text}");
-            assert!(text.contains("Ships"), "{w}x{h}: {text}");
-            assert!(text.contains("Raid:"), "{w}x{h}: {text}");
             assert!(text.contains("Wonder:"), "{w}x{h}: {text}");
-            assert!(text.contains("Prestige:"), "{w}x{h}: {text}");
             assert!(
                 !text.contains('\u{1b}'),
                 "{w}x{h} leaked an escape sequence: {text:?}"
             );
         }
+        let mut app = app;
+        app.open(Screen::Shipyard);
+        let fleet = render_text(&app, 60, 20);
+        assert!(fleet.contains("Ships"), "{fleet}");
+        assert!(fleet.contains("Raid:"), "{fleet}");
+        app.open(Screen::Prestige);
+        let records = render_text(&app, 60, 20);
+        assert!(records.contains("Prestige:"), "{records}");
     }
 
     #[test]
@@ -4106,7 +4336,7 @@ mod tests {
         assert!(text.contains("Fe"), "{text}");
         assert!(text.contains(".==."), "{text}");
         assert!(!text.contains('▀'), "{text}");
-        app.handle_key(KeyCode::Tab, 1_000);
+        app.open(Screen::Planet);
         let planet = render_text(&app, 80, 24);
         assert!(
             planet.contains("(::.") || planet.contains("rocky"),
@@ -4127,7 +4357,7 @@ mod tests {
     fn overview_shows_raid_countdown() {
         let app = App::new(GameState::new(1_000));
         let text = render_text(&app, 80, 24);
-        assert!(text.contains("Raid: 3600s"), "{text}");
+        assert!(text.contains("RAID 1:00:00"), "{text}");
     }
 
     #[test]
@@ -4235,8 +4465,7 @@ mod tests {
         state.buildings.research_lab = 1;
         let mut app = App::new(state);
 
-        assert_eq!(app.handle_key(KeyCode::Tab, clock.now_unix()), Action::None);
-        assert_eq!(app.screen, Screen::Planet);
+        app.open(Screen::Planet);
         assert_eq!(
             app.handle_key(KeyCode::Enter, clock.now_unix()),
             Action::None
@@ -4261,25 +4490,7 @@ mod tests {
         let text = render_text(&app, 80, 24);
         assert!(text.contains(&format!("{build_left_later}s")), "{text}");
 
-        app.handle_key(KeyCode::Tab, clock.now_unix());
-        app.handle_key(KeyCode::Tab, clock.now_unix());
-        app.handle_key(KeyCode::Tab, clock.now_unix());
-        app.handle_key(KeyCode::Tab, clock.now_unix());
-        app.handle_key(KeyCode::Tab, clock.now_unix());
-        app.handle_key(KeyCode::Tab, clock.now_unix());
-        app.handle_key(KeyCode::Tab, clock.now_unix());
-        app.handle_key(KeyCode::Tab, clock.now_unix());
-        app.handle_key(KeyCode::Tab, clock.now_unix());
-        app.handle_key(KeyCode::Tab, clock.now_unix());
-        app.handle_key(KeyCode::Tab, clock.now_unix());
-        app.handle_key(KeyCode::Tab, clock.now_unix());
-        app.handle_key(KeyCode::Tab, clock.now_unix());
-        app.handle_key(KeyCode::Tab, clock.now_unix());
-        app.handle_key(KeyCode::Tab, clock.now_unix());
-        app.handle_key(KeyCode::Tab, clock.now_unix());
-        app.handle_key(KeyCode::Tab, clock.now_unix());
-        app.handle_key(KeyCode::Tab, clock.now_unix());
-        app.handle_key(KeyCode::Tab, clock.now_unix());
+        app.open(Screen::Overview);
         assert_eq!(app.screen, Screen::Overview);
         let energy = app
             .overview_techs()
@@ -4327,7 +4538,7 @@ mod tests {
         );
 
         let mut app = App::new(GameState::new(1_000));
-        app.handle_key(KeyCode::Tab, 1_000);
+        app.open(Screen::Planet);
         app.selected = BuildingKind::ALL
             .iter()
             .position(|&kind| kind == BuildingKind::ResearchLab)
@@ -4347,19 +4558,6 @@ mod tests {
         );
     }
 
-    fn open_shipyard(app: &mut App, now: u64) {
-        app.handle_key(KeyCode::Tab, now);
-        app.handle_key(KeyCode::Tab, now);
-        assert_eq!(app.screen, Screen::Shipyard);
-    }
-
-    fn open_map(app: &mut App, now: u64) {
-        for _ in 0..18 {
-            app.handle_key(KeyCode::Tab, now);
-        }
-        assert_eq!(app.screen, Screen::Map);
-    }
-
     #[test]
     fn shipyard_lists_ships_requirements_and_queue() {
         let mut state = GameState::new(1_000);
@@ -4372,9 +4570,9 @@ mod tests {
         state.fleet.add(ShipKind::HeavyFighter, 2);
         state.fleet.add(ShipKind::SmallCargo, 1);
         let mut app = App::new(state);
-        open_shipyard(&mut app, 1_000);
+        app.open(Screen::Shipyard);
         let text = render_text(&app, 100, 32);
-        assert!(text.contains("[yard]"), "{text}");
+        assert!(text.contains("Fleet / Shipyard"), "{text}");
         assert!(text.contains("light fighter"), "{text}");
         assert!(text.contains("battleship"), "{text}");
         assert!(text.contains("x4"), "{text}");
@@ -4398,7 +4596,7 @@ mod tests {
     #[test]
     fn unaffordable_ships_are_dimmed_with_missing_or_shipyard() {
         let mut app = App::new(GameState::new(1_000));
-        open_shipyard(&mut app, 1_000);
+        app.open(Screen::Shipyard);
         app.selected = ShipKind::ALL
             .iter()
             .position(|k| *k == ShipKind::LightFighter)
@@ -4421,7 +4619,7 @@ mod tests {
         state.tech_levels.insert("combustion_drive".into(), 1);
         state.resources = hoshi_core::Resources::ZERO;
         let mut app = App::new(state);
-        open_shipyard(&mut app, 1_000);
+        app.open(Screen::Shipyard);
         app.selected = ShipKind::ALL
             .iter()
             .position(|k| *k == ShipKind::LightFighter)
@@ -4449,11 +4647,11 @@ mod tests {
         state.resources.silicon = 100_000.0;
         state.resources.deuterium = 100_000.0;
         let mut app = App::new(state);
-        app.handle_key(KeyCode::Tab, 1_000);
+        app.open(Screen::Planet);
         assert_eq!(app.screen, Screen::Planet);
         app.handle_key(KeyCode::Enter, 1_000);
         assert_eq!(app.state.build_queue.len(), 1);
-        app.handle_key(KeyCode::Tab, 1_000);
+        app.open(Screen::Shipyard);
         assert_eq!(app.screen, Screen::Shipyard);
         app.selected = ShipKind::ALL
             .iter()
@@ -4466,25 +4664,7 @@ mod tests {
         assert!(app.state.ship_queue.is_empty());
         assert_eq!(app.state.build_queue.len(), 1);
 
-        app.handle_key(KeyCode::Tab, 1_000);
-        app.handle_key(KeyCode::Tab, 1_000);
-        app.handle_key(KeyCode::Tab, 1_000);
-        app.handle_key(KeyCode::Tab, 1_000);
-        app.handle_key(KeyCode::Tab, 1_000);
-        app.handle_key(KeyCode::Tab, 1_000);
-        app.handle_key(KeyCode::Tab, 1_000);
-        app.handle_key(KeyCode::Tab, 1_000);
-        app.handle_key(KeyCode::Tab, 1_000);
-        app.handle_key(KeyCode::Tab, 1_000);
-        app.handle_key(KeyCode::Tab, 1_000);
-        app.handle_key(KeyCode::Tab, 1_000);
-        app.handle_key(KeyCode::Tab, 1_000);
-        app.handle_key(KeyCode::Tab, 1_000);
-        app.handle_key(KeyCode::Tab, 1_000);
-        app.handle_key(KeyCode::Tab, 1_000);
-        app.handle_key(KeyCode::Tab, 1_000);
-        app.handle_key(KeyCode::Tab, 1_000);
-        app.handle_key(KeyCode::Tab, 1_000);
+        app.open(Screen::Planet);
         assert_eq!(app.screen, Screen::Planet);
         app.handle_key(KeyCode::Char('x'), 1_000);
         assert!(app.state.build_queue.is_empty());
@@ -4498,7 +4678,7 @@ mod tests {
         state.resources.silicon = 100_000.0;
         state.resources.deuterium = 100_000.0;
         let mut app = App::new(state);
-        open_shipyard(&mut app, 1_000);
+        app.open(Screen::Shipyard);
         let text = render_text(&app, 100, 40);
         assert!(text.contains("light cannon"), "{text}");
         assert!(text.contains("orbital station"), "{text}");
@@ -4530,7 +4710,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let mut conn = open_save(&path).unwrap();
         let mut app = App::new(GameState::new(50));
-        app.handle_key(KeyCode::Tab, 50);
+        app.open(Screen::Planet);
         app.handle_key(KeyCode::Enter, 50);
         assert_eq!(app.handle_key(KeyCode::Char('q'), 50), Action::Quit);
         save_state(&mut conn, &app.state).unwrap();
@@ -4575,7 +4755,7 @@ mod tests {
 
         app.handle_key(KeyCode::Char(']'), 1_000);
         assert_eq!(app.selected_coord(), dest);
-        app.handle_key(KeyCode::Tab, 1_000);
+        app.open(Screen::Planet);
         assert_eq!(app.screen, Screen::Planet);
         app.handle_key(KeyCode::Enter, 1_000);
         assert!(app.state.build_queue.is_empty());
@@ -4609,7 +4789,7 @@ mod tests {
         });
         let mut app = App::new(state);
         app.handle_key(KeyCode::Char(']'), 1_000);
-        app.handle_key(KeyCode::Tab, 1_000);
+        app.open(Screen::Planet);
         assert_eq!(app.screen, Screen::Planet);
         let text = render_text(&app, 100, 32);
         assert!(text.contains("Planet 1:1:2"), "{text}");
@@ -4621,7 +4801,7 @@ mod tests {
     fn planet_screen_shows_deposits_from_type_and_seed() {
         let state = GameState::new(1_000);
         let mut app = App::new(state);
-        app.handle_key(KeyCode::Tab, 1_000);
+        app.open(Screen::Planet);
         assert_eq!(app.screen, Screen::Planet);
         let text = render_text(&app, 100, 32);
         assert!(text.contains("Deposits"), "{text}");
@@ -4642,7 +4822,7 @@ mod tests {
         let mut app = App::new(state);
         let overview = render_text(&app, 100, 32);
         assert!(overview.contains("unrest"), "{overview}");
-        app.handle_key(KeyCode::Tab, 1_000);
+        app.open(Screen::Planet);
         assert_eq!(app.screen, Screen::Planet);
         let planet = render_text(&app, 100, 32);
         assert!(planet.contains("unrest"), "{planet}");
@@ -4667,9 +4847,7 @@ mod tests {
         state.resources.silicon = 500.0;
         state.resources.deuterium = 2_000.0;
         let mut app = App::new(state);
-        app.handle_key(KeyCode::Tab, 1_000);
-        app.handle_key(KeyCode::Tab, 1_000);
-        app.handle_key(KeyCode::Tab, 1_000);
+        app.open(Screen::Wonder);
         assert_eq!(app.screen, Screen::Wonder);
         let _ = render_text(&app, 40, 12);
         app.selected = 0;
@@ -4677,7 +4855,7 @@ mod tests {
         let remaining = app.state.wonder_remaining().expect("stage remaining");
         let eta = app.state.wonder_eta_secs().expect("eta");
         let text = render_text(&app, 100, 32);
-        assert!(text.contains("[wonder]"), "{text}");
+        assert!(text.contains("Colony / Wonder"), "{text}");
         assert!(text.contains("Dyson ring"), "{text}");
         assert!(
             text.contains(&format!("need Fe{:.0}", remaining.iron)),
@@ -4692,13 +4870,10 @@ mod tests {
         let mut state = GameState::new(1_000);
         state.completed_wonders.push("observatory".into());
         let mut app = App::new(state);
-        app.handle_key(KeyCode::Tab, 1_000);
-        app.handle_key(KeyCode::Tab, 1_000);
-        app.handle_key(KeyCode::Tab, 1_000);
-        app.handle_key(KeyCode::Tab, 1_000);
+        app.open(Screen::Prestige);
         assert_eq!(app.screen, Screen::Prestige);
         let text = render_text(&app, 100, 32);
-        assert!(text.contains("[prestige]"), "{text}");
+        assert!(text.contains("Records / Legacy"), "{text}");
         assert!(text.contains("Reset"), "{text}");
         app.handle_key(KeyCode::Enter, 1_000);
         assert!(app.confirming_prestige);
@@ -4718,12 +4893,12 @@ mod tests {
         let mut state = GameState::new(1_000);
         state.buildings.metal_mine = 2;
         let mut app = App::new(state);
-        for _ in 0..5 {
-            app.handle_key(KeyCode::Tab, 1_001);
+        for _ in 0..4 {
+            app.handle_key(KeyCode::Char('1'), 1_001);
         }
         assert_eq!(app.screen, Screen::Achievements);
         let text = render_text(&app, 100, 32);
-        assert!(text.contains("[ach]"), "{text}");
+        assert!(text.contains("Bridge / Feats"), "{text}");
         assert!(text.contains("First cut"), "{text}");
         assert!(text.contains("earned"), "{text}");
         assert!(text.contains("???"), "{text}");
@@ -4737,12 +4912,10 @@ mod tests {
     #[test]
     fn daily_screen_lists_progress_and_reset() {
         let mut app = App::new(GameState::new(1_000));
-        for _ in 0..6 {
-            app.handle_key(KeyCode::Tab, 1_000);
-        }
+        app.open(Screen::Daily);
         assert_eq!(app.screen, Screen::Daily);
         let text = render_text(&app, 100, 32);
-        assert!(text.contains("[daily]"), "{text}");
+        assert!(text.contains("Bridge / Daily"), "{text}");
         assert!(text.contains("Streak"), "{text}");
         assert!(text.contains("resets in"), "{text}");
         assert!(
@@ -4761,12 +4934,10 @@ mod tests {
     #[test]
     fn goals_screen_lists_three_paths() {
         let mut app = App::new(GameState::new(1_000));
-        for _ in 0..7 {
-            app.handle_key(KeyCode::Tab, 1_000);
-        }
+        app.open(Screen::Goals);
         assert_eq!(app.screen, Screen::Goals);
         let text = render_text(&app, 100, 32);
-        assert!(text.contains("[g]"), "{text}");
+        assert!(text.contains("Bridge / Goals"), "{text}");
         assert!(text.contains("Conquest"), "{text}");
         assert!(text.contains("Wonder"), "{text}");
         assert!(text.contains("Diplomacy"), "{text}");
@@ -4797,12 +4968,10 @@ mod tests {
             )
             .unwrap();
         let mut app = App::new(state);
-        for _ in 0..16 {
-            app.handle_key(KeyCode::Tab, 1_000);
-        }
+        app.open(Screen::Automation);
         assert_eq!(app.screen, Screen::Automation);
         let text = render_text(&app, 120, 32);
-        assert!(text.contains("[auto]"), "{text}");
+        assert!(text.contains("Empire / Automation"), "{text}");
         assert!(text.contains("Adaptive routes"), "{text}");
         assert!(text.contains("rule #1"), "{text}");
         assert!(text.contains("stock_below"), "{text}");
@@ -4838,11 +5007,10 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, hoshi_core::BuildError::NeedsApproval { .. }));
         let mut app = App::new(state);
-        for _ in 0..17 {
-            app.handle_key(KeyCode::Tab, 1_000);
-        }
+        app.open(Screen::Finance);
         assert_eq!(app.screen, Screen::Finance);
         let text = render_text(&app, 120, 32);
+        assert!(text.contains("Trade / Finance"), "{text}");
         assert!(text.contains("[fin]"), "{text}");
         assert!(text.contains("industry"), "{text}");
         assert!(text.contains("hold #"), "{text}");
@@ -4864,19 +5032,17 @@ mod tests {
         let text = render_text(&app, 80, 24);
         assert!(text.contains("victory"), "{text}");
         assert!(text.contains("wonder"), "{text}");
-        assert!(!text.contains("[overview]"), "{text}");
+        assert!(!text.contains("Colony / Research"), "{text}");
         app.handle_key(KeyCode::Enter, 1_000);
         assert!(app.state.victory.as_ref().unwrap().kept_playing);
         let after = render_text(&app, 80, 24);
-        assert!(after.contains("[overview]"), "{after}");
+        assert!(after.contains("Colony / Research"), "{after}");
     }
 
     #[test]
     fn victory_overlay_enter_works_from_daily() {
         let mut app = App::new(GameState::new(1_000));
-        for _ in 0..6 {
-            app.handle_key(KeyCode::Tab, 1_000);
-        }
+        app.open(Screen::Daily);
         assert_eq!(app.screen, Screen::Daily);
         app.state.victory = Some(VictoryRecord {
             path: VictoryPath::Conquest,
@@ -4903,12 +5069,10 @@ mod tests {
     #[test]
     fn production_screen_shows_limit_energy_heat_and_fits_80x24() {
         let mut app = App::new(GameState::new(1_000));
-        for _ in 0..8 {
-            app.handle_key(KeyCode::Tab, 1_000);
-        }
+        app.open(Screen::Production);
         assert_eq!(app.screen, Screen::Production);
         let text = render_text(&app, 80, 24);
-        assert!(text.contains("[prod]"), "{text}");
+        assert!(text.contains("Colony / Production"), "{text}");
         assert!(text.contains("limit"), "{text}");
         assert!(text.contains("energy"), "{text}");
         assert!(text.contains("heat"), "{text}");
@@ -4936,7 +5100,7 @@ mod tests {
         assert!(text.contains("Burn through"), "{text}");
         assert!(text.contains("Wait it out"), "{text}");
         assert!(
-            !text.contains("[overview]"),
+            !text.contains("Colony / Research"),
             "overlay left the screen chrome visible:\n{text}"
         );
         assert!(
@@ -4959,7 +5123,7 @@ mod tests {
         );
         let text = render_text(&app, 80, 24);
         assert!(!text.contains("Burn through"), "{text}");
-        assert!(text.contains("[overview]"), "{text}");
+        assert!(text.contains("Colony / Research"), "{text}");
     }
 
     #[test]
@@ -4983,12 +5147,10 @@ mod tests {
         let mut state = GameState::new(1_000);
         state.resources.iron = 1_000.0;
         let mut app = App::new(state);
-        for _ in 0..9 {
-            app.handle_key(KeyCode::Tab, 1_000);
-        }
+        app.open(Screen::Market);
         assert_eq!(app.screen, Screen::Market);
         let text = render_text(&app, 100, 32);
-        assert!(text.contains("[market]"), "{text}");
+        assert!(text.contains("Trade / Market"), "{text}");
         assert!(text.contains("Prices"), "{text}");
         assert!(text.contains("preview"), "{text}");
         assert!(
@@ -5011,12 +5173,10 @@ mod tests {
         let mut state = GameState::new(1_000);
         state.resources.iron = 1_000.0;
         let mut app = App::new(state);
-        for _ in 0..10 {
-            app.handle_key(KeyCode::Tab, 1_000);
-        }
+        app.open(Screen::Diplomacy);
         assert_eq!(app.screen, Screen::Diplomacy);
         let text = render_text(&app, 100, 32);
-        assert!(text.contains("[diplo]"), "{text}");
+        assert!(text.contains("Empire / Diplomacy"), "{text}");
         assert!(text.contains("Traders' guild"), "{text}");
         assert!(text.contains("Pirate clans"), "{text}");
         assert!(text.contains("Ancient empire"), "{text}");
@@ -5049,12 +5209,10 @@ mod tests {
             ..BalanceConfig::default()
         };
         let mut app = App::new(GameState::with_config(1_000, cfg));
-        for _ in 0..11 {
-            app.handle_key(KeyCode::Tab, 1_000);
-        }
+        app.open(Screen::Laws);
         assert_eq!(app.screen, Screen::Laws);
         let text = render_text(&app, 100, 32);
-        assert!(text.contains("[laws]"), "{text}");
+        assert!(text.contains("Empire / Laws"), "{text}");
         assert!(text.contains("Emission cap"), "{text}");
         assert!(text.contains("Metal levy"), "{text}");
         app.handle_key(KeyCode::Enter, 1_000);
@@ -5105,9 +5263,7 @@ mod tests {
         });
         let mut app = App::new(state);
         app.handle_key(KeyCode::Char(']'), 1_000);
-        for _ in 0..11 {
-            app.handle_key(KeyCode::Tab, 1_000);
-        }
+        app.open(Screen::Laws);
         assert_eq!(app.screen, Screen::Laws);
         app.handle_key(KeyCode::Enter, 1_000);
         let law = app
@@ -5146,12 +5302,10 @@ mod tests {
             stance: Some("neutral".into()),
         });
         let mut app = App::new(state);
-        for _ in 0..12 {
-            app.handle_key(KeyCode::Tab, 1_000);
-        }
+        app.open(Screen::Reports);
         assert_eq!(app.screen, Screen::Reports);
         let text = render_text(&app, 100, 32);
-        assert!(text.contains("[reports]"), "{text}");
+        assert!(text.contains("Fleet / Intel"), "{text}");
         assert!(text.contains(&dest.to_string()), "{text}");
         assert!(text.contains("age 100s"), "{text}");
         assert!(text.contains("garrison"), "{text}");
@@ -5159,7 +5313,7 @@ mod tests {
         let text = render_text(&app, 100, 32);
         assert!(text.contains(&format!("spy {dest}")), "{text}");
         assert!(
-            !text.contains("[reports]"),
+            !text.contains("Fleet / Intel"),
             "spy overlay left the reports chrome visible:\n{text}"
         );
         assert!(text.contains("detected yes"), "{text}");
@@ -5167,7 +5321,7 @@ mod tests {
         assert!(text.contains(&format!("garrison {garrison}")), "{text}");
         app.handle_key(KeyCode::Enter, 1_000);
         let text = render_text(&app, 100, 32);
-        assert!(text.contains("[reports]"), "{text}");
+        assert!(text.contains("Fleet / Intel"), "{text}");
         assert!(!text.contains("detected yes"), "{text}");
     }
 
@@ -5176,12 +5330,10 @@ mod tests {
         let mut state = GameState::with_seed(0, BalanceConfig::default(), 1);
         state.enqueue_build(BuildingKind::MetalMine, 0).unwrap();
         let mut app = App::new(state);
-        for _ in 0..13 {
-            app.handle_key(KeyCode::Tab, 0);
-        }
+        app.open(Screen::History);
         assert_eq!(app.screen, Screen::History);
         let text = render_text(&app, 100, 32);
-        assert!(text.contains("[log]"), "{text}");
+        assert!(text.contains("Records / History"), "{text}");
         assert!(text.contains("queue"), "{text}");
         app.handle_key(KeyCode::Enter, 0);
         let overlay = render_text(&app, 100, 32);
@@ -5191,12 +5343,10 @@ mod tests {
     #[test]
     fn staff_screen_lists_home_leaders() {
         let mut app = App::new(GameState::new(1_000));
-        for _ in 0..14 {
-            app.handle_key(KeyCode::Tab, 1_000);
-        }
+        app.open(Screen::Staff);
         assert_eq!(app.screen, Screen::Staff);
         let text = render_text(&app, 100, 32);
-        assert!(text.contains("[stf]"), "{text}");
+        assert!(text.contains("Empire / Staff"), "{text}");
         assert!(text.contains("Home fleet"), "{text}");
         assert!(text.contains("governor"), "{text}");
     }
@@ -5204,12 +5354,10 @@ mod tests {
     #[test]
     fn ops_screen_lists_schedule_alerts() {
         let mut app = App::new(GameState::new(1_000));
-        for _ in 0..15 {
-            app.handle_key(KeyCode::Tab, 1_000);
-        }
+        app.open(Screen::Ops);
         assert_eq!(app.screen, Screen::Ops);
         let text = render_text(&app, 100, 32);
-        assert!(text.contains("[ops]"), "{text}");
+        assert!(text.contains("Fleet / Ops"), "{text}");
         assert!(text.contains("vehicles"), "{text}");
     }
 
@@ -5226,9 +5374,7 @@ mod tests {
             });
         }
         let mut app = App::new(state);
-        for _ in 0..15 {
-            app.handle_key(KeyCode::Tab, 1_000);
-        }
+        app.open(Screen::Ops);
         assert_eq!(app.screen, Screen::Ops);
         for _ in 0..23 {
             app.handle_key(KeyCode::Char('j'), 1_000);
@@ -5253,7 +5399,7 @@ mod tests {
             .expect("revealed world")
             .clone();
         let mut app = App::new(state);
-        open_map(&mut app, 1_000);
+        app.open(Screen::Map);
         app.handle_key(KeyCode::Char(' '), 1_000);
         app.map_system = world.coord.system;
         app.map_position = world.coord.position;
@@ -5270,12 +5416,12 @@ mod tests {
     #[test]
     fn map_renders_at_80x24_and_scales_up() {
         let mut app = App::new(GameState::new(1_000));
-        open_map(&mut app, 1_000);
+        app.open(Screen::Map);
         let small = render_text(&app, 80, 24);
         assert!(small.contains("Map"), "{small}");
         assert!(small.contains("[H]") || small.contains("home"), "{small}");
         let large = render_text(&app, 120, 40);
-        assert!(large.contains("[map]"), "{large}");
+        assert!(large.contains("Fleet / Star map"), "{large}");
         assert!(large.contains("[H]"), "{large}");
         assert!(large.contains("home"), "{large}");
         assert!(large.contains("hjkl"), "{large}");
@@ -5288,7 +5434,7 @@ mod tests {
         let mut app = App::new(state);
         let overview = render_text(&app, 100, 28);
         assert!(overview.contains("moon"), "{overview}");
-        open_map(&mut app, 1_000);
+        app.open(Screen::Map);
         let map = render_text(&app, 100, 32);
         assert!(map.contains("moon"), "{map}");
         app.screen = Screen::Planet;
@@ -5315,9 +5461,9 @@ mod tests {
             .saturating_sub(state.last_tick_unix);
         let id = state.missions[0].id;
         let mut app = App::new(state);
-        open_map(&mut app, 1_000);
+        app.open(Screen::Map);
         let text = render_text(&app, 100, 32);
-        assert!(text.contains("[map]"), "{text}");
+        assert!(text.contains("Fleet / Star map"), "{text}");
         assert!(text.contains("[H]f"), "{text}");
         assert!(
             text.contains(&format!("fleet #{id} outbound {eta}s")),
@@ -5331,7 +5477,7 @@ mod tests {
         state.fleet.add(ShipKind::SmallCargo, 2);
         state.resources.deuterium = 10_000.0;
         let mut app = App::new(state);
-        open_map(&mut app, 1_000);
+        app.open(Screen::Map);
         app.handle_key(KeyCode::Char('l'), 1_000);
         app.handle_key(KeyCode::Enter, 1_000);
         let overlay = render_text(&app, 100, 32);
@@ -5340,7 +5486,7 @@ mod tests {
         assert!(overlay.contains("pick ships"), "{overlay}");
         assert!(overlay.contains("small_cargo"), "{overlay}");
         assert!(
-            !overlay.contains("[map]"),
+            !overlay.contains("Fleet / Star map"),
             "dispatch overlay left the map chrome visible:\n{overlay}"
         );
         app.handle_key(KeyCode::Char('+'), 1_000);
@@ -5351,7 +5497,7 @@ mod tests {
         assert_eq!(app.state.missions.len(), 1);
         assert_eq!(app.state.missions[0].dest.to_string(), "1:1:2");
         let text = render_text(&app, 100, 32);
-        assert!(text.contains("[map]"), "{text}");
+        assert!(text.contains("Fleet / Star map"), "{text}");
         assert!(text.contains("fleet #"), "{text}");
         assert!(text.contains("outbound"), "{text}");
         assert!(text.contains("launched to 1:1:2"), "{text}");
@@ -5380,7 +5526,7 @@ mod tests {
         });
         let mut app = App::new(state);
         app.governance = true;
-        open_map(&mut app, 1_000);
+        app.open(Screen::Map);
         app.handle_key(KeyCode::Char('l'), 1_000);
         app.handle_key(KeyCode::Enter, 1_000);
         for _ in 0..10 {
@@ -5448,9 +5594,7 @@ mod tests {
         assert!(overview.contains("REE rare earths"), "{overview}");
         assert!(overview.contains("He3 helium-3"), "{overview}");
         app.handle_key(KeyCode::Char('?'), 1_000);
-        for _ in 0..9 {
-            app.handle_key(KeyCode::Tab, 1_000);
-        }
+        app.open(Screen::Market);
         app.handle_key(KeyCode::Char('?'), 1_000);
         let market = render_text(&app, 80, 24);
         assert!(market.contains("increase amount"), "{market}");
@@ -5504,7 +5648,7 @@ mod tests {
         let panel = render_text(&app, 80, 24);
         assert!(panel.contains("suggestions only"), "{panel}");
         assert!(
-            !panel.contains("[daily]"),
+            !panel.contains("Bridge / Daily"),
             "advisor overlay left the chrome visible:\n{panel}"
         );
         assert_eq!(app.state, before);
@@ -5528,7 +5672,7 @@ mod tests {
         assert!(panel.contains("activity"), "{panel}");
         assert!(panel.contains("github"), "{panel}");
         assert!(
-            !panel.contains("[overview]"),
+            !panel.contains("Colony / Research"),
             "activity overlay left the chrome visible:\n{panel}"
         );
     }
@@ -5575,29 +5719,15 @@ mod tests {
         app.handle_key(KeyCode::Char('c'), 1_000);
         assert_eq!(app.screen, Screen::Cockpit);
         let full = render_text(&app, 160, 48);
-        assert!(full.contains("[ckp]"), "{full}");
+        assert!(full.contains("Bridge / Dashboard"), "{full}");
         assert!(full.contains("alerts"), "{full}");
-        assert!(full.contains("map") || full.contains("[map]"), "{full}");
-        assert!(
-            full.contains("gauges") || full.contains("[gauges]"),
-            "{full}"
-        );
-        assert!(
-            full.contains("queues") || full.contains("[queues]"),
-            "{full}"
-        );
-        assert!(
-            full.contains("fleets") || full.contains("[fleets]"),
-            "{full}"
-        );
-        assert!(
-            full.contains("timeline") || full.contains("[timeline]"),
-            "{full}"
-        );
+        for tile in ["MAP", "GAUGES", "QUEUES", "FLEETS", "TIMELINE"] {
+            assert!(full.contains(tile), "missing {tile}: {full}");
+        }
         let compact = render_text(&app, 120, 40);
         assert!(compact.contains("alerts"), "{compact}");
         assert!(
-            compact.contains("gauges") || compact.contains("queues"),
+            compact.contains("GAUGES") || compact.contains("QUEUES"),
             "{compact}"
         );
         let tabbed = render_text(&app, 80, 24);
@@ -5618,7 +5748,7 @@ mod tests {
         app.handle_key(KeyCode::Char(' '), 1_000);
         assert_eq!(app.cockpit.layout, crate::cockpit::CockpitLayout::Economy);
         let econ = render_text(&app, 160, 48);
-        assert!(econ.contains("gauges") || econ.contains("market"), "{econ}");
+        assert!(econ.contains("GAUGES") || econ.contains("MARKET"), "{econ}");
         app.handle_key(KeyCode::Char(' '), 1_000);
         assert_eq!(app.cockpit.layout, crate::cockpit::CockpitLayout::War);
         app.handle_key(KeyCode::Enter, 1_000);
@@ -5720,31 +5850,31 @@ mod tests {
             &app,
             160,
             48,
-            &["detail", "metal mine", "cost", "iron", "energy draw"],
+            &["DETAIL", "metal mine", "COST", "iron", "energy draw"],
         );
-        assert_detail_on(&app, 120, 40, &["detail", "metal mine", "affordable"]);
+        assert_detail_on(&app, 120, 40, &["DETAIL", "metal mine", "affordable"]);
         app.screen = Screen::Overview;
         app.selected = app
             .overview_techs()
             .iter()
             .position(|spec| spec.id == "energy")
             .unwrap();
-        assert_detail_on(&app, 160, 48, &["detail", "Energy Technology", "requires"]);
+        assert_detail_on(&app, 160, 48, &["DETAIL", "Energy Technology", "REQUIRES"]);
         assert_detail_on(&app, 120, 40, &["Energy Technology"]);
         app.screen = Screen::Shipyard;
         app.selected = 0;
-        assert_detail_on(&app, 160, 48, &["detail", "speed", "fuel"]);
+        assert_detail_on(&app, 160, 48, &["DETAIL", "speed", "fuel"]);
         assert_detail_on(&app, 120, 40, &["speed"]);
         app.screen = Screen::Laws;
         app.selected = 0;
         let laws = render_text(&app, 160, 48);
-        assert!(laws.contains("detail"), "{laws}");
+        assert!(laws.contains("DETAIL"), "{laws}");
         app.screen = Screen::Map;
         let map = render_text(&app, 160, 48);
-        assert!(map.contains("detail"), "{map}");
+        assert!(map.contains("DETAIL"), "{map}");
         assert!(map.contains("1:1:1") || map.contains("size"), "{map}");
         let map_mid = render_text(&app, 120, 40);
-        assert!(map_mid.contains("detail"), "{map_mid}");
+        assert!(map_mid.contains("DETAIL"), "{map_mid}");
     }
 
     #[test]
@@ -5822,7 +5952,8 @@ mod tests {
         let secs = travel.outbound_secs.expect("outbound");
         let fuel = travel.fuel_cost.expect("fuel");
         let text = render_text(&app, 160, 48);
-        assert!(text.contains(&format!("travel {secs}s")), "{text}");
+        assert!(text.contains("TRAVEL"), "{text}");
+        assert!(text.contains(&ui::spans::duration(secs)), "{text}");
         let fuel_bit = format!("fuel {fuel:.1}");
         assert!(text.contains(&fuel_bit), "missing {fuel_bit} in\n{text}");
     }
@@ -5845,5 +5976,88 @@ mod tests {
         app.screen = Screen::Planet;
         let hidden = render_text(&app, 160, 48);
         assert!(!hidden.contains("energy draw"), "{hidden}");
+    }
+
+    #[test]
+    fn play_starts_on_the_bridge() {
+        let app = App::with_keymap(GameState::new(1_000), Keymap::defaults());
+        assert_eq!(app.screen, Screen::Cockpit);
+        let text = render_text(&app, 120, 40);
+        assert!(text.contains("Bridge / Dashboard"), "{text}");
+        assert!(text.contains("ALERTS") || text.contains("alerts"), "{text}");
+    }
+
+    #[test]
+    fn hub_digits_open_hubs_and_cycle_their_tabs() {
+        let mut app = App::new(GameState::new(1_000));
+        app.handle_key(KeyCode::Char('3'), 1_000);
+        assert_eq!(app.screen, Screen::Shipyard);
+        app.handle_key(KeyCode::Char('3'), 1_000);
+        assert_eq!(app.screen, Screen::Map);
+        app.handle_key(KeyCode::Char('4'), 1_000);
+        assert_eq!(app.screen, Screen::Market);
+        app.handle_key(KeyCode::Char('4'), 1_000);
+        assert_eq!(app.screen, Screen::Finance);
+        app.handle_key(KeyCode::Tab, 1_000);
+        assert_eq!(app.screen, Screen::Diplomacy);
+        app.handle_key(KeyCode::BackTab, 1_000);
+        assert_eq!(app.screen, Screen::Finance);
+        app.handle_key(KeyCode::Char('1'), 1_000);
+        assert_eq!(app.screen, Screen::Cockpit);
+        let text = render_text(&app, 80, 24);
+        assert!(text.contains("BRIDGE"), "{text}");
+    }
+
+    #[test]
+    fn esc_closes_the_window_but_x_still_cancels() {
+        let mut state = GameState::new(1_000);
+        state.resources.iron = 100_000.0;
+        state.resources.silicon = 100_000.0;
+        let mut app = App::new(state);
+        app.open(Screen::Planet);
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert_eq!(app.state.build_queue.len(), 1);
+        app.handle_key(KeyCode::Esc, 1_000);
+        assert_eq!(app.screen, Screen::Cockpit);
+        assert_eq!(app.state.build_queue.len(), 1);
+        app.open(Screen::Planet);
+        app.handle_key(KeyCode::Char('x'), 1_000);
+        assert!(app.state.build_queue.is_empty());
+        assert_eq!(app.screen, Screen::Planet);
+    }
+
+    #[test]
+    fn hub_window_floats_over_the_dimmed_bridge_on_large_terminals() {
+        let mut app = App::new(GameState::new(1_000));
+        app.open(Screen::Planet);
+        let backend = TestBackend::new(160, 48);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let text = buffer_text(terminal.backend());
+        assert!(text.contains("Colony"), "{text}");
+        assert!(text.contains("Buildings"), "{text}");
+        assert!(text.contains("BUILDING"), "{text}");
+        let theme = Theme::default();
+        let edge = &terminal.backend().buffer()[(1, 10)];
+        assert_eq!(
+            edge.bg,
+            theme.surface(Surface::Dimmed).bg.unwrap(),
+            "{text}"
+        );
+        let small = render_text(&app, 80, 24);
+        assert!(small.contains("esc bridge"), "{small}");
+    }
+
+    #[test]
+    fn hub_window_floats_from_120x40_and_fills_below() {
+        let frame = Rect::new(0, 0, 120, 40);
+        let body = Rect::new(0, 4, 120, 35);
+        assert_ne!(window_area(frame, body), body);
+        let short = Rect::new(0, 0, 120, 39);
+        let short_body = Rect::new(0, 4, 120, 34);
+        assert_eq!(window_area(short, short_body), short_body);
+        let narrow = Rect::new(0, 0, 119, 48);
+        let narrow_body = Rect::new(0, 4, 119, 43);
+        assert_eq!(window_area(narrow, narrow_body), narrow_body);
     }
 }
