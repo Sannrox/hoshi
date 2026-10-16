@@ -215,8 +215,6 @@ silent exceptions. Do not "fix" them in an unrelated PR.
 - Empty `[chains]` recipes still allow the legacy mine-to-stockpile path
   (mass from a building level with no deposit). Bundled config has recipes;
   overrides that clear them regress.
-- Market mids (`metal_mean = 1`, `crystal_mean = 2`, `deuterium_mean = 3`)
-  are ordinal, not mass- or energy-based.
 
 When a follow-up Issue closes one of these, remove the bullet here.
 

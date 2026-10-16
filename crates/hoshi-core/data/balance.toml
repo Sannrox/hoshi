@@ -61,6 +61,8 @@ release_sectors = 1
 epic_sectors = 1
 bridge_sector_cap = 2
 
+# Hourly output and energy draw. Market mids use L1 energy per unit
+# (energy_use / production) relative to iron as the numeraire.
 [metal_mine]
 base_per_hour = 30.0
 growth = 1.5
@@ -83,6 +85,7 @@ energy_growth = 1.1
 base_energy = 22.0
 growth = 1.1
 
+# Three tanks: iron+rare earths, silicon, water ice+helium-3+deuterium.
 [metal_storage]
 base = 10000.0
 growth = 2.0
@@ -262,6 +265,9 @@ queue_slots = 1
 [starting_resources]
 iron = 500.0
 silicon = 500.0
+rare_earths = 0.0
+water_ice = 0.0
+helium_3 = 0.0
 deuterium = 0.0
 
 [starting_buildings]
@@ -752,9 +758,11 @@ impact_unit = 100.0
 min_mult = 0.5
 max_mult = 2.0
 history_len = 24
+# Mids = L1 extraction energy per unit, relative to iron (10/30).
+# silicon 10/20 → 1.5; deuterium 20/10 → 6. Not ordinal 1/2/3.
 metal_mean = 1.0
-crystal_mean = 2.0
-deuterium_mean = 3.0
+crystal_mean = 1.5
+deuterium_mean = 6.0
 cargo_free = 50.0
 hub_galaxy = 1
 hub_system = 1

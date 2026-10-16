@@ -202,13 +202,21 @@ impl SelfPlayReport {
             mark(self.time_dominance_ok())
         ));
         out.push_str("## Resource curves\n\n");
-        out.push_str("| seed | species | day | metal | crystal | deuterium |\n");
-        out.push_str("| --- | --- | --- | --- | --- | --- |\n");
+        out.push_str("| seed | species | day | iron | silicon | rare earths | water ice | helium-3 | deuterium |\n");
+        out.push_str("| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
         for cell in &self.cells {
             for snap in &cell.curve {
                 out.push_str(&format!(
-                    "| {} | {} | {} | {:.0} | {:.0} | {:.0} |\n",
-                    cell.seed, cell.species, snap.day, snap.iron, snap.silicon, snap.deuterium
+                    "| {} | {} | {} | {:.0} | {:.0} | {:.0} | {:.0} | {:.0} | {:.0} |\n",
+                    cell.seed,
+                    cell.species,
+                    snap.day,
+                    snap.iron,
+                    snap.silicon,
+                    snap.rare_earths,
+                    snap.water_ice,
+                    snap.helium_3,
+                    snap.deuterium
                 ));
             }
         }
