@@ -4032,7 +4032,7 @@ mod tests {
         );
         app.state.events.push(hoshi_core::GameEvent {
             at: 1,
-            text: "raid: pirates 1 vs 0. 1 rounds. lost none. pirates lost 1. plunder M0 C0 D0"
+            text: "raid: pirates 1 vs 0. 1 rounds. lost none. pirates lost 1. plunder Fe0 Si0 D0"
                 .into(),
         });
         app.handle_key(KeyCode::Tab, 1_000);
