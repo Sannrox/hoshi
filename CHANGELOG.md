@@ -8,6 +8,8 @@
 
 ### Added
 
+- Title New game rival settings: on/off, every personality from the data files, and a difficulty preset (aggression, efficiency, starting bonus). Rivals stay off until toggled; a galaxy with rivals on needs at least one personality. Load game shows the chosen roster.
+
 - Title New game lists every playable species from the data files. Locked empires stay visible with their prestige cost and cannot start a galaxy; 80-column sessions keep a compact list, wider terminals open a card with portrait fallback, victory lean, strengths and starting faction standing. Load game shows the species saved on the slot.
 
 - Planet blueprints: capture a world's building levels, export/import as text, and apply to another colony. Apply queues only missing upgrades in power-then-extraction order through the normal build path, lists mismatches (wrong planet type, solar too far from the star) before queueing, and stops when resources or the queue cap run out. Stored per player beside the save as `blueprints/*.toml`. `hoshi blueprint list|show|capture|apply|export|import`.

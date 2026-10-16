@@ -175,6 +175,13 @@ pub(crate) fn inspect_backend_save(path: &Path) -> Result<crate::SaveGlance, Sav
         galaxy_seed: Some(state.galaxy_seed),
         generator_version: state.generator_version,
         species_id: state.species.as_ref().map(|run| run.id.clone()),
+        rivals_enabled: state.rivals.enabled,
+        rival_personalities: state
+            .rivals
+            .empires
+            .iter()
+            .map(|row| row.personality.clone())
+            .collect(),
     })
 }
 

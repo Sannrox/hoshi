@@ -6,9 +6,10 @@ use crate::keymap::{Binding, HelpContext, Keymap};
 use crate::portraits::{self, Mood, PortraitView, Slot as PortraitSlot};
 use hoshi_core::{
     AchievementConfig, BalanceConfig, CareerGlance, Prestige, PrestigeConfig, PrestigeError,
-    SaveError, SaveGlance, SeasonCatalog, SpeciesCatalog, SpeciesSpec, advisor_endpoint_allowed,
-    encode_galaxy_seed, inspect_career, inspect_save, lock_save, open_storage, parse_galaxy_seed,
-    preview_galaxy, probe_model_endpoint, save_is_locked, season_slot_name,
+    RivalCatalog, RivalSettings, SaveError, SaveGlance, SeasonCatalog, SpeciesCatalog, SpeciesSpec,
+    advisor_endpoint_allowed, encode_galaxy_seed, inspect_career, inspect_save, lock_save,
+    open_storage, parse_galaxy_seed, preview_galaxy, probe_model_endpoint, save_is_locked,
+    season_slot_name,
 };
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
@@ -72,26 +73,34 @@ enum NewField {
     Difficulty,
     Species,
     Rivals,
+    RivalRoster,
+    RivalDifficulty,
 }
 
 impl NewField {
-    fn next(self) -> Self {
+    fn next(self, rivals_on: bool) -> Self {
         match self {
             NewField::Name => NewField::Seed,
             NewField::Seed => NewField::Difficulty,
             NewField::Difficulty => NewField::Species,
             NewField::Species => NewField::Rivals,
+            NewField::Rivals if rivals_on => NewField::RivalRoster,
             NewField::Rivals => NewField::Name,
+            NewField::RivalRoster => NewField::RivalDifficulty,
+            NewField::RivalDifficulty => NewField::Name,
         }
     }
 
-    fn prev(self) -> Self {
+    fn prev(self, rivals_on: bool) -> Self {
         match self {
+            NewField::Name if rivals_on => NewField::RivalDifficulty,
             NewField::Name => NewField::Rivals,
             NewField::Seed => NewField::Name,
             NewField::Difficulty => NewField::Seed,
             NewField::Species => NewField::Difficulty,
             NewField::Rivals => NewField::Species,
+            NewField::RivalRoster => NewField::Rivals,
+            NewField::RivalDifficulty => NewField::RivalRoster,
         }
     }
 }
@@ -178,7 +187,13 @@ pub struct Title {
     new_field: NewField,
     new_species: usize,
     new_rivals: bool,
+    new_rival_row: usize,
+    new_personalities: Vec<String>,
+    new_aggression: f64,
+    new_efficiency: f64,
+    new_starting_bonus: f64,
     species_catalog: SpeciesCatalog,
+    rival_catalog: RivalCatalog,
     confirm_delete: Option<String>,
     rename_from: Option<String>,
     rename_to: String,
@@ -229,7 +244,13 @@ impl Title {
             new_field: NewField::Name,
             new_species: 0,
             new_rivals: false,
+            new_rival_row: 0,
+            new_personalities: Vec::new(),
+            new_aggression: 1.0,
+            new_efficiency: 1.0,
+            new_starting_bonus: 0.0,
             species_catalog: SpeciesCatalog::default(),
+            rival_catalog: RivalCatalog::default(),
             confirm_delete: None,
             rename_from: None,
             rename_to: String::new(),
@@ -255,6 +276,11 @@ impl Title {
             advisor_probe_status: String::new(),
         };
         title.new_rivals = title.config.rivals;
+        title.new_personalities = title
+            .rival_catalog
+            .iter()
+            .map(|row| row.id.clone())
+            .collect();
         title.refresh_slots();
         title
     }
@@ -618,17 +644,19 @@ impl Title {
                 return TitleAction::None;
             }
             Some(Binding::NextScreen) => {
-                self.new_field = self.new_field.next();
+                self.new_field = self.new_field.next(self.new_rivals);
                 return TitleAction::None;
             }
             Some(Binding::Confirm) => {
                 if self.new_field == NewField::Difficulty
                     || self.new_field == NewField::Species
                     || self.new_field == NewField::Rivals
+                    || self.new_field == NewField::RivalRoster
+                    || self.new_field == NewField::RivalDifficulty
                 {
                     return self.create_new();
                 }
-                self.new_field = self.new_field.next();
+                self.new_field = self.new_field.next(self.new_rivals);
                 return TitleAction::None;
             }
             Some(Binding::Toggle) if self.new_field == NewField::Difficulty => {
@@ -641,17 +669,48 @@ impl Title {
             }
             Some(Binding::Toggle) if self.new_field == NewField::Rivals => {
                 self.new_rivals = !self.new_rivals;
+                if self.new_rivals && self.new_personalities.is_empty() {
+                    self.new_personalities = self
+                        .rival_catalog
+                        .iter()
+                        .map(|row| row.id.clone())
+                        .collect();
+                }
+                if !self.new_rivals
+                    && matches!(
+                        self.new_field,
+                        NewField::RivalRoster | NewField::RivalDifficulty
+                    )
+                {
+                    self.new_field = NewField::Rivals;
+                }
+                return TitleAction::None;
+            }
+            Some(Binding::Toggle) if self.new_field == NewField::RivalRoster => {
+                self.toggle_rival_personality();
+                return TitleAction::None;
+            }
+            Some(Binding::Toggle) if self.new_field == NewField::RivalDifficulty => {
+                self.cycle_rival_difficulty();
                 return TitleAction::None;
             }
             _ => {}
         }
         match code {
             KeyCode::Down => {
-                self.new_field = self.new_field.next();
+                self.new_field = self.new_field.next(self.new_rivals);
                 TitleAction::None
             }
             KeyCode::Up => {
-                self.new_field = self.new_field.prev();
+                self.new_field = self.new_field.prev(self.new_rivals);
+                TitleAction::None
+            }
+            KeyCode::Left if self.new_field == NewField::RivalRoster => {
+                self.cycle_rival_row(false);
+                TitleAction::None
+            }
+            KeyCode::Right if self.new_field == NewField::RivalRoster => {
+                self.cycle_rival_row(true);
                 TitleAction::None
             }
             KeyCode::Backspace => {
@@ -662,7 +721,11 @@ impl Title {
                     NewField::Seed => {
                         self.new_seed.pop();
                     }
-                    NewField::Difficulty | NewField::Species | NewField::Rivals => {}
+                    NewField::Difficulty
+                    | NewField::Species
+                    | NewField::Rivals
+                    | NewField::RivalRoster
+                    | NewField::RivalDifficulty => {}
                 }
                 TitleAction::None
             }
@@ -680,7 +743,11 @@ impl Title {
                             self.new_seed.push(c);
                         }
                     }
-                    NewField::Difficulty | NewField::Species | NewField::Rivals => {}
+                    NewField::Difficulty
+                    | NewField::Species
+                    | NewField::Rivals
+                    | NewField::RivalRoster
+                    | NewField::RivalDifficulty => {}
                 }
                 TitleAction::None
             }
@@ -711,6 +778,10 @@ impl Title {
             .is_unlocked(&spec.id, &self.career.prestige)
         {
             self.status = format!("{} locked ({} prestige)", spec.name, spec.unlock_cost);
+            return TitleAction::None;
+        }
+        if self.new_rivals && self.new_personalities.is_empty() {
+            self.status = "pick at least one rival personality".into();
             return TitleAction::None;
         }
         let path = self.dir.join(format!("{name}.sqlite"));
@@ -746,6 +817,90 @@ impl Title {
     fn cycle_species(&mut self) {
         let n = self.catalog_specs().len().max(1);
         self.new_species = (self.new_species + 1) % n;
+    }
+
+    fn cycle_rival_row(&mut self, forward: bool) {
+        let n = self.rival_catalog.iter().count().max(1);
+        if forward {
+            self.new_rival_row = (self.new_rival_row + 1) % n;
+        } else {
+            self.new_rival_row = (self.new_rival_row + n - 1) % n;
+        }
+    }
+
+    fn toggle_rival_personality(&mut self) {
+        let Some(spec) = self.rival_catalog.iter().nth(self.new_rival_row) else {
+            return;
+        };
+        let id = spec.id.clone();
+        if let Some(pos) = self.new_personalities.iter().position(|row| row == &id) {
+            self.new_personalities.remove(pos);
+        } else {
+            self.new_personalities.push(id);
+        }
+    }
+
+    fn cycle_rival_difficulty(&mut self) {
+        let presets = [(1.0, 1.0, 0.0), (0.5, 1.0, 0.0), (1.5, 1.2, 0.25)];
+        let cur = (
+            self.new_aggression,
+            self.new_efficiency,
+            self.new_starting_bonus,
+        );
+        let idx = presets
+            .iter()
+            .position(|p| *p == cur)
+            .map(|i| (i + 1) % presets.len())
+            .unwrap_or(0);
+        let next = presets[idx];
+        self.new_aggression = next.0;
+        self.new_efficiency = next.1;
+        self.new_starting_bonus = next.2;
+    }
+
+    fn rival_difficulty_label(&self) -> &'static str {
+        match (
+            self.new_aggression,
+            self.new_efficiency,
+            self.new_starting_bonus,
+        ) {
+            (a, e, b)
+                if (a - 1.0).abs() < f64::EPSILON
+                    && (e - 1.0).abs() < f64::EPSILON
+                    && b.abs() < f64::EPSILON =>
+            {
+                "standard"
+            }
+            (a, e, b)
+                if (a - 0.5).abs() < f64::EPSILON
+                    && (e - 1.0).abs() < f64::EPSILON
+                    && b.abs() < f64::EPSILON =>
+            {
+                "calm"
+            }
+            (a, e, b)
+                if (a - 1.5).abs() < f64::EPSILON
+                    && (e - 1.2).abs() < f64::EPSILON
+                    && (b - 0.25).abs() < f64::EPSILON =>
+            {
+                "fierce"
+            }
+            _ => "custom",
+        }
+    }
+
+    fn rival_settings(&self) -> RivalSettings {
+        if !self.new_rivals {
+            return RivalSettings::default();
+        }
+        RivalSettings {
+            enabled: true,
+            tick_secs: self.rival_catalog.tick_secs,
+            aggression: self.new_aggression,
+            efficiency: self.new_efficiency,
+            starting_bonus: self.new_starting_bonus,
+            personalities: self.new_personalities.clone(),
+        }
     }
 
     fn species_unlocked(&self, spec: &SpeciesSpec) -> bool {
@@ -807,15 +962,34 @@ impl Title {
                 } else {
                     species
                 };
+                let rivals = if g.rivals_enabled {
+                    let names: Vec<_> = g
+                        .rival_personalities
+                        .iter()
+                        .map(|id| {
+                            self.rival_catalog
+                                .get(id)
+                                .map(|row| row.name.as_str())
+                                .unwrap_or(id.as_str())
+                        })
+                        .collect();
+                    if names.is_empty() {
+                        "rivals on".to_string()
+                    } else {
+                        format!("rivals {}", names.join(", "))
+                    }
+                } else {
+                    "rivals off".to_string()
+                };
                 match g.galaxy_seed {
                     Some(seed) => format!(
-                        "{kind}  planets {}  fleet {}  {}  {ago}s ago",
+                        "{kind}  planets {}  fleet {}  {}  {rivals}  {ago}s ago",
                         g.planets,
                         g.fleet_strength,
                         encode_galaxy_seed(seed)
                     ),
                     None => format!(
-                        "{kind}  planets {}  fleet {}  {ago}s ago",
+                        "{kind}  planets {}  fleet {}  {rivals}  {ago}s ago",
                         g.planets, g.fleet_strength
                     ),
                 }
@@ -1621,6 +1795,33 @@ impl Title {
                     if self.new_rivals { "on" } else { "off" },
                     self.new_field == NewField::Rivals,
                 ));
+                if self.new_rivals {
+                    for (i, row) in self.rival_catalog.iter().enumerate() {
+                        let mark =
+                            if i == self.new_rival_row && self.new_field == NewField::RivalRoster {
+                                ">"
+                            } else {
+                                " "
+                            };
+                        let on = if self.new_personalities.iter().any(|id| id == &row.id) {
+                            "[x]"
+                        } else {
+                            "[ ]"
+                        };
+                        lines.push(Line::from(format!("{mark} {on} {}", row.name)));
+                    }
+                    lines.push(field_line(
+                        "rival difficulty",
+                        &format!(
+                            "{}  agg {:.1}  eff {:.1}  +{:.2}",
+                            self.rival_difficulty_label(),
+                            self.new_aggression,
+                            self.new_efficiency,
+                            self.new_starting_bonus
+                        ),
+                        self.new_field == NewField::RivalDifficulty,
+                    ));
+                }
                 let summary = self.prestige_summary();
                 if !summary.is_empty() {
                     lines.push(Line::from(summary));
@@ -1922,7 +2123,7 @@ impl Title {
             prestige: self.career.prestige.clone(),
             season_id: self.season_id.clone(),
             species_id: self.selected_species().id.clone(),
-            rivals: self.new_rivals,
+            rivals: self.rival_settings(),
         }
     }
 }
@@ -1935,7 +2136,7 @@ pub struct NewGameSpec {
     pub prestige: Prestige,
     pub season_id: Option<String>,
     pub species_id: String,
-    pub rivals: bool,
+    pub rivals: RivalSettings,
 }
 
 pub fn parse_seed(text: &str) -> Result<Option<u64>, String> {
@@ -2255,8 +2456,8 @@ pub fn research_levels(state: &hoshi_core::GameState) -> u32 {
 mod tests {
     use super::*;
     use hoshi_core::{
-        BalanceConfig, GameState, Prestige, SCHEMA_VERSION, SpeciesCatalog, load_state, lock_save,
-        open_save, save_is_locked, save_state,
+        BalanceConfig, GameState, Prestige, RivalCatalog, RivalSettings, SCHEMA_VERSION,
+        SpeciesCatalog, load_state, lock_save, open_save, save_is_locked, save_state,
     };
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -2363,6 +2564,68 @@ mod tests {
         title.tick();
         let b = render(&title, 80, 24);
         assert_eq!(a, b);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn new_game_keeps_rivals_off_until_toggled() {
+        let dir = unique_dir();
+        let mut title = Title::new(dir.clone(), 100);
+        title.page = Page::New;
+        let text = render(&title, 80, 24);
+        assert!(text.contains("rivals"), "{text}");
+        assert!(text.contains("off"), "{text}");
+        assert!(!text.contains("Greedy Trader"), "{text}");
+        assert!(!title.new_game_spec().rivals.enabled);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn new_game_lists_rival_personalities_from_data_files() {
+        let dir = unique_dir();
+        let mut title = Title::new(dir.clone(), 100);
+        title.page = Page::New;
+        title.new_field = NewField::Rivals;
+        title.handle_key(KeyCode::Char(' '));
+        let text = render(&title, 80, 24);
+        for spec in RivalCatalog::default().iter() {
+            assert!(text.contains(&spec.name), "missing {} in {text}", spec.name);
+        }
+        assert!(text.contains("[x]"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rivals_on_with_zero_personalities_is_refused() {
+        let dir = unique_dir();
+        let mut title = Title::new(dir.clone(), 100);
+        title.page = Page::New;
+        title.new_field = NewField::Rivals;
+        title.handle_key(KeyCode::Char(' '));
+        title.new_personalities.clear();
+        title.new_field = NewField::RivalRoster;
+        let action = title.handle_key(KeyCode::Enter);
+        assert_eq!(action, TitleAction::None);
+        assert!(title.status.contains("personality"), "{}", title.status);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_slot_shows_rival_personalities() {
+        let dir = unique_dir();
+        let mut state = GameState::new(10);
+        state
+            .spawn_rivals(&RivalCatalog::default(), RivalSettings::on())
+            .unwrap();
+        write_save(&dir, "war", &state);
+        let mut title = Title::new(dir.clone(), 20);
+        title.page = Page::Load;
+        let text = render(&title, 80, 24);
+        assert!(text.contains("rivals"), "{text}");
+        assert!(
+            text.contains("Greedy Trader") || text.contains("trader"),
+            "{text}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
