@@ -24,7 +24,7 @@ use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Clear, Paragraph, Wrap};
 use std::cell::Cell;
 
 mod views;
@@ -1419,7 +1419,13 @@ impl App {
         if self.shows_detail_overlay()
             && let Some(detail) = self.current_detail()
         {
-            render_overlay(frame, " detail ", detail_panel::paragraph(&detail));
+            self.dialog(
+                frame,
+                "Detail",
+                String::new(),
+                detail_panel::paragraph(&detail),
+                &[],
+            );
         }
         if self.help_open {
             self.draw_help(frame);
@@ -1542,22 +1548,30 @@ impl App {
             CombatWinner::Defender => "you",
             CombatWinner::Draw => "draw",
         };
+        let t = &self.theme;
+        let most = snap.attacker.total().max(snap.defender.total()).max(1) as f64;
+        let side = |name: &str, n: u32, intent: Intent| {
+            let mut spans = vec![Span::styled(format!("{name:<8}"), t.label())];
+            spans.extend(ui::spans::bar(t, n as f64 / most, 24, intent));
+            spans.push(Span::styled(format!("  {n}"), t.strong()));
+            Line::from(spans)
+        };
         let mut lines = vec![
-            Line::from(format!(
-                "round {}/{}  winner {winner}",
-                snap.round,
-                report.rounds.max(snap.round)
-            )),
-            Line::from(format!(
-                "pirates {}  {}",
-                snap.attacker.total(),
-                fleet_bar(snap.attacker.total())
-            )),
-            Line::from(format!(
-                "you     {}  {}",
-                snap.defender.total(),
-                fleet_bar(snap.defender.total())
-            )),
+            Line::from(vec![
+                Span::styled(
+                    format!("round {}/{}  ", snap.round, report.rounds.max(snap.round)),
+                    t.text(),
+                ),
+                ui::spans::tag(
+                    t,
+                    &format!("WINNER {}", winner.to_uppercase()),
+                    Intent::Primary,
+                    true,
+                ),
+            ]),
+            Line::default(),
+            side("PIRATES", snap.attacker.total(), Intent::Danger),
+            side("YOU", snap.defender.total(), Intent::Success),
         ];
         if snap.shots > 0 {
             lines.push(Line::from(format!(
@@ -1568,41 +1582,80 @@ impl App {
         if let Some(line) = replay.commentary.get(idx).and_then(|s| s.as_deref()) {
             lines.push(Line::from(line.to_string()));
         }
-        lines.push(Line::from(""));
-        lines.push(Line::from(format!(
-            "{} pause  {} step  {} skip",
-            self.keymap.primary(Binding::Toggle),
-            self.keymap.primary(Binding::ReplayStep),
-            self.keymap.primary(Binding::Cancel)
-        )));
-        render_overlay(frame, " combat replay ", lines);
+        self.dialog(
+            frame,
+            "Combat replay",
+            String::new(),
+            lines,
+            &[
+                (self.keymap.primary(Binding::Toggle), "pause"),
+                (self.keymap.primary(Binding::ReplayStep), "step"),
+                (self.keymap.primary(Binding::Cancel), "skip"),
+            ],
+        );
     }
 
     fn draw_away(&self, frame: &mut Frame<'_>, away: &AwaySummary) {
+        let t = &self.theme;
         let mut lines = vec![
-            Line::from(format!("elapsed {}s", away.elapsed_secs)),
-            Line::from(format!(
-                "resources +{:.0} metal +{:.0} crystal +{:.0} deuterium",
-                away.iron, away.silicon, away.deuterium
-            )),
-            Line::from(format!(
-                "builds {}  research {}  fleets returned {}  expeditions {}  raids {}",
-                away.builds, away.research, away.fleets_returned, away.expeditions, away.raids
-            )),
+            Line::from(vec![
+                Span::styled("GAINED  ", t.label()),
+                Span::styled(
+                    format!(
+                        "Fe +{}  Si +{}  D +{}",
+                        ui::spans::compact(away.iron),
+                        ui::spans::compact(away.silicon),
+                        ui::spans::compact(away.deuterium)
+                    ),
+                    t.intent(Intent::Success),
+                ),
+            ]),
+            Line::styled(
+                format!(
+                    "builds {}  research {}  fleets returned {}  expeditions {}  raids {}",
+                    away.builds, away.research, away.fleets_returned, away.expeditions, away.raids
+                ),
+                t.text(),
+            ),
         ];
-        push_away_section(&mut lines, "deliveries", &away.deliveries);
-        push_away_section(&mut lines, "stalls", &away.stalls);
-        push_away_section(&mut lines, "completed", &away.completed);
-        for event in away.events.iter().take(4) {
-            lines.push(Line::from(event.clone()));
+        for (title, items) in [
+            ("deliveries", &away.deliveries),
+            ("stalls", &away.stalls),
+            ("completed", &away.completed),
+        ] {
+            if items.is_empty() {
+                continue;
+            }
+            lines.push(Line::default());
+            lines.push(ui::panels::section(t, title));
+            for item in items.iter().take(4) {
+                lines.push(Line::styled(format!("· {item}"), t.text()));
+            }
+            if items.len() > 4 {
+                lines.push(Line::styled(
+                    format!("+{} more", items.len() - 4),
+                    t.muted(),
+                ));
+            }
         }
-        lines.push(Line::from(format!(
-            "{} dismisses. {} replay. {} on overview reopens.",
-            self.keymap.primary(Binding::Confirm),
-            self.keymap.primary(Binding::Replay),
-            self.keymap.primary(Binding::ShowAway)
-        )));
-        render_overlay(frame, " while you were away ", lines);
+        if !away.events.is_empty() {
+            lines.push(Line::default());
+            lines.push(ui::panels::section(t, "events"));
+            for event in away.events.iter().take(4) {
+                lines.push(Line::styled(event.clone(), t.muted()));
+            }
+        }
+        self.dialog(
+            frame,
+            "While you were away",
+            ui::spans::duration(away.elapsed_secs),
+            lines,
+            &[
+                (self.keymap.primary(Binding::Confirm), "dismiss"),
+                (self.keymap.primary(Binding::Replay), "replay"),
+                (self.keymap.primary(Binding::ShowAway), "reopen on overview"),
+            ],
+        );
     }
 
     fn handle_tactical_key(&mut self, code: KeyCode, now_unix: u64) -> Action {
@@ -1657,30 +1710,39 @@ impl App {
                 adm.name, adm.trait_id, adm.xp
             )));
         }
-        lines.push(Line::from(""));
-        lines.push(Line::from("enter hold   x retreat   space commit"));
-        render_overlay(frame, " tactical ", lines);
+        self.dialog(
+            frame,
+            "Tactical",
+            format!("round {round}"),
+            lines,
+            &[
+                ("⏎".into(), "hold"),
+                ("x".into(), "retreat"),
+                ("space".into(), "commit reserves"),
+            ],
+        );
     }
 
     fn draw_story(&self, frame: &mut Frame<'_>, event: &StoryEvent) {
-        let mut lines = vec![Line::from(event.text.clone()), Line::from("")];
+        let t = &self.theme;
+        let mut lines = vec![Line::styled(event.text.clone(), t.text()), Line::default()];
         for (i, choice) in event.choices.iter().enumerate() {
-            let n = i + 1;
-            let mark = if choice.id == event.timeout_choice {
-                " (default if ignored)"
-            } else {
-                ""
-            };
-            lines.push(Line::from(format!(
-                "{n} {label}{mark}",
-                label = choice.label
-            )));
+            let mut spans = vec![
+                ui::spans::keycap(t, &(i + 1).to_string()),
+                Span::styled(format!(" {}", choice.label), t.strong()),
+            ];
+            if choice.id == event.timeout_choice {
+                spans.push(Span::styled("  default if ignored", t.muted()));
+            }
+            lines.push(Line::from(spans));
         }
-        lines.push(Line::from(""));
-        lines.push(Line::from(
-            "1-9 chooses. Ignored too long uses the default.",
-        ));
-        render_overlay(frame, format!(" {} ", event.title), lines);
+        self.dialog(
+            frame,
+            &event.title,
+            "story".into(),
+            lines,
+            &[("1-9".into(), "chooses; ignored too long uses the default")],
+        );
     }
 
     fn activate(&mut self, now_unix: u64) {
@@ -1962,16 +2024,33 @@ impl App {
             .pending_invasion
             .map(|form| form.dest)
             .unwrap_or(Coord::HOME);
-        let lines = vec![
-            Line::from(format!("Approve invasion of {dest}?")),
-            Line::from("policy invasion-approval"),
-            Line::from("enter grant  x deny"),
-        ];
-        render_overlay(frame, " invasion approval ", lines);
+        let t = &self.theme;
+        let mut lines = vec![Line::styled(
+            format!("Approve invasion of {dest}?"),
+            t.strong(),
+        )];
+        lines.push(Line::default());
+        lines.push(Line::from(vec![
+            Span::styled("▌ ", t.intent(Intent::Warning)),
+            Span::styled("policy invasion-approval", t.muted()),
+        ]));
+        self.dialog(
+            frame,
+            "Invasion approval",
+            String::new(),
+            lines,
+            &[("⏎".into(), "grant"), ("x".into(), "deny")],
+        );
     }
 
     fn draw_dispatch(&self, frame: &mut Frame<'_>, form: &DispatchForm) {
-        render_overlay(frame, " dispatch ", self.dispatch_lines(form));
+        self.dialog(
+            frame,
+            "Dispatch",
+            String::new(),
+            self.dispatch_lines(form),
+            &[],
+        );
     }
 
     fn activate_diplomacy(&mut self, now_unix: u64) {
@@ -2372,7 +2451,18 @@ impl App {
         lines.insert(2, "Fe iron  Si silicon  REE rare earths".into());
         lines.insert(3, "H2O water ice  He3 helium-3  D deuterium".into());
         lines.insert(4, String::new());
-        render_overlay(frame, " help ", lines.into_iter().map(Line::from).collect());
+        let t = &self.theme;
+        let lines = lines
+            .into_iter()
+            .map(|line| Line::styled(line, t.text()))
+            .collect();
+        self.dialog(
+            frame,
+            "Help",
+            String::new(),
+            lines,
+            &[(self.keymap.primary(Binding::Help), "close")],
+        );
     }
 
     fn open_advisor(&mut self) {
@@ -2387,23 +2477,27 @@ impl App {
     }
 
     fn draw_advisor(&self, frame: &mut Frame<'_>) {
+        let t = &self.theme;
         let mut lines = vec![
-            Line::from("advisor (suggestions only; nothing is queued)"),
-            Line::from(""),
+            Line::styled("advisor (suggestions only; nothing is queued)", t.muted()),
+            Line::default(),
         ];
         if self.advisor_lines.is_empty() {
-            lines.push(Line::from("no suggestions"));
-        } else {
-            for (i, text) in self.advisor_lines.iter().enumerate() {
-                lines.push(Line::from(format!("{}. {text}", i + 1)));
-            }
+            lines.push(Line::styled("no suggestions", t.faint()));
         }
-        lines.push(Line::from(""));
-        lines.push(Line::from(format!(
-            "{} closes",
-            self.keymap.primary(Binding::Cancel)
-        )));
-        render_overlay(frame, " advisor ", lines);
+        for text in &self.advisor_lines {
+            lines.push(Line::from(vec![
+                Span::styled("▌ ", t.intent(Intent::Primary)),
+                Span::styled(text.clone(), t.text()),
+            ]));
+        }
+        self.dialog(
+            frame,
+            "Advisor",
+            String::new(),
+            lines,
+            &[(self.keymap.primary(Binding::Cancel), "closes")],
+        );
     }
 
     fn draw_activity(&self, frame: &mut Frame<'_>) {
@@ -2431,14 +2525,23 @@ impl App {
                 )));
             }
         }
-        lines.push(Line::from(""));
-        lines.push(Line::from(format!(
-            "{} closes   {}/{} scroll",
-            self.keymap.primary(Binding::Cancel),
-            self.keymap.primary(Binding::SelectNext),
-            self.keymap.primary(Binding::SelectPrev)
-        )));
-        render_overlay(frame, " activity ", lines);
+        self.dialog(
+            frame,
+            "Activity",
+            String::new(),
+            lines,
+            &[
+                (self.keymap.primary(Binding::Cancel), "closes"),
+                (
+                    format!(
+                        "{}/{}",
+                        self.keymap.primary(Binding::SelectNext),
+                        self.keymap.primary(Binding::SelectPrev)
+                    ),
+                    "scroll",
+                ),
+            ],
+        );
     }
 
     fn planet_info_lines(&self) -> Vec<Line<'static>> {
@@ -2668,15 +2771,30 @@ impl App {
         let Some(record) = &self.state.victory else {
             return;
         };
+        let t = &self.theme;
         let lines = vec![
-            Line::from(format!("Galaxy complete: {}", record.path.label())),
-            Line::from(format!(
-                "+{} prestige in {}s",
-                record.prestige, record.elapsed_secs
-            )),
-            Line::from("Enter keep playing. Prestige screen starts a new galaxy."),
+            Line::styled(
+                format!("Galaxy complete: {}", record.path.label()),
+                t.intent(Intent::Success).add_modifier(Modifier::BOLD),
+            ),
+            Line::styled(
+                format!(
+                    "+{} prestige in {}",
+                    record.prestige,
+                    ui::spans::duration(record.elapsed_secs)
+                ),
+                t.text(),
+            ),
+            Line::default(),
+            Line::styled("The prestige screen starts a new galaxy.", t.muted()),
         ];
-        render_overlay(frame, " victory ", lines);
+        self.dialog(
+            frame,
+            "Victory",
+            String::new(),
+            lines,
+            &[(self.keymap.primary(Binding::Confirm), "keep playing")],
+        );
     }
 
     fn record_production_sample(&mut self) {
@@ -2925,7 +3043,13 @@ impl App {
 
     fn draw_history_overlay(&self, frame: &mut Frame<'_>) {
         let Some(event) = self.selected_history() else {
-            render_overlay(frame, " history ", vec![Line::from("no event selected")]);
+            self.dialog(
+                frame,
+                "History",
+                String::new(),
+                vec![Line::from("no event selected")],
+                &[],
+            );
             return;
         };
         match self.history_pane {
@@ -2947,7 +3071,7 @@ impl App {
                     "{} closes",
                     self.keymap.primary(Binding::Cancel)
                 )));
-                render_overlay(frame, " lineage ", lines);
+                self.dialog(frame, "Lineage", String::new(), lines, &[]);
             }
             HistoryPane::AsOf => {
                 let snap = self.state.history.as_of(event.at);
@@ -2970,7 +3094,7 @@ impl App {
                     "{} closes",
                     self.keymap.primary(Binding::Cancel)
                 )));
-                render_overlay(frame, " time travel ", lines);
+                self.dialog(frame, "Time travel", String::new(), lines, &[]);
             }
         }
     }
@@ -2984,7 +3108,7 @@ impl App {
             Some(report) => report_overlay_lines(report, self.state.last_tick_unix),
             None => vec![Line::from("no spy report for this outpost")],
         };
-        render_overlay(frame, title, lines);
+        self.dialog(frame, title.trim(), String::new(), lines, &[]);
     }
 }
 
@@ -3030,20 +3154,6 @@ fn waste_detail_line(
     line
 }
 
-fn fleet_bar(n: u32) -> String {
-    "*".repeat(n.min(40) as usize)
-}
-
-fn push_away_section(lines: &mut Vec<Line<'static>>, title: &str, items: &[String]) {
-    if items.is_empty() {
-        return;
-    }
-    lines.push(Line::from(format!("{title}:")));
-    for item in items.iter().take(3) {
-        lines.push(Line::from(item.clone()));
-    }
-}
-
 fn pad_x(area: Rect, n: u16) -> Rect {
     Rect {
         x: area.x + n.min(area.width),
@@ -3070,21 +3180,12 @@ fn detail_column_width(total: u16) -> u16 {
     (total * 7 / 20).clamp(30, 56).min(total.saturating_sub(10))
 }
 
-fn render_overlay(frame: &mut Frame<'_>, title: impl Into<String>, lines: Vec<Line<'static>>) {
-    let area = frame.area();
-    frame.render_widget(Clear, area);
-    let block = Block::bordered().title(title.into());
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    frame.render_widget(Paragraph::new(lines), inner);
-}
-
 fn report_overlay_lines(report: &SpyReport, now: u64) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(format!(
-            "{}  age {}s  score {:.0}",
+            "{}  age {}  score {:.0}",
             report.tier,
-            report.age_secs(now),
+            ui::spans::duration(report.age_secs(now)),
             report.score
         )),
         Line::from(format!(
@@ -3229,6 +3330,24 @@ mod tests {
         lines.join("\n")
     }
 
+    /// True when `needle` is on screen and its first cell sits on the dimmed backdrop.
+    fn text_is_dimmed(app: &App, width: u16, height: u16, needle: &str) -> bool {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let buf = terminal.backend().buffer();
+        let dimmed = app.theme.surface(Surface::Dimmed).bg;
+        for y in 0..buf.area.height {
+            let cells: Vec<_> = (0..buf.area.width).map(|x| &buf[(x, y)]).collect();
+            let row: String = cells.iter().map(|c| c.symbol()).collect();
+            if let Some(at) = row.find(needle) {
+                let col = row[..at].chars().count();
+                return cells[col].bg == dimmed.unwrap_or_default();
+            }
+        }
+        false
+    }
+
     fn line_is_dim(backend: &TestBackend, needle: &str) -> bool {
         let buf = backend.buffer();
         let area = buf.area();
@@ -3260,8 +3379,8 @@ mod tests {
             ..crate::title::AwaySummary::default()
         });
         let text = render_text(&app, 80, 24);
-        assert!(text.contains("while you were away"), "{text}");
-        assert!(text.contains("elapsed 120s"), "{text}");
+        assert!(text.contains("While you were away"), "{text}");
+        assert!(text.contains("2m 00s"), "{text}");
         assert!(
             !text.contains("Armour Technology"),
             "away overlay left the research list visible:\n{text}"
@@ -3271,7 +3390,7 @@ mod tests {
         assert!(!text.contains("while you were away"), "{text}");
         app.handle_key(KeyCode::Char('w'), 1_000);
         let text = render_text(&app, 80, 24);
-        assert!(text.contains("while you were away"), "{text}");
+        assert!(text.contains("While you were away"), "{text}");
     }
 
     #[test]
@@ -3285,11 +3404,11 @@ mod tests {
             ..AwaySummary::default()
         });
         let text = render_text(&app, 80, 24);
-        assert!(text.contains("deliveries:"), "{text}");
+        assert!(text.contains("DELIVERIES"), "{text}");
         assert!(text.contains("delivered 100 metal to 1:1:2"), "{text}");
-        assert!(text.contains("stalls:"), "{text}");
+        assert!(text.contains("STALLS"), "{text}");
         assert!(text.contains("stall: energy deficit at 1:1:1"), "{text}");
-        assert!(text.contains("completed:"), "{text}");
+        assert!(text.contains("COMPLETED"), "{text}");
         assert!(text.contains("metal mine lv 2"), "{text}");
     }
 
@@ -3466,9 +3585,9 @@ mod tests {
         app.handle_key(KeyCode::Char('r'), 1_000);
         assert!(app.replay_active());
         let text = render_text(&app, 80, 24);
-        assert!(text.contains("combat replay"), "{text}");
-        assert!(text.contains("pirates"), "{text}");
-        assert!(text.contains("you"), "{text}");
+        assert!(text.contains("Combat replay"), "{text}");
+        assert!(text.contains("PIRATES"), "{text}");
+        assert!(text.contains("YOU"), "{text}");
         app.handle_key(KeyCode::Char('n'), 1_000);
         let text = render_text(&app, 80, 24);
         assert!(text.contains("round"), "{text}");
@@ -3524,7 +3643,7 @@ mod tests {
         };
         app.replay.as_mut().unwrap().frame = last;
         let text = render_text(&app, 80, 24);
-        assert!(text.contains("combat replay"), "{text}");
+        assert!(text.contains("Combat replay"), "{text}");
         assert!(text.contains(&line), "{text}");
     }
 
@@ -4173,9 +4292,9 @@ mod tests {
             kept_playing: false,
         });
         let text = render_text(&app, 80, 24);
-        assert!(text.contains("victory"), "{text}");
+        assert!(text.contains("Victory"), "{text}");
         assert!(text.contains("wonder"), "{text}");
-        assert!(!text.contains("Colony / Research"), "{text}");
+        assert!(text_is_dimmed(&app, 80, 24, "Colony / Research"), "{text}");
         app.handle_key(KeyCode::Enter, 1_000);
         assert!(app.state.victory.as_ref().unwrap().kept_playing);
         let after = render_text(&app, 80, 24);
@@ -4243,16 +4362,17 @@ mod tests {
         assert!(text.contains("Burn through"), "{text}");
         assert!(text.contains("Wait it out"), "{text}");
         assert!(
-            !text.contains("Colony / Research"),
-            "overlay left the screen chrome visible:\n{text}"
+            text_is_dimmed(&app, 80, 24, "Colony / Research"),
+            "overlay left the screen chrome undimmed:\n{text}"
         );
         assert!(
-            !text.contains("Armour Technology"),
-            "overlay left the research list visible:\n{text}"
+            !text.contains("Armour Technology")
+                || text_is_dimmed(&app, 80, 24, "Armour Technology"),
+            "overlay left the research list undimmed:\n{text}"
         );
         assert!(
-            !text.contains("REE"),
-            "overlay left resource lines visible:\n{text}"
+            text_is_dimmed(&app, 80, 24, "REE"),
+            "overlay left resource lines undimmed:\n{text}"
         );
         app.handle_key(KeyCode::Char('2'), 1_000);
         assert!(app.state.story_pending.is_none());
@@ -4453,8 +4573,8 @@ mod tests {
         let text = render_text(&app, 100, 32);
         assert!(text.contains(&format!("spy {dest}")), "{text}");
         assert!(
-            !text.contains("Fleet / Intel"),
-            "spy overlay left the reports chrome visible:\n{text}"
+            text_is_dimmed(&app, 100, 32, "Fleet / Intel"),
+            "spy overlay left the reports chrome undimmed:\n{text}"
         );
         assert!(text.contains("detected yes"), "{text}");
         assert!(text.contains("lost 1/3"), "{text}");
@@ -4627,8 +4747,8 @@ mod tests {
         assert!(overlay.contains("pick ships"), "{overlay}");
         assert!(overlay.contains("Small cargo"), "{overlay}");
         assert!(
-            !overlay.contains("Fleet / Star map"),
-            "dispatch overlay left the map chrome visible:\n{overlay}"
+            text_is_dimmed(&app, 100, 32, "Fleet / Star map"),
+            "dispatch overlay left the map chrome undimmed:\n{overlay}"
         );
         app.handle_key(KeyCode::Char('+'), 1_000);
         let preview = render_text(&app, 100, 32);
@@ -4695,7 +4815,7 @@ mod tests {
         app.handle_key(KeyCode::Char('+'), 1_000);
         app.handle_key(KeyCode::Enter, 1_000);
         let overlay = render_text(&app, 100, 32);
-        assert!(overlay.contains("invasion approval"), "{overlay}");
+        assert!(overlay.contains("Invasion approval"), "{overlay}");
         assert!(overlay.contains("invasion-approval"), "{overlay}");
         assert_eq!(app.state.missions.len(), 0);
         app.handle_key(KeyCode::Char('x'), 1_000);
@@ -4807,8 +4927,8 @@ mod tests {
         let panel = render_text(&app, 80, 24);
         assert!(panel.contains("suggestions only"), "{panel}");
         assert!(
-            !panel.contains("Bridge / Daily"),
-            "advisor overlay left the chrome visible:\n{panel}"
+            text_is_dimmed(&app, 80, 24, "Bridge / Daily"),
+            "advisor overlay left the chrome undimmed:\n{panel}"
         );
         assert_eq!(app.state, before);
     }
@@ -4831,8 +4951,8 @@ mod tests {
         assert!(panel.contains("activity"), "{panel}");
         assert!(panel.contains("github"), "{panel}");
         assert!(
-            !panel.contains("Colony / Research"),
-            "activity overlay left the chrome visible:\n{panel}"
+            text_is_dimmed(&app, 80, 24, "Colony / Research"),
+            "activity overlay left the chrome undimmed:\n{panel}"
         );
     }
 
@@ -5045,7 +5165,7 @@ mod tests {
         assert!(!hidden.contains("energy draw"), "{hidden}");
         app.handle_key(KeyCode::Char('d'), 1_000);
         let text = render_text(&app, 80, 24);
-        assert!(text.contains("detail"), "{text}");
+        assert!(text.contains("Detail"), "{text}");
         assert!(text.contains("metal mine"), "{text}");
         app.handle_key(KeyCode::Char('d'), 1_000);
         let closed = render_text(&app, 80, 24);
