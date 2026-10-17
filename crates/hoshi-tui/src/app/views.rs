@@ -213,6 +213,7 @@ impl App {
             Screen::Finance => self.finance_view(),
             Screen::Kpis => self.kpi_view(),
             Screen::Incidents => self.incident_view(),
+            Screen::Maintenance => self.maintenance_view(),
             Screen::Map => self.map_view(),
             Screen::Cockpit => ListView::default(),
         }
@@ -1956,6 +1957,138 @@ impl App {
                     Column::left("status", 12),
                     Column::left("owner", 12),
                     Column::right("ev", 3),
+                ],
+                rows,
+                groups: Vec::new(),
+                selected: Some(self.selected),
+            }),
+            foot,
+            ..ListView::default()
+        }
+    }
+
+    fn maintenance_view(&self) -> ListView {
+        let t = &self.theme;
+        let now = self.state.last_tick_unix;
+        let snap = self.state.maintenance_snapshot();
+        let cfg = self.state.maintenance_config();
+        let mut head = vec![self.props(&[
+            ("assets", snap.assets.len().to_string()),
+            ("orders", snap.orders.len().to_string()),
+            ("readings", snap.readings.len().to_string()),
+            ("telemetry", duration(snap.next_at.saturating_sub(now))),
+        ])];
+        let mut foot = Vec::new();
+        if snap.assets.is_empty() {
+            head.push(Line::default());
+            head.extend(callout_lines(
+                t,
+                Intent::Neutral,
+                "No assets yet",
+                "Mines, defences and vehicles appear here as they come online.",
+            ));
+            return ListView {
+                head,
+                foot,
+                ..ListView::default()
+            };
+        }
+        if let Some(asset) = snap.assets.get(self.selected) {
+            if let Some(pred) = snap
+                .predictions
+                .iter()
+                .rev()
+                .find(|p| p.asset_id == asset.id)
+            {
+                foot.push(Line::styled(
+                    format!(
+                        "fail p {:.3} over {}",
+                        pred.probability,
+                        duration(pred.horizon_secs)
+                    ),
+                    t.muted(),
+                ));
+            } else {
+                let p = hoshi_core::predict_failure(
+                    &cfg,
+                    hoshi_core::fail_p_per_hour(&cfg, asset.hours_use, asset.condition, false),
+                );
+                foot.push(Line::styled(
+                    format!("fail p {p:.3} over {}", duration(cfg.horizon_secs)),
+                    t.muted(),
+                ));
+            }
+            if let Some(reading) = snap.readings.iter().rev().find(|r| r.asset_id == asset.id) {
+                foot.push(Line::styled(
+                    format!(
+                        "temp {:.2}  vib {:.2}  power {:.2}",
+                        reading.temperature, reading.vibration, reading.power
+                    ),
+                    t.muted(),
+                ));
+            }
+            for order in snap
+                .orders
+                .iter()
+                .filter(|o| o.asset_id == asset.id)
+                .take(2)
+            {
+                foot.push(Line::styled(
+                    format!(
+                        "order #{} {} ends {}",
+                        order.id,
+                        humanize(order.kind.as_key()),
+                        duration(order.ends_at.saturating_sub(now))
+                    ),
+                    t.muted(),
+                ));
+            }
+        }
+        let rows = snap
+            .assets
+            .iter()
+            .map(|asset| {
+                let cond_intent = if asset.condition < 0.35 {
+                    Intent::Danger
+                } else if asset.condition < 0.7 {
+                    Intent::Warning
+                } else {
+                    Intent::Success
+                };
+                let order = snap.orders.iter().find(|o| o.asset_id == asset.id);
+                let status = match (order, asset.offline_until) {
+                    (Some(order), _) => format!(
+                        "offline {}",
+                        duration(order.ends_at.saturating_sub(now).max(1))
+                    ),
+                    (_, Some(until)) if until > now => {
+                        format!("offline {}", duration(until.saturating_sub(now)))
+                    }
+                    _ => "online".into(),
+                };
+                let status_intent = if status == "online" {
+                    Intent::Success
+                } else {
+                    Intent::Warning
+                };
+                vec![
+                    Line::styled(format!("#{}", asset.id), t.label()),
+                    Line::styled(asset.key.clone(), t.text()),
+                    Line::styled(format!("{:.2}", asset.condition), t.intent(cond_intent)),
+                    Line::styled(format!("{:.1}", asset.hours_use), t.muted()),
+                    self.chip(&status, status_intent, status == "online"),
+                ]
+            })
+            .collect();
+        ListView {
+            head,
+            table: Some(TableView {
+                columns: vec![
+                    Column::right("id", 4),
+                    Column::left("asset", 16),
+                    Column::right("cond", 5),
+                    Column::right("hours", 6),
+                    Column::fill("status"),
                 ],
                 rows,
                 groups: Vec::new(),

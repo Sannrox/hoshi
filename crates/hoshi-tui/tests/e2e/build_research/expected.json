@@ -170,6 +170,11 @@
       "xp": 0
     }
   ],
+  "maintenance": {
+    "assets": 4,
+    "orders": 0,
+    "readings": 0
+  },
   "missions": [],
   "moons": [],
   "now": 600,
@@ -307,7 +312,7 @@
     "empires": [],
     "enabled": false
   },
-  "save_schema": 43,
+  "save_schema": 44,
   "schema_version": 2,
   "season": null,
   "species": null,

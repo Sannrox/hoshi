@@ -103,11 +103,11 @@
     },
     {
       "at": 32400,
-      "text": "raid: pirates 900 light fighter vs 5 light fighter. 1 rounds. lost 5 light fighter. pirates lost none. plunder Fe534 Si356 D2500. winner attacker"
+      "text": "raid: pirates 900 light fighter vs 5 light fighter. 1 rounds. lost 5 light fighter. pirates lost none. plunder Fe533 Si356 D2500. winner attacker"
     }
   ],
   "finance": {
-    "cash": 790.902867553384,
+    "cash": 790.0540309788805,
     "debt": 0.0,
     "pending": 0
   },
@@ -182,6 +182,11 @@
       "xp": 0
     }
   ],
+  "maintenance": {
+    "assets": 3,
+    "orders": 0,
+    "readings": 36
+  },
   "missions": [],
   "moons": [
     {
@@ -274,9 +279,9 @@
   "rates": {
     "deuterium": 0.0,
     "helium_3": 0.0,
-    "iron": 33.0,
-    "rare_earths": 2.4829039272702857,
-    "silicon": 22.0,
+    "iron": 32.92277999999999,
+    "rare_earths": 2.4770939320804786,
+    "silicon": 21.948519999999974,
     "water_ice": 0.0
   },
   "research": {
@@ -317,16 +322,16 @@
   "resources": {
     "deuterium": 2500.0,
     "helium_3": 0.0,
-    "iron": 632.5,
-    "rare_earths": 54.79484712724343,
-    "silicon": 421.74999999999994,
+    "iron": 632.19112,
+    "rare_earths": 54.762892153699454,
+    "silicon": 421.54408000000006,
     "water_ice": 0.0
   },
   "rivals": {
     "empires": [],
     "enabled": false
   },
-  "save_schema": 43,
+  "save_schema": 44,
   "schema_version": 2,
   "season": null,
   "species": null,

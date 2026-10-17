@@ -184,7 +184,9 @@ pub fn dest_of(intent: &Intent) -> Option<Coord> {
         | Intent::OpenIncident { .. }
         | Intent::AssignIncident { .. }
         | Intent::ResolveIncident { .. }
-        | Intent::ReviewIncident { .. } => None,
+        | Intent::ReviewIncident { .. }
+        | Intent::ScheduleMaintenance { .. }
+        | Intent::CompleteWorkOrder { .. } => None,
     }
 }
 
@@ -245,7 +247,12 @@ pub fn spend_of(state: &GameState, intent: &Intent, _now: u64) -> f64 {
         | Intent::OpenIncident { .. }
         | Intent::AssignIncident { .. }
         | Intent::ResolveIncident { .. }
-        | Intent::ReviewIncident { .. } => 0.0,
+        | Intent::ReviewIncident { .. }
+        | Intent::CompleteWorkOrder { .. } => 0.0,
+        Intent::ScheduleMaintenance { .. } => {
+            let cfg = state.maintenance_config();
+            cfg.iron_cost + cfg.silicon_cost
+        }
         Intent::RequestSpend { amount, .. } => *amount,
     }
 }
