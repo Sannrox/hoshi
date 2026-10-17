@@ -46,6 +46,7 @@ mod rivals;
 mod save;
 mod season;
 mod self_play;
+mod shard;
 mod ships;
 mod simulate;
 mod species;
@@ -223,6 +224,7 @@ pub use season::{
 pub use self_play::{
     SelfPlayCell, SelfPlayConfig, SelfPlayReport, path_bot_relpaths, run_self_play,
 };
+pub use shard::{ShardCommand, ShardConfig, ShardError, ShardSession, SignedBridgeEvent};
 pub use ships::{
     Fleet, SHIP_KINDS, ShipCatalog, ShipCatalogError, ShipError, ShipJob, ShipKind, ShipSpec,
     ShipStats,
