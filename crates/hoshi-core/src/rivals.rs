@@ -4,6 +4,10 @@ use crate::buildings::{BuildJob, BuildingKind, Buildings};
 use crate::combat::{next_u64, plunder_from, rapid_fire_table, resolve_combat, stats_from_catalog};
 use crate::espionage::{reveals, spy_score, spy_tier};
 use crate::fleets::Coord;
+use crate::intel::{
+    apply_amount_error, intel_confidence, light_delay_secs, light_range_au, noisy_fleet,
+    sensor_error, signed_unit,
+};
 use crate::intent::{Intent, apply, propose};
 use crate::leaders::Actor;
 use crate::market::{OrderSide, TraderId};
@@ -128,6 +132,23 @@ pub struct RivalIntel {
     pub resources: Option<Resources>,
     pub fleet: Option<Fleet>,
     pub buildings: Option<Buildings>,
+    pub source: String,
+    pub observed_at: u64,
+    pub age_secs: u64,
+    pub confidence: f64,
+}
+
+/// Sticky sample key: one draw per empire per hour of observed time.
+fn rival_sample_rng(galaxy_seed: u64, observed_at: u64, row: &RivalEmpire) -> u64 {
+    let bucket = observed_at / 3600;
+    let mut rng =
+        galaxy_seed ^ bucket ^ (u64::from(row.home.system) << 16) ^ u64::from(row.home.position);
+    for b in row.id.as_bytes() {
+        rng = rng
+            .wrapping_mul(1_099_511_628_211)
+            .wrapping_add(u64::from(*b));
+    }
+    rng
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -388,6 +409,8 @@ impl GameState {
         let tier = spy_tier(score, &self.config.espionage)
             .map(|t| t.id.as_str())
             .unwrap_or("activity");
+        let now = self.last_tick_unix;
+        let quality = 1.0 + own;
         self.rivals
             .empires
             .iter()
@@ -396,17 +419,69 @@ impl GameState {
                     .get(&row.personality)
                     .map(|s| s.name.clone())
                     .unwrap_or_else(|| row.personality.clone());
+                let range = light_range_au(self.home, row.home, &self.config.orbits);
+                let delay = light_delay_secs(self.home, row.home, &self.config.orbits);
+                let error = sensor_error(range, quality, &self.config.espionage);
+                let observed_at = now.saturating_sub(delay);
+                let confidence = intel_confidence(error, delay, false, &self.config.espionage);
+                let mut rng = rival_sample_rng(self.galaxy_seed, observed_at, row);
+                let resources = reveals(tier, "resources", &self.config.espionage).then(|| {
+                    let r = row.resources;
+                    Resources {
+                        iron: apply_amount_error(r.iron, error, signed_unit(&mut rng), false, 0.0),
+                        silicon: apply_amount_error(
+                            r.silicon,
+                            error,
+                            signed_unit(&mut rng),
+                            false,
+                            0.0,
+                        ),
+                        rare_earths: apply_amount_error(
+                            r.rare_earths,
+                            error,
+                            signed_unit(&mut rng),
+                            false,
+                            0.0,
+                        ),
+                        water_ice: apply_amount_error(
+                            r.water_ice,
+                            error,
+                            signed_unit(&mut rng),
+                            false,
+                            0.0,
+                        ),
+                        helium_3: apply_amount_error(
+                            r.helium_3,
+                            error,
+                            signed_unit(&mut rng),
+                            false,
+                            0.0,
+                        ),
+                        deuterium: apply_amount_error(
+                            r.deuterium,
+                            error,
+                            signed_unit(&mut rng),
+                            false,
+                            0.0,
+                        ),
+                    }
+                });
+                let fleet = reveals(tier, "fleet", &self.config.espionage)
+                    .then(|| noisy_fleet(row.fleet, error, false, 0.0, &mut rng));
                 RivalIntel {
                     id: row.id.clone(),
                     personality: row.personality.clone(),
                     name,
                     home: row.home,
                     last_action: row.last_action.clone(),
-                    resources: reveals(tier, "resources", &self.config.espionage)
-                        .then_some(row.resources),
-                    fleet: reveals(tier, "fleet", &self.config.espionage).then_some(row.fleet),
+                    resources,
+                    fleet,
                     buildings: reveals(tier, "defences", &self.config.espionage)
                         .then_some(row.buildings),
+                    source: "sensor".into(),
+                    observed_at,
+                    age_secs: delay,
+                    confidence,
                 }
             })
             .collect()
@@ -852,6 +927,20 @@ mod tests {
         state.tech_levels.insert("espionage".into(), 8);
         let intel = state.rival_intel();
         assert!(intel.iter().any(|row| row.resources.is_some()));
+    }
+
+    #[test]
+    fn rival_sensor_noise_is_stable_inside_an_hour() {
+        let mut state = spawn_on(quiet(1_000_000), 60);
+        state.tech_levels.insert("espionage".into(), 8);
+        let first = state.rival_intel();
+        state.last_tick_unix += 1;
+        let second = state.rival_intel();
+        assert_eq!(first[0].resources, second[0].resources);
+        assert_eq!(first[0].fleet, second[0].fleet);
+        state.last_tick_unix += 3600;
+        let third = state.rival_intel();
+        assert_ne!(first[0].resources, third[0].resources);
     }
 
     #[test]

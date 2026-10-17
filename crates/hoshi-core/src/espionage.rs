@@ -27,6 +27,14 @@ pub struct EspionageConfig {
     pub detect_per_level: f64,
     /// Per-probe destruction chance after a detection.
     pub destroy_chance: f64,
+    /// Additive measurement error at zero range.
+    pub error_base: f64,
+    /// Extra error per AU of radial range, divided by sensor quality.
+    pub error_per_au: f64,
+    /// Confidence spent per hour of age after the observation.
+    pub age_penalty_per_hour: f64,
+    /// Systematic count bias applied when a probe is detected and fed false data.
+    pub decoy_bias: f64,
     pub tiers: Vec<EspionageTier>,
 }
 
@@ -40,6 +48,10 @@ impl Default for EspionageConfig {
             detect_per_probe: 0.08,
             detect_per_level: 0.12,
             destroy_chance: 0.5,
+            error_base: 0.02,
+            error_per_au: 0.01,
+            age_penalty_per_hour: 0.02,
+            decoy_bias: 0.35,
             tiers: vec![
                 EspionageTier {
                     id: "activity".into(),
@@ -85,11 +97,23 @@ pub struct SpyReport {
     pub size: Option<u8>,
     pub formation: Option<String>,
     pub stance: Option<String>,
+    /// `probe` for a spy wave; `sensor` for a passive rival glance.
+    pub source: String,
+    pub observed_at: u64,
+    /// Unix time the reading becomes visible at home (observed_at plus light delay).
+    pub arrives_at: u64,
+    pub confidence: f64,
+    /// Internal: the snapshot was biased after detection. CLI/TUI never print this flag.
+    pub deceived: bool,
 }
 
 impl SpyReport {
     pub fn age_secs(&self, now: u64) -> u64 {
-        now.saturating_sub(self.created_at)
+        now.saturating_sub(self.observed_at)
+    }
+
+    pub fn delivered(&self, now: u64) -> bool {
+        now >= self.arrives_at
     }
 }
 

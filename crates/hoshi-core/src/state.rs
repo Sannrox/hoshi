@@ -17,6 +17,10 @@ use crate::expedition::{ExpeditionResult, roll_expedition};
 use crate::fleets::{
     Coord, FleetError, Mission, MissionPhase, TradeRoute, distance, flight_secs, fuel_cost,
 };
+use crate::intel::{
+    intel_confidence, light_delay_secs, light_range_au, noisy_fleet, noisy_resources, sensor_error,
+    signed_unit,
+};
 use crate::outposts::{
     Outpost, RarePlanetBonus, generate_outposts, scaled_defence, scaled_garrison,
 };
@@ -686,7 +690,10 @@ impl GameState {
                                                             self.next_kpi_event(),
                                                             min_time(
                                                                 self.next_incident_event(),
-                                                                self.next_maintenance_event(),
+                                                                min_time(
+                                                                    self.next_maintenance_event(),
+                                                                    self.next_intel_at(),
+                                                                ),
                                                             ),
                                                         ),
                                                     ),
@@ -701,6 +708,7 @@ impl GameState {
                 ),
             ) else {
                 self.produce_until(now_unix);
+                self.deliver_spy_reports_at(now_unix);
                 self.apply_laws_at(now_unix);
                 self.apply_automation_at(now_unix);
                 self.apply_finance_at(now_unix);
@@ -718,6 +726,7 @@ impl GameState {
             };
             if done_at > now_unix {
                 self.produce_until(now_unix);
+                self.deliver_spy_reports_at(now_unix);
                 self.apply_laws_at(now_unix);
                 self.apply_automation_at(now_unix);
                 self.apply_finance_at(now_unix);
@@ -734,6 +743,7 @@ impl GameState {
                 return;
             }
             self.produce_until(done_at);
+            self.deliver_spy_reports_at(done_at);
             self.apply_laws_at(done_at);
             self.apply_automation_at(done_at);
             self.apply_finance_at(done_at);
@@ -2619,8 +2629,15 @@ impl GameState {
     pub fn latest_report(&self, coord: Coord) -> Option<&SpyReport> {
         self.spy_reports
             .iter()
-            .filter(|r| r.target == coord)
-            .max_by_key(|r| (r.created_at, r.id))
+            .filter(|r| r.target == coord && r.delivered(self.last_tick_unix))
+            .max_by_key(|r| (r.observed_at, r.id))
+    }
+
+    pub fn reports_for(&self, coord: Coord) -> Vec<&SpyReport> {
+        self.spy_reports
+            .iter()
+            .filter(|r| r.target == coord && r.delivered(self.last_tick_unix))
+            .collect()
     }
 
     pub fn outpost(&self, coord: Coord) -> Option<&Outpost> {
@@ -3851,10 +3868,47 @@ impl GameState {
             ),
             None => (None, None, Fleet::default(), None),
         };
-        let resources = show_resources.then_some(Resources::ZERO);
-        let fleet = show_fleet.then_some(Fleet::default());
-        let defences = show_defences.then_some(defences);
-        let garrison = if show_garrison { garrison } else { None };
+        let delay = light_delay_secs(self.home, dest, &self.config.orbits);
+        let quality = 1.0 + own;
+        let range = light_range_au(self.home, dest, &self.config.orbits);
+        let error = sensor_error(range, quality, &self.config.espionage);
+        let deceived = outcome.detected;
+        let decoy = self.config.espionage.decoy_bias;
+        let resources = show_resources.then_some(noisy_resources(
+            Resources::ZERO,
+            error,
+            deceived,
+            decoy,
+            &mut self.rng_seed,
+        ));
+        let fleet = show_fleet.then_some(noisy_fleet(
+            Fleet::default(),
+            error,
+            deceived,
+            decoy,
+            &mut self.rng_seed,
+        ));
+        let defences = show_defences.then_some(noisy_fleet(
+            defences,
+            error,
+            deceived,
+            decoy,
+            &mut self.rng_seed,
+        ));
+        let garrison = if show_garrison {
+            garrison.map(|n| {
+                crate::intel::apply_count_error(
+                    n,
+                    error,
+                    signed_unit(&mut self.rng_seed),
+                    deceived,
+                    decoy,
+                )
+            })
+        } else {
+            None
+        };
+        let confidence = intel_confidence(error, 0, outcome.detected, &self.config.espionage);
         let id = self.next_report_id;
         self.next_report_id = self.next_report_id.saturating_add(1);
         self.spy_reports.push(SpyReport {
@@ -3882,9 +3936,12 @@ impl GameState {
             } else {
                 None
             },
+            source: "probe".into(),
+            observed_at: done_at,
+            arrives_at: done_at.saturating_add(delay),
+            confidence,
+            deceived,
         });
-        self.maybe_leak_spy(done_at, outcome.detected);
-        self.push_event(done_at, format_spy_report(&outcome, dest, probes));
         self.missions[index]
             .ships
             .saturating_sub(ShipKind::EspionageProbe, outcome.probes_lost);
@@ -4465,9 +4522,56 @@ impl GameState {
 
     pub(crate) fn push_event(&mut self, at: u64, text: String) {
         self.events.push(GameEvent { at, text });
-        if self.events.len() > EVENT_LOG_CAP {
-            let drop = self.events.len() - EVENT_LOG_CAP;
-            self.events.drain(..drop);
+        self.trim_event_log();
+    }
+
+    /// Cap delivered lines at `EVENT_LOG_CAP`. Pending (future `at`) spy lines
+    /// stay until the clock reaches them, then they compete with the rest.
+    fn trim_event_log(&mut self) {
+        let now = self.last_tick_unix;
+        let delivered = self.events.iter().filter(|event| event.at <= now).count();
+        if delivered <= EVENT_LOG_CAP {
+            return;
+        }
+        let drop = delivered - EVENT_LOG_CAP;
+        let mut removed = 0;
+        self.events.retain(|event| {
+            if removed < drop && event.at <= now {
+                removed += 1;
+                false
+            } else {
+                true
+            }
+        });
+    }
+
+    fn next_intel_at(&self) -> Option<u64> {
+        self.spy_reports
+            .iter()
+            .map(|report| report.arrives_at)
+            .filter(|&at| at > self.last_tick_unix)
+            .min()
+    }
+
+    /// Write the spy log line (and a detection leak) when light-time elapses.
+    fn deliver_spy_reports_at(&mut self, now: u64) {
+        let due: Vec<SpyReport> = self
+            .spy_reports
+            .iter()
+            .filter(|report| report.arrives_at == now)
+            .cloned()
+            .collect();
+        for report in due {
+            let text = spy_event_text(&report);
+            if self
+                .events
+                .iter()
+                .any(|event| event.at == now && event.text == text)
+            {
+                continue;
+            }
+            self.maybe_leak_spy(now, report.detected);
+            self.push_event(now, text);
         }
     }
 
@@ -5510,6 +5614,7 @@ impl GameState {
         self.accrue_production_income(hours, produced);
         self.tick_flagship(now_unix);
         self.last_tick_unix = now_unix;
+        self.trim_event_log();
         self.sync_daily(now_unix);
     }
 
@@ -6288,11 +6393,11 @@ fn fleet_losses(before: Fleet, after: Fleet) -> Fleet {
     lost
 }
 
-fn format_spy_report(outcome: &crate::SpyOutcome, dest: Coord, sent: u32) -> String {
-    let detected = if outcome.detected { "yes" } else { "no" };
+fn spy_event_text(report: &SpyReport) -> String {
+    let detected = if report.detected { "yes" } else { "no" };
     format!(
-        "outpost {dest}: spy. score {:.0} {}. detected {detected}. lost {}/{sent}",
-        outcome.score, outcome.tier, outcome.probes_lost
+        "outpost {}: spy. score {:.0} {}. detected {detected}. lost {}/{}",
+        report.target, report.score, report.tier, report.probes_lost, report.probes_sent
     )
 }
 
@@ -9292,6 +9397,18 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         assert!(state.missions.is_empty());
     }
 
+    fn deliver_intel(state: &mut GameState) {
+        let until = state
+            .spy_reports
+            .iter()
+            .map(|r| r.arrives_at)
+            .max()
+            .unwrap_or(state.last_tick_unix);
+        if until > state.last_tick_unix {
+            state.catch_up(until);
+        }
+    }
+
     #[test]
     fn invasion_is_refused_while_defences_remain() {
         let mut state = GameState::with_config(0, outpost_config());
@@ -9319,6 +9436,9 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         cfg.espionage.destroy_chance = 0.0;
         cfg.espionage.detect_base = 0.0;
         cfg.espionage.detect_per_probe = 0.0;
+        cfg.espionage.error_base = 0.0;
+        cfg.espionage.error_per_au = 0.0;
+        cfg.espionage.decoy_bias = 0.0;
         cfg.techs = TechTree::parse(
             r#"
 [[tech]]
@@ -9343,13 +9463,18 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         low.launch_spy(probes(1), dest, 100, 0).unwrap();
         let arrives = low.missions[0].phase_ends_at;
         low.catch_up(arrives);
+        let delay = crate::light_delay_secs(low.home, dest, &low.config.orbits);
+        if delay > 0 {
+            assert!(low.latest_report(dest).is_none());
+            low.catch_up(arrives.saturating_add(delay));
+        }
         let one = low.latest_report(dest).expect("report");
         assert_eq!(one.tier, "activity");
         assert!(one.resources.is_none());
         assert!(one.garrison.is_none());
         assert!(one.formation.is_none());
         assert!(one.stance.is_none());
-        assert_eq!(one.age_secs(low.last_tick_unix), 0);
+        assert_eq!(one.age_secs(low.last_tick_unix), delay);
         fly_home(&mut low);
         let aged = low.latest_report(dest).expect("report");
         assert!(aged.age_secs(low.last_tick_unix) > 0);
@@ -9363,6 +9488,17 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         high.fleet.add(ShipKind::EspionageProbe, 1);
         high.launch_spy(probes(1), dest, 100, 0).unwrap();
         fly_home(&mut high);
+        let delay = crate::light_delay_secs(high.home, dest, &high.config.orbits);
+        if delay > 0 {
+            assert!(
+                high.visible_events(crate::Actor::Player)
+                    .iter()
+                    .all(|e| !e.text.contains("spy")),
+                "{:?}",
+                high.visible_events(crate::Actor::Player)
+            );
+        }
+        deliver_intel(&mut high);
         let full = high.latest_report(dest).expect("report");
         assert_eq!(full.tier, "garrison");
         assert_eq!(full.resources, Some(Resources::ZERO));
@@ -9394,6 +9530,8 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         b.launch_spy(probes(6), dest, 100, 0).unwrap();
         fly_home(&mut a);
         fly_home(&mut b);
+        deliver_intel(&mut a);
+        deliver_intel(&mut b);
         let ra = a.latest_report(dest).unwrap();
         let rb = b.latest_report(dest).unwrap();
         assert_eq!(ra.detected, rb.detected);
@@ -9404,6 +9542,173 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
             assert_eq!(ra.probes_lost, 0);
         }
         assert!(ra.probes_lost <= 6);
+    }
+
+    #[test]
+    fn pending_spy_event_survives_the_event_log_cap() {
+        let mut cfg = outpost_config();
+        cfg.espionage.destroy_chance = 0.0;
+        cfg.espionage.detect_base = 0.0;
+        cfg.espionage.detect_per_probe = 0.0;
+        let mut state = GameState::with_config(0, cfg);
+        state.resources.deuterium = 10_000.0;
+        let dest = state.outposts[0].coord;
+        let delay = crate::light_delay_secs(state.home, dest, &state.config.orbits);
+        assert!(delay > 0);
+        state.fleet.add(ShipKind::EspionageProbe, 1);
+        state.launch_spy(probes(1), dest, 100, 0).unwrap();
+        fly_home(&mut state);
+        assert!(state.latest_report(dest).is_none());
+        assert!(
+            state.events.iter().all(|event| !event.text.contains("spy")),
+            "{:?}",
+            state.events
+        );
+        for i in 0..40 {
+            state.push_event(state.last_tick_unix, format!("noise {i}"));
+        }
+        deliver_intel(&mut state);
+        assert!(
+            state
+                .visible_events(crate::Actor::Player)
+                .iter()
+                .any(|event| event.text.contains("spy")),
+            "{:?}",
+            state.visible_events(crate::Actor::Player)
+        );
+    }
+
+    #[test]
+    fn spy_reports_wait_for_light_delay_and_keep_conflicts() {
+        let mut cfg = outpost_config();
+        cfg.espionage.destroy_chance = 0.0;
+        cfg.espionage.detect_base = 0.0;
+        cfg.espionage.detect_per_probe = 0.0;
+        cfg.espionage.error_base = 0.0;
+        cfg.espionage.error_per_au = 0.0;
+        let mut state = GameState::with_config(0, cfg);
+        let dest = state.outposts[0].coord;
+        let delay = crate::light_delay_secs(state.home, dest, &state.config.orbits);
+        state.spy_reports.push(SpyReport {
+            id: 1,
+            target: dest,
+            created_at: 10,
+            probes_sent: 1,
+            probes_lost: 0,
+            detected: false,
+            score: 4.0,
+            tier: "garrison".into(),
+            resources: None,
+            fleet: None,
+            defences: None,
+            garrison: Some(10),
+            kind: None,
+            size: None,
+            formation: None,
+            stance: None,
+            source: "probe".into(),
+            observed_at: 10,
+            arrives_at: 10 + delay,
+            confidence: 0.9,
+            deceived: false,
+        });
+        state.last_tick_unix = 10;
+        assert!(state.latest_report(dest).is_none());
+        state.last_tick_unix = 10 + delay;
+        assert_eq!(state.latest_report(dest).unwrap().garrison, Some(10));
+        state.spy_reports.push(SpyReport {
+            id: 2,
+            target: dest,
+            created_at: 20,
+            probes_sent: 1,
+            probes_lost: 0,
+            detected: false,
+            score: 4.0,
+            tier: "garrison".into(),
+            resources: None,
+            fleet: None,
+            defences: None,
+            garrison: Some(40),
+            kind: None,
+            size: None,
+            formation: None,
+            stance: None,
+            source: "probe".into(),
+            observed_at: 20,
+            arrives_at: 20,
+            confidence: 0.8,
+            deceived: false,
+        });
+        state.last_tick_unix = state.last_tick_unix.max(20);
+        let facts = state.intel_facts_for(crate::Actor::Player, state.last_tick_unix);
+        let garrison = facts
+            .iter()
+            .find(|f| f.field == "garrison")
+            .expect("garrison fact");
+        assert_eq!(garrison.observations.len(), 2);
+        let values: Vec<_> = garrison
+            .observations
+            .iter()
+            .map(|o| match o.value {
+                crate::IntelValue::Count(n) => n,
+                _ => panic!("expected count"),
+            })
+            .collect();
+        assert!(values.contains(&10));
+        assert!(values.contains(&40));
+        let chain = state.provenance_for(
+            crate::Actor::Player,
+            &dest.to_string(),
+            "garrison",
+            state.last_tick_unix,
+        );
+        assert_eq!(chain.len(), 2);
+        assert!(chain.iter().all(|o| o.source == "probe"));
+    }
+
+    #[test]
+    fn detected_spy_wave_is_deceived() {
+        let mut cfg = outpost_config();
+        cfg.espionage.destroy_chance = 0.0;
+        cfg.espionage.detect_base = 1.0;
+        cfg.espionage.detect_per_probe = 0.0;
+        cfg.espionage.detect_per_level = 0.0;
+        cfg.espionage.error_base = 0.0;
+        cfg.espionage.error_per_au = 0.0;
+        cfg.espionage.decoy_bias = 0.35;
+        cfg.techs = TechTree::parse(
+            r#"
+[[tech]]
+id = "espionage"
+name = "Espionage"
+metal = 1.0
+crystal = 1.0
+deuterium = 0.0
+cost_growth = 2.0
+base_seconds = 1.0
+time_growth = 2.0
+prereq_buildings = []
+prereq_techs = []
+modifiers = [{ kind = "espionage", per_level = 1.0 }]
+"#,
+        )
+        .expect("espionage tech");
+        let mut state = GameState::with_config(0, cfg);
+        state.resources.deuterium = 10_000.0;
+        state.tech_levels.insert("espionage".into(), 4);
+        let dest = state.outposts[0].coord;
+        let truth = state.outposts[0].garrison;
+        state.fleet.add(ShipKind::EspionageProbe, 1);
+        state.launch_spy(probes(1), dest, 100, 0).unwrap();
+        fly_home(&mut state);
+        deliver_intel(&mut state);
+        let report = state.latest_report(dest).expect("report");
+        assert!(report.detected);
+        assert!(report.deceived);
+        assert_eq!(report.tier, "garrison");
+        assert_ne!(report.garrison, Some(truth));
+        let json_like = format!("{:?}", report);
+        assert!(json_like.contains("garrison"));
     }
 
     #[test]

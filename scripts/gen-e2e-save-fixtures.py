@@ -1227,6 +1227,67 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             );
             """
         )
+    elif version == 44:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS maintenance_meta (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                next_id INTEGER NOT NULL,
+                next_plan_id INTEGER NOT NULL,
+                next_order_id INTEGER NOT NULL,
+                next_reading_id INTEGER NOT NULL,
+                next_prediction_id INTEGER NOT NULL,
+                next_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS maintenance_assets (
+                id INTEGER PRIMARY KEY,
+                kind TEXT NOT NULL,
+                key TEXT NOT NULL,
+                galaxy INTEGER NOT NULL,
+                system INTEGER NOT NULL,
+                position INTEGER NOT NULL,
+                condition REAL NOT NULL,
+                hours_use REAL NOT NULL,
+                installed_at INTEGER NOT NULL,
+                last_service_at INTEGER NOT NULL,
+                last_service_hours REAL NOT NULL,
+                offline_until INTEGER
+            );
+            CREATE TABLE IF NOT EXISTS maintenance_plans (
+                id INTEGER PRIMARY KEY,
+                asset_id INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                interval REAL NOT NULL,
+                enabled INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS maintenance_orders (
+                id INTEGER PRIMARY KEY,
+                asset_id INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                started_at INTEGER NOT NULL,
+                ends_at INTEGER NOT NULL,
+                iron REAL NOT NULL,
+                silicon REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS maintenance_readings (
+                id INTEGER PRIMARY KEY,
+                asset_id INTEGER NOT NULL,
+                at INTEGER NOT NULL,
+                temperature REAL NOT NULL,
+                vibration REAL NOT NULL,
+                power REAL NOT NULL,
+                hours_use REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS maintenance_predictions (
+                id INTEGER PRIMARY KEY,
+                asset_id INTEGER NOT NULL,
+                at INTEGER NOT NULL,
+                probability REAL NOT NULL,
+                horizon_secs INTEGER NOT NULL,
+                reading_id INTEGER NOT NULL
+            );
+            """
+        )
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"

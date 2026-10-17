@@ -21,6 +21,8 @@ replacement name. `state` lists those stockpiles plus `energy` and `heat`.
 ```sh
 hoshi --version
 hoshi --save PATH [--seed N] [--balance PATH] state [--as player|leader:ID] [--json]
+hoshi --save PATH intel [coord] [--as player|leader:ID]
+hoshi --save PATH intel provenance <coord> <field> [--as player|leader:ID]
 hoshi --save PATH classify <kind> <id> --class open|internal|restricted|secret [--compartment ID] [--as player|leader:ID]
 hoshi --save PATH share <faction> --class open|internal|restricted|secret [--compartment ID]
 hoshi --save PATH incidents [--as player|leader:ID]
@@ -110,8 +112,11 @@ config keys (`metal_mine`, `light_fighter`). Queue item is `0`, `build:0`, or
 `research`. Mission is `attack`, `invade`, `colonize`, `expedition`, or `spy`. Ships look like
 `light_fighter:2`. `attack` fights an outpost's defences; `invade` lands troop
 transports and is refused while defences remain. `spy` sends espionage probes and
-writes a report; `state` lists reports with age and attaches the latest report to
-each outpost so attack and invade can read it. `colonize` takes exactly `colony_ship:1`. `moon build` spends stockpile on a phalanx or jump gate at that planet's moon. `moon jump` moves parked ships instantly between two moons that both have gates. `moon scan` lists fleets the phalanx can see. Extra arguments
+writes a report that arrives after light-time; `state` lists arrived reports with
+age, source and confidence and attaches the latest arrived report to each
+outpost so attack and invade can read it. `intel` lists every arrived fact;
+`intel provenance <coord> <field>` prints the chain for one field. Pending
+reports and the internal deceived flag never appear. `colonize` takes exactly `colony_ship:1`. `moon build` spends stockpile on a phalanx or jump gate at that planet's moon. `moon jump` moves parked ships instantly between two moons that both have gates. `moon scan` lists fleets the phalanx can see. Extra arguments
 on `build`, `research`, and `cancel` are invalid (`state` may take `--as`). Duration is seconds,
 or `30s` / `3m` / `1h` / `1d`.
 

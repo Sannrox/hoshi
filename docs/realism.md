@@ -21,7 +21,7 @@ When adding a feature, name:
 
 | Piece | Meaning |
 | --- | --- |
-| Object types | The nouns (planet, fleet, faction, outpost, route, facility, good, law, proposal, approver, jurisdiction, measurement, leader, role, assignment, permission, delegation, marking, compartment, clearance, sharing agreement, region, warehouse, order, contract, trader, shipment, goal, tier, frontier world, treasury, budget, cost center, expense, forecast, approval, kpi, target, report, incident, risk, resolution, review, follow-up, asset, condition, maintenance plan, work order, telemetry reading, failure prediction). |
+| Object types | The nouns (planet, fleet, faction, outpost, route, facility, good, law, proposal, approver, jurisdiction, measurement, observation, source, fact, confidence, leader, role, assignment, permission, delegation, marking, compartment, clearance, sharing agreement, region, warehouse, order, contract, trader, shipment, goal, tier, frontier world, treasury, budget, cost center, expense, forecast, approval, kpi, target, report, incident, risk, resolution, review, follow-up, asset, condition, maintenance plan, work order, telemetry reading, failure prediction). |
 | Links | How those nouns point at each other (fleet at coord, route between owned planets, standing on a faction id, a proposal that amends a law in a jurisdiction, a leader holding a role through an assignment, a role granting permissions, a delegation with limits, owned by a leader, approved by approvers, a marking on a fact/plan/report/law, a clearance that includes compartments, a sharing agreement with an allied faction, an order placed in a region, a contract that binds a trader, a shipment that fulfils a contract, a tier that requires sustained good rates, a wonder stage that requires a tier, an expense charged to a cost center under a budget and approved by a role). |
 | Actions | Propose, check, apply. The TUI and CLI call the same `hoshi-core` function. They do not write the save. `AssignLeader`, `Delegate` and `RevokeDelegation` are the staff path. `ProposeLaw`, `ApproveLaw`, `EnactLaw` and `RepealLaw` are the law path: owner, approvals, effective date, audit trail. `PlaceOrder`, `AcceptContract`, `FulfilContract` and `ShipGoods` are the regional market path. `SetBudget`, `RequestSpend` and `ApproveSpend` are the finance path: a spend over a budget waits, then applies through the same build/research/ship actions. `SetTarget` and `GenerateReport` are the KPI path: a colony or role holds a goal, catch-up archives measurements with source events. `OpenIncident`, `AssignIncident`, `ResolveIncident` and `ReviewIncident` are the incident path: an event opens a row, a leader owns it, a review archives lineage. `ScheduleMaintenance` and `CompleteWorkOrder` are the maintenance path: condition wears with use, age and heat; work orders cost parts and downtime; telemetry is noisy; predicted failure uses a bathtub hourly chance. Every action a leader takes is checked against the role and recorded. |
 | Outcomes | A typed result plus a log line (`GameEvent`) with a timestamp. Catch-up and live play share that path. Measured effects attach to the law as evidence. |
@@ -127,8 +127,12 @@ stockpiled, and overflow drops as soon as capacity catches up.
 A probe is a ship. It flies on the same distance and drive rules as any other
 mission. What it learns is a score from how many probes arrived and the
 espionage research gap, not a narrative reveal. Detection and destruction are
-seeded chances from config. A stored report ages; later attacks read that
-snapshot, not live omniscience.
+seeded chances from config. The snapshot is taken on site; it becomes visible
+at home after light-time `distance / c` along the difference of heliocentric
+radii. Measurement error is `error_base + error_per_au * range_au / quality`.
+A detected wave can be fed a biased decoy. Stored reports age; later attacks
+read those snapshots, not live omniscience. Two reports of the same field both
+stay visible.
 
 ## Combat maths
 
@@ -170,7 +174,9 @@ silent extra departure; they extend this list.
 | Simplification | Gameplay reason |
 | --- | --- |
 | Compressed clocks (upgrades in minutes, not months) | The game is meant to run in a spare terminal while other work happens. |
-| Instant communication across the galaxy | No light-lag UI; commands apply on the injected clock as soon as they are legal. |
+| Player commands apply as soon as they are legal | The injected clock is the authority for own actions; remote facts still wait for light-time. |
+| Light delay uses the absolute difference of heliocentric radii | Same radius table as PlanMission; no 3D chord or occlusion. |
+| Passive rival sensors stamp light delay on a noisy present-time glance | Reconstructing the past light cone would store a second empire history. |
 | No n-body gravity, no eclipses | Catch-up must stay deterministic and fast. |
 | Abstract flight units and ship `speed` points | Existing fleets already fly; a documented scale can replace the points later. |
 | Circular coplanar orbits, mean anomaly 0 at unix epoch | Catch-up stays a closed-form Hohmann estimate, not an integrator. |

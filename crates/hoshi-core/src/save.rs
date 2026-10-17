@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 44;
+pub const SCHEMA_VERSION: u32 = 45;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -561,8 +561,8 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 id, galaxy, system, position, created_at, probes_sent, probes_lost,
                 detected, score, tier, metal, crystal, deuterium, garrison, kind, size,
                 revealed_resources, revealed_fleet, revealed_defences, revealed_garrison,
-                formation, stance
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+                formation, stance, source, observed_at, arrives_at, confidence, deceived
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
             params![
                 report.id as i64,
                 report.target.galaxy as i64,
@@ -586,6 +586,11 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 i64::from(report.garrison.is_some()),
                 report.formation,
                 report.stance,
+                report.source,
+                report.observed_at as i64,
+                report.arrives_at as i64,
+                report.confidence,
+                i64::from(report.deceived),
             ],
         )?;
         if let Some(fleet) = report.fleet {
@@ -3240,6 +3245,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     if found < 44 {
         migrate_v44(conn)?;
     }
+    if found < 45 {
+        migrate_v45(conn)?;
+    }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
 }
@@ -4333,6 +4341,47 @@ fn migrate_v41(conn: &Connection) -> Result<(), SaveError> {
             credits REAL NOT NULL
         );
         ",
+    )?;
+    Ok(())
+}
+
+fn migrate_v45(conn: &Connection) -> Result<(), SaveError> {
+    if !table_exists(conn, "spy_reports") {
+        return Ok(());
+    }
+    for (column, sql) in [
+        (
+            "source",
+            "ALTER TABLE spy_reports ADD COLUMN source TEXT NOT NULL DEFAULT 'probe'",
+        ),
+        (
+            "observed_at",
+            "ALTER TABLE spy_reports ADD COLUMN observed_at INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "arrives_at",
+            "ALTER TABLE spy_reports ADD COLUMN arrives_at INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "confidence",
+            "ALTER TABLE spy_reports ADD COLUMN confidence REAL NOT NULL DEFAULT 1",
+        ),
+        (
+            "deceived",
+            "ALTER TABLE spy_reports ADD COLUMN deceived INTEGER NOT NULL DEFAULT 0",
+        ),
+    ] {
+        if !spy_reports_has_column(conn, column)? {
+            conn.execute(sql, [])?;
+        }
+    }
+    conn.execute(
+        "UPDATE spy_reports SET observed_at = created_at WHERE observed_at = 0",
+        [],
+    )?;
+    conn.execute(
+        "UPDATE spy_reports SET arrives_at = created_at WHERE arrives_at = 0",
+        [],
     )?;
     Ok(())
 }
@@ -6636,7 +6685,7 @@ fn load_spy_reports(conn: &Connection, state: &mut GameState) -> Result<(), Save
         "SELECT id, galaxy, system, position, created_at, probes_sent, probes_lost,
                 detected, score, tier, metal, crystal, deuterium, garrison, kind, size,
                 revealed_resources, revealed_fleet, revealed_defences, revealed_garrison,
-                formation, stance
+                formation, stance, source, observed_at, arrives_at, confidence, deceived
          FROM spy_reports ORDER BY id",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -6663,6 +6712,11 @@ fn load_spy_reports(conn: &Connection, state: &mut GameState) -> Result<(), Save
             row.get::<_, i64>(19)?,
             row.get::<_, Option<String>>(20)?,
             row.get::<_, Option<String>>(21)?,
+            row.get::<_, String>(22)?,
+            row.get::<_, i64>(23)?,
+            row.get::<_, i64>(24)?,
+            row.get::<_, f64>(25)?,
+            row.get::<_, i64>(26)?,
         ))
     })?;
     let mut pending = Vec::new();
@@ -6694,10 +6748,18 @@ fn load_spy_reports(conn: &Connection, state: &mut GameState) -> Result<(), Save
         revealed_garrison,
         formation,
         stance,
+        source,
+        observed_at,
+        arrives_at,
+        confidence,
+        deceived,
     ) in pending
     {
         if !score.is_finite() {
             return Err(SaveError::Corrupt("spy score"));
+        }
+        if !confidence.is_finite() {
+            return Err(SaveError::Corrupt("spy confidence"));
         }
         let target = Coord {
             galaxy: u16_coord(g)?,
@@ -6748,6 +6810,11 @@ fn load_spy_reports(conn: &Connection, state: &mut GameState) -> Result<(), Save
             size,
             formation,
             stance,
+            source,
+            observed_at: unix_ts(observed_at)?,
+            arrives_at: unix_ts(arrives_at)?,
+            confidence,
+            deceived: deceived != 0,
         });
     }
     state.next_report_id = state
@@ -9178,6 +9245,11 @@ mod tests {
             size: Some(12),
             formation: Some("neutral".into()),
             stance: Some("neutral".into()),
+            source: "probe".into(),
+            observed_at: 40,
+            arrives_at: 40,
+            confidence: 0.8,
+            deceived: true,
         });
         state.next_report_id = 3;
         save_state(&mut conn, &state).unwrap();
@@ -9519,6 +9591,11 @@ mod tests {
             size: None,
             formation: None,
             stance: None,
+            source: "probe".into(),
+            observed_at: 10,
+            arrives_at: 0,
+            confidence: 1.0,
+            deceived: false,
         });
         state
             .classify(
@@ -9909,6 +9986,50 @@ mod tests {
         assert!(!loaded.maintenance.orders.is_empty() || !loaded.maintenance.readings.is_empty());
         assert_eq!(count_rows(&conn, "maintenance_meta").unwrap(), 1);
         assert!(count_rows(&conn, "maintenance_assets").unwrap() >= 1);
+    }
+
+    #[test]
+    fn migrate_v45_round_trips_intel_fields() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v45(&conn).unwrap();
+        migrate_v45(&conn).unwrap();
+        let mut state = GameState::new(3);
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 8,
+        };
+        state.spy_reports.push(crate::SpyReport {
+            id: 2,
+            target: dest,
+            created_at: 40,
+            probes_sent: 4,
+            probes_lost: 1,
+            detected: true,
+            score: 3.0,
+            tier: "defences".into(),
+            resources: None,
+            fleet: None,
+            defences: None,
+            garrison: Some(12),
+            kind: Some(PlanetType::Rocky),
+            size: Some(12),
+            formation: None,
+            stance: None,
+            source: "probe".into(),
+            observed_at: 40,
+            arrives_at: 540,
+            confidence: 0.42,
+            deceived: true,
+        });
+        state.next_report_id = 3;
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.spy_reports, state.spy_reports);
+        assert_eq!(loaded.spy_reports[0].arrives_at, 540);
+        assert_eq!(loaded.spy_reports[0].source, "probe");
+        assert!(loaded.spy_reports[0].deceived);
+        assert!(spy_reports_has_column(&conn, "confidence").unwrap());
     }
 
     #[test]

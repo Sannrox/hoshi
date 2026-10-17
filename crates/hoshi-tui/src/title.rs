@@ -2661,7 +2661,7 @@ pub fn snapshot_away(state: &hoshi_core::GameState) -> AwaySnapshot {
         deuterium: state.resources.deuterium,
         builds: building_levels(state),
         research: research_levels(state),
-        events: state.events.len(),
+        events: state.delivered_events().count(),
         deliveries: state.logistics.deliveries.len(),
         stalls: state.logistics.stalls.len(),
         completed: state.logistics.completed.len(),
@@ -2670,8 +2670,7 @@ pub fn snapshot_away(state: &hoshi_core::GameState) -> AwaySnapshot {
 
 pub fn summarize_away(before: &AwaySnapshot, after: &hoshi_core::GameState) -> AwaySummary {
     let new_events: Vec<String> = after
-        .events
-        .iter()
+        .delivered_events()
         .skip(before.events)
         .map(|e| e.text.clone())
         .collect();
@@ -2888,6 +2887,29 @@ mod tests {
         let text = render(&title, 80, 24);
         assert!(text.contains("finished"), "{text}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn summarize_away_includes_a_spy_event_that_was_pending() {
+        let mut state = GameState::new(0);
+        state.events.push(hoshi_core::GameEvent {
+            at: 0,
+            text: "old".into(),
+        });
+        state.last_tick_unix = 10;
+        state.events.push(hoshi_core::GameEvent {
+            at: 100,
+            text: "spy 1:2:3 activity detected=no lost=0/1".into(),
+        });
+        let before = snapshot_away(&state);
+        assert_eq!(before.events, 1);
+        state.last_tick_unix = 100;
+        let summary = summarize_away(&before, &state);
+        assert!(
+            summary.events.iter().any(|text| text.contains("spy")),
+            "{:?}",
+            summary.events
+        );
     }
 
     #[test]

@@ -736,6 +736,11 @@ mod tests {
             size: None,
             formation: None,
             stance: None,
+            source: "probe".into(),
+            observed_at: 1_000,
+            arrives_at: 0,
+            confidence: 1.0,
+            deceived: false,
         });
         state
             .classify(

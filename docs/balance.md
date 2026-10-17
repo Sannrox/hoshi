@@ -82,7 +82,7 @@ keystone within 14 days.
 
 ## Espionage
 
-`[espionage]` scores a probe wave as `probes * probe_weight + (own_espionage - target_level) * level_weight`. Own espionage is the existing research/faction modifier. The report tier is the highest `[[espionage.tiers]]` whose `min_score` the score still meets (activity, resources, fleet, defences, garrison). Detection chance is `detect_base + probes * detect_per_probe - (own - target) * detect_per_level`, clamped to `[0, 1]`. A detection then rolls `destroy_chance` once per probe. The TUI reports screen lists outposts with report age; Enter opens the latest report; `s` sends one probe.
+`[espionage]` scores a probe wave as `probes * probe_weight + (own_espionage - target_level) * level_weight`. Own espionage is the existing research/faction modifier. The report tier is the highest `[[espionage.tiers]]` whose `min_score` the score still meets (activity, resources, fleet, defences, garrison). Detection chance is `detect_base + probes * detect_per_probe - (own - target) * detect_per_level`, clamped to `[0, 1]`. A detection then rolls `destroy_chance` once per probe and applies `decoy_bias` to counts. Measurement error is `error_base + error_per_au * range_au / quality`; light delay is radial range over `c`. Confidence starts from that error and spends `age_penalty_per_hour`. The TUI Intel screen lists age and confidence; Enter opens every arrived report for that target; `s` sends one probe. `hoshi intel` / `hoshi intel provenance` print the same facts.
 
 ## Outposts
 

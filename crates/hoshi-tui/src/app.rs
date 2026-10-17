@@ -13,11 +13,11 @@ use crate::ui::panels::{Metric, MetricStrip};
 use crate::ui::table::{Column, DataTable};
 use crate::ui::{self, Depth, Intent, Surface, Theme};
 use hoshi_core::{
-    AssignmentTarget, BuildingKind, CombatLog, CombatWinner, CommentaryCatalog, Coord, DefenceKind,
-    Detail, DetailSubject, Fleet, GameState, HintScreen, HistoryKind, HistoryQuery, Jurisdiction,
-    JurisdictionKind, LawStatus, Permission, ResourceKind, Resources, RoleKind, ShipKind,
-    SpyReport, StoryEvent, TechBranch, TechNodeState, WonderError, advise, encode_galaxy_seed,
-    polish_all_named, rephrase_lines,
+    Actor, AssignmentTarget, BuildingKind, CombatLog, CombatWinner, CommentaryCatalog, Coord,
+    DefenceKind, Detail, DetailSubject, Fleet, GameState, HintScreen, HistoryKind, HistoryQuery,
+    Jurisdiction, JurisdictionKind, LawStatus, Permission, ResourceKind, Resources, RoleKind,
+    ShipKind, SpyReport, StoryEvent, TechBranch, TechNodeState, WonderError, advise,
+    encode_galaxy_seed, polish_all_named, rephrase_lines,
 };
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
@@ -1023,7 +1023,7 @@ impl App {
                 ])
                 .split(area);
                 let slot = self.current_portrait_slot();
-                let mood = portraits::mood_for(slot, &self.state.events);
+                let mood = portraits::mood_for(slot, self.state.visible_events(Actor::Player));
                 frame.render_widget(
                     Paragraph::new(portraits::portrait_lines_for(
                         self.portraits,
@@ -1442,7 +1442,10 @@ impl App {
             self.screen == Screen::Shipyard || self.screen == Screen::Staff,
             self.state.planet_kind(coord),
             self.state.rare_bonus_at(coord).is_some(),
-            self.state.events.last().map(|e| e.text.as_str()),
+            self.state
+                .visible_events(Actor::Player)
+                .last()
+                .map(|e| e.text.as_str()),
         )
     }
 
@@ -1482,7 +1485,7 @@ impl App {
             return Ok(());
         };
         let slot = self.current_portrait_slot();
-        let mood = portraits::mood_for(slot, &self.state.events);
+        let mood = portraits::mood_for(slot, self.state.visible_events(Actor::Player));
         portraits::paint_inline_graphics(out, area, slot, mood)
     }
 
@@ -3131,8 +3134,15 @@ impl App {
         let title = dest
             .map(|c| format!(" spy {c} "))
             .unwrap_or_else(|| " spy ".into());
-        let lines = match dest.and_then(|c| self.state.latest_report(c)) {
-            Some(report) => report_overlay_lines(report, self.state.last_tick_unix),
+        let lines = match dest {
+            Some(coord) => {
+                let reports = self.state.reports_for(coord);
+                if reports.is_empty() {
+                    vec![Line::from("no spy report for this outpost")]
+                } else {
+                    report_overlay_lines(&self.state, &reports, self.state.last_tick_unix)
+                }
+            }
             None => vec![Line::from("no spy report for this outpost")],
         };
         self.dialog(frame, title.trim(), String::new(), lines, &[]);
@@ -3207,35 +3217,44 @@ fn detail_column_width(total: u16) -> u16 {
     (total * 7 / 20).clamp(30, 56).min(total.saturating_sub(10))
 }
 
-fn report_overlay_lines(report: &SpyReport, now: u64) -> Vec<Line<'static>> {
-    let mut lines = vec![
-        Line::from(format!(
-            "{}  age {}  score {:.0}",
+fn report_overlay_lines(state: &GameState, reports: &[&SpyReport], now: u64) -> Vec<Line<'static>> {
+    let mut ordered: Vec<&SpyReport> = reports.to_vec();
+    ordered.sort_by_key(|r| std::cmp::Reverse((r.observed_at, r.id)));
+    let mut lines = Vec::new();
+    for (i, report) in ordered.iter().enumerate() {
+        if i > 0 {
+            lines.push(Line::from(""));
+        }
+        lines.push(Line::from(format!(
+            "{}  {}  age {}  conf {:.2}  score {:.0}",
+            report.source,
             report.tier,
             ui::spans::duration(report.age_secs(now)),
+            state.report_confidence(report),
             report.score
-        )),
-        Line::from(format!(
-            "detected {}  lost {}/{}",
+        )));
+        lines.push(Line::from(format!(
+            "observed {}  detected {}  lost {}/{}",
+            report.observed_at,
             if report.detected { "yes" } else { "no" },
             report.probes_lost,
             report.probes_sent
-        )),
-    ];
-    if let (Some(kind), Some(size)) = (report.kind, report.size) {
-        lines.push(Line::from(format!("planet {} size {size}", kind.as_key())));
-    }
-    if let Some(res) = report.resources {
-        lines.push(Line::from(format!("resources {}", stockpile_label(res))));
-    }
-    if let Some(fleet) = report.fleet {
-        lines.push(Line::from(format!("fleet {}", fleet_brief(fleet))));
-    }
-    if let Some(defences) = report.defences {
-        lines.push(Line::from(format!("defences {}", fleet_brief(defences))));
-    }
-    if let Some(garrison) = report.garrison {
-        lines.push(Line::from(format!("garrison {garrison}")));
+        )));
+        if let (Some(kind), Some(size)) = (report.kind, report.size) {
+            lines.push(Line::from(format!("planet {} size {size}", kind.as_key())));
+        }
+        if let Some(res) = report.resources {
+            lines.push(Line::from(format!("resources {}", stockpile_label(res))));
+        }
+        if let Some(fleet) = report.fleet {
+            lines.push(Line::from(format!("fleet {}", fleet_brief(fleet))));
+        }
+        if let Some(defences) = report.defences {
+            lines.push(Line::from(format!("defences {}", fleet_brief(defences))));
+        }
+        if let Some(garrison) = report.garrison {
+            lines.push(Line::from(format!("garrison {garrison}")));
+        }
     }
     lines.push(Line::from("Enter closes"));
     lines
@@ -3557,7 +3576,7 @@ mod tests {
     fn disabled_portraits_use_ascii_and_keep_layout() {
         fn portrait_row(app: &App) -> String {
             let slot = app.current_portrait_slot();
-            let mood = portraits::mood_for(slot, &app.state.events);
+            let mood = portraits::mood_for(slot, app.state.visible_events(Actor::Player));
             portraits::portrait_lines_for(app.portraits, slot, mood, None)
                 .iter()
                 .map(|line| line.to_string().trim().to_string())
@@ -4603,6 +4622,34 @@ mod tests {
             size: Some(state.outposts[0].size),
             formation: Some("neutral".into()),
             stance: Some("neutral".into()),
+            source: "probe".into(),
+            observed_at: 900,
+            arrives_at: 0,
+            confidence: 0.8,
+            deceived: false,
+        });
+        state.spy_reports.push(hoshi_core::SpyReport {
+            id: 0,
+            target: dest,
+            created_at: 800,
+            probes_sent: 1,
+            probes_lost: 0,
+            detected: false,
+            score: 1.0,
+            tier: "activity".into(),
+            resources: None,
+            fleet: None,
+            defences: None,
+            garrison: Some(1),
+            kind: None,
+            size: None,
+            formation: None,
+            stance: None,
+            source: "probe".into(),
+            observed_at: 800,
+            arrives_at: 0,
+            confidence: 0.6,
+            deceived: false,
         });
         let mut app = App::new(state);
         app.open(Screen::Reports);
@@ -4619,6 +4666,13 @@ mod tests {
             text_is_dimmed(&app, 100, 32, "Fleet / Intel"),
             "spy overlay left the reports chrome undimmed:\n{text}"
         );
+        assert!(text.contains("probe"), "{text}");
+        assert!(text.contains("conf "), "{text}");
+        assert!(text.contains("observed 900"), "{text}");
+        assert!(text.contains("observed 800"), "{text}");
+        let newer = text.find("observed 900").expect(&text);
+        let older = text.find("observed 800").expect(&text);
+        assert!(newer < older, "{text}");
         assert!(text.contains("detected yes"), "{text}");
         assert!(text.contains("lost 1/3"), "{text}");
         assert!(text.contains(&format!("garrison {garrison}")), "{text}");

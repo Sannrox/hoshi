@@ -357,6 +357,7 @@ impl GameState {
     pub fn visible_reports(&self, actor: Actor) -> Vec<&crate::SpyReport> {
         self.spy_reports
             .iter()
+            .filter(|row| row.delivered(self.last_tick_unix))
             .filter(|row| self.can_see(actor, ClassifiedKind::Report, &row.id.to_string()))
             .collect()
     }
@@ -380,13 +381,20 @@ impl GameState {
         self.classification
             .incidents
             .iter()
+            .filter(|row| row.at <= self.last_tick_unix)
             .filter(|row| self.can_see(actor, row.kind, &row.object_id))
             .collect()
     }
 
-    pub fn visible_events(&self, actor: Actor) -> Vec<&crate::GameEvent> {
+    /// Log lines whose timestamp has already arrived on the injected clock.
+    pub fn delivered_events(&self) -> impl Iterator<Item = &crate::GameEvent> {
         self.events
             .iter()
+            .filter(|row| row.at <= self.last_tick_unix)
+    }
+
+    pub fn visible_events(&self, actor: Actor) -> Vec<&crate::GameEvent> {
+        self.delivered_events()
             .filter(|row| self.event_visible(actor, &row.text))
             .collect()
     }
@@ -658,6 +666,11 @@ mod tests {
             size: None,
             formation: None,
             stance: None,
+            source: "probe".into(),
+            observed_at: 10,
+            arrives_at: 0,
+            confidence: 1.0,
+            deceived: false,
         }
     }
 
@@ -862,6 +875,7 @@ mod tests {
                 .iter()
                 .any(|row| row.source == "disloyal" && row.via == format!("leader:{id}"))
         );
+        state.last_tick_unix = 20;
         let admiral = Actor::Leader(1);
         assert!(state.visible_incidents(admiral).is_empty());
         assert_eq!(state.visible_incidents(Actor::Player).len(), 2);

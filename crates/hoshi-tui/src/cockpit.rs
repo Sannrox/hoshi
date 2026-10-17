@@ -5,7 +5,7 @@ use crate::ui::panels::Callout;
 use crate::ui::spans::countdown;
 use crate::ui::{Intent, Surface, Theme};
 use hoshi_core::{
-    Coord, GameState, HistoryKind, MissionPhase, ResourceKind, Resources, RoleKind, ShipKind,
+    Actor, Coord, GameState, HistoryKind, MissionPhase, ResourceKind, Resources, RoleKind, ShipKind,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout as TuiLayout, Rect};
@@ -1038,7 +1038,12 @@ fn timeline_lines(state: &GameState, height: usize, t: &Theme) -> Vec<Line<'stat
             )));
         }
     } else {
-        for event in state.events.iter().rev().take(height.max(1)) {
+        for event in state
+            .visible_events(Actor::Player)
+            .into_iter()
+            .rev()
+            .take(height.max(1))
+        {
             let ago = now.saturating_sub(event.at);
             entries.push(Line::from(format!("{ago}s {}", event.text)));
         }
@@ -1205,7 +1210,12 @@ fn planet_detail(state: &GameState, coord: Coord, height: usize, t: &Theme) -> V
             outpost.kind.as_key()
         )));
         if let Some(report) = state.latest_report(coord) {
-            lines.push(Line::from(format!("spy {}", report.tier)));
+            lines.push(Line::from(format!(
+                "spy {}  conf {:.2}  age {}",
+                report.tier,
+                state.report_confidence(report),
+                report.age_secs(state.last_tick_unix)
+            )));
         }
     } else if owned {
         lines.push(Line::from("owned"));
@@ -1313,8 +1323,8 @@ fn faction_detail(state: &GameState, id: &str, height: usize, _t: &Theme) -> Vec
             None => String::new(),
         };
         lines.push(Line::from(format!(
-            "rival {} {} last {}{stock}",
-            row.name, row.home, row.last_action
+            "rival {} {} last {}  {}  conf {:.2}  age {}{stock}",
+            row.name, row.home, row.last_action, row.source, row.confidence, row.age_secs
         )));
     }
     if lines.is_empty() {
