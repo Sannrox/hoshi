@@ -3,7 +3,7 @@
 use crate::ui::panels::{Callout, PropertyList, section};
 use crate::ui::spans::{bar, compact, duration, tag};
 use crate::ui::{Intent, Theme};
-use hoshi_core::{AffordEta, Detail};
+use hoshi_core::{AffordEta, Detail, ResourceKind};
 use ratatui::text::{Line, Span};
 
 /// Dock the side card when the frame is at least this wide.
@@ -122,9 +122,13 @@ pub fn inspector(
                 Intent::Warning,
                 true,
             ),
-            AffordEta::Never => tag(t, "NEVER AT CURRENT INCOME", Intent::Danger, true),
+            AffordEta::Never => tag(t, "NEVER", Intent::Danger, true),
         };
-        props.push(("Status".into(), Line::from(chip)));
+        let mut status = vec![chip];
+        if matches!(eta, AffordEta::Never) {
+            status.push(Span::styled("at current income", t.muted()));
+        }
+        props.push(("Status".into(), Line::from(status)));
     }
     if !props.is_empty() {
         out.extend(
@@ -143,7 +147,17 @@ pub fn inspector(
     if !costs.is_empty() {
         out.push(Line::default());
         out.push(section(t, "cost"));
-        let w = costs.iter().map(|row| row.id.len()).max().unwrap_or(0);
+        let name = |id: &str| {
+            ResourceKind::ALL
+                .iter()
+                .find(|kind| kind.as_key() == id)
+                .map_or_else(|| id.replace('_', " "), |kind| kind.abbr().to_string())
+        };
+        let w = costs
+            .iter()
+            .map(|row| name(row.id).len())
+            .max()
+            .unwrap_or(0);
         for row in costs {
             let short = row.missing > 0.0;
             let intent = if short {
@@ -151,8 +165,8 @@ pub fn inspector(
             } else {
                 Intent::Primary
             };
-            let mut spans = vec![Span::styled(format!("{:<w$}  ", row.id), t.muted())];
-            spans.extend(bar(t, row.cost / row.stock.max(1.0), 16, intent));
+            let mut spans = vec![Span::styled(format!("{:<w$}  ", name(row.id)), t.muted())];
+            spans.extend(bar(t, row.cost / row.stock.max(1.0), 10, intent));
             spans.push(Span::styled(
                 format!("  {}", compact(row.cost)),
                 if short {

@@ -50,6 +50,8 @@ pub struct DataTable<'a> {
     pub selected: Option<usize>,
     pub striped: bool,
     pub surface: Surface,
+    /// Label rows drawn before the data row at each index, such as `SHIPS`.
+    pub groups: Vec<(usize, String)>,
 }
 
 impl DataTable<'_> {
@@ -102,11 +104,40 @@ impl Widget for DataTable<'_> {
             &widths,
             &header,
         );
+        enum Entry<'a> {
+            Group(&'a str),
+            Row(usize),
+        }
+        let mut entries = Vec::with_capacity(self.rows.len() + self.groups.len());
+        for i in 0..self.rows.len() {
+            for (_, label) in self.groups.iter().filter(|(at, _)| *at == i) {
+                entries.push(Entry::Group(label));
+            }
+            entries.push(Entry::Row(i));
+        }
+        let selected_line = self.selected.and_then(|sel| {
+            entries
+                .iter()
+                .position(|e| matches!(e, Entry::Row(i) if *i == sel))
+        });
         let visible = (area.height - 1) as usize;
-        let start = Self::scroll(self.selected, self.rows.len(), visible);
-        for (i, row) in self.rows.iter().enumerate().skip(start).take(visible) {
-            let y = area.y + 1 + (i - start) as u16;
+        let start = Self::scroll(selected_line, entries.len(), visible);
+        for (n, entry) in entries.iter().enumerate().skip(start).take(visible) {
+            let y = area.y + 1 + (n - start) as u16;
             let band = Rect::new(area.x, y, area.width, 1);
+            let i = match entry {
+                Entry::Group(label) => {
+                    buf.set_line(
+                        area.x + 1,
+                        y,
+                        &Line::styled(label.to_uppercase(), t.label()),
+                        area.width.saturating_sub(1),
+                    );
+                    continue;
+                }
+                Entry::Row(i) => *i,
+            };
+            let row = &self.rows[i];
             if Some(i) == self.selected {
                 fill(buf, band, t.surface(self.surface).patch(t.selected()));
             } else if self.striped && i % 2 == 1 {
@@ -179,6 +210,7 @@ mod tests {
             selected,
             striped: true,
             surface: Surface::Raised,
+            groups: Vec::new(),
         }
     }
 
@@ -211,6 +243,21 @@ mod tests {
         let mut buf = Buffer::empty(area);
         table(&theme, Some(0), 2).render(area, &mut buf);
         assert!(buf[(3, 1)].modifier.contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn group_labels_sit_above_their_rows() {
+        let theme = Theme::default();
+        let area = Rect::new(0, 0, 30, 6);
+        let mut buf = Buffer::empty(area);
+        let mut t = table(&theme, Some(2), 3);
+        t.groups = vec![(0, "ships".into()), (2, "defences".into())];
+        t.render(area, &mut buf);
+        assert_eq!(row_text(&buf, 1).trim_end(), " SHIPS");
+        assert!(row_text(&buf, 2).contains("row0"));
+        assert_eq!(row_text(&buf, 4).trim_end(), " DEFENCES");
+        assert!(row_text(&buf, 5).contains("row2"));
+        assert_eq!(buf[(0, 5)].symbol(), "▌");
     }
 
     #[test]
