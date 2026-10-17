@@ -990,6 +990,103 @@ impl App {
         }
     }
 
+    /// Dispatch form: target, ship steppers, flight time and fuel.
+    pub(super) fn dispatch_lines(&self, form: &DispatchForm) -> Vec<Line<'static>> {
+        let t = &self.theme;
+        let dest = form.dest;
+        let place = if self.state.owned_coords().contains(&dest) {
+            "colony"
+        } else if let Some(out) = self.state.outpost(dest) {
+            out.kind.as_key()
+        } else if self
+            .state
+            .frontier
+            .visible_worlds()
+            .any(|w| w.coord == dest)
+        {
+            "frontier"
+        } else {
+            "empty slot"
+        };
+        let mut lines = vec![
+            section(t, "dispatch"),
+            Line::from(vec![
+                Span::styled(format!("to {dest}"), t.strong()),
+                Span::raw("  "),
+                tag(t, &place.to_uppercase(), Intent::Neutral, true),
+            ]),
+            Line::default(),
+            section(t, "ships"),
+        ];
+        let w = ShipKind::ALL
+            .iter()
+            .map(|k| humanize(&k.to_string()).len())
+            .max()
+            .unwrap_or(0);
+        for (i, &kind) in ShipKind::ALL.iter().enumerate() {
+            let have = self.state.fleet.get(kind);
+            let picked = form.ships.get(kind);
+            let on = i == form.selected;
+            let name_style = if on {
+                t.strong()
+            } else if have == 0 {
+                t.faint()
+            } else {
+                t.text()
+            };
+            let mut spans = vec![
+                Span::styled(if on { "▌" } else { " " }, t.intent(Intent::Primary)),
+                Span::styled(format!("{:<w$} ", humanize(&kind.to_string())), name_style),
+            ];
+            if on {
+                spans.push(keycap(t, "-"));
+                spans.push(Span::styled(format!(" {picked:>3} "), t.strong()));
+                spans.push(keycap(t, "+"));
+            } else {
+                spans.push(Span::styled(
+                    format!("   {picked:>3}    "),
+                    if picked > 0 { t.text() } else { t.faint() },
+                ));
+            }
+            spans.push(Span::styled(format!("  of {have}"), t.muted()));
+            lines.push(Line::from(spans));
+        }
+        lines.push(Line::default());
+        if form.ships.is_empty() {
+            lines.extend(callout_lines(
+                t,
+                Intent::Primary,
+                "pick ships with +/-",
+                "j/k moves between ship types.",
+            ));
+        } else {
+            match self.state.flight_time_and_fuel(form.ships, dest, 100) {
+                Ok((eta, fuel)) => {
+                    lines.push(
+                        self.props(&[("ETA", duration(eta)), ("fuel", format!("{fuel:.1} D"))]),
+                    );
+                    if fuel > self.state.resources.deuterium {
+                        lines.extend(callout_lines(
+                            t,
+                            Intent::Danger,
+                            "not enough deuterium",
+                            &format!("have {:.0} D", self.state.resources.deuterium),
+                        ));
+                    }
+                }
+                Err(e) => lines.extend(callout_lines(t, Intent::Danger, &e.to_string(), "")),
+            }
+        }
+        lines.push(Line::default());
+        lines.push(Line::from(vec![
+            keycap(t, "⏎"),
+            Span::styled(" launch  ", t.muted()),
+            keycap(t, "x"),
+            Span::styled(" close", t.muted()),
+        ]));
+        lines
+    }
+
     fn standing_gauge(&self, standing: f64, min: f64, max: f64) -> Line<'static> {
         let t = &self.theme;
         const W: usize = 15;
@@ -1219,10 +1316,6 @@ impl App {
             ));
             legend_spans.push(Span::styled(format!(" {name}   "), t.muted()));
         }
-        legend_spans.push(Span::styled(
-            "hjkl move · enter dispatch · space galaxy",
-            t.faint(),
-        ));
         head.push(Line::from(legend_spans));
         let owned = self.state.owned_coords();
         let now = self.state.last_tick_unix;
