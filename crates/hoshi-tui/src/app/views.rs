@@ -1245,8 +1245,13 @@ impl App {
                     Span::styled(format!("{} ", row.name), t.text()),
                     Span::styled(
                         format!(
-                            "{} {} last {}{stock}{fleet}",
-                            row.home, row.personality, row.last_action
+                            "{} {} last {}  {}  conf {:.2}  age {}{stock}{fleet}",
+                            row.home,
+                            row.personality,
+                            row.last_action,
+                            row.source,
+                            row.confidence,
+                            row.age_secs
                         ),
                         t.muted(),
                     ),
@@ -1499,21 +1504,29 @@ impl App {
                 let target = Line::styled(outpost.coord.to_string(), t.text());
                 let kind = self.chip(outpost.kind.as_key(), Intent::Danger, true);
                 match self.state.latest_report(outpost.coord) {
-                    Some(report) => vec![
-                        target,
-                        kind,
-                        Line::styled(report.tier.to_string(), t.text()),
-                        Line::styled(duration(report.age_secs(now)), t.muted()),
-                        Line::styled(
-                            format!("{}/{}", report.probes_lost, report.probes_sent),
-                            t.muted(),
-                        ),
-                        if report.detected {
-                            self.chip("detected", Intent::Warning, false)
+                    Some(report) => {
+                        let n = self.state.reports_for(outpost.coord).len();
+                        let extra = if n > 1 {
+                            format!(" +{}", n - 1)
                         } else {
-                            Line::default()
-                        },
-                    ],
+                            String::new()
+                        };
+                        vec![
+                            target,
+                            kind,
+                            Line::styled(format!("{}{extra}", report.tier), t.text()),
+                            Line::styled(duration(report.age_secs(now)), t.muted()),
+                            Line::styled(
+                                format!("{:.2}", self.state.report_confidence(report)),
+                                t.muted(),
+                            ),
+                            if report.detected {
+                                self.chip("detected", Intent::Warning, false)
+                            } else {
+                                Line::default()
+                            },
+                        ]
+                    }
                     None => vec![
                         target,
                         kind,
@@ -1532,7 +1545,7 @@ impl App {
                     Column::left("kind", 10),
                     Column::left("report", 10),
                     Column::right("age", 7),
-                    Column::right("lost", 5),
+                    Column::right("conf", 5),
                     Column::fill("flags"),
                 ],
                 rows,

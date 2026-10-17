@@ -25,6 +25,7 @@ mod galaxy;
 mod governance;
 mod history;
 mod incident;
+mod intel;
 mod intent;
 mod kpi;
 mod ladder;
@@ -144,6 +145,11 @@ pub use history::{
 pub use incident::{
     Incident, IncidentConfig, IncidentError, IncidentKind, IncidentReview, IncidentSnapshot,
     IncidentState, IncidentStatus, Risk, Severity,
+};
+pub use intel::{
+    IntelFact, IntelValue, Observation, SPEED_OF_LIGHT_MPS, aged_confidence, apply_amount_error,
+    apply_count_error, group_facts, intel_confidence, light_delay_secs, light_range_au,
+    noisy_fleet, noisy_resources, observations_from, sensor_error, signed_unit,
 };
 pub use intent::{Intent, IntentError, Proposal, apply, propose};
 pub use kpi::{

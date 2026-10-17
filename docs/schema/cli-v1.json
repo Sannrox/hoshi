@@ -58,7 +58,15 @@
     "missions": { "type": "array" },
     "spy_reports": {
       "type": "array",
-      "description": "Stored spy reports with age_secs. Each outpost also carries its latest report."
+      "description": "Arrived spy reports with source, observed_at, age_secs and confidence. Each outpost also carries its latest arrived report. Pending reports are omitted."
+    },
+    "facts": {
+      "type": "array",
+      "description": "Remote intel facts from `hoshi intel`. Each fact keeps every arrived observation for one object field."
+    },
+    "observations": {
+      "type": "array",
+      "description": "Provenance chain from `hoshi intel provenance`. Source, time, age, confidence and the player-visible value; never hidden truth."
     },
     "planets": { "type": "array" },
     "events": { "type": "array" },
