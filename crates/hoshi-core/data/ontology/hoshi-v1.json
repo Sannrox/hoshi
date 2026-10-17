@@ -124,6 +124,30 @@
     {
       "name": "FollowUp",
       "description": "A recommended law, maintenance or fleet change from a review."
+    },
+    {
+      "name": "Asset",
+      "description": "A building, defence battery or vehicle whose condition is tracked."
+    },
+    {
+      "name": "Condition",
+      "description": "Health of an asset from use, age and heat, from 1.0 (new) to worn."
+    },
+    {
+      "name": "MaintenancePlan",
+      "description": "A time-based or usage-based service interval for an asset."
+    },
+    {
+      "name": "WorkOrder",
+      "description": "Scheduled service or repair that takes an asset offline for a cost."
+    },
+    {
+      "name": "TelemetryReading",
+      "description": "A noisy sample of temperature, vibration and power for an asset."
+    },
+    {
+      "name": "FailurePrediction",
+      "description": "Chance an asset fails within the configured horizon, from the hourly bathtub rate."
     }
   ],
   "relations": [

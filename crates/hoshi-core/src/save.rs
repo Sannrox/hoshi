@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 43;
+pub const SCHEMA_VERSION: u32 = 44;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -230,7 +230,13 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM incident_rows;
          DELETE FROM incident_reviews;
          DELETE FROM incident_risks;
-         DELETE FROM incident_meta;",
+         DELETE FROM incident_meta;
+         DELETE FROM maintenance_assets;
+         DELETE FROM maintenance_plans;
+         DELETE FROM maintenance_orders;
+         DELETE FROM maintenance_readings;
+         DELETE FROM maintenance_predictions;
+         DELETE FROM maintenance_meta;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -475,6 +481,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
     persist_finance(&tx, state)?;
     persist_kpi(&tx, state)?;
     persist_incidents(&tx, state)?;
+    persist_maintenance(&tx, state)?;
     tx.execute(
         "INSERT INTO activity_boosts (id, prod_until, prod_factor, research_until, research_factor)
          VALUES (1, ?1, ?2, ?3, ?4)",
@@ -1778,6 +1785,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     read_finance(conn, &mut state)?;
     read_kpi(conn, &mut state)?;
     read_incidents(conn, &mut state)?;
+    read_maintenance(conn, &mut state)?;
     state.next_route_id = state
         .routes
         .iter()
@@ -2863,6 +2871,10 @@ fn unix_ts_opt(value: Option<i64>) -> Result<Option<u64>, SaveError> {
     value.map(unix_ts).transpose()
 }
 
+fn duration_secs(value: i64) -> Result<u64, SaveError> {
+    u64::try_from(value).map_err(|_| SaveError::Corrupt("negative duration"))
+}
+
 fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
     let sql = match table {
         "meta" => "SELECT COUNT(*) FROM meta",
@@ -2967,6 +2979,12 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "incident_rows" => "SELECT COUNT(*) FROM incident_rows",
         "incident_reviews" => "SELECT COUNT(*) FROM incident_reviews",
         "incident_risks" => "SELECT COUNT(*) FROM incident_risks",
+        "maintenance_meta" => "SELECT COUNT(*) FROM maintenance_meta",
+        "maintenance_assets" => "SELECT COUNT(*) FROM maintenance_assets",
+        "maintenance_plans" => "SELECT COUNT(*) FROM maintenance_plans",
+        "maintenance_orders" => "SELECT COUNT(*) FROM maintenance_orders",
+        "maintenance_readings" => "SELECT COUNT(*) FROM maintenance_readings",
+        "maintenance_predictions" => "SELECT COUNT(*) FROM maintenance_predictions",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -3073,7 +3091,13 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "incident_meta")?
         + count_rows(conn, "incident_rows")?
         + count_rows(conn, "incident_reviews")?
-        + count_rows(conn, "incident_risks")?)
+        + count_rows(conn, "incident_risks")?
+        + count_rows(conn, "maintenance_meta")?
+        + count_rows(conn, "maintenance_assets")?
+        + count_rows(conn, "maintenance_plans")?
+        + count_rows(conn, "maintenance_orders")?
+        + count_rows(conn, "maintenance_readings")?
+        + count_rows(conn, "maintenance_predictions")?)
 }
 
 fn migrate(conn: &Connection) -> Result<(), SaveError> {
@@ -3212,6 +3236,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 43 {
         migrate_v43(conn)?;
+    }
+    if found < 44 {
+        migrate_v44(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -4304,6 +4331,70 @@ fn migrate_v41(conn: &Connection) -> Result<(), SaveError> {
             s INTEGER,
             p INTEGER,
             credits REAL NOT NULL
+        );
+        ",
+    )?;
+    Ok(())
+}
+
+fn migrate_v44(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS maintenance_meta (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            next_id INTEGER NOT NULL,
+            next_plan_id INTEGER NOT NULL,
+            next_order_id INTEGER NOT NULL,
+            next_reading_id INTEGER NOT NULL,
+            next_prediction_id INTEGER NOT NULL,
+            next_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS maintenance_assets (
+            id INTEGER PRIMARY KEY,
+            kind TEXT NOT NULL,
+            key TEXT NOT NULL,
+            galaxy INTEGER NOT NULL,
+            system INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            condition REAL NOT NULL,
+            hours_use REAL NOT NULL,
+            installed_at INTEGER NOT NULL,
+            last_service_at INTEGER NOT NULL,
+            last_service_hours REAL NOT NULL,
+            offline_until INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS maintenance_plans (
+            id INTEGER PRIMARY KEY,
+            asset_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            interval REAL NOT NULL,
+            enabled INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS maintenance_orders (
+            id INTEGER PRIMARY KEY,
+            asset_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            started_at INTEGER NOT NULL,
+            ends_at INTEGER NOT NULL,
+            iron REAL NOT NULL,
+            silicon REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS maintenance_readings (
+            id INTEGER PRIMARY KEY,
+            asset_id INTEGER NOT NULL,
+            at INTEGER NOT NULL,
+            temperature REAL NOT NULL,
+            vibration REAL NOT NULL,
+            power REAL NOT NULL,
+            hours_use REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS maintenance_predictions (
+            id INTEGER PRIMARY KEY,
+            asset_id INTEGER NOT NULL,
+            at INTEGER NOT NULL,
+            probability REAL NOT NULL,
+            horizon_secs INTEGER NOT NULL,
+            reading_id INTEGER NOT NULL
         );
         ",
     )?;
@@ -7434,6 +7525,312 @@ fn decode_incident_list(raw: &str) -> Result<Vec<String>, SaveError> {
     serde_json::from_str(raw).map_err(|_| SaveError::Corrupt("incident list"))
 }
 
+fn persist_maintenance(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<(), SaveError> {
+    tx.execute(
+        "INSERT INTO maintenance_meta (
+            id, next_id, next_plan_id, next_order_id, next_reading_id, next_prediction_id, next_at
+         ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            state.maintenance.next_id as i64,
+            state.maintenance.next_plan_id as i64,
+            state.maintenance.next_order_id as i64,
+            state.maintenance.next_reading_id as i64,
+            state.maintenance.next_prediction_id as i64,
+            state.maintenance.next_at as i64,
+        ],
+    )?;
+    for row in &state.maintenance.assets {
+        tx.execute(
+            "INSERT INTO maintenance_assets (
+                id, kind, key, galaxy, system, position, condition, hours_use,
+                installed_at, last_service_at, last_service_hours, offline_until
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                row.id as i64,
+                row.kind.as_key(),
+                row.key,
+                row.coord.galaxy as i64,
+                row.coord.system as i64,
+                row.coord.position as i64,
+                row.condition,
+                row.hours_use,
+                row.installed_at as i64,
+                row.last_service_at as i64,
+                row.last_service_hours,
+                row.offline_until.map(|v| v as i64),
+            ],
+        )?;
+    }
+    for row in &state.maintenance.plans {
+        tx.execute(
+            "INSERT INTO maintenance_plans (id, asset_id, kind, interval, enabled)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                row.id as i64,
+                row.asset_id as i64,
+                row.kind.as_key(),
+                row.interval,
+                if row.enabled { 1i64 } else { 0 },
+            ],
+        )?;
+    }
+    for row in &state.maintenance.orders {
+        tx.execute(
+            "INSERT INTO maintenance_orders (
+                id, asset_id, kind, started_at, ends_at, iron, silicon
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                row.id as i64,
+                row.asset_id as i64,
+                row.kind.as_key(),
+                row.started_at as i64,
+                row.ends_at as i64,
+                row.iron,
+                row.silicon,
+            ],
+        )?;
+    }
+    for row in &state.maintenance.readings {
+        tx.execute(
+            "INSERT INTO maintenance_readings (
+                id, asset_id, at, temperature, vibration, power, hours_use
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                row.id as i64,
+                row.asset_id as i64,
+                row.at as i64,
+                row.temperature,
+                row.vibration,
+                row.power,
+                row.hours_use,
+            ],
+        )?;
+    }
+    for row in &state.maintenance.predictions {
+        tx.execute(
+            "INSERT INTO maintenance_predictions (
+                id, asset_id, at, probability, horizon_secs, reading_id
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                row.id as i64,
+                row.asset_id as i64,
+                row.at as i64,
+                row.probability,
+                row.horizon_secs as i64,
+                row.reading_id as i64,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn read_maintenance(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
+    let cfg = crate::MaintenanceConfig::bundled();
+    state.maintenance = crate::MaintenanceState::new(state.last_tick_unix, &cfg);
+    let meta = conn
+        .query_row(
+            "SELECT next_id, next_plan_id, next_order_id, next_reading_id, next_prediction_id, next_at
+             FROM maintenance_meta WHERE id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((next_id, next_plan_id, next_order_id, next_reading_id, next_prediction_id, next_at)) =
+        meta
+    else {
+        state.sync_maintenance_assets(state.last_tick_unix);
+        return Ok(());
+    };
+    state.maintenance.next_id = u64::try_from(next_id).unwrap_or(1);
+    state.maintenance.next_plan_id = u64::try_from(next_plan_id).unwrap_or(1);
+    state.maintenance.next_order_id = u64::try_from(next_order_id).unwrap_or(1);
+    state.maintenance.next_reading_id = u64::try_from(next_reading_id).unwrap_or(1);
+    state.maintenance.next_prediction_id = u64::try_from(next_prediction_id).unwrap_or(1);
+    state.maintenance.next_at = unix_ts(next_at)?;
+
+    let mut stmt = conn.prepare(
+        "SELECT id, kind, key, galaxy, system, position, condition, hours_use,
+                installed_at, last_service_at, last_service_hours, offline_until
+         FROM maintenance_assets ORDER BY id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, i64>(5)?,
+            row.get::<_, f64>(6)?,
+            row.get::<_, f64>(7)?,
+            row.get::<_, i64>(8)?,
+            row.get::<_, i64>(9)?,
+            row.get::<_, f64>(10)?,
+            row.get::<_, Option<i64>>(11)?,
+        ))
+    })?;
+    let mut assets = Vec::new();
+    for row in rows {
+        let (
+            id,
+            kind,
+            key,
+            galaxy,
+            system,
+            position,
+            condition,
+            hours_use,
+            installed_at,
+            last_service_at,
+            last_service_hours,
+            offline_until,
+        ) = row?;
+        assets.push(crate::Asset {
+            id: u64::try_from(id).map_err(|_| SaveError::Corrupt("asset id"))?,
+            kind: crate::AssetKind::from_key(&kind).ok_or(SaveError::Corrupt("asset kind"))?,
+            key,
+            coord: crate::Coord {
+                galaxy: u16::try_from(galaxy).map_err(|_| SaveError::Corrupt("asset galaxy"))?,
+                system: u16::try_from(system).map_err(|_| SaveError::Corrupt("asset system"))?,
+                position: u16::try_from(position)
+                    .map_err(|_| SaveError::Corrupt("asset position"))?,
+            },
+            condition,
+            hours_use,
+            installed_at: unix_ts(installed_at)?,
+            last_service_at: unix_ts(last_service_at)?,
+            last_service_hours,
+            offline_until: unix_ts_opt(offline_until)?,
+        });
+    }
+    state.maintenance.assets = assets;
+
+    let mut stmt = conn.prepare(
+        "SELECT id, asset_id, kind, interval, enabled FROM maintenance_plans ORDER BY id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, f64>(3)?,
+            row.get::<_, i64>(4)?,
+        ))
+    })?;
+    let mut plans = Vec::new();
+    for row in rows {
+        let (id, asset_id, kind, interval, enabled) = row?;
+        plans.push(crate::MaintenancePlan {
+            id: u64::try_from(id).map_err(|_| SaveError::Corrupt("plan id"))?,
+            asset_id: u64::try_from(asset_id).map_err(|_| SaveError::Corrupt("plan asset"))?,
+            kind: crate::PlanKind::from_key(&kind).ok_or(SaveError::Corrupt("plan kind"))?,
+            interval,
+            enabled: enabled != 0,
+        });
+    }
+    state.maintenance.plans = plans;
+
+    let mut stmt = conn.prepare(
+        "SELECT id, asset_id, kind, started_at, ends_at, iron, silicon
+         FROM maintenance_orders ORDER BY id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, f64>(5)?,
+            row.get::<_, f64>(6)?,
+        ))
+    })?;
+    let mut orders = Vec::new();
+    for row in rows {
+        let (id, asset_id, kind, started_at, ends_at, iron, silicon) = row?;
+        orders.push(crate::WorkOrder {
+            id: u64::try_from(id).map_err(|_| SaveError::Corrupt("order id"))?,
+            asset_id: u64::try_from(asset_id).map_err(|_| SaveError::Corrupt("order asset"))?,
+            kind: crate::WorkKind::from_key(&kind).ok_or(SaveError::Corrupt("order kind"))?,
+            started_at: unix_ts(started_at)?,
+            ends_at: unix_ts(ends_at)?,
+            iron,
+            silicon,
+        });
+    }
+    state.maintenance.orders = orders;
+
+    let mut stmt = conn.prepare(
+        "SELECT id, asset_id, at, temperature, vibration, power, hours_use
+         FROM maintenance_readings ORDER BY id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, f64>(3)?,
+            row.get::<_, f64>(4)?,
+            row.get::<_, f64>(5)?,
+            row.get::<_, f64>(6)?,
+        ))
+    })?;
+    let mut readings = Vec::new();
+    for row in rows {
+        let (id, asset_id, at, temperature, vibration, power, hours_use) = row?;
+        readings.push(crate::TelemetryReading {
+            id: u64::try_from(id).map_err(|_| SaveError::Corrupt("reading id"))?,
+            asset_id: u64::try_from(asset_id).map_err(|_| SaveError::Corrupt("reading asset"))?,
+            at: unix_ts(at)?,
+            temperature,
+            vibration,
+            power,
+            hours_use,
+        });
+    }
+    state.maintenance.readings = readings;
+
+    let mut stmt = conn.prepare(
+        "SELECT id, asset_id, at, probability, horizon_secs, reading_id
+         FROM maintenance_predictions ORDER BY id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, f64>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, i64>(5)?,
+        ))
+    })?;
+    let mut predictions = Vec::new();
+    for row in rows {
+        let (id, asset_id, at, probability, horizon_secs, reading_id) = row?;
+        predictions.push(crate::FailurePrediction {
+            id: u64::try_from(id).map_err(|_| SaveError::Corrupt("prediction id"))?,
+            asset_id: u64::try_from(asset_id)
+                .map_err(|_| SaveError::Corrupt("prediction asset"))?,
+            at: unix_ts(at)?,
+            probability,
+            horizon_secs: duration_secs(horizon_secs)?,
+            reading_id: u64::try_from(reading_id)
+                .map_err(|_| SaveError::Corrupt("prediction reading"))?,
+        });
+    }
+    state.maintenance.predictions = predictions;
+    Ok(())
+}
+
 fn persist_incidents(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<(), SaveError> {
     tx.execute(
         "INSERT INTO incident_meta (id, next_id, next_review_id, next_risk_id, next_review_at)
@@ -9485,6 +9882,60 @@ mod tests {
         assert_eq!(loaded.incidents.risks.len(), 3);
         assert_eq!(count_rows(&conn, "incident_meta").unwrap(), 1);
         assert_eq!(count_rows(&conn, "incident_rows").unwrap(), 1);
+    }
+
+    #[test]
+    fn migrate_v44_round_trips_maintenance() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v44(&conn).unwrap();
+        migrate_v44(&conn).unwrap();
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.enabled = false;
+        cfg.market.enabled = false;
+        let mut state = GameState::with_seed(1_000, cfg, 9);
+        state.deterministic = true;
+        state.resources.iron = 1_000.0;
+        state.resources.silicon = 1_000.0;
+        state.sync_maintenance_assets(1_000);
+        let id = state.maintenance.assets[0].id;
+        state
+            .schedule_maintenance(id, crate::PlanKind::Time, crate::Actor::Player, 1_000)
+            .unwrap();
+        state.catch_up(state.maintenance.next_at);
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert!(!loaded.maintenance.assets.is_empty());
+        assert_eq!(loaded.maintenance.assets[0].id, id);
+        assert!(!loaded.maintenance.orders.is_empty() || !loaded.maintenance.readings.is_empty());
+        assert_eq!(count_rows(&conn, "maintenance_meta").unwrap(), 1);
+        assert!(count_rows(&conn, "maintenance_assets").unwrap() >= 1);
+    }
+
+    #[test]
+    fn pre_v44_save_materializes_assets_without_catch_up() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.enabled = false;
+        cfg.market.enabled = false;
+        let mut state = GameState::with_seed(1_000, cfg, 9);
+        state.deterministic = true;
+        save_state(&mut conn, &state).unwrap();
+        conn.execute("DELETE FROM maintenance_meta", []).unwrap();
+        conn.execute("DELETE FROM maintenance_assets", []).unwrap();
+        conn.execute("DELETE FROM maintenance_plans", []).unwrap();
+        conn.execute("DELETE FROM maintenance_orders", []).unwrap();
+        conn.execute("DELETE FROM maintenance_readings", [])
+            .unwrap();
+        conn.execute("DELETE FROM maintenance_predictions", [])
+            .unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert!(
+            !loaded.maintenance.assets.is_empty(),
+            "expected mines after pre-v44 load, got {:?}",
+            loaded.maintenance.assets
+        );
+        assert!(loaded.deterministic);
+        assert_eq!(loaded.last_tick_unix, state.last_tick_unix);
     }
 
     #[test]

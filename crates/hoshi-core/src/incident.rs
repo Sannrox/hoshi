@@ -537,6 +537,15 @@ impl GameState {
         );
     }
 
+    pub(crate) fn note_failure_incident(&mut self, asset: &str, at: u64) {
+        self.auto_open(
+            IncidentKind::Failure,
+            Severity::High,
+            vec![format!("asset:{asset}")],
+            at,
+        );
+    }
+
     pub(crate) fn note_leak_incident(&mut self, via: &str, at: u64) {
         self.auto_open(
             IncidentKind::Accident,

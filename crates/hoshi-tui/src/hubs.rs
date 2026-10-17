@@ -44,6 +44,7 @@ impl Hub {
             Hub::Colony => &[
                 Screen::Planet,
                 Screen::Production,
+                Screen::Maintenance,
                 Screen::Overview,
                 Screen::Wonder,
             ],
@@ -81,6 +82,7 @@ pub fn label(screen: Screen) -> &'static str {
         Screen::Achievements => "Feats",
         Screen::Planet => "Buildings",
         Screen::Production => "Production",
+        Screen::Maintenance => "Maintenance",
         Screen::Overview => "Research",
         Screen::Wonder => "Wonder",
         Screen::Shipyard => "Shipyard",
@@ -128,7 +130,7 @@ pub fn enter(current: Screen, hub: Hub) -> Screen {
 mod tests {
     use super::*;
 
-    const EVERY: [Screen; 22] = [
+    const EVERY: [Screen; 23] = [
         Screen::Overview,
         Screen::Planet,
         Screen::Shipyard,
@@ -138,6 +140,7 @@ mod tests {
         Screen::Daily,
         Screen::Goals,
         Screen::Production,
+        Screen::Maintenance,
         Screen::Market,
         Screen::Diplomacy,
         Screen::Laws,

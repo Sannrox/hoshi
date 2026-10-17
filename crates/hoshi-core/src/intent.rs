@@ -96,6 +96,15 @@ pub enum Intent {
         id: u64,
         actor: Actor,
     },
+    ScheduleMaintenance {
+        asset_id: u64,
+        plan: String,
+        actor: Actor,
+    },
+    CompleteWorkOrder {
+        order_id: u64,
+        actor: Actor,
+    },
 }
 
 impl Intent {
@@ -119,6 +128,8 @@ impl Intent {
             Intent::AssignIncident { .. } => "assign_incident",
             Intent::ResolveIncident { .. } => "resolve_incident",
             Intent::ReviewIncident { .. } => "review_incident",
+            Intent::ScheduleMaintenance { .. } => "schedule_maintenance",
+            Intent::CompleteWorkOrder { .. } => "complete_work_order",
         }
     }
 }
@@ -139,6 +150,7 @@ pub enum IntentError {
     Finance(crate::FinanceError),
     Kpi(crate::KpiError),
     Incident(crate::IncidentError),
+    Maintenance(crate::MaintenanceError),
     Save(String),
 }
 
@@ -152,6 +164,7 @@ impl fmt::Display for IntentError {
             IntentError::Finance(e) => write!(f, "{e}"),
             IntentError::Kpi(e) => write!(f, "{e}"),
             IntentError::Incident(e) => write!(f, "{e}"),
+            IntentError::Maintenance(e) => write!(f, "{e}"),
             IntentError::Save(e) => write!(f, "save backend: {e}"),
         }
     }
@@ -281,6 +294,18 @@ fn proposal_id(intent: &Intent, now_unix: u64, tick: u64) -> String {
         Intent::ReviewIncident { id, actor } => {
             format!("review_incident:{now_unix}:{tick}:{id}:{}", actor.as_key())
         }
+        Intent::ScheduleMaintenance {
+            asset_id,
+            plan,
+            actor,
+        } => format!(
+            "schedule_maintenance:{now_unix}:{tick}:{asset_id}:{plan}:{}",
+            actor.as_key()
+        ),
+        Intent::CompleteWorkOrder { order_id, actor } => format!(
+            "complete_work_order:{now_unix}:{tick}:{order_id}:{}",
+            actor.as_key()
+        ),
     }
 }
 
@@ -419,6 +444,22 @@ fn apply_inner(state: &mut GameState, intent: &Intent, now_unix: u64) -> Result<
             .review_incident(*id, *actor, now_unix)
             .map(|_| ())
             .map_err(IntentError::Incident),
+        Intent::ScheduleMaintenance {
+            asset_id,
+            plan,
+            actor,
+        } => {
+            let plan = crate::PlanKind::from_key(plan).ok_or(IntentError::Maintenance(
+                crate::MaintenanceError::Parse("unknown plan".into()),
+            ))?;
+            state
+                .schedule_maintenance(*asset_id, plan, *actor, now_unix)
+                .map(|_| ())
+                .map_err(IntentError::Maintenance)
+        }
+        Intent::CompleteWorkOrder { order_id, actor } => state
+            .complete_work_order(*order_id, *actor, now_unix)
+            .map_err(IntentError::Maintenance),
     }
 }
 
@@ -525,6 +566,17 @@ mod tests {
             .as_key(),
             Intent::ReviewIncident {
                 id: 1,
+                actor: Actor::Player,
+            }
+            .as_key(),
+            Intent::ScheduleMaintenance {
+                asset_id: 1,
+                plan: "time".into(),
+                actor: Actor::Player,
+            }
+            .as_key(),
+            Intent::CompleteWorkOrder {
+                order_id: 1,
                 actor: Actor::Player,
             }
             .as_key(),
