@@ -12,6 +12,8 @@
 
 - Overlays (story, away, victory, tactical, combat replay, invasion approval, advisor, activity, help, detail, history and spy reports) open as centred dialogs over the dimmed screen with their keys as keycaps in the footer. Story choices show number keycaps, the away summary groups deliveries, stalls and completions with Fe/Si/D gains and a duration, the replay draws both fleets as bars, and advisor tips read as callouts.
 
+- The title screen uses the same navbar and status bar as play. At 90 columns and up the menu sits beside a save table (name, species, planets, fleet, last played, state) that marks the save Continue opens; an empty folder says New game starts one. Title help opens as a dialog.
+
 ### Fixed
 
 - Story, away, and spy overlays clear the screen underneath so numbered choices stay readable. Inline portraits are erased while an overlay is open.

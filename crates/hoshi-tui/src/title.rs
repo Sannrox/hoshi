@@ -4,6 +4,9 @@ use crate::clip::copy_to_clipboard;
 use crate::config::UserConfig;
 use crate::keymap::{Binding, HelpContext, Keymap};
 use crate::portraits::{self, Mood, PortraitView, Slot as PortraitSlot};
+use crate::ui::chrome::{Dialog, Navbar, StatusBar};
+use crate::ui::table::{Column, DataTable};
+use crate::ui::{Depth, Intent, Surface, Theme};
 use hoshi_core::{
     AchievementCondition, AchievementConfig, BalanceConfig, CareerGlance, Prestige, PrestigeConfig,
     PrestigeError, RivalCatalog, RivalSettings, SaveError, SaveGlance, SeasonCatalog,
@@ -13,10 +16,10 @@ use hoshi_core::{
 };
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
-use ratatui::layout::{Constraint, Layout};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
@@ -1709,22 +1712,164 @@ impl Title {
         TitleAction::None
     }
 
+    fn theme(&self) -> Theme {
+        Theme::resolve(
+            Depth::detect(|key| std::env::var(key).ok()),
+            self.config.high_contrast,
+        )
+    }
+
+    fn page_label(&self) -> &'static str {
+        match self.page {
+            Page::Menu => "menu",
+            Page::New => "new game",
+            Page::Season => "season",
+            Page::Load => "load game",
+            Page::Settings => "settings",
+            Page::Advisor => "advisor",
+            Page::Keys => "keys",
+            Page::Achievements => "achievements",
+            Page::Prestige => "prestige",
+            Page::Credits => "credits",
+        }
+    }
+
+    /// Saves as a table: name, species, planets, fleet, last played and state.
+    fn save_table<'a>(&self, t: &'a Theme) -> DataTable<'a> {
+        let continue_name = self
+            .config
+            .last_slot
+            .as_deref()
+            .filter(|name| {
+                self.slots
+                    .iter()
+                    .any(|s| s.name == *name && s.status.playable())
+            })
+            .or_else(|| {
+                self.slots
+                    .iter()
+                    .find(|s| s.status.playable())
+                    .map(|s| s.name.as_str())
+            });
+        let rows = self
+            .slots
+            .iter()
+            .map(|slot| {
+                let mut name = vec![Span::styled(slot_label(slot), t.text())];
+                if continue_name == Some(slot.name.as_str()) {
+                    name.insert(0, Span::styled("▸ ", t.intent(Intent::Primary)));
+                }
+                let chip = |text: &str, intent: Intent| {
+                    Line::from(crate::ui::spans::tag(t, text, intent, true))
+                };
+                match &slot.status {
+                    SlotStatus::Ready(g) | SlotStatus::Harness(g) => {
+                        let species = g
+                            .species_id
+                            .as_deref()
+                            .and_then(|id| self.species_catalog.get(id).map(|s| s.name.clone()))
+                            .unwrap_or_else(|| "Humans".into());
+                        let ago = self.now_unix.saturating_sub(g.last_tick_unix);
+                        vec![
+                            Line::from(name),
+                            Line::styled(species, t.muted()),
+                            Line::styled(g.planets.to_string(), t.text()),
+                            Line::styled(g.fleet_strength.to_string(), t.text()),
+                            Line::styled(
+                                format!("{} ago", crate::ui::spans::duration(ago)),
+                                t.muted(),
+                            ),
+                            if matches!(slot.status, SlotStatus::Harness(_)) {
+                                chip("CLI ONLY", Intent::Neutral)
+                            } else if g.seasonal {
+                                chip("SEASON", Intent::Primary)
+                            } else {
+                                chip("READY", Intent::Success)
+                            },
+                        ]
+                    }
+                    other => {
+                        let (text, intent) = match other {
+                            SlotStatus::Locked => ("IN USE", Intent::Warning),
+                            SlotStatus::Newer { .. } => ("NEWER", Intent::Warning),
+                            _ => ("CORRUPT", Intent::Danger),
+                        };
+                        vec![
+                            Line::from(name),
+                            Line::default(),
+                            Line::default(),
+                            Line::default(),
+                            Line::default(),
+                            chip(text, intent),
+                        ]
+                    }
+                }
+            })
+            .collect();
+        DataTable {
+            theme: t,
+            columns: vec![
+                Column::fill("save"),
+                Column::left("species", 10),
+                Column::right("planets", 7),
+                Column::right("fleet", 5),
+                Column::right("played", 11),
+                Column::left("state", 9),
+            ],
+            rows,
+            selected: None,
+            striped: true,
+            surface: Surface::Base,
+            groups: Vec::new(),
+        }
+    }
+
     pub fn draw(&self, frame: &mut Frame<'_>) {
+        let t = self.theme();
         let area = frame.area();
-        let contrast = if self.config.high_contrast {
-            Style::default().fg(Color::White)
-        } else {
-            Style::default()
+        crate::ui::chrome::fill(frame.buffer_mut(), area, t.surface(Surface::Base));
+        let [nav, body, status] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .areas(area);
+        frame.render_widget(
+            Navbar {
+                theme: &t,
+                mark: "HOSHI",
+                crumbs: vec!["Title".into(), self.page_label().into()],
+                right: Vec::new(),
+            },
+            nav,
+        );
+        frame.render_widget(
+            StatusBar {
+                theme: &t,
+                crumbs: vec!["title".into(), self.page_label().into()],
+                hints: vec![
+                    ("↑↓".into(), "select".into()),
+                    (self.config.keys.primary(Binding::Confirm), "open".into()),
+                    (self.config.keys.primary(Binding::Help), "help".into()),
+                    (self.config.keys.primary(Binding::Quit), "quit".into()),
+                ],
+                right: None,
+            },
+            status,
+        );
+        let inner = Rect {
+            x: body.x + 2,
+            y: body.y + 1,
+            width: body.width.saturating_sub(4),
+            height: body.height.saturating_sub(1),
         };
-        let block = Block::bordered().title(" hoshi ").style(contrast);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
         let mut lines: Vec<Line> = Vec::new();
         if inner.width >= 40 && inner.height >= 10 {
-            lines.push(Line::from(Span::styled(
-                "hoshi",
-                Style::default().add_modifier(Modifier::BOLD),
-            )));
+            lines.push(Line::from(Span::styled("hoshi", t.strong())));
+            lines.push(Line::styled(
+                "an idle space-strategy game for the terminal",
+                t.muted(),
+            ));
             lines.push(Line::from(""));
         }
         if !self.config.reduced_motion {
@@ -1736,7 +1881,14 @@ impl Title {
         match self.page {
             Page::Menu => {
                 for (i, item) in self.menu_items().into_iter().enumerate() {
-                    lines.push(menu_line(item, i == self.selected));
+                    lines.push(if i == self.selected {
+                        Line::from(vec![
+                            Span::styled("▌ ", t.intent(Intent::Primary)),
+                            Span::styled(format!("{item:<16}"), t.selected()),
+                        ])
+                    } else {
+                        Line::styled(format!("  {item}"), t.text())
+                    });
                 }
                 lines.push(Line::from(""));
                 lines.push(Line::from(format!(
@@ -2132,21 +2284,86 @@ impl Title {
                 Style::default().add_modifier(Modifier::ITALIC),
             )));
         }
-        let chunks = Layout::vertical([Constraint::Min(1)]).split(inner);
-        frame.render_widget(Paragraph::new(lines), chunks[0]);
+        if self.page == Page::Menu && inner.width >= 90 {
+            let header_rows = if inner.height >= 10 { 5 } else { 2 };
+            let menu_lines = lines.split_off(header_rows.min(lines.len() as u16) as usize);
+            let [header, below] =
+                Layout::vertical([Constraint::Length(header_rows), Constraint::Min(1)])
+                    .areas(inner);
+            frame.render_widget(Paragraph::new(lines).style(t.text()), header);
+            let [menu, _, saves] = Layout::horizontal([
+                Constraint::Length(34),
+                Constraint::Length(2),
+                Constraint::Min(40),
+            ])
+            .areas(below);
+            frame.render_widget(Paragraph::new(menu_lines).style(t.text()), menu);
+            frame.render_widget(
+                Paragraph::new(crate::ui::panels::section(&t, "saves")),
+                saves,
+            );
+            let table = Rect {
+                y: saves.y + 1,
+                height: saves.height.saturating_sub(1),
+                ..saves
+            };
+            if self.slots.is_empty() {
+                frame.render_widget(
+                    Paragraph::new(vec![
+                        Line::from(vec![
+                            Span::styled("▌ ", t.intent(Intent::Primary)),
+                            Span::styled("No saves yet", t.strong()),
+                        ]),
+                        Line::from(vec![
+                            Span::styled("▌ ", t.intent(Intent::Primary)),
+                            Span::styled("New game starts one in this folder.", t.muted()),
+                        ]),
+                    ]),
+                    table,
+                );
+            } else {
+                frame.render_widget(self.save_table(&t), table);
+            }
+        } else {
+            frame.render_widget(Paragraph::new(lines).style(t.text()), inner);
+        }
         if self.help_open {
             let help = self
                 .config
                 .keys
                 .help_lines(self.help_context())
                 .into_iter()
-                .map(Line::from)
+                .map(|line| Line::styled(line, t.text()))
                 .collect::<Vec<_>>();
-            frame.render_widget(Clear, area);
-            let block = Block::bordered().title(" help ");
-            let help_inner = block.inner(area);
-            frame.render_widget(block, area);
-            frame.render_widget(Paragraph::new(help), help_inner);
+            crate::ui::chrome::dim(frame.buffer_mut(), area, &t);
+            let width = area.width.saturating_sub(4).min(84);
+            let height = (help.len() as u16 + 4).min(area.height.saturating_sub(2));
+            let rect = Rect {
+                x: area.x + (area.width - width) / 2,
+                y: area.y + (area.height - height) / 2,
+                width,
+                height,
+            };
+            frame.render_widget(Clear, rect);
+            let dialog = Dialog {
+                theme: &t,
+                title: "Help".into(),
+                subtitle: String::new(),
+                close_hint: self.config.keys.primary(Binding::Cancel),
+                footer_note: None,
+                buttons: Vec::new(),
+            };
+            let help_inner = dialog.inner(rect);
+            frame.render_widget(dialog, rect);
+            frame.render_widget(
+                Paragraph::new(help),
+                Rect {
+                    x: help_inner.x + 2,
+                    y: help_inner.y + 1,
+                    width: help_inner.width.saturating_sub(4),
+                    height: help_inner.height.saturating_sub(1),
+                },
+            );
         }
     }
 
@@ -2619,6 +2836,28 @@ mod tests {
         title.now_unix = 1;
         let early = render(&title, 80, 24);
         assert!(!early.contains("Season"), "{early}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wide_menu_shows_saves_as_a_table() {
+        let dir = unique_dir();
+        let empty = Title::new(dir.clone(), 1_000);
+        let text = render(&empty, 120, 40);
+        assert!(text.contains("No saves yet"), "{text}");
+        write_save(&dir, "live", &GameState::new(10));
+        let title = Title::new(dir.clone(), 3_610);
+        let text = render(&title, 120, 40);
+        assert!(text.contains("HOSHI"), "{text}");
+        assert!(text.contains("Continue"), "{text}");
+        assert!(text.contains("SAVES"), "{text}");
+        assert!(text.contains("▸ live"), "{text}");
+        assert!(text.contains("Humans"), "{text}");
+        assert!(text.contains("1h 00m ago"), "{text}");
+        assert!(text.contains("READY"), "{text}");
+        let narrow = render(&title, 80, 24);
+        assert!(narrow.contains("Continue"), "{narrow}");
+        assert!(!narrow.contains("SAVES"), "{narrow}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
