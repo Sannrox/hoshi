@@ -54,6 +54,23 @@ pub fn bar(theme: &Theme, frac: f64, width: usize, intent: Intent) -> Vec<Span<'
     ]
 }
 
+/// Block sparkline of the last `width` values, scaled between their min and max.
+pub fn sparkline(theme: &Theme, values: &[f64], width: usize, intent: Intent) -> Span<'static> {
+    const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let tail = &values[values.len().saturating_sub(width)..];
+    let (lo, hi) = tail
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+            (lo.min(*v), hi.max(*v))
+        });
+    let span = if hi > lo { hi - lo } else { 1.0 };
+    let text: String = tail
+        .iter()
+        .map(|v| BLOCKS[(((v - lo) / span) * 7.0).round().clamp(0.0, 7.0) as usize])
+        .collect();
+    Span::styled(text, theme.intent(intent))
+}
+
 /// Compact duration: `45s`, `3m 00s`, `2h 05m`, `3d 04h`.
 pub fn duration(secs: u64) -> String {
     match secs {
@@ -124,6 +141,18 @@ mod tests {
         assert_eq!(duration(273_600), "3d 04h");
         assert_eq!(countdown(3_582), "59:42");
         assert_eq!(countdown(3_900), "1:05:00");
+    }
+
+    #[test]
+    fn sparkline_scales_to_the_range_and_keeps_the_tail() {
+        let theme = Theme::default();
+        let s = sparkline(&theme, &[9.0, 1.0, 2.0, 3.0], 3, Intent::Primary);
+        assert_eq!(s.content, "▁▅█");
+        assert_eq!(sparkline(&theme, &[], 4, Intent::Primary).content, "");
+        assert_eq!(
+            sparkline(&theme, &[5.0, 5.0], 4, Intent::Primary).content,
+            "▁▁"
+        );
     }
 
     #[test]

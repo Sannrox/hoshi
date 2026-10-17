@@ -40,6 +40,8 @@ pub enum Intent {
     Success,
     Warning,
     Danger,
+    /// Grey state such as idle, locked or open.
+    Neutral,
 }
 
 /// Background layers, darkest last.
@@ -331,6 +333,7 @@ impl Theme {
             Intent::Success => self.p.success,
             Intent::Warning => self.p.warning,
             Intent::Danger => self.p.danger,
+            Intent::Neutral => self.p.muted,
         };
         let style = Style::default().fg(fg);
         if self.plain && matches!(intent, Intent::Primary | Intent::Danger) {
@@ -375,6 +378,7 @@ impl Theme {
                 self.p.danger_soft,
                 self.p.danger_soft_text,
             ),
+            Intent::Neutral => (self.p.line, self.p.header, self.p.muted),
         };
         if minimal {
             Style::default().bg(soft).fg(soft_text)

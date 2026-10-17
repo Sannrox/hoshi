@@ -26,6 +26,8 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use std::cell::Cell;
+
+mod views;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     Overview,
@@ -998,7 +1000,11 @@ impl App {
                 );
             }
         } else {
-            let (list_area, portrait) = portraits::split_area(body);
+            let (list_area, portrait) = if self.screen == Screen::Staff {
+                portraits::split_area(body)
+            } else {
+                (body, None)
+            };
             self.draw_list(frame, list_area);
             if let Some(area) = portrait {
                 let art = Layout::vertical([
@@ -1443,7 +1449,7 @@ impl App {
             || self.pending_invasion.is_some()
             || self.replay.is_some()
             || (self.screen == Screen::History && self.history_pane != HistoryPane::List)
-            || self.screen == Screen::Cockpit
+            || self.screen != Screen::Staff
         {
             return portraits::erase_inline_graphics(out);
         }
@@ -2446,33 +2452,6 @@ impl App {
         render_overlay(frame, " activity ", lines);
     }
 
-    fn list_lines(&self, height: usize) -> Vec<Line<'static>> {
-        match self.screen {
-            Screen::Planet => self.planet_info_lines(),
-            Screen::Shipyard => self.shipyard_lines(height),
-            Screen::Overview => self.research_lines(height),
-            Screen::Wonder => self.wonder_lines(height),
-            Screen::Prestige => self.prestige_lines(height),
-            Screen::Achievements => self.achievement_lines(height),
-            Screen::Daily => self.daily_lines(height),
-            Screen::Goals => self.goals_lines(height),
-            Screen::Production => self.production_lines(height),
-            Screen::Market => self.market_lines(height),
-            Screen::Diplomacy => self.diplomacy_lines(height),
-            Screen::Laws => self.law_lines(height),
-            Screen::Reports => self.report_lines(height),
-            Screen::History => self.history_lines(height),
-            Screen::Staff => self.staff_lines(height),
-            Screen::Ops => self.ops_lines(height),
-            Screen::Automation => self.automation_lines(height),
-            Screen::Finance => self.finance_lines(height),
-            Screen::Kpis => self.kpi_lines(height),
-            Screen::Incidents => self.incident_lines(height),
-            Screen::Map => self.map_lines(height),
-            Screen::Cockpit => Vec::new(),
-        }
-    }
-
     fn planet_info_lines(&self) -> Vec<Line<'static>> {
         let coord = self.selected_coord();
         let queue = self.state.queue_at(coord).unwrap_or(&[]);
@@ -2506,7 +2485,9 @@ impl App {
             let ready = if moon.jump_ready_at > self.state.last_tick_unix {
                 format!(
                     "jump {}",
-                    moon.jump_ready_at.saturating_sub(self.state.last_tick_unix)
+                    ui::spans::duration(
+                        moon.jump_ready_at.saturating_sub(self.state.last_tick_unix)
+                    )
                 )
             } else {
                 "jump ready".into()
@@ -2526,12 +2507,12 @@ impl App {
                     Ok(contacts) => {
                         for contact in contacts {
                             rows.push(Line::from(format!(
-                                "Phalanx  fleet #{} {} {} -> {}  {}s  ships {}",
+                                "Phalanx  fleet #{} {} {} → {}  {}  ships {}",
                                 contact.id,
                                 contact.phase,
                                 contact.origin,
                                 contact.dest,
-                                contact.eta_secs,
+                                ui::spans::duration(contact.eta_secs),
                                 contact.ships
                             )));
                         }
@@ -2557,192 +2538,17 @@ impl App {
                 .completes_at
                 .map(|t| t.saturating_sub(self.state.last_tick_unix));
             let timer = match left {
-                Some(s) => format!("{s}s"),
+                Some(s) => ui::spans::duration(s),
                 None => "wait".to_string(),
             };
             rows.push(Line::from(format!(
-                "  {}. {} -> lv{}  {timer}",
+                "  {}. {} → lv{}  {timer}",
                 i + 1,
                 job.building,
                 job.from_level + 1
             )));
         }
         rows
-    }
-
-    fn buildings_table(&self) -> DataTable<'_> {
-        let t = &self.theme;
-        let coord = self.selected_coord();
-        let levels = self
-            .state
-            .buildings_at(coord)
-            .unwrap_or(&self.state.buildings);
-        let rows = BuildingKind::ALL
-            .iter()
-            .map(|&kind| {
-                let reason = self.building_block_reason(kind);
-                let base = if reason.is_some() {
-                    t.label().add_modifier(Modifier::DIM)
-                } else {
-                    t.text()
-                };
-                let cost = self.state.build_cost_on(coord, kind);
-                let mut row = vec![
-                    Line::styled(kind.to_string(), base),
-                    Line::styled(levels.get(kind).to_string(), base),
-                ];
-                for res in ResourceKind::QUOTED {
-                    let amount = cost.get(res);
-                    row.push(if amount < 0.5 {
-                        Line::styled("—", t.faint())
-                    } else if amount > self.state.resources.get(res) {
-                        Line::styled(ui::spans::compact(amount), t.intent(Intent::Danger))
-                    } else {
-                        Line::styled(ui::spans::compact(amount), base)
-                    });
-                }
-                row.push(Line::styled(
-                    ui::spans::duration(self.state.build_time_secs_on(coord, kind)),
-                    base,
-                ));
-                row.push(Line::from(match reason {
-                    Some(reason) => {
-                        ui::spans::tag(t, &reason.to_uppercase(), Intent::Warning, true)
-                    }
-                    None => ui::spans::tag(t, "READY", Intent::Success, false),
-                }));
-                row
-            })
-            .collect();
-        let mut columns = vec![Column::left("building", 18), Column::right("lv", 2)];
-        for res in ResourceKind::QUOTED {
-            columns.push(Column::right(res.abbr(), 5));
-        }
-        columns.push(Column::right("time", 6));
-        columns.push(Column::fill("status"));
-        DataTable {
-            theme: t,
-            columns,
-            rows,
-            selected: Some(self.selected),
-            striped: true,
-            surface: Surface::Raised,
-        }
-    }
-
-    fn draw_list(&self, frame: &mut Frame<'_>, area: Rect) {
-        let t = &self.theme;
-        if self.screen == Screen::Planet {
-            let info = self.planet_info_lines();
-            let top_h = (info.len() as u16 + 1).min(area.height / 2);
-            let [top, table] =
-                Layout::vertical([Constraint::Length(top_h), Constraint::Min(2)]).areas(area);
-            frame.render_widget(Paragraph::new(info).style(t.text()), top);
-            frame.render_widget(self.buildings_table(), table);
-        } else {
-            frame.render_widget(
-                Paragraph::new(self.list_lines(area.height as usize)).style(t.text()),
-                area,
-            );
-        }
-    }
-
-    fn shipyard_lines(&self, height: usize) -> Vec<Line<'static>> {
-        let mut rows: Vec<Line<'static>> = Vec::new();
-        rows.push(Line::from(format!(
-            "Queue {}/{}",
-            self.state.ship_queue.len(),
-            self.state.config.max_ship_queue
-        )));
-        for (i, job) in self.state.ship_queue.iter().enumerate() {
-            let left = job
-                .completes_at
-                .map(|t| t.saturating_sub(self.state.last_tick_unix));
-            let timer = match left {
-                Some(s) => format!("{s}s"),
-                None => "wait".to_string(),
-            };
-            rows.push(Line::from(format!(
-                "  {}. {} x{}  {timer}",
-                i + 1,
-                job.label(),
-                job.remaining
-            )));
-        }
-        rows.push(Line::from("Ships and defences"));
-        let mut entries: Vec<Line<'static>> = ShipKind::ALL
-            .iter()
-            .enumerate()
-            .map(|(i, &kind)| self.ship_row(i, kind))
-            .collect();
-        entries.extend(
-            DefenceKind::ALL
-                .iter()
-                .enumerate()
-                .map(|(i, &kind)| self.defence_row(ShipKind::ALL.len() + i, kind)),
-        );
-        append_windowed(&mut rows, &entries, self.selected, height)
-    }
-
-    fn research_lines(&self, height: usize) -> Vec<Line<'static>> {
-        let tabs = self
-            .visible_tree_branches()
-            .into_iter()
-            .map(|branch| {
-                if branch == self.tree_branch {
-                    format!("[{}]", branch.as_key())
-                } else {
-                    branch.as_key().to_string()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
-        let mut rows = vec![Line::from(format!("Tree  {tabs}  h/l branch"))];
-        let specs = self.overview_techs();
-        let entries: Vec<Line<'static>> = specs
-            .iter()
-            .enumerate()
-            .map(|(i, spec)| self.tech_row(i, spec))
-            .collect();
-        append_windowed(&mut rows, &entries, self.selected, height)
-    }
-
-    fn wonder_lines(&self, height: usize) -> Vec<Line<'static>> {
-        let mut rows = Vec::new();
-        match &self.state.wonder {
-            Some(job) => {
-                let spec = self.state.config.wonders.iter().find(|s| s.id == job.id);
-                let name = spec.map(|s| s.name.as_str()).unwrap_or(job.id.as_str());
-                let total = spec.map(|s| s.stages.len()).unwrap_or(0);
-                let remaining = self.state.wonder_remaining().unwrap_or(Resources::ZERO);
-                let eta = match self.state.wonder_eta_secs() {
-                    Some(secs) => format!("{secs}s"),
-                    None => "?".into(),
-                };
-                rows.push(Line::from(format!(
-                    "Active {name}  stage {}/{total}  {}  eta {eta}",
-                    job.stage + 1,
-                    missing_label(remaining)
-                )));
-            }
-            None => rows.push(Line::from("Active none")),
-        }
-        rows.push(Line::from("Wonders"));
-        let entries: Vec<Line<'static>> = self
-            .state
-            .config
-            .wonders
-            .iter()
-            .enumerate()
-            .map(|(i, spec)| self.wonder_row(i, spec))
-            .collect();
-        append_windowed(&mut rows, &entries, self.selected, height)
-    }
-
-    fn wonder_row(&self, index: usize, spec: &hoshi_core::WonderSpec) -> Line<'static> {
-        let mark = if index == self.selected { '>' } else { ' ' };
-        let text = format!("{mark} {}  {} stages", spec.name, spec.stages.len());
-        styled_row(text, self.wonder_block_reason(spec))
     }
 
     fn wonder_block_reason(&self, spec: &hoshi_core::WonderSpec) -> Option<String> {
@@ -2762,35 +2568,6 @@ impl App {
             }
         }
         None
-    }
-
-    fn ship_row(&self, index: usize, kind: ShipKind) -> Line<'static> {
-        let spec = self.state.config.ships.get(kind);
-        let cost = spec.unit_cost();
-        let secs = spec.duration_secs();
-        let owned = self.state.fleet.get(kind);
-        let mark = if index == self.selected { '>' } else { ' ' };
-        let stats = self.state.ship_stats(kind);
-        let text = format!(
-            "{mark} {kind}  x{owned}  {}  {secs}s  atk {:.0}",
-            cost_label(cost),
-            stats.attack
-        );
-        styled_row(text, self.ship_block_reason(kind, cost))
-    }
-
-    fn defence_row(&self, index: usize, kind: DefenceKind) -> Line<'static> {
-        let spec = self.state.config.defences.get(kind);
-        let cost = spec.unit_cost();
-        let secs = spec.duration_secs();
-        let owned = self.state.defences.get(kind);
-        let mark = if index == self.selected { '>' } else { ' ' };
-        let text = format!(
-            "{mark} {kind}  x{owned}  {}  {secs}s  atk {:.0}",
-            cost_label(cost),
-            spec.attack
-        );
-        styled_row(text, self.defence_block_reason(kind, cost))
     }
 
     fn defence_block_reason(&self, kind: DefenceKind, cost: Resources) -> Option<String> {
@@ -2816,22 +2593,6 @@ impl App {
             return Some(missing_label(self.state.resources.missing(cost)));
         }
         None
-    }
-
-    fn tech_row(&self, index: usize, spec: &hoshi_core::TechSpec) -> Line<'static> {
-        let level = self.state.tech_level(&spec.id);
-        let cost = spec.cost(level);
-        let secs = spec.duration_secs(level);
-        let mark = if index == self.selected { '>' } else { ' ' };
-        let indent = "  ".repeat(spec.tier.min(4) as usize);
-        let state = self.state.tech_node_state(&spec.id).as_key();
-        let extra = if spec.keystone { " keystone" } else { "" };
-        let text = format!(
-            "{mark}{indent}{}  lv{level}  {state}{extra}  {}  {secs}s",
-            spec.name,
-            cost_label(cost)
-        );
-        styled_row(text, self.tech_block_reason(&spec.id, cost))
     }
 
     fn building_block_reason(&self, kind: BuildingKind) -> Option<String> {
@@ -2907,103 +2668,6 @@ impl App {
         }
     }
 
-    fn prestige_lines(&self, height: usize) -> Vec<Line<'static>> {
-        let preview = self.state.prestige_preview();
-        let mut rows = vec![Line::from(format!(
-            "Run {}  score {}  earned {}  {}",
-            preview.run.index,
-            preview.score,
-            preview.earned,
-            if preview.eligible { "ready" } else { "locked" }
-        ))];
-        if self.confirming_prestige {
-            rows.push(Line::from(format!(
-                "Reset keeps: {}",
-                preview.kept.join(", ")
-            )));
-            rows.push(Line::from(format!(
-                "Reset loses: {}",
-                preview.lost.join(", ")
-            )));
-            rows.push(Line::from("Enter again to confirm. x cancels."));
-        }
-        let mut entries = vec![Line::from(if self.selected == 0 {
-            "> Reset".to_string()
-        } else {
-            "  Reset".to_string()
-        })];
-        for (i, spec) in self.state.config.prestige.bonuses.iter().enumerate() {
-            let mark = if self.selected == i + 1 { '>' } else { ' ' };
-            let owned = self.state.prestige.owned_count(&spec.id);
-            entries.push(Line::from(format!(
-                "{mark} {}  cost {}  owned {owned}",
-                spec.name, spec.cost
-            )));
-        }
-        append_windowed(&mut rows, &entries, self.selected, height)
-    }
-
-    fn achievement_lines(&self, height: usize) -> Vec<Line<'static>> {
-        let earned = self.state.achievements.len();
-        let total = self.state.config.achievements.len();
-        let mut rows = vec![Line::from(format!("Earned {earned}/{total}"))];
-        let entries: Vec<Line<'static>> = self
-            .state
-            .config
-            .achievements
-            .iter()
-            .enumerate()
-            .map(|(i, spec)| {
-                let mark = if i == self.selected { '>' } else { ' ' };
-                let unlocked = self.state.achievements.contains_key(&spec.id);
-                let title = spec.listed_title(unlocked);
-                if unlocked {
-                    let at = self.state.achievements[&spec.id];
-                    Line::from(format!("{mark} {title}  earned t{at}"))
-                } else if spec.hidden {
-                    Line::from(format!("{mark} ???"))
-                } else {
-                    let current = spec.condition.current(&self.state);
-                    let target = spec.condition.target();
-                    Line::from(format!("{mark} {title}  {current:.0}/{target:.0}"))
-                }
-            })
-            .collect();
-        append_windowed(&mut rows, &entries, self.selected, height)
-    }
-
-    fn daily_lines(&self, height: usize) -> Vec<Line<'static>> {
-        let resets = self.state.daily_resets_in();
-        let streak = self.state.daily.streak;
-        let cap = self.state.config.daily.streak_cap;
-        let mut rows = vec![Line::from(format!(
-            "Streak {streak}/{cap}  resets in {resets}s"
-        ))];
-        let entries: Vec<Line<'static>> = self
-            .state
-            .daily
-            .slots
-            .iter()
-            .enumerate()
-            .map(|(i, slot)| {
-                let mark = if i == self.selected { '>' } else { ' ' };
-                let name = self
-                    .state
-                    .config
-                    .daily
-                    .get(&slot.spec_id)
-                    .map(|s| s.name.as_str())
-                    .unwrap_or(slot.spec_id.as_str());
-                let done = if slot.done() { " done" } else { "" };
-                Line::from(format!(
-                    "{mark} {name}  {}/{}{done}",
-                    slot.progress, slot.target
-                ))
-            })
-            .collect();
-        append_windowed(&mut rows, &entries, self.selected, height)
-    }
-
     fn shows_victory_overlay(&self) -> bool {
         self.state
             .victory
@@ -3026,55 +2690,6 @@ impl App {
         render_overlay(frame, " victory ", lines);
     }
 
-    fn goals_lines(&self, height: usize) -> Vec<Line<'static>> {
-        let ladder = self.state.ladder_progress();
-        let progress = self.state.victory_progress();
-        let mut rows = Vec::new();
-        let current = ladder.current.as_deref().unwrap_or("none");
-        rows.push(Line::from(format!("Ladder  {current}")));
-        if let Some(goal) = &ladder.next {
-            rows.push(Line::from(format!(
-                "Next  {}  {:.0}%  {}",
-                goal.name,
-                goal.ratio * 100.0,
-                goal.next_step
-            )));
-        } else {
-            rows.push(Line::from("Next  ladder complete"));
-        }
-        if let Some(record) = &self.state.victory {
-            rows.push(Line::from(format!(
-                "Won via {}  +{} prestige",
-                record.path.label(),
-                record.prestige
-            )));
-        } else {
-            rows.push(Line::from("Galaxy victory: first path wins"));
-        }
-        if let Some(coord) = self.state.pirate_homeworld() {
-            rows.push(Line::from(format!("Pirate homeworld {coord}")));
-        }
-        let paths = [
-            ("Conquest", &progress.conquest),
-            ("Wonder", &progress.wonder),
-            ("Diplomacy", &progress.diplomacy),
-        ];
-        let entries: Vec<Line<'static>> = paths
-            .iter()
-            .enumerate()
-            .map(|(i, (name, path))| {
-                let mark = if i == self.selected { '>' } else { ' ' };
-                let ready = if path.ready { " ready" } else { "" };
-                Line::from(format!(
-                    "{mark} {name}  {:.0}%  {}{ready}",
-                    path.ratio * 100.0,
-                    path.next_step
-                ))
-            })
-            .collect();
-        append_windowed(&mut rows, &entries, self.selected, height)
-    }
-
     fn record_production_sample(&mut self) {
         let rate = self.state.production_report().metal_per_hour;
         self.prod_history.push(rate);
@@ -3083,386 +2698,6 @@ impl App {
             let drop = self.prod_history.len() - CAP;
             self.prod_history.drain(..drop);
         }
-    }
-
-    fn production_lines(&self, height: usize) -> Vec<Line<'static>> {
-        let report = self.state.production_report();
-        let coord = self.selected_coord();
-        let mut rows = vec![
-            Line::from(format!(
-                "limit {}  {}",
-                report.limited_by.as_key(),
-                report.limited_by.suggestion()
-            )),
-            Line::from(format!(
-                "energy {:.0}/{:.0}  heat {:.0}/{:.0}  Fe {:.0} Si {:.0} REE {:.0} H2O {:.0} He3 {:.0} D {:.0}/h",
-                report.energy_supply,
-                report.energy_demand,
-                report.heat_load,
-                report.heat_sink,
-                report.metal_per_hour,
-                report.crystal_per_hour,
-                report.rare_earths_per_hour,
-                report.water_ice_per_hour,
-                report.helium_3_per_hour,
-                report.deuterium_per_hour
-            )),
-            Line::from(format!("rate {}", sparkline(&self.prod_history, 24))),
-        ];
-        let entries: Vec<Line<'static>> = report
-            .steps
-            .iter()
-            .filter(|step| step.planet == coord)
-            .enumerate()
-            .map(|(i, step)| {
-                let mark = if i == self.selected { '>' } else { ' ' };
-                let out = step
-                    .outputs_per_hour
-                    .iter()
-                    .map(|(id, n)| format!("{id} {n:.1}"))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                let buf = step
-                    .buffers
-                    .iter()
-                    .map(|(id, n)| format!("{id} {n:.0}"))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                Line::from(format!(
-                    "{mark} {}  {out}  buf {buf}  {}",
-                    step.id,
-                    step.limited_by.as_key()
-                ))
-            })
-            .collect();
-        append_windowed(&mut rows, &entries, self.selected, height)
-    }
-
-    fn market_lines(&self, height: usize) -> Vec<Line<'static>> {
-        let market = &self.state.market;
-        let fee_pct = self.state.effective_market_fee() * 100.0;
-        let mut rows = vec![
-            Line::from(format!(
-                "Prices  metal {:.3}  crystal {:.3}  deuterium {:.3}",
-                market.iron, market.silicon, market.deuterium
-            )),
-            Line::from(format!(
-                "metal     {}",
-                sparkline(market.history(ResourceKind::Iron), 24)
-            )),
-            Line::from(format!(
-                "crystal   {}",
-                sparkline(market.history(ResourceKind::Silicon), 24)
-            )),
-            Line::from(format!(
-                "deuterium {}",
-                sparkline(market.history(ResourceKind::Deuterium), 24)
-            )),
-            Line::from(format!(
-                "amount {:.0}  +/-  fee {fee_pct:.0}%",
-                self.trade_amount
-            )),
-        ];
-        let entries: Vec<Line<'static>> = TRADE_PAIRS
-            .iter()
-            .enumerate()
-            .map(|(i, &(pay, recv))| {
-                let mark = if i == self.selected { '>' } else { ' ' };
-                match self.state.quote_market(pay, recv, self.trade_amount) {
-                    Ok(quote) => Line::from(format!(
-                        "{mark} {:.0} {} -> {:.1} {}  preview",
-                        quote.pay_amount,
-                        pay.label(),
-                        quote.recv_amount,
-                        recv.label()
-                    )),
-                    Err(e) => {
-                        Line::from(format!("{mark} {} -> {}  {e}", pay.label(), recv.label()))
-                    }
-                }
-            })
-            .collect();
-        let mut rows = append_windowed(&mut rows, &entries, self.selected, height);
-        rows.push(Line::from(format!(
-            "hub {}  orders {}  contracts {}  shipments {}",
-            self.state.config.market.hub(),
-            self.state.board.orders.len(),
-            self.state.board.contracts.len(),
-            self.state
-                .board
-                .shipments
-                .values()
-                .filter(|s| !s.delivered)
-                .count()
-        )));
-        if let Some(region) = self.state.board.regions.get(&self.state.home) {
-            rows.push(Line::from(format!(
-                "home book  crystal {}  deut {}",
-                sparkline(region.history(ResourceKind::Silicon), 16),
-                sparkline(region.history(ResourceKind::Deuterium), 16)
-            )));
-        }
-        for contract in self.state.board.contracts.values().take(3) {
-            rows.push(Line::from(format!(
-                "contract #{} {} {:.0} {} {} due {}",
-                contract.id,
-                contract.kind.as_key(),
-                contract.remaining,
-                contract.good.label(),
-                contract.status.as_key(),
-                contract.deadline
-            )));
-        }
-        rows
-    }
-
-    fn law_lines(&self, height: usize) -> Vec<Line<'static>> {
-        let mut rows = vec![Line::from(
-            "Laws  enter propose / approve / repeal  expected vs measured",
-        )];
-        let mut entries: Vec<Line<'static>> = Vec::new();
-        let mut i = 0;
-        for spec in self.state.config.laws.iter() {
-            let mark = if i == self.selected { '>' } else { ' ' };
-            entries.push(Line::from(format!(
-                "{mark} propose {}  {}={:.2}  {}",
-                spec.title,
-                spec.param_name,
-                spec.default,
-                match spec.jurisdiction {
-                    JurisdictionKind::Empire => "empire",
-                    JurisdictionKind::Planet => "planet",
-                }
-            )));
-            i += 1;
-        }
-        for law in &self.state.laws.laws {
-            let mark = if i == self.selected { '>' } else { ' ' };
-            let mut line = format!(
-                "{mark} #{} {} {} {}={:.2} {}",
-                law.id,
-                law.template_id,
-                law.status.as_key(),
-                "param",
-                law.param,
-                law.jurisdiction.as_key()
-            );
-            for sample in self.state.laws.latest_samples(law.id) {
-                line.push_str(&format!(
-                    "  {}: exp {:.1} act {:.1}",
-                    sample.metric.as_key(),
-                    sample.expected,
-                    sample.actual
-                ));
-            }
-            entries.push(Line::from(line));
-            i += 1;
-        }
-        let _ = i;
-        append_windowed(&mut rows, &entries, self.selected, height)
-    }
-
-    fn map_lines(&self, height: usize) -> Vec<Line<'static>> {
-        let cursor = self.map_cursor();
-        let mut rows = vec![Line::from(format!(
-            "Map  galaxy {}  cursor {cursor}  hjkl move  enter dispatch  space other galaxy",
-            cursor.galaxy
-        ))];
-        let owned = self.state.owned_coords();
-        let mut entries: Vec<Line<'static>> = Vec::new();
-        for system in 1..=MAP_SYSTEM_MAX {
-            let mark = if system == self.map_system { '>' } else { ' ' };
-            let mut glyphs = String::with_capacity(MAP_SLOT_COUNT as usize);
-            let mut labels = Vec::new();
-            for pos in 1..=MAP_SLOT_COUNT {
-                let coord = Coord {
-                    galaxy: cursor.galaxy,
-                    system,
-                    position: pos,
-                };
-                let ch = if coord == self.state.home {
-                    'H'
-                } else if owned.contains(&coord) {
-                    'C'
-                } else if self.state.outposts.iter().any(|o| o.coord == coord) {
-                    'P'
-                } else if self
-                    .state
-                    .frontier
-                    .visible_worlds()
-                    .any(|w| w.coord == coord)
-                {
-                    'F'
-                } else if self.state.missions.iter().any(|m| m.dest == coord) {
-                    'f'
-                } else {
-                    '.'
-                };
-                if pos == self.map_position && system == self.map_system {
-                    glyphs.push('[');
-                    glyphs.push(ch);
-                    glyphs.push(']');
-                } else {
-                    glyphs.push(ch);
-                }
-                if coord == self.state.home {
-                    labels.push("home".into());
-                } else if owned.contains(&coord) {
-                    labels.push(format!("colony {coord}"));
-                } else if let Some(out) = self.state.outposts.iter().find(|o| o.coord == coord) {
-                    labels.push(format!("pirate {coord} {}", out.kind.as_key()));
-                } else if let Some(world) = self
-                    .state
-                    .frontier
-                    .visible_worlds()
-                    .find(|w| w.coord == coord)
-                {
-                    let bonus = world
-                        .rare
-                        .as_deref()
-                        .and_then(|id| {
-                            self.state
-                                .config
-                                .outposts
-                                .rare
-                                .iter()
-                                .find(|row| row.id == id)
-                                .map(|row| row.summary())
-                        })
-                        .unwrap_or_else(|| {
-                            format!(
-                                "prod +{:.0}% fields +{}",
-                                self.state.config.frontier.production_bonus * 100.0,
-                                self.state.config.frontier.fields_bonus
-                            )
-                        });
-                    labels.push(format!("frontier {coord} {} {bonus}", world.kind.as_key()));
-                }
-                if self.state.moon_at(coord).is_some() {
-                    labels.push("moon".into());
-                }
-            }
-            for mission in &self.state.missions {
-                if mission.dest.galaxy == cursor.galaxy && mission.dest.system == system {
-                    let eta = mission
-                        .phase_ends_at
-                        .saturating_sub(self.state.last_tick_unix);
-                    labels.push(format!(
-                        "fleet #{} {} {eta}s",
-                        mission.id,
-                        mission.phase.as_key()
-                    ));
-                }
-            }
-            let extra = if labels.is_empty() {
-                String::new()
-            } else {
-                format!("  {}", labels.join("  "))
-            };
-            entries.push(Line::from(format!("{mark} {system:>3} {glyphs}{extra}")));
-        }
-        let selected = self.map_system.saturating_sub(1) as usize;
-        append_windowed(&mut rows, &entries, selected, height)
-    }
-
-    fn diplomacy_lines(&self, height: usize) -> Vec<Line<'static>> {
-        let cfg = &self.state.config.diplomacy;
-        let mut rows = vec![Line::from(if cfg.enabled {
-            format!(
-                "Decay {:.0}% / {}s  standing {}..{}",
-                cfg.decay * 100.0,
-                cfg.tick_secs,
-                cfg.min_standing,
-                cfg.max_standing
-            )
-        } else {
-            "Diplomacy off".into()
-        })];
-        if self.state.diplomacy.log.is_empty() {
-            rows.push(Line::from("Recent: none"));
-        } else {
-            rows.push(Line::from("Recent:"));
-            for change in self.state.diplomacy.log.iter().rev().take(4) {
-                rows.push(Line::from(format!(
-                    "  {} {:+.0} {} t{}",
-                    change.faction, change.delta, change.reason, change.at
-                )));
-            }
-        }
-        let entries: Vec<Line<'static>> = cfg
-            .iter()
-            .enumerate()
-            .map(|(i, spec)| {
-                let mark = if i == self.selected { '>' } else { ' ' };
-                let standing = self.state.diplomacy.standing(&spec.id);
-                let tier = spec.tier(standing).map(|t| t.name.as_str()).unwrap_or("-");
-                let next = match spec.next_tier(standing) {
-                    Some(t) => format!("next {} {:.0}", t.name, t.min),
-                    None => "max".into(),
-                };
-                let tribute = if spec.tribute_metal > 0.0 {
-                    format!(
-                        "  tribute {:.0}M {:+.0}",
-                        spec.tribute_metal, spec.tribute_delta
-                    )
-                } else {
-                    String::new()
-                };
-                Line::from(format!(
-                    "{mark} {}  {standing:.0}  {tier}  {next}{tribute}",
-                    spec.name
-                ))
-            })
-            .collect();
-        if self.state.rivals.enabled {
-            rows.push(Line::from("Rivals:"));
-            for row in self.state.rival_intel() {
-                let stock = match row.resources {
-                    Some(r) => format!("  {:.0}M {:.0}C {:.0}D", r.iron, r.silicon, r.deuterium),
-                    None => String::new(),
-                };
-                let fleet = match row.fleet {
-                    Some(f) => format!("  fleet {}", f.get(ShipKind::LightFighter)),
-                    None => String::new(),
-                };
-                rows.push(Line::from(format!(
-                    "  {} {} {} last {}{stock}{fleet}",
-                    row.name, row.home, row.personality, row.last_action
-                )));
-            }
-        }
-        append_windowed(&mut rows, &entries, self.selected, height)
-    }
-
-    fn report_lines(&self, height: usize) -> Vec<Line<'static>> {
-        let now = self.state.last_tick_unix;
-        let mut rows = vec![Line::from("[reports]")];
-        if self.state.outposts.is_empty() {
-            rows.push(Line::from("No pirate outposts"));
-            return rows;
-        }
-        let entries: Vec<Line<'static>> = self
-            .state
-            .outposts
-            .iter()
-            .enumerate()
-            .map(|(i, outpost)| {
-                let mark = if i == self.selected { '>' } else { ' ' };
-                match self.state.latest_report(outpost.coord) {
-                    Some(report) => Line::from(format!(
-                        "{mark} {}  {}  age {}s  lost {}/{}{}",
-                        outpost.coord,
-                        report.tier,
-                        report.age_secs(now),
-                        report.probes_lost,
-                        report.probes_sent,
-                        if report.detected { "  detected" } else { "" }
-                    )),
-                    None => Line::from(format!("{mark} {}  no report", outpost.coord)),
-                }
-            })
-            .collect();
-        append_windowed(&mut rows, &entries, self.selected, height)
     }
 
     fn history_rows(&self) -> Vec<&hoshi_core::HistoryEvent> {
@@ -3515,96 +2750,6 @@ impl App {
         } else {
             HistoryPane::AsOf
         };
-    }
-
-    fn history_lines(&self, height: usize) -> Vec<Line<'static>> {
-        let kind = self
-            .history_kind
-            .map(|k| k.as_key().to_string())
-            .unwrap_or_else(|| "all".into());
-        let actor = self.history_actor.clone().unwrap_or_else(|| "all".into());
-        let mut rows = vec![Line::from(format!(
-            "[log] type:{kind} actor:{actor}  {} retained",
-            self.state.history.events.len()
-        ))];
-        let events = self.history_rows();
-        if events.is_empty() {
-            rows.push(Line::from("no history yet"));
-            return rows;
-        }
-        let entries: Vec<Line<'static>> = events
-            .iter()
-            .enumerate()
-            .map(|(i, event)| {
-                let mark = if i == self.selected { '>' } else { ' ' };
-                Line::from(format!(
-                    "{mark} #{} t{} {} {} {}  {}",
-                    event.id,
-                    event.at,
-                    event.kind.as_key(),
-                    event.actor,
-                    event.action,
-                    event.objects.join(",")
-                ))
-            })
-            .collect();
-        append_windowed(&mut rows, &entries, self.selected, height)
-    }
-
-    fn ops_lines(&self, height: usize) -> Vec<Line<'static>> {
-        let schedule = self.state.mission_schedule(self.state.last_tick_unix);
-        let mut rows = vec![Line::from(format!(
-            "[ops] {} vehicles  {} missions  {} alerts",
-            schedule.vehicles.len(),
-            schedule.missions.len(),
-            schedule.alerts.len()
-        ))];
-        if schedule.vehicles.is_empty() && schedule.missions.is_empty() {
-            rows.push(Line::from(
-                "Register a vehicle with hoshi vehicle register, then mission plan.",
-            ));
-            return rows;
-        }
-        let mut entries = Vec::new();
-        let mut index = 0usize;
-        for vehicle in &schedule.vehicles {
-            let mark = if index == self.selected { '>' } else { ' ' };
-            index += 1;
-            let booked = if vehicle.free_at > self.state.last_tick_unix {
-                format!("booked until {}", vehicle.free_at)
-            } else {
-                "idle".into()
-            };
-            entries.push(Line::from(format!(
-                "{mark} #{} {} @ {}  {booked}",
-                vehicle.id, vehicle.name, vehicle.coord
-            )));
-        }
-        for mission in &schedule.missions {
-            let mark = if index == self.selected { '>' } else { ' ' };
-            index += 1;
-            entries.push(Line::from(format!(
-                "{mark} mission {} {} -> {}  {}  eta {}",
-                mission.id,
-                mission.route.origin,
-                mission.route.dest,
-                mission.transfer.as_key(),
-                mission.arrives_at.saturating_sub(self.state.last_tick_unix)
-            )));
-        }
-        for alert in &schedule.alerts {
-            let mark = if index == self.selected { '>' } else { ' ' };
-            index += 1;
-            let kind = match alert.kind {
-                hoshi_core::ScheduleAlertKind::DoubleBook => "double-book",
-                hoshi_core::ScheduleAlertKind::MissedWindow => "missed window",
-            };
-            entries.push(Line::from(format!(
-                "{mark} ! {kind} vehicle #{}  {}",
-                alert.vehicle_id, alert.detail
-            )));
-        }
-        append_windowed(&mut rows, &entries, self.selected, height)
     }
 
     fn activate_automation(&mut self) {
@@ -3670,53 +2815,6 @@ impl App {
         }
     }
 
-    fn automation_lines(&self, height: usize) -> Vec<Line<'static>> {
-        let catalog = self.state.automation_catalog();
-        let mut rows = vec![Line::from(format!(
-            "[auto] control energy {:.0}  interval {}s",
-            self.state.automation_control_energy(),
-            catalog.interval_secs
-        ))];
-        let mut entries = Vec::new();
-        let mut index = 0usize;
-        for tier in &catalog.tier {
-            let mark = if index == self.selected { '>' } else { ' ' };
-            index += 1;
-            let lock = if self.state.automation_tier_unlocked(&tier.id) {
-                "unlocked"
-            } else {
-                "locked"
-            };
-            entries.push(Line::from(format!(
-                "{mark} {lock} {} ({})",
-                tier.name, tier.research
-            )));
-        }
-        let preview = self.state.preview_automation();
-        for rule in &self.state.automation_rules {
-            let mark = if index == self.selected { '>' } else { ' ' };
-            index += 1;
-            let pre = preview
-                .iter()
-                .find(|p| p.rule_id == rule.id)
-                .map(|p| p.detail.as_str())
-                .unwrap_or("");
-            let on = if rule.enabled { "on" } else { "off" };
-            entries.push(Line::from(format!(
-                "{mark} rule #{} {on}  {} → {}  {pre}",
-                rule.id,
-                rule.condition.describe(),
-                rule.action.describe()
-            )));
-        }
-        if self.state.automation_rules.is_empty() {
-            entries.push(Line::from(
-                "Unlock logistics_rules, then hoshi automation add from the CLI. Enter dry-runs.",
-            ));
-        }
-        append_windowed(&mut rows, &entries, self.selected, height)
-    }
-
     fn activate_kpi(&mut self) {
         let snap = self.state.kpi_snapshot();
         let Some(row) = snap.measurements.get(self.selected) else {
@@ -3758,105 +2856,6 @@ impl App {
         }
     }
 
-    fn incident_lines(&self, height: usize) -> Vec<Line<'static>> {
-        let snap = self.state.incident_snapshot();
-        let mut rows = vec![Line::from(format!(
-            "[incidents] {} open  {} risks  {} reviews",
-            snap.open.len(),
-            snap.risks.len(),
-            snap.reviews.len()
-        ))];
-        for (i, row) in snap.open.iter().enumerate() {
-            let mark = if i == self.selected { '>' } else { ' ' };
-            let owner = row
-                .owner
-                .map(|id| format!("leader:{id}"))
-                .unwrap_or_else(|| "unassigned".into());
-            rows.push(Line::from(format!(
-                "{mark} #{} {} {} {} {owner}",
-                row.id,
-                row.kind.as_key(),
-                row.severity.as_key(),
-                row.status.as_key()
-            )));
-        }
-        if snap.open.is_empty() {
-            rows.push(Line::from(" no open incidents"));
-        } else if let Some(row) = snap.open.get(self.selected) {
-            let objects = if row.objects.is_empty() {
-                "-".into()
-            } else {
-                row.objects.join(",")
-            };
-            rows.push(Line::from(format!(
-                "  objects {objects}  events {}",
-                row.event_ids.len()
-            )));
-            if let Some(action) = row.actions.last() {
-                rows.push(Line::from(format!("  last {action}")));
-            }
-            if let Some(review) = snap.reviews.iter().rev().find(|r| r.incident_id == row.id) {
-                rows.push(Line::from(format!("  review: {}", review.root_cause)));
-            }
-        }
-        for risk in snap.risks.iter().take(4) {
-            rows.push(Line::from(format!(
-                "risk {} L{:.2} {} review {}",
-                risk.name,
-                risk.likelihood,
-                risk.impact.as_key(),
-                risk.review_at
-            )));
-        }
-        rows.truncate(height.max(1));
-        rows
-    }
-
-    fn kpi_lines(&self, height: usize) -> Vec<Line<'static>> {
-        let snap = self.state.kpi_snapshot();
-        let due = snap
-            .next_report_at
-            .saturating_sub(self.state.last_tick_unix);
-        let mut rows = vec![Line::from(format!(
-            "[kpi] next report {due}s  {} targets  {} archived",
-            snap.targets.len(),
-            snap.reports.len()
-        ))];
-        if let Some(report) = snap.reports.last() {
-            rows.push(Line::from(format!(
-                "period #{} at {}  pending {}  {}",
-                report.id,
-                report.at,
-                report.pending_decisions,
-                report.highlights.first().cloned().unwrap_or_default()
-            )));
-        }
-        let mut entries = Vec::new();
-        for (i, row) in snap.measurements.iter().enumerate() {
-            let mark = if i == self.selected { '>' } else { ' ' };
-            let target = row
-                .target
-                .map(|t| format!("{t:.1}"))
-                .unwrap_or_else(|| "-".into());
-            let var = row
-                .variance()
-                .map(|v| format!("{v:+.1}"))
-                .unwrap_or_else(|| "-".into());
-            let progress = row
-                .progress()
-                .map(|p| format!("{:.0}%", p * 100.0))
-                .unwrap_or_else(|| "-".into());
-            entries.push(Line::from(format!(
-                "{mark} {} [{}] {:.1}  target {target}  var {var}  {progress}  events {}",
-                row.kpi.as_key(),
-                row.owner.as_key(),
-                row.value,
-                row.event_ids.len()
-            )));
-        }
-        append_windowed(&mut rows, &entries, self.selected, height)
-    }
-
     fn activate_finance(&mut self, now_unix: u64) {
         let Some(row) = self.state.finance.pending.get(self.selected) else {
             self.status = "select a held spend".into();
@@ -3870,106 +2869,6 @@ impl App {
             Ok(()) => self.status = format!("approved spend #{id}"),
             Err(e) => self.status = e.to_string(),
         }
-    }
-
-    fn finance_lines(&self, height: usize) -> Vec<Line<'static>> {
-        let report = self.state.finance_report();
-        let cfg = self.state.finance_config();
-        let mut rows = vec![Line::from(format!(
-            "[fin] cash {:.0}  debt {:.0}  reserve {:.0} (gap {:.0})  period {}s",
-            report.cash, report.debt, report.reserve_target, report.reserve_gap, cfg.period_secs
-        ))];
-        rows.push(Line::from(format!(
-            "income {:.0} (prod {:.0} tax {:.0} trade {:.0} ctr {:.0})  expense {:.0} (ind {:.0} rs {:.0} mil {:.0} log {:.0} int {:.0})",
-            report.income.total(),
-            report.income.production,
-            report.income.tax,
-            report.income.trade,
-            report.income.contract,
-            report.expense.total(),
-            report.expense.industry,
-            report.expense.research,
-            report.expense.military,
-            report.expense.logistics,
-            report.expense.interest
-        )));
-        let mut entries = Vec::new();
-        let mut index = 0usize;
-        for pending in &report.pending {
-            let mark = if index == self.selected { '>' } else { ' ' };
-            index += 1;
-            entries.push(Line::from(format!(
-                "{mark} hold #{} {:.0} {}  {}",
-                pending.id,
-                pending.amount,
-                pending.center.as_key(),
-                pending.kind.summary()
-            )));
-        }
-        for budget in &report.budgets {
-            let mark = if index == self.selected { '>' } else { ' ' };
-            index += 1;
-            let limit = budget
-                .limit
-                .map(|v| format!("{v:.0}"))
-                .unwrap_or_else(|| "∞".into());
-            let run = budget.run_rate(report.elapsed_secs, cfg.period_secs);
-            entries.push(Line::from(format!(
-                "{mark} {} limit {limit}  actual {:.0}  forecast {:.0}  var {:+.0}  run {:.0}",
-                budget.center.as_key(),
-                budget.actual,
-                budget.forecast,
-                budget.variance(),
-                run
-            )));
-        }
-        append_windowed(&mut rows, &entries, self.selected, height)
-    }
-
-    fn staff_lines(&self, height: usize) -> Vec<Line<'static>> {
-        let mut rows = vec![Line::from(format!(
-            "[stf] {} leaders  empty gov {:.0}%",
-            self.state.leaders.len(),
-            self.state.config.leaders.empty_governor * 100.0
-        ))];
-        if self.state.leaders.is_empty() {
-            rows.push(Line::from("no leaders"));
-            return rows;
-        }
-        let entries: Vec<Line<'static>> = self
-            .state
-            .leaders
-            .iter()
-            .enumerate()
-            .map(|(i, leader)| {
-                let mark = if i == self.selected { '>' } else { ' ' };
-                let assignment = self.state.assignment_of(leader.id);
-                let role = assignment.map(|row| row.role.as_key()).unwrap_or("idle");
-                let target = assignment
-                    .map(|row| row.target.as_key())
-                    .unwrap_or_else(|| "-".into());
-                let ready = assignment
-                    .map(|row| {
-                        if row.ready(self.state.last_tick_unix) {
-                            "ready".into()
-                        } else {
-                            format!(
-                                "eta {}",
-                                row.ready_at.saturating_sub(self.state.last_tick_unix)
-                            )
-                        }
-                    })
-                    .unwrap_or_else(|| "unassigned".into());
-                let retired = if leader.retired { " retired" } else { "" };
-                Line::from(format!(
-                    "{mark} #{id} {name}  {trait_id}  {role} {target}  {ready}{retired}",
-                    id = leader.id,
-                    name = leader.name,
-                    trait_id = leader.trait_id
-                ))
-            })
-            .collect();
-        append_windowed(&mut rows, &entries, self.selected, height)
     }
 
     fn selected_leader_id(&self) -> Option<u64> {
@@ -4248,16 +3147,6 @@ fn stockpile_label(stock: Resources) -> String {
         .join("  ")
 }
 
-fn cost_label(cost: Resources) -> String {
-    ResourceKind::ALL
-        .iter()
-        .copied()
-        .filter(|&kind| cost.get(kind) > 0.5 || ResourceKind::QUOTED.contains(&kind))
-        .map(|kind| format!("{}{:.0}", kind.abbr(), cost.get(kind)))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 fn missing_label(missing: Resources) -> String {
     let parts: Vec<String> = ResourceKind::ALL
         .iter()
@@ -4270,44 +3159,6 @@ fn missing_label(missing: Resources) -> String {
     } else {
         format!("need {}", parts.join(" "))
     }
-}
-
-fn styled_row(text: String, reason: Option<String>) -> Line<'static> {
-    match reason {
-        None => Line::from(text),
-        Some(reason) => Line::from(Span::styled(
-            format!("{text}  {reason}"),
-            Style::default().add_modifier(Modifier::DIM),
-        )),
-    }
-}
-
-fn append_windowed(
-    rows: &mut Vec<Line<'static>>,
-    entries: &[Line<'static>],
-    selected: usize,
-    height: usize,
-) -> Vec<Line<'static>> {
-    let used = rows.len();
-    let avail = height.saturating_sub(used);
-    if avail == 0 {
-        return rows.clone();
-    }
-    let len = entries.len();
-    if len == 0 {
-        return std::mem::take(rows);
-    }
-    let start = if len <= avail {
-        0
-    } else {
-        let mut start = selected.saturating_sub(avail / 2);
-        if start + avail > len {
-            start = len - avail;
-        }
-        start
-    };
-    rows.extend(entries.iter().skip(start).take(avail).cloned());
-    std::mem::take(rows)
 }
 
 fn wrap_text(text: &str, width: usize) -> Vec<String> {
@@ -4354,10 +3205,6 @@ fn wrap_chunks(word: &str, width: usize) -> Vec<String> {
         out.push(buf);
     }
     out
-}
-
-fn sparkline(values: &[f64], width: usize) -> String {
-    crate::cockpit::sparkline(values, width)
 }
 
 #[cfg(test)]
@@ -4526,24 +3373,23 @@ mod tests {
             .insert("mining_method".into(), "deep_core".into());
         let mut app = App::new(state);
         let small = render_text(&app, 80, 24);
-        assert!(small.contains("[industry]"), "{small}");
+        assert!(small.contains(" industry "), "{small}");
         assert!(
-            small.contains("locked") || small.contains("available") || small.contains("researched"),
+            small.contains("NEED") || small.contains("READY") || small.contains("EXCLUDED"),
             "{small}"
         );
         let text = render_text(&app, 120, 40);
-        assert!(text.contains("[industry]"), "{text}");
+        assert!(text.contains(" industry "), "{text}");
         assert!(text.contains("military"), "{text}");
         assert!(text.contains("society"), "{text}");
-        assert!(text.contains("researched"), "{text}");
-        assert!(text.contains("Energy Technology"), "{text}");
-        assert!(text.contains("excluded"), "{text}");
-        assert!(text.contains("keystone"), "{text}");
+        assert!(text.contains("Energy Technology 1"), "{text}");
+        assert!(text.contains("EXCLUDED"), "{text}");
+        assert!(text.contains("★ Dyson ring"), "{text}");
         assert!(!text.contains("ancient"), "{text}");
         app.handle_key(KeyCode::Char('l'), 1_000);
         assert_eq!(app.tree_branch, TechBranch::Military);
         let military = render_text(&app, 120, 40);
-        assert!(military.contains("[military]"), "{military}");
+        assert!(military.contains("military tier"), "{military}");
         app.handle_key(KeyCode::Char('l'), 1_000);
         app.handle_key(KeyCode::Char('l'), 1_000);
         assert_eq!(app.tree_branch, TechBranch::Industry);
@@ -4569,32 +3415,36 @@ mod tests {
             Some("energy")
         );
         let text = render_text(&app, 120, 40);
-        assert!(text.contains("in_progress"), "{text}");
+        assert!(text.contains("IN PROGRESS"), "{text}");
     }
 
     #[test]
     fn disabled_portraits_use_ascii_and_keep_layout() {
+        fn portrait_row(app: &App) -> String {
+            let slot = app.current_portrait_slot();
+            let mood = portraits::mood_for(slot, &app.state.events);
+            portraits::portrait_lines_for(app.portraits, slot, mood, None)
+                .iter()
+                .map(|line| line.to_string().trim().to_string())
+                .find(|row| row.len() > 2)
+                .unwrap()
+        }
         let mut app = App::new(GameState::new(1_000));
         app.portraits.enabled = false;
-        let text = render_text(&app, 80, 24);
-        assert!(text.contains("Fe"), "{text}");
-        assert!(text.contains(".==."), "{text}");
-        assert!(!text.contains('▀'), "{text}");
-        app.open(Screen::Planet);
-        let planet = render_text(&app, 80, 24);
-        assert!(
-            planet.contains("(::.") || planet.contains("rocky"),
-            "{planet}"
-        );
+        app.open(Screen::Staff);
+        let staff = render_text(&app, 80, 24);
+        assert!(staff.contains(&portrait_row(&app)), "{staff}");
+        assert!(!staff.contains('▀'), "{staff}");
         app.state.events.push(hoshi_core::GameEvent {
             at: 1,
             text: "raid: pirates 1 vs 0. 1 rounds. lost none. pirates lost 1. plunder Fe0 Si0 D0"
                 .into(),
         });
-        app.handle_key(KeyCode::Tab, 1_000);
-        app.screen = Screen::Overview;
         let raid = render_text(&app, 80, 24);
-        assert!(raid.contains("|o-|") || raid.contains("|O-|"), "{raid}");
+        assert!(raid.contains(&portrait_row(&app)), "{raid}");
+        app.open(Screen::Planet);
+        let planet = render_text(&app, 80, 24);
+        assert!(!planet.contains(&portrait_row(&app)), "{planet}");
     }
 
     #[test]
@@ -4732,7 +3582,10 @@ mod tests {
             "build countdown should tick: {build_left} -> {build_left_later}"
         );
         let text = render_text(&app, 80, 24);
-        assert!(text.contains(&format!("{build_left_later}s")), "{text}");
+        assert!(
+            text.contains(&ui::spans::duration(build_left_later)),
+            "{text}"
+        );
 
         app.open(Screen::Overview);
         assert_eq!(app.screen, Screen::Overview);
@@ -4776,11 +3629,11 @@ mod tests {
         terminal.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(terminal.backend());
         assert!(
-            text.contains("need"),
+            text.contains("NEED"),
             "overview should show missing: {text}"
         );
         assert!(
-            line_is_dim(terminal.backend(), "need"),
+            line_is_dim(terminal.backend(), "NEED"),
             "unaffordable research should be dim: {text}"
         );
 
@@ -4799,8 +3652,7 @@ mod tests {
             "planet should show missing resources: {text}"
         );
         assert!(
-            line_is_dim(terminal.backend(), "research lab")
-                || line_is_dim(terminal.backend(), "need"),
+            line_is_dim(terminal.backend(), "Research lab"),
             "unaffordable building should be dim: {text}"
         );
     }
@@ -4820,11 +3672,11 @@ mod tests {
         app.open(Screen::Shipyard);
         let text = render_text(&app, 100, 32);
         assert!(text.contains("Fleet / Shipyard"), "{text}");
-        assert!(text.contains("light fighter"), "{text}");
-        assert!(text.contains("battleship"), "{text}");
-        assert!(text.contains("x4"), "{text}");
+        assert!(text.contains("Light fighter"), "{text}");
+        assert!(text.contains("Battleship"), "{text}");
+        assert!(text.contains("Light fighter        4"), "{text}");
         assert!(
-            text.contains("need shipyard") || text.contains("need "),
+            text.contains("NEED SHIPYARD") || text.contains("NEED "),
             "{text}"
         );
 
@@ -4836,8 +3688,8 @@ mod tests {
         assert_eq!(app.state.ship_queue.len(), 1);
         assert_eq!(app.state.ship_queue[0].ship, Some(ShipKind::LightFighter));
         let text = render_text(&app, 100, 32);
-        assert!(text.contains("1. light fighter x1"), "{text}");
-        assert!(text.contains("Queue 1/5"), "{text}");
+        assert!(text.contains("1. light fighter ×1"), "{text}");
+        assert!(text.contains("QUEUE 1/5"), "{text}");
     }
 
     #[test]
@@ -4853,11 +3705,11 @@ mod tests {
         terminal.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(terminal.backend());
         assert!(
-            text.contains("need shipyard"),
+            text.contains("NEED SHIPYARD"),
             "shipyard should show shipyard requirement: {text}"
         );
         assert!(
-            line_is_dim(terminal.backend(), "light fighter"),
+            line_is_dim(terminal.backend(), "Light fighter"),
             "locked ships should be dim: {text}"
         );
 
@@ -4876,11 +3728,11 @@ mod tests {
         terminal.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(terminal.backend());
         assert!(
-            text.contains("need Fe") || text.contains("need Si"),
+            text.contains("NEED FE") || text.contains("NEED SI"),
             "unaffordable ships should show missing amounts: {text}"
         );
         assert!(
-            line_is_dim(terminal.backend(), "light fighter"),
+            line_is_dim(terminal.backend(), "Light fighter"),
             "unaffordable ships should be dim: {text}"
         );
     }
@@ -4927,8 +3779,8 @@ mod tests {
         let mut app = App::new(state);
         app.open(Screen::Shipyard);
         let text = render_text(&app, 100, 40);
-        assert!(text.contains("light cannon"), "{text}");
-        assert!(text.contains("orbital station"), "{text}");
+        assert!(text.contains("Light cannon"), "{text}");
+        assert!(text.contains("Orbital station"), "{text}");
         app.selected = ShipKind::ALL.len()
             + DefenceKind::ALL
                 .iter()
@@ -4941,7 +3793,7 @@ mod tests {
             Some(DefenceKind::LightCannon)
         );
         let text = render_text(&app, 100, 32);
-        assert!(text.contains("1. light cannon x1"), "{text}");
+        assert!(text.contains("1. light cannon ×1"), "{text}");
     }
 
     #[test]
@@ -5074,8 +3926,8 @@ mod tests {
         assert_eq!(app.screen, Screen::Planet);
         let planet = render_text(&app, 100, 32);
         assert!(planet.contains("unrest"), "{planet}");
-        assert!(planet.contains("radiator"), "{planet}");
-        assert!(planet.contains("scrubber"), "{planet}");
+        assert!(planet.contains("Radiator"), "{planet}");
+        assert!(planet.contains("Scrubber"), "{planet}");
     }
 
     #[test]
@@ -5109,7 +3961,10 @@ mod tests {
             text.contains(&format!("need Fe{:.0}", remaining.iron)),
             "{text}"
         );
-        assert!(text.contains(&format!("eta {eta}s")), "{text}");
+        assert!(
+            text.contains(&format!("eta {}", ui::spans::duration(eta))),
+            "{text}"
+        );
         assert!(text.contains("stage 1/"), "{text}");
     }
 
@@ -5148,8 +4003,8 @@ mod tests {
         let text = render_text(&app, 100, 32);
         assert!(text.contains("Bridge / Feats"), "{text}");
         assert!(text.contains("First cut"), "{text}");
-        assert!(text.contains("earned"), "{text}");
-        assert!(text.contains("???"), "{text}");
+        assert!(text.contains("EARNED"), "{text}");
+        assert!(text.contains("Hidden feat"), "{text}");
         assert!(
             text.contains("1/5") || text.contains("Solar array"),
             "{text}"
@@ -5164,8 +4019,8 @@ mod tests {
         assert_eq!(app.screen, Screen::Daily);
         let text = render_text(&app, 100, 32);
         assert!(text.contains("Bridge / Daily"), "{text}");
-        assert!(text.contains("Streak"), "{text}");
-        assert!(text.contains("resets in"), "{text}");
+        assert!(text.contains("STREAK"), "{text}");
+        assert!(text.contains("RESETS IN"), "{text}");
         assert!(
             app.state.daily.slots.iter().any(|s| text.contains(
                 app.state
@@ -5189,8 +4044,8 @@ mod tests {
         assert!(text.contains("Conquest"), "{text}");
         assert!(text.contains("Wonder"), "{text}");
         assert!(text.contains("Diplomacy"), "{text}");
-        assert!(text.contains("Pirate homeworld"), "{text}");
-        assert!(text.contains("Ladder"), "{text}");
+        assert!(text.contains("PIRATE HOMEWORLD"), "{text}");
+        assert!(text.contains("LADDER"), "{text}");
         assert!(
             text.contains("Self-sufficient volatiles") || text.contains("Next"),
             "{text}"
@@ -5221,7 +4076,7 @@ mod tests {
         let text = render_text(&app, 120, 32);
         assert!(text.contains("Empire / Automation"), "{text}");
         assert!(text.contains("Adaptive routes"), "{text}");
-        assert!(text.contains("rule #1"), "{text}");
+        assert!(text.contains("#1 "), "{text}");
         assert!(text.contains("stock_below"), "{text}");
         app.handle_key(KeyCode::Enter, 1_000);
         assert!(
@@ -5259,9 +4114,9 @@ mod tests {
         assert_eq!(app.screen, Screen::Finance);
         let text = render_text(&app, 120, 32);
         assert!(text.contains("Trade / Finance"), "{text}");
-        assert!(text.contains("[fin]"), "{text}");
-        assert!(text.contains("industry"), "{text}");
-        assert!(text.contains("hold #"), "{text}");
+        assert!(text.contains("CASH"), "{text}");
+        assert!(text.contains("Industry"), "{text}");
+        assert!(text.contains("HELD"), "{text}");
         app.handle_key(KeyCode::Enter, 1_000);
         assert!(app.status.contains("approved"), "{}", app.status);
         assert_eq!(app.state.build_queue.len(), 1);
@@ -5284,7 +4139,7 @@ mod tests {
         assert_eq!(app.screen, Screen::Kpis);
         let text = render_text(&app, 120, 32);
         assert!(text.contains("KPIs"), "{text}");
-        assert!(text.contains("output"), "{text}");
+        assert!(text.contains("Output"), "{text}");
         app.handle_key(KeyCode::Enter, 1_000);
         assert!(
             app.status.contains("events") || app.status.contains("no source"),
@@ -5310,7 +4165,7 @@ mod tests {
         assert_eq!(app.screen, Screen::Incidents);
         let text = render_text(&app, 120, 32);
         assert!(text.contains("Incidents"), "{text}");
-        assert!(text.contains("manual"), "{text}");
+        assert!(text.contains("Manual"), "{text}");
         assert!(text.contains("objects home"), "{text}");
         assert!(text.contains("pirate activity"), "{text}");
         app.handle_key(KeyCode::Enter, 1_000);
@@ -5372,16 +4227,16 @@ mod tests {
         assert_eq!(app.screen, Screen::Production);
         let text = render_text(&app, 80, 24);
         assert!(text.contains("Colony / Production"), "{text}");
-        assert!(text.contains("limit"), "{text}");
-        assert!(text.contains("energy"), "{text}");
-        assert!(text.contains("heat"), "{text}");
+        assert!(text.contains("LIMIT"), "{text}");
+        assert!(text.contains("ENERGY"), "{text}");
+        assert!(text.contains("HEAT"), "{text}");
         assert!(text.contains("REE"), "{text}");
         assert!(text.contains("H2O"), "{text}");
         assert!(text.contains("He3"), "{text}");
         let wide = render_text(&app, 120, 32);
-        assert!(wide.contains("limit"), "{wide}");
+        assert!(wide.contains("LIMIT"), "{wide}");
         assert!(
-            text.chars().any(|c| "▁▂▃▄▅▆▇█".contains(c)) || text.contains("rate"),
+            text.chars().any(|c| "▁▂▃▄▅▆▇█".contains(c)) || text.contains("Fe /h"),
             "history missing: {text}"
         );
     }
@@ -5450,15 +4305,15 @@ mod tests {
         assert_eq!(app.screen, Screen::Market);
         let text = render_text(&app, 100, 32);
         assert!(text.contains("Trade / Market"), "{text}");
-        assert!(text.contains("Prices"), "{text}");
-        assert!(text.contains("preview"), "{text}");
+        assert!(text.contains("Fe → Si"), "{text}");
+        assert!(text.contains("YOU GET"), "{text}");
         assert!(
             text.chars().any(|c| "▁▂▃▄▅▆▇█".contains(c)),
             "sparkline missing: {text}"
         );
         app.handle_key(KeyCode::Char('+'), 1_000);
         let text = render_text(&app, 100, 32);
-        assert!(text.contains("amount 20"), "{text}");
+        assert!(text.contains(" 20 "), "{text}");
         let before = app.state.resources.iron;
         app.handle_key(KeyCode::Enter, 1_000);
         assert!(
@@ -5480,21 +4335,18 @@ mod tests {
         assert!(text.contains("Pirate clans"), "{text}");
         assert!(text.contains("Ancient empire"), "{text}");
         assert!(
-            text.contains("Neutral") || text.contains("Dormant"),
+            text.contains("NEUTRAL") || text.contains("DORMANT"),
             "{text}"
         );
-        assert!(text.contains("next"), "{text}");
-        assert!(text.contains("Recent: none"), "{text}");
+        assert!(text.contains("NEXT"), "{text}");
+        assert!(text.contains("RECENT"), "{text}");
         app.handle_key(KeyCode::Char('j'), 1_000);
         app.handle_key(KeyCode::Enter, 1_000);
         close_standing(&app, "pirates", 12.0);
         let text = render_text(&app, 100, 32);
         assert!(text.contains("tribute"), "{text}");
-        assert!(
-            text.contains("truce") || text.contains("Truce") || text.contains("Neutral"),
-            "{text}"
-        );
-        assert!(text.contains("Recent:"), "{text}");
+        assert!(text.contains("TRUCE") || text.contains("NEUTRAL"), "{text}");
+        assert!(text.contains("RECENT"), "{text}");
         assert!(text.contains("pirates"), "{text}");
     }
 
@@ -5606,7 +4458,7 @@ mod tests {
         let text = render_text(&app, 100, 32);
         assert!(text.contains("Fleet / Intel"), "{text}");
         assert!(text.contains(&dest.to_string()), "{text}");
-        assert!(text.contains("age 100s"), "{text}");
+        assert!(text.contains("1m 40s"), "{text}");
         assert!(text.contains("garrison"), "{text}");
         app.handle_key(KeyCode::Enter, 1_000);
         let text = render_text(&app, 100, 32);
@@ -5647,7 +4499,7 @@ mod tests {
         let text = render_text(&app, 100, 32);
         assert!(text.contains("Empire / Staff"), "{text}");
         assert!(text.contains("Home fleet"), "{text}");
-        assert!(text.contains("governor"), "{text}");
+        assert!(text.contains("GOVERNOR"), "{text}");
     }
 
     #[test]
@@ -5717,7 +4569,7 @@ mod tests {
         let mut app = App::new(GameState::new(1_000));
         app.open(Screen::Map);
         let small = render_text(&app, 80, 24);
-        assert!(small.contains("Map"), "{small}");
+        assert!(small.contains("Star map"), "{small}");
         assert!(small.contains("[H]") || small.contains("home"), "{small}");
         let large = render_text(&app, 120, 40);
         assert!(large.contains("Fleet / Star map"), "{large}");
@@ -5761,9 +4613,12 @@ mod tests {
         app.open(Screen::Map);
         let text = render_text(&app, 100, 32);
         assert!(text.contains("Fleet / Star map"), "{text}");
-        assert!(text.contains("[H]f"), "{text}");
+        assert!(text.contains("[H] f"), "{text}");
         assert!(
-            text.contains(&format!("fleet #{id} outbound {eta}s")),
+            text.contains(&format!(
+                "fleet #{id} outbound {}",
+                ui::spans::duration(eta)
+            )),
             "{text}"
         );
     }
@@ -6212,7 +5067,7 @@ mod tests {
             .position(|spec| spec.id == "energy")
             .unwrap();
         let text = render_text(&app, 160, 48);
-        assert!(text.contains("NEVER AT CURRENT INCOME"), "{text}");
+        assert!(text.contains("NEVER at current income"), "{text}");
     }
 
     #[test]
