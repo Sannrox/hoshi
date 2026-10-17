@@ -47,7 +47,10 @@ A live shard (not this in-process backend) wraps those moves in
 `ShardSession`: the host clock is the only time source, a client timestamp is
 ignored, each identity is rate limited, intents carry an idempotency id, and
 bridge pulses need an HMAC-SHA256 the host keys. Unsigned or altered pulses
-are rejected. The local TUI and CLI do not use this gate.
+are rejected. Player raids catch up both empires, then resolve against that
+snapshot with the same fleet combat as local play. A young defender is
+protected; an attacker has a per-identity attack cap; plunder uses the
+defender's share then cap. The local TUI and CLI do not use this gate.
 
 The optional governance demo (`hoshi --demo demo governance --seed N`) puts an
 ungoverned CLI player next to a Chisei-governed one. Policies (spend caps,

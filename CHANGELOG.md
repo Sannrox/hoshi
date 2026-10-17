@@ -20,6 +20,8 @@
 
 ### Added
 
+- Shard player raids: a Chisei-hosted shard catches up both empires, then resolves against that snapshot with the same fleet combat as local play. Newbie protection and per-identity attack caps are enforced; plunder uses the defender share then cap. Local play is unchanged.
+
 - Shard anti-cheat gate: a Chisei-hosted shard applies commands on its own clock (client timestamps ignored), rejects unsigned or altered bridge pulses, and rate-limits commands per identity. Local play is unchanged.
 
 - Imperfect intel: remote facts carry source, observed time, age and confidence. Probe reports wait for light-time from the target, pick up range/sensor error, keep conflicting readings side by side, and a detected wave can be fed false counts. Intel screen, `hoshi intel` and `hoshi intel provenance` show that provenance. Fair-play: pending reports and the deceived flag stay off the CLI. Save schema v45.
