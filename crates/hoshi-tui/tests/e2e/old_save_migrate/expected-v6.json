@@ -148,57 +148,41 @@
   "outposts": [
     {
       "coord": "1:12:7",
-      "defences": 1,
-      "garrison": 2,
       "rare": null,
       "report": null
     },
     {
       "coord": "1:73:8",
-      "defences": 1,
-      "garrison": 2,
       "rare": null,
       "report": null
     },
     {
       "coord": "1:74:6",
-      "defences": 1,
-      "garrison": 2,
       "rare": null,
       "report": null
     },
     {
       "coord": "1:23:4",
-      "defences": 1,
-      "garrison": 2,
       "rare": null,
       "report": null
     },
     {
       "coord": "1:51:5",
-      "defences": 1,
-      "garrison": 2,
       "rare": null,
       "report": null
     },
     {
       "coord": "1:62:3",
-      "defences": 1,
-      "garrison": 2,
       "rare": null,
       "report": null
     },
     {
       "coord": "1:2:4",
-      "defences": 1,
-      "garrison": 2,
       "rare": null,
       "report": null
     },
     {
       "coord": "1:76:5",
-      "defences": 3,
-      "garrison": 6,
       "rare": null,
       "report": null
     }
@@ -278,7 +262,7 @@
     "empires": [],
     "enabled": false
   },
-  "save_schema": 44,
+  "save_schema": 45,
   "schema_version": 2,
   "season": null,
   "species": null,

@@ -44,6 +44,15 @@ enum Command {
     State {
         actor: Actor,
     },
+    Intel {
+        actor: Actor,
+        target: Option<Coord>,
+    },
+    IntelProvenance {
+        actor: Actor,
+        target: Coord,
+        field: String,
+    },
     Classify {
         kind: ClassifiedKind,
         id: String,
@@ -600,6 +609,22 @@ fn apply(
                 state.catch_up(now);
             }
             Ok(state_value(state, *actor))
+        }
+        Command::Intel { actor, target } => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            Ok(intel_value(state, *actor, target.as_ref()))
+        }
+        Command::IntelProvenance {
+            actor,
+            target,
+            field,
+        } => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            Ok(intel_provenance_value(state, *actor, *target, field))
         }
         Command::Classify {
             kind,
@@ -2080,8 +2105,6 @@ fn state_value(state: &GameState, actor: Actor) -> Value {
         "planets": planets,
         "outposts": state.outposts.iter().map(|o| json!({
             "coord": o.coord.to_string(),
-            "defences": o.defences.total(),
-            "garrison": o.garrison,
             "rare": o.rare,
             "report": state.latest_report_for(actor, o.coord).map(|r| spy_report_value(r, state.last_tick_unix, state)),
         })).collect::<Vec<_>>(),
@@ -2184,6 +2207,10 @@ fn state_value(state: &GameState, actor: Actor) -> Value {
             "name": row.name,
             "home": row.home.to_string(),
             "last_action": row.last_action,
+            "source": row.source,
+            "observed_at": row.observed_at,
+            "age_secs": row.age_secs,
+            "confidence": row.confidence,
             "resources": row.resources.map(resources_json),
             "fleet": row.fleet.map(fleet_counts),
             "buildings": row.buildings.map(|b| json!({
@@ -2231,7 +2258,11 @@ fn spy_report_value(report: &SpyReport, now: u64, state: &GameState) -> Value {
     json!({
         "id": report.id,
         "target": report.target.to_string(),
+        "source": report.source,
+        "observed_at": report.observed_at,
+        "arrives_at": report.arrives_at,
         "age_secs": report.age_secs(now),
+        "confidence": state.report_confidence(report),
         "tier": report.tier,
         "detected": report.detected,
         "probes_sent": report.probes_sent,
@@ -2247,6 +2278,89 @@ fn spy_report_value(report: &SpyReport, now: u64, state: &GameState) -> Value {
         "stance": report.stance,
         "marking": marking_value(state, ClassifiedKind::Report, &report.id.to_string()),
     })
+}
+
+fn observation_value(obs: &hoshi_core::Observation) -> Value {
+    json!({
+        "report_id": obs.report_id,
+        "object": obs.object,
+        "field": obs.field,
+        "source": obs.source,
+        "observed_at": obs.observed_at,
+        "arrives_at": obs.arrives_at,
+        "age_secs": obs.age_secs,
+        "confidence": obs.confidence,
+        "detected": obs.detected,
+        "value": match &obs.value {
+            hoshi_core::IntelValue::Count(n) => json!(n),
+            hoshi_core::IntelValue::Number(n) => json!(n),
+            hoshi_core::IntelValue::Text(s) => json!(s),
+        },
+    })
+}
+
+fn intel_value(state: &GameState, actor: Actor, target: Option<&Coord>) -> Value {
+    let now = state.last_tick_unix;
+    let mut facts = state.intel_facts_for(actor, now);
+    if let Some(coord) = target {
+        let key = coord.to_string();
+        facts.retain(|fact| fact.object == key);
+    }
+    let reports: Vec<_> = state
+        .visible_reports(actor)
+        .into_iter()
+        .filter(|r| target.map(|c| r.target == *c).unwrap_or(true))
+        .collect();
+    json!({
+        "schema_version": SCHEMA_VERSION,
+        "ok": true,
+        "now": now,
+        "facts": facts.iter().map(|fact| json!({
+            "object": fact.object,
+            "field": fact.field,
+            "observations": fact.observations.iter().map(observation_value).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+        "reports": reports.iter().map(|r| spy_report_value(r, now, state)).collect::<Vec<_>>(),
+    })
+}
+
+fn intel_provenance_value(state: &GameState, actor: Actor, target: Coord, field: &str) -> Value {
+    let now = state.last_tick_unix;
+    let object = target.to_string();
+    let observations = state.provenance_for(actor, &object, field, now);
+    json!({
+        "schema_version": SCHEMA_VERSION,
+        "ok": true,
+        "now": now,
+        "object": object,
+        "field": field,
+        "observations": observations.iter().map(observation_value).collect::<Vec<_>>(),
+    })
+}
+
+fn parse_intel_command(args: &[String]) -> Result<Command, CliError> {
+    match args.get(1).map(String::as_str) {
+        None | Some("--as") => parse_actor_command(args, |actor| Command::Intel {
+            actor,
+            target: None,
+        }),
+        Some("provenance") => {
+            let target = parse_coord(nth(args, 2, "intel provenance <coord> <field>")?)?;
+            let field = nth(args, 3, "intel provenance <coord> <field>")?.to_string();
+            Ok(Command::IntelProvenance {
+                actor: parse_actor_flag(args, 4)?,
+                target,
+                field,
+            })
+        }
+        Some(raw) => {
+            let target = parse_coord(raw)?;
+            Ok(Command::Intel {
+                actor: parse_actor_flag(args, 2)?,
+                target: Some(target),
+            })
+        }
+    }
 }
 
 fn fleet_counts(fleet: Fleet) -> Value {
@@ -2532,6 +2646,7 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
     };
     match name {
         "state" => parse_actor_command(args, |actor| Command::State { actor }),
+        "intel" => parse_intel_command(args),
         "classify" => parse_classify_command(args),
         "share" => parse_share_command(args),
         "incidents" => parse_incidents_command(args),
@@ -5272,6 +5387,11 @@ mod tests {
             size: None,
             formation: None,
             stance: None,
+            source: "probe".into(),
+            observed_at: 10,
+            arrives_at: 0,
+            confidence: 1.0,
+            deceived: false,
         });
         state
             .classify(
@@ -5327,6 +5447,128 @@ mod tests {
         );
         assert_eq!(exit, EXIT_OK, "{classified}");
         assert!(classified["spy_reports"].as_array().unwrap().is_empty());
+        let _ = std::fs::remove_file(&save);
+    }
+
+    #[test]
+    fn intel_lists_conflicts_hides_pending_and_stays_fair() {
+        let save = unique_save("intel");
+        let mut conn = open_save(&save).unwrap();
+        let mut state = GameState::with_seed(50, BalanceConfig::default(), 1);
+        state.deterministic = true;
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 4,
+        };
+        state.spy_reports.push(SpyReport {
+            id: 1,
+            target: dest,
+            created_at: 10,
+            probes_sent: 2,
+            probes_lost: 0,
+            detected: false,
+            score: 4.0,
+            tier: "garrison".into(),
+            resources: None,
+            fleet: None,
+            defences: None,
+            garrison: Some(12),
+            kind: None,
+            size: None,
+            formation: None,
+            stance: None,
+            source: "probe".into(),
+            observed_at: 10,
+            arrives_at: 10,
+            confidence: 0.8,
+            deceived: false,
+        });
+        state.spy_reports.push(SpyReport {
+            id: 2,
+            target: dest,
+            created_at: 20,
+            probes_sent: 2,
+            probes_lost: 0,
+            detected: true,
+            score: 4.0,
+            tier: "garrison".into(),
+            resources: None,
+            fleet: None,
+            defences: None,
+            garrison: Some(40),
+            kind: None,
+            size: None,
+            formation: None,
+            stance: None,
+            source: "probe".into(),
+            observed_at: 20,
+            arrives_at: 20,
+            confidence: 0.4,
+            deceived: true,
+        });
+        state.spy_reports.push(SpyReport {
+            id: 3,
+            target: dest,
+            created_at: 30,
+            probes_sent: 1,
+            probes_lost: 0,
+            detected: false,
+            score: 1.0,
+            tier: "activity".into(),
+            resources: None,
+            fleet: None,
+            defences: None,
+            garrison: Some(99),
+            kind: None,
+            size: None,
+            formation: None,
+            stance: None,
+            source: "probe".into(),
+            observed_at: 30,
+            arrives_at: 10_000,
+            confidence: 0.9,
+            deceived: false,
+        });
+        state.last_tick_unix = 50;
+        save_state(&mut conn, &state).unwrap();
+        drop(conn);
+        let (value, exit) = run_on(&save, &["intel", &dest.to_string()]);
+        assert_eq!(exit, EXIT_OK, "{value}");
+        let dump = value.to_string();
+        assert!(!dump.contains("deceived"), "{dump}");
+        assert!(!dump.contains("rng_seed"), "{dump}");
+        assert!(!dump.contains("\"99\""), "{dump}");
+        let (glance, exit) = run_on(&save, &["state"]);
+        assert_eq!(exit, EXIT_OK, "{glance}");
+        for row in glance["outposts"].as_array().unwrap() {
+            assert!(row.get("garrison").is_none(), "{row}");
+            assert!(row.get("defences").is_none(), "{row}");
+        }
+        let reports = value["reports"].as_array().unwrap();
+        assert_eq!(reports.len(), 2, "{value}");
+        let (prov, exit) = run_on(
+            &save,
+            &["intel", "provenance", &dest.to_string(), "garrison"],
+        );
+        assert_eq!(exit, EXIT_OK, "{prov}");
+        let obs = prov["observations"].as_array().unwrap();
+        assert_eq!(obs.len(), 2, "{prov}");
+        let values: Vec<u64> = obs
+            .iter()
+            .map(|row| row["value"].as_u64().unwrap())
+            .collect();
+        assert!(values.contains(&12), "{prov}");
+        assert!(values.contains(&40), "{prov}");
+        assert!(!values.contains(&99), "{prov}");
+        assert!(obs.iter().all(|row| row["source"] == "probe"));
+        assert!(obs.iter().all(|row| row.get("deceived").is_none()));
+        let (again, exit) = run_on(
+            &save,
+            &["intel", "provenance", &dest.to_string(), "garrison"],
+        );
+        assert_eq!(exit, EXIT_OK, "{again}");
+        assert_eq!(again["observations"], prov["observations"]);
         let _ = std::fs::remove_file(&save);
     }
 

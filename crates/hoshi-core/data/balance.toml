@@ -425,6 +425,11 @@ detect_base = 0.05
 detect_per_probe = 0.08
 detect_per_level = 0.12
 destroy_chance = 0.5
+# error = error_base + error_per_au * range_au / quality
+error_base = 0.02
+error_per_au = 0.01
+age_penalty_per_hour = 0.02
+decoy_bias = 0.35
 
 [[espionage.tiers]]
 id = "activity"

@@ -20,6 +20,8 @@
 
 ### Added
 
+- Imperfect intel: remote facts carry source, observed time, age and confidence. Probe reports wait for light-time from the target, pick up range/sensor error, keep conflicting readings side by side, and a detected wave can be fed false counts. Intel screen, `hoshi intel` and `hoshi intel provenance` show that provenance. Fair-play: pending reports and the deceived flag stay off the CLI. Save schema v45.
+
 - Predictive maintenance: asset condition from use, age and heat; time and usage plans; work orders with iron/silicon cost and downtime; bounded noisy telemetry; bathtub failure prediction on a documented horizon. Failures take assets offline and can open incidents. Maintenance screen in the Colony hub and `hoshi maintenance` / `schedule` / `complete` / `telemetry --export`. Save schema v44. See `crates/hoshi-core/data/maintenance.toml`.
 
 - Incidents opened from raids, heat overflow, missed contracts and classification leaks, with leader assignment, resolution and post-incident reviews. A risk register reviews pirate activity, heat margins and the single home world daily. Incidents screen in the Empire hub and `hoshi incidents` / `open` / `assign` / `resolve` / `review`. Save schema v43. See `crates/hoshi-core/data/incidents.toml`.

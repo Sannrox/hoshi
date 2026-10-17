@@ -168,12 +168,13 @@ fn infer_protocol(env: impl Fn(&str) -> Option<String>) -> Protocol {
 }
 
 /// Latest matching mood for a slot. Missing variants stay Neutral at the call site.
-pub fn mood_for(slot: Slot, events: &[GameEvent]) -> Mood {
+pub fn mood_for<'a>(slot: Slot, events: impl IntoIterator<Item = &'a GameEvent>) -> Mood {
     if !slot.uses_mood() {
         return Mood::Neutral;
     }
     let rules = mood_rules();
-    for event in events.iter().rev() {
+    let events: Vec<&GameEvent> = events.into_iter().collect();
+    for event in events.into_iter().rev() {
         for (rule_slot, needle, mood) in &rules {
             if *rule_slot == slot && event.text.contains(needle) {
                 return *mood;

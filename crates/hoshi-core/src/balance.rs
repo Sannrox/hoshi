@@ -771,6 +771,14 @@ struct FileEspionage {
     detect_per_level: f64,
     #[serde(default = "default_spy_destroy")]
     destroy_chance: f64,
+    #[serde(default = "default_spy_error_base")]
+    error_base: f64,
+    #[serde(default = "default_spy_error_per_au")]
+    error_per_au: f64,
+    #[serde(default = "default_spy_age_penalty")]
+    age_penalty_per_hour: f64,
+    #[serde(default = "default_spy_decoy")]
+    decoy_bias: f64,
     #[serde(default)]
     tiers: Vec<FileEspionageTier>,
 }
@@ -823,6 +831,18 @@ fn default_spy_detect_level() -> f64 {
 fn default_spy_destroy() -> f64 {
     0.5
 }
+fn default_spy_error_base() -> f64 {
+    0.02
+}
+fn default_spy_error_per_au() -> f64 {
+    0.01
+}
+fn default_spy_age_penalty() -> f64 {
+    0.02
+}
+fn default_spy_decoy() -> f64 {
+    0.35
+}
 
 impl Default for FileEspionage {
     fn default() -> Self {
@@ -834,6 +854,10 @@ impl Default for FileEspionage {
             detect_per_probe: default_spy_detect_probe(),
             detect_per_level: default_spy_detect_level(),
             destroy_chance: default_spy_destroy(),
+            error_base: default_spy_error_base(),
+            error_per_au: default_spy_error_per_au(),
+            age_penalty_per_hour: default_spy_age_penalty(),
+            decoy_bias: default_spy_decoy(),
             tiers: Vec::new(),
         }
     }
@@ -860,6 +884,10 @@ impl FileEspionage {
             detect_per_probe: self.detect_per_probe,
             detect_per_level: self.detect_per_level,
             destroy_chance: self.destroy_chance,
+            error_base: self.error_base,
+            error_per_au: self.error_per_au,
+            age_penalty_per_hour: self.age_penalty_per_hour,
+            decoy_bias: self.decoy_bias,
             tiers,
         }
     }

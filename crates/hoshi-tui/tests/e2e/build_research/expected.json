@@ -182,57 +182,41 @@
   "outposts": [
     {
       "coord": "1:21:4",
-      "defences": 1,
-      "garrison": 2,
       "rare": "crystal_garden",
       "report": null
     },
     {
       "coord": "1:17:5",
-      "defences": 1,
-      "garrison": 2,
       "rare": null,
       "report": null
     },
     {
       "coord": "1:54:5",
-      "defences": 1,
-      "garrison": 2,
       "rare": null,
       "report": null
     },
     {
       "coord": "1:56:6",
-      "defences": 1,
-      "garrison": 2,
       "rare": null,
       "report": null
     },
     {
       "coord": "1:77:6",
-      "defences": 3,
-      "garrison": 6,
       "rare": null,
       "report": null
     },
     {
       "coord": "1:13:6",
-      "defences": 1,
-      "garrison": 2,
       "rare": "shipyard_world",
       "report": null
     },
     {
       "coord": "1:12:7",
-      "defences": 1,
-      "garrison": 2,
       "rare": null,
       "report": null
     },
     {
       "coord": "1:27:7",
-      "defences": 1,
-      "garrison": 2,
       "rare": null,
       "report": null
     }
@@ -312,7 +296,7 @@
     "empires": [],
     "enabled": false
   },
-  "save_schema": 44,
+  "save_schema": 45,
   "schema_version": 2,
   "season": null,
   "species": null,
