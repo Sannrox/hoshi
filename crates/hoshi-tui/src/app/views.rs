@@ -64,6 +64,60 @@ fn callout_lines(theme: &Theme, intent: Intent, title: &str, detail: &str) -> Ve
 }
 
 impl App {
+    /// Dims the frame and centres a dialog sized to its wrapped content.
+    pub(super) fn dialog(
+        &self,
+        frame: &mut Frame<'_>,
+        title: &str,
+        subtitle: String,
+        lines: Vec<Line<'static>>,
+        hints: &[(String, &str)],
+    ) {
+        let t = &self.theme;
+        let area = frame.area();
+        ui::chrome::dim(frame.buffer_mut(), area, t);
+        let width = area.width.saturating_sub(4).min(84).max(area.width.min(40));
+        let text_w = width.saturating_sub(4).max(1) as usize;
+        let rows: usize = lines
+            .iter()
+            .map(|line| line.width().max(1).div_ceil(text_w))
+            .sum();
+        let height = (rows as u16 + 4).min(area.height.saturating_sub(2)).max(3);
+        let rect = Rect {
+            x: area.x + (area.width - width) / 2,
+            y: area.y + (area.height - height) / 2,
+            width,
+            height,
+        };
+        frame.render_widget(Clear, rect);
+        let hints: Vec<(String, String)> = hints
+            .iter()
+            .map(|(key, label)| (key.clone(), label.to_string()))
+            .collect();
+        let dialog = Dialog {
+            theme: t,
+            title: title.to_string(),
+            subtitle,
+            close_hint: self.keymap.primary(Binding::Cancel),
+            footer_note: Some(Line::from(ui::spans::key_hints(t, &hints))),
+            buttons: Vec::new(),
+        };
+        let inner = dialog.inner(rect);
+        frame.render_widget(dialog, rect);
+        let body = Rect {
+            x: inner.x + 2,
+            y: inner.y + 1,
+            width: inner.width.saturating_sub(4),
+            height: inner.height.saturating_sub(1),
+        };
+        frame.render_widget(
+            Paragraph::new(lines)
+                .style(t.text())
+                .wrap(Wrap { trim: false }),
+            body,
+        );
+    }
+
     pub(super) fn draw_list(&self, frame: &mut Frame<'_>, area: Rect) {
         let t = &self.theme;
         let view = self.list_view();

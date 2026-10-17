@@ -10,6 +10,8 @@
 
 - Dispatch opens beside the star map at 120 columns and up instead of covering it: target and slot kind, a stepper per ship type with the owned count, flight time and fuel, and a warning when deuterium runs short. Smaller terminals keep the full-screen form.
 
+- Overlays (story, away, victory, tactical, combat replay, invasion approval, advisor, activity, help, detail, history and spy reports) open as centred dialogs over the dimmed screen with their keys as keycaps in the footer. Story choices show number keycaps, the away summary groups deliveries, stalls and completions with Fe/Si/D gains and a duration, the replay draws both fleets as bars, and advisor tips read as callouts.
+
 ### Fixed
 
 - Story, away, and spy overlays clear the screen underneath so numbered choices stay readable. Inline portraits are erased while an overlay is open.
