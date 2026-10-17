@@ -160,8 +160,14 @@ impl GameState {
                 if buildings.get(recipe.building) == 0 {
                     continue;
                 }
-                let scale =
-                    self.recipe_building_scale(buildings, kind, extra, recipe.building, (now, now));
+                let scale = self.recipe_building_scale(
+                    buildings,
+                    kind,
+                    extra,
+                    recipe.building,
+                    (now, now),
+                    coord,
+                );
                 let flow =
                     self.flow_for_recipe(coord, recipe, scale, buildings, &resources, &goods);
                 for (id, amount) in &flow.inputs_per_hour {
@@ -732,6 +738,7 @@ mod tests {
             (0.0, 0.0, 0.0),
             BuildingKind::MetalMine,
             (now, now),
+            state.home,
         );
         let report = state.production_report();
         assert_eq!(report.limited_by.as_key(), "energy");

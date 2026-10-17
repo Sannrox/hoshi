@@ -95,7 +95,7 @@
     },
     {
       "at": 32400,
-      "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder Fe323 Si218 D0. winner attacker"
+      "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder Fe322 Si218 D0. winner attacker"
     },
     {
       "at": 61200,
@@ -123,7 +123,7 @@
     },
     {
       "at": 90000,
-      "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder Fe378 Si186 D0. winner attacker"
+      "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder Fe377 Si186 D0. winner attacker"
     },
     {
       "at": 118800,
@@ -135,7 +135,7 @@
     },
     {
       "at": 118800,
-      "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder Fe387 Si181 D0. winner attacker"
+      "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder Fe385 Si181 D0. winner attacker"
     },
     {
       "at": 140400,
@@ -147,7 +147,7 @@
     },
     {
       "at": 140400,
-      "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder Fe342 Si157 D0. winner attacker"
+      "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder Fe340 Si156 D0. winner attacker"
     },
     {
       "at": 162000,
@@ -159,11 +159,11 @@
     },
     {
       "at": 162000,
-      "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder Fe319 Si144 D0. winner attacker"
+      "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder Fe317 Si143 D0. winner attacker"
     }
   ],
   "finance": {
-    "cash": 4233.107337862709,
+    "cash": 4212.953987243957,
     "debt": 0.0,
     "pending": 0
   },
@@ -257,6 +257,11 @@
       "xp": 0
     }
   ],
+  "maintenance": {
+    "assets": 3,
+    "orders": 0,
+    "readings": 48
+  },
   "missions": [],
   "moons": [],
   "now": 176400,
@@ -342,9 +347,9 @@
   "rates": {
     "deuterium": 0.0,
     "helium_3": 0.0,
-    "iron": 49.5,
-    "rare_earths": 5.374355890905406,
-    "silicon": 22.0,
+    "iron": 49.02702750000003,
+    "rare_earths": 5.323003920367853,
+    "silicon": 21.78979000000001,
     "water_ice": 0.0
   },
   "research": {
@@ -385,16 +390,16 @@
   "resources": {
     "deuterium": 0.0,
     "helium_3": 0.0,
-    "iron": 517.4583984375,
-    "rare_earths": 263.19886605618376,
-    "silicon": 232.30859375,
+    "iron": 513.5376735937501,
+    "rare_earths": 261.96641876328187,
+    "silicon": 230.566049375,
     "water_ice": 0.0
   },
   "rivals": {
     "empires": [],
     "enabled": false
   },
-  "save_schema": 43,
+  "save_schema": 44,
   "schema_version": 2,
   "season": null,
   "species": null,

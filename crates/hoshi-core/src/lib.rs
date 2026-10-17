@@ -30,6 +30,7 @@ mod kpi;
 mod ladder;
 mod laws;
 mod leaders;
+mod maintenance;
 mod market;
 mod moons;
 mod ontology;
@@ -161,6 +162,11 @@ pub use laws::{
 pub use leaders::{
     Actor, Assignment, AssignmentTarget, Delegation, Leader, LeaderConfig, LeaderError,
     PLAYER as LEADER_PLAYER, Permission, RoleKind, TraitSpec,
+};
+pub use maintenance::{
+    Asset, AssetKind, FailurePrediction, MaintenanceConfig, MaintenanceError, MaintenancePlan,
+    MaintenanceSnapshot, MaintenanceState, PlanKind, TelemetryReading, WorkKind, WorkOrder,
+    fail_p_per_hour, predict_failure,
 };
 pub use market::{
     ContractKind, ContractStatus, MarketBoard, MarketConfig, MarketContract, MarketError,

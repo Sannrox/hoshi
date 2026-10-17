@@ -39,6 +39,7 @@ pub enum Screen {
     Daily,
     Goals,
     Production,
+    Maintenance,
     Market,
     Diplomacy,
     Laws,
@@ -822,6 +823,7 @@ impl App {
             Screen::Daily => HelpContext::Daily,
             Screen::Goals => HelpContext::Goals,
             Screen::Production => HelpContext::Production,
+            Screen::Maintenance => HelpContext::Maintenance,
             Screen::Market => HelpContext::Market,
             Screen::Diplomacy => HelpContext::Diplomacy,
             Screen::Laws => HelpContext::Laws,
@@ -1299,6 +1301,7 @@ impl App {
             Screen::Finance => "approve",
             Screen::Kpis => "events",
             Screen::Incidents => "resolve",
+            Screen::Maintenance => "schedule",
             Screen::Cockpit
             | Screen::Achievements
             | Screen::Daily
@@ -1794,6 +1797,7 @@ impl App {
             Screen::Finance => self.activate_finance(now_unix),
             Screen::Kpis => self.activate_kpi(),
             Screen::Incidents => self.activate_incident(),
+            Screen::Maintenance => self.activate_maintenance(),
             Screen::Market => self.activate_market(now_unix),
             Screen::Diplomacy => self.activate_diplomacy(now_unix),
             Screen::Laws => self.activate_law(now_unix),
@@ -2166,7 +2170,8 @@ impl App {
             | Screen::Ops
             | Screen::Finance
             | Screen::Kpis
-            | Screen::Incidents => {}
+            | Screen::Incidents
+            | Screen::Maintenance => {}
             Screen::Automation => self.remove_selected_automation_rule(),
         }
     }
@@ -2200,6 +2205,7 @@ impl App {
             Screen::Finance => self.state.finance.pending.len() + self.state.finance.budgets.len(),
             Screen::Kpis => self.state.kpi_snapshot().measurements.len(),
             Screen::Incidents => self.state.incident_snapshot().open.len(),
+            Screen::Maintenance => self.state.maintenance_snapshot().assets.len(),
             Screen::Ops => {
                 self.state.vehicles.len()
                     + self.state.planned.len()
@@ -2401,6 +2407,9 @@ impl App {
                 }
                 Screen::Incidents => {
                     format!("{select}  {confirm} resolve")
+                }
+                Screen::Maintenance => {
+                    format!("{select}  {confirm} schedule")
                 }
                 Screen::Ops => select,
                 Screen::Map => format!(
@@ -2959,6 +2968,24 @@ impl App {
             self.state.last_tick_unix,
         ) {
             Ok(()) => self.status = format!("incident #{id} resolved"),
+            Err(e) => self.status = e.to_string(),
+        }
+    }
+
+    fn activate_maintenance(&mut self) {
+        let snap = self.state.maintenance_snapshot();
+        let Some(asset) = snap.assets.get(self.selected) else {
+            self.status = "select an asset".into();
+            return;
+        };
+        let id = asset.id;
+        match self.state.schedule_maintenance(
+            id,
+            hoshi_core::PlanKind::Time,
+            hoshi_core::Actor::Player,
+            self.state.last_tick_unix,
+        ) {
+            Ok(order) => self.status = format!("work order #{order} on asset {id}"),
             Err(e) => self.status = e.to_string(),
         }
     }
@@ -4254,6 +4281,22 @@ mod tests {
             "{}",
             app.status
         );
+    }
+
+    #[test]
+    fn maintenance_screen_lists_assets_and_schedules() {
+        let mut state = GameState::new(1_000);
+        state.resources.iron = 1_000.0;
+        state.resources.silicon = 1_000.0;
+        let mut app = App::new(state);
+        app.open(Screen::Maintenance);
+        assert_eq!(app.screen, Screen::Maintenance);
+        let text = render_text(&app, 120, 32);
+        assert!(text.contains("Maintenance"), "{text}");
+        assert!(text.contains("COND"), "{text}");
+        assert!(text.contains("ONLINE"), "{text}");
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.status.contains("work order"), "{}", app.status);
     }
 
     #[test]

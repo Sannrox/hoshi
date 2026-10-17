@@ -1,0 +1,21 @@
+# Asset health, telemetry and predictive maintenance.
+# Formulas live in maintenance.rs. Horizon and noise are hours / fractions.
+
+telemetry_secs = 3600
+archive_cap = 48
+horizon_secs = 86400
+noise = 0.05
+infant_hours = 72.0
+wearout_condition = 0.35
+wear_use_per_hour = 0.00035
+wear_age_per_hour = 0.00004
+wear_heat_per_hour = 0.0009
+fail_base_per_hour = 0.00002
+fail_infant_per_hour = 0.00025
+fail_wearout_per_hour = 0.003
+offline_secs = 14400
+work_secs = 7200
+iron_cost = 40.0
+silicon_cost = 20.0
+interval_secs = 604800
+interval_hours_use = 168.0

@@ -125,6 +125,17 @@ enum Command {
     IncidentsReview {
         id: u64,
     },
+    Maintenance,
+    MaintenanceSchedule {
+        id: u64,
+        plan: String,
+    },
+    MaintenanceComplete {
+        id: u64,
+    },
+    MaintenanceTelemetry {
+        export: Option<PathBuf>,
+    },
     AutomationAdd {
         cond: String,
         planet: Coord,
@@ -858,6 +869,49 @@ fn apply(
                 .review_incident(*id, Actor::Player, now)
                 .map_err(|e| CliError::Refused(e.to_string()))?;
             Ok(ops_incidents_value(state))
+        }
+        Command::Maintenance | Command::MaintenanceTelemetry { export: None } => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            Ok(maintenance_value(state, None))
+        }
+        Command::MaintenanceSchedule { id, plan } => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            governed(
+                state,
+                Intent::ScheduleMaintenance {
+                    asset_id: *id,
+                    plan: plan.clone(),
+                    actor: Actor::Player,
+                },
+                now,
+            )?;
+            Ok(maintenance_value(state, None))
+        }
+        Command::MaintenanceComplete { id } => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            governed(
+                state,
+                Intent::CompleteWorkOrder {
+                    order_id: *id,
+                    actor: Actor::Player,
+                },
+                now,
+            )?;
+            Ok(maintenance_value(state, None))
+        }
+        Command::MaintenanceTelemetry { export: Some(path) } => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            let text = state.telemetry_jsonl();
+            std::fs::write(path, text.as_bytes()).map_err(|e| CliError::Internal(e.to_string()))?;
+            Ok(maintenance_value(state, Some(path)))
         }
         Command::Automation | Command::AutomationDryRun => {
             if !state.deterministic {
@@ -2155,6 +2209,11 @@ fn state_value(state: &GameState, actor: Actor) -> Value {
         "risks": state.incidents.risks.len(),
         "reviews": state.incidents.reviews.len(),
     });
+    value["maintenance"] = json!({
+        "assets": state.maintenance.assets.len(),
+        "orders": state.maintenance.orders.len(),
+        "readings": state.maintenance.readings.len(),
+    });
     value["season"] = match &state.season {
         Some(run) => json!({
             "id": run.ruleset_id,
@@ -2320,6 +2379,113 @@ fn parse_seed(v: &str) -> Result<u64, CliError> {
         .map_err(|_| CliError::Invalid(format!("invalid --seed {v}")))
 }
 
+fn parse_maintenance_command(args: &[String]) -> Result<Command, CliError> {
+    match args.get(1).map(String::as_str) {
+        None => {
+            expect_end(args, 1)?;
+            Ok(Command::Maintenance)
+        }
+        Some("schedule") => {
+            let id = parse_law_id(nth(
+                args,
+                2,
+                "maintenance schedule <asset-id> [time|usage]",
+            )?)?;
+            let plan = args.get(3).cloned().unwrap_or_else(|| "time".into());
+            if args.get(3).is_some() {
+                expect_end(args, 4)?;
+            } else {
+                expect_end(args, 3)?;
+            }
+            Ok(Command::MaintenanceSchedule { id, plan })
+        }
+        Some("complete") => {
+            let id = parse_law_id(nth(args, 2, "maintenance complete <order-id>")?)?;
+            expect_end(args, 3)?;
+            Ok(Command::MaintenanceComplete { id })
+        }
+        Some("telemetry") => {
+            let export = match args.get(2).map(String::as_str) {
+                None => {
+                    expect_end(args, 2)?;
+                    None
+                }
+                Some("--export") => {
+                    let path =
+                        PathBuf::from(nth(args, 3, "maintenance telemetry --export <path>")?);
+                    expect_end(args, 4)?;
+                    Some(path)
+                }
+                Some(other) if other.starts_with("--export=") => {
+                    expect_end(args, 3)?;
+                    Some(PathBuf::from(other.trim_start_matches("--export=")))
+                }
+                Some(other) => {
+                    return Err(CliError::Invalid(format!(
+                        "unknown maintenance telemetry flag {other}"
+                    )));
+                }
+            };
+            Ok(Command::MaintenanceTelemetry { export })
+        }
+        Some(other) => Err(CliError::Invalid(format!(
+            "unknown maintenance command {other}"
+        ))),
+    }
+}
+
+fn maintenance_value(state: &hoshi_core::GameState, export: Option<&PathBuf>) -> serde_json::Value {
+    let snap = state.maintenance_snapshot();
+    json!({
+        "ok": true,
+        "schema_version": SCHEMA_VERSION,
+        "next_at": snap.next_at,
+        "exported": export.map(|p| p.display().to_string()),
+        "assets": snap.assets.iter().map(|a| json!({
+            "id": a.id,
+            "kind": a.kind.as_key(),
+            "key": a.key,
+            "coord": a.coord.to_string(),
+            "condition": a.condition,
+            "hours_use": a.hours_use,
+            "offline_until": a.offline_until,
+        })).collect::<Vec<_>>(),
+        "plans": snap.plans.iter().map(|p| json!({
+            "id": p.id,
+            "asset_id": p.asset_id,
+            "kind": p.kind.as_key(),
+            "interval": p.interval,
+            "enabled": p.enabled,
+        })).collect::<Vec<_>>(),
+        "orders": snap.orders.iter().map(|o| json!({
+            "id": o.id,
+            "asset_id": o.asset_id,
+            "kind": o.kind.as_key(),
+            "started_at": o.started_at,
+            "ends_at": o.ends_at,
+            "iron": o.iron,
+            "silicon": o.silicon,
+        })).collect::<Vec<_>>(),
+        "readings": snap.readings.iter().map(|r| json!({
+            "id": r.id,
+            "asset_id": r.asset_id,
+            "at": r.at,
+            "temperature": r.temperature,
+            "vibration": r.vibration,
+            "power": r.power,
+            "hours_use": r.hours_use,
+        })).collect::<Vec<_>>(),
+        "predictions": snap.predictions.iter().map(|p| json!({
+            "id": p.id,
+            "asset_id": p.asset_id,
+            "at": p.at,
+            "probability": p.probability,
+            "horizon_secs": p.horizon_secs,
+            "reading_id": p.reading_id,
+        })).collect::<Vec<_>>(),
+    })
+}
+
 fn parse_incidents_command(args: &[String]) -> Result<Command, CliError> {
     match args.get(1).map(String::as_str) {
         None | Some("--as") => parse_actor_command(args, |actor| Command::Incidents { actor }),
@@ -2369,6 +2535,7 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
         "classify" => parse_classify_command(args),
         "share" => parse_share_command(args),
         "incidents" => parse_incidents_command(args),
+        "maintenance" => parse_maintenance_command(args),
         "advise" => {
             expect_end(args, 1)?;
             Ok(Command::Advise)

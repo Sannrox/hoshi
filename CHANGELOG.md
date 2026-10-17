@@ -18,6 +18,8 @@
 
 ### Added
 
+- Predictive maintenance: asset condition from use, age and heat; time and usage plans; work orders with iron/silicon cost and downtime; bounded noisy telemetry; bathtub failure prediction on a documented horizon. Failures take assets offline and can open incidents. Maintenance screen in the Colony hub and `hoshi maintenance` / `schedule` / `complete` / `telemetry --export`. Save schema v44. See `crates/hoshi-core/data/maintenance.toml`.
+
 - Incidents opened from raids, heat overflow, missed contracts and classification leaks, with leader assignment, resolution and post-incident reviews. A risk register reviews pirate activity, heat margins and the single home world daily. Incidents screen in the Empire hub and `hoshi incidents` / `open` / `assign` / `resolve` / `review`. Save schema v43. See `crates/hoshi-core/data/incidents.toml`.
 
 - KPIs for output, energy, heat, budget variance, incidents, on-time missions and market profit. Targets belong to the empire, a colony or a role. Catch-up archives a daily report with variance and source events. KPI screen, cockpit widget, and `hoshi kpis` / `kpis set` / `kpis report` (JSON plus Markdown). Save schema v42. See `crates/hoshi-core/data/kpis.toml`.
