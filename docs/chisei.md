@@ -43,6 +43,12 @@ Need-to-know stays in the tenant SQLite codec (`classified`, sharing agreements,
 Moves go through `propose` then `apply`. A refused proposal never writes the
 live state or the save.
 
+A live shard (not this in-process backend) wraps those moves in
+`ShardSession`: the host clock is the only time source, a client timestamp is
+ignored, each identity is rate limited, intents carry an idempotency id, and
+bridge pulses need an HMAC-SHA256 the host keys. Unsigned or altered pulses
+are rejected. The local TUI and CLI do not use this gate.
+
 The optional governance demo (`hoshi --demo demo governance --seed N`) puts an
 ungoverned CLI player next to a Chisei-governed one. Policies (spend caps,
 no attacks on allies, invasion approval, token budgets) wrap propose/apply.
