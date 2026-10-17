@@ -6,8 +6,12 @@
 
 use crate::activity::{ActivityApply, ActivityPulse};
 use crate::clock::Clock;
+use crate::combat::{
+    CombatReport, CombatWinner, plunder_from, rapid_fire_table, resolve_combat, stats_from_catalog,
+};
 use crate::intent::{Intent, IntentError, apply, propose};
-use crate::state::GameState;
+use crate::ships::Fleet;
+use crate::state::{GameState, Resources};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use std::collections::{BTreeMap, BTreeSet};
@@ -20,6 +24,10 @@ type HmacSha256 = Hmac<Sha256>;
 pub struct ShardConfig {
     pub command_window_secs: u64,
     pub command_limit: u32,
+    /// Defender run younger than this cannot be raided.
+    pub newbie_secs: u64,
+    pub attack_window_secs: u64,
+    pub attack_limit: u32,
 }
 
 impl Default for ShardConfig {
@@ -27,6 +35,9 @@ impl Default for ShardConfig {
         Self {
             command_window_secs: 60,
             command_limit: 30,
+            newbie_secs: 24 * 3600,
+            attack_window_secs: 24 * 3600,
+            attack_limit: 3,
         }
     }
 }
@@ -47,7 +58,23 @@ pub struct SignedBridgeEvent {
     pub mac: [u8; 32],
 }
 
-/// Why a shard refused a command or a bridge pulse.
+/// Snapshot raid: attacker and defender after catch-up at the host clock.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShardRaid {
+    pub attacker_id: String,
+    pub defender_id: String,
+    pub idempotency_id: String,
+    pub client_now_unix: Option<u64>,
+}
+
+/// Combat report plus plunder moved from defender to attacker.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShardRaidResult {
+    pub report: CombatReport,
+    pub plunder: Resources,
+}
+
+/// Why a shard refused a command, a bridge pulse, or a raid.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ShardError {
     EmptyIdentity,
@@ -58,6 +85,14 @@ pub enum ShardError {
     },
     ForgedBridge,
     Intent(IntentError),
+    SameEmpire,
+    NewbieProtected {
+        identity: String,
+    },
+    AttackCapped {
+        identity: String,
+        retry_after_secs: u64,
+    },
 }
 
 impl fmt::Display for ShardError {
@@ -74,6 +109,17 @@ impl fmt::Display for ShardError {
             ),
             ShardError::ForgedBridge => write!(f, "forged bridge event"),
             ShardError::Intent(err) => write!(f, "{err}"),
+            ShardError::SameEmpire => write!(f, "cannot raid your own empire"),
+            ShardError::NewbieProtected { identity } => {
+                write!(f, "{identity} is under newbie protection")
+            }
+            ShardError::AttackCapped {
+                identity,
+                retry_after_secs,
+            } => write!(
+                f,
+                "attack cap for {identity}, retry after {retry_after_secs}s"
+            ),
         }
     }
 }
@@ -87,6 +133,7 @@ pub struct ShardSession<C> {
     mac_key: [u8; 32],
     windows: BTreeMap<String, Vec<u64>>,
     seen: BTreeSet<(String, String)>,
+    attacks: BTreeMap<String, Vec<u64>>,
 }
 
 impl<C: Clock> ShardSession<C> {
@@ -97,6 +144,7 @@ impl<C: Clock> ShardSession<C> {
             mac_key,
             windows: BTreeMap::new(),
             seen: BTreeSet::new(),
+            attacks: BTreeMap::new(),
         }
     }
 
@@ -155,6 +203,92 @@ impl<C: Clock> ShardSession<C> {
         Ok(state.apply_activity(event.pulse, now))
     }
 
+    /// Catch up both empires on the host clock, then resolve a snapshot raid.
+    pub fn raid(
+        &mut self,
+        attacker: &mut GameState,
+        defender: &mut GameState,
+        cmd: ShardRaid,
+    ) -> Result<ShardRaidResult, ShardError> {
+        if cmd.attacker_id.is_empty() || cmd.defender_id.is_empty() {
+            return Err(ShardError::EmptyIdentity);
+        }
+        if cmd.idempotency_id.is_empty() {
+            return Err(ShardError::EmptyIdempotency);
+        }
+        if cmd.attacker_id == cmd.defender_id {
+            return Err(ShardError::SameEmpire);
+        }
+        let _ = cmd.client_now_unix;
+        let seen_key = (cmd.attacker_id.clone(), cmd.idempotency_id.clone());
+        if self.seen.contains(&seen_key) {
+            return Ok(ShardRaidResult {
+                report: empty_report(attacker.fleet, defender.fleet),
+                plunder: Resources::ZERO,
+            });
+        }
+        let now = self.clock.now_unix();
+        attacker.catch_up(now);
+        defender.catch_up(now);
+        if now.saturating_sub(defender.prestige.current.started_at) < self.config.newbie_secs {
+            return Err(ShardError::NewbieProtected {
+                identity: cmd.defender_id,
+            });
+        }
+        self.admit(&cmd.attacker_id, now)?;
+        self.admit_attack(&cmd.attacker_id, now)?;
+        let mut rng = attacker.rng_seed;
+        let report = resolve_combat(
+            attacker.fleet,
+            defender.fleet,
+            &stats_from_catalog(&attacker.config.ships),
+            &stats_from_catalog(&defender.config.ships),
+            attacker.config.raid.max_rounds,
+            &rapid_fire_table(&attacker.config.ships),
+            &mut rng,
+        );
+        attacker.rng_seed = rng;
+        attacker.fleet = report.attacker_after;
+        defender.fleet = report.defender_after;
+        let plunder = if report.winner == CombatWinner::Attacker {
+            plunder_from(
+                defender.resources,
+                defender.config.raid.plunder_share,
+                defender.config.raid.plunder_cap,
+            )
+        } else {
+            Resources::ZERO
+        };
+        defender.resources = defender.resources.saturating_sub(plunder);
+        attacker.resources = attacker.resources.saturating_add(plunder);
+        self.seen.insert(seen_key);
+        Ok(ShardRaidResult { report, plunder })
+    }
+
+    fn admit_attack(&mut self, identity: &str, now: u64) -> Result<(), ShardError> {
+        let window = self.config.attack_window_secs.max(1);
+        let limit = self.config.attack_limit;
+        if limit == 0 {
+            return Err(ShardError::AttackCapped {
+                identity: identity.to_string(),
+                retry_after_secs: window,
+            });
+        }
+        let stamps = self.attacks.entry(identity.to_string()).or_default();
+        let start = now.saturating_sub(window);
+        stamps.retain(|&t| t > start);
+        if stamps.len() as u32 >= limit {
+            let oldest = stamps.first().copied().unwrap_or(now);
+            let retry_after_secs = oldest.saturating_add(window).saturating_sub(now).max(1);
+            return Err(ShardError::AttackCapped {
+                identity: identity.to_string(),
+                retry_after_secs,
+            });
+        }
+        stamps.push(now);
+        Ok(())
+    }
+
     fn admit(&mut self, identity: &str, now: u64) -> Result<(), ShardError> {
         let window = self.config.command_window_secs.max(1);
         let limit = self.config.command_limit;
@@ -177,6 +311,21 @@ impl<C: Clock> ShardSession<C> {
         }
         stamps.push(now);
         Ok(())
+    }
+}
+
+fn empty_report(attacker: Fleet, defender: Fleet) -> CombatReport {
+    CombatReport {
+        rounds: 0,
+        attacker_before: attacker,
+        defender_before: defender,
+        attacker_after: attacker,
+        defender_after: defender,
+        winner: CombatWinner::Draw,
+        ground: None,
+        seed: 0,
+        frames: Vec::new(),
+        layered: false,
     }
 }
 
@@ -229,8 +378,10 @@ mod tests {
     use crate::balance::BalanceConfig;
     use crate::buildings::BuildingKind;
     use crate::clock::FakeClock;
+    use crate::combat::{plunder_from, rapid_fire_table, resolve_combat, stats_from_catalog};
     use crate::fleets::Coord;
     use crate::leaders::Actor;
+    use crate::ships::{Fleet, ShipKind};
     use crate::state::GameState;
 
     const KEY: [u8; 32] = [0x11; 32];
@@ -252,6 +403,7 @@ mod tests {
             ShardConfig {
                 command_window_secs: 60,
                 command_limit: limit,
+                ..ShardConfig::default()
             },
         )
     }
@@ -429,5 +581,115 @@ mod tests {
             .submit(&mut state, build_cmd("tenant-b", "same", None))
             .unwrap();
         assert_eq!(state.build_queue.len(), 2);
+    }
+
+    fn raid_session(now: u64, newbie_secs: u64, attack_limit: u32) -> ShardSession<FakeClock> {
+        ShardSession::new(
+            FakeClock::new(now),
+            KEY,
+            ShardConfig {
+                newbie_secs,
+                attack_limit,
+                ..ShardConfig::default()
+            },
+        )
+    }
+
+    fn armed(now: u64, fighters: u32) -> GameState {
+        let mut state = test_state(now);
+        state.fleet = Fleet::default();
+        state.fleet.add(ShipKind::LightFighter, fighters);
+        state.resources.iron = 1_000.0;
+        state
+    }
+
+    fn raid_cmd(attacker: &str, defender: &str, id: &str) -> ShardRaid {
+        ShardRaid {
+            attacker_id: attacker.into(),
+            defender_id: defender.into(),
+            idempotency_id: id.into(),
+            client_now_unix: Some(99_999),
+        }
+    }
+
+    #[test]
+    fn shard_raid_matches_the_single_player_resolver() {
+        let mut shard = raid_session(1_000, 0, 3);
+        let mut attacker = armed(1_000, 8);
+        let mut defender = armed(1_000, 3);
+        let atk_fleet = attacker.fleet;
+        let def_fleet = defender.fleet;
+        let mut rng = attacker.rng_seed;
+        let expected = resolve_combat(
+            atk_fleet,
+            def_fleet,
+            &stats_from_catalog(&attacker.config.ships),
+            &stats_from_catalog(&defender.config.ships),
+            attacker.config.raid.max_rounds,
+            &rapid_fire_table(&attacker.config.ships),
+            &mut rng,
+        );
+        let result = shard
+            .raid(&mut attacker, &mut defender, raid_cmd("a", "b", "r1"))
+            .unwrap();
+        assert_eq!(result.report, expected);
+        assert_eq!(attacker.fleet, expected.attacker_after);
+        assert_eq!(defender.fleet, expected.defender_after);
+    }
+
+    #[test]
+    fn newbie_protection_blocks_then_expires() {
+        let mut shard = raid_session(1_000, 3_600, 3);
+        let mut attacker = armed(1_000, 8);
+        let mut defender = armed(1_000, 3);
+        let err = shard
+            .raid(&mut attacker, &mut defender, raid_cmd("a", "b", "early"))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ShardError::NewbieProtected { identity } if identity == "b"
+        ));
+        assert_eq!(attacker.fleet.get(ShipKind::LightFighter), 8);
+        shard.clock.advance(3_600);
+        shard
+            .raid(&mut attacker, &mut defender, raid_cmd("a", "b", "later"))
+            .unwrap();
+    }
+
+    #[test]
+    fn attack_cap_rejects_the_next_raid() {
+        let mut shard = raid_session(1_000, 0, 1);
+        let mut attacker = armed(1_000, 8);
+        let mut defender = armed(1_000, 3);
+        shard
+            .raid(&mut attacker, &mut defender, raid_cmd("a", "b", "r1"))
+            .unwrap();
+        let err = shard
+            .raid(&mut attacker, &mut defender, raid_cmd("a", "b", "r2"))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ShardError::AttackCapped { identity, .. } if identity == "a"
+        ));
+    }
+
+    #[test]
+    fn shard_raid_applies_plunder_share_then_cap() {
+        let mut shard = raid_session(1_000, 0, 3);
+        let mut attacker = armed(1_000, 20);
+        let mut defender = armed(1_000, 1);
+        defender.resources.iron = 200.0;
+        defender.config.raid.plunder_share = 0.5;
+        defender.config.raid.plunder_cap = Resources::from_parts(40.0, 0.0, 0.0);
+        let stock = defender.resources;
+        let before = attacker.resources;
+        let result = shard
+            .raid(&mut attacker, &mut defender, raid_cmd("a", "b", "loot"))
+            .unwrap();
+        assert_eq!(result.report.winner, CombatWinner::Attacker);
+        let expected = plunder_from(stock, 0.5, defender.config.raid.plunder_cap);
+        assert_eq!(result.plunder, expected);
+        assert_eq!(attacker.resources, before.saturating_add(expected));
+        assert_eq!(defender.resources, stock.saturating_sub(expected));
     }
 }
