@@ -102,7 +102,7 @@ impl KpiId {
             KpiId::EnergyBalance => "home energy produced - draw",
             KpiId::HeatMargin => "home heat sink - load",
             KpiId::BudgetVariance => "sum of budget forecast - actual",
-            KpiId::Incidents => "open leak incidents",
+            KpiId::Incidents => "open operational incidents",
             KpiId::MissionOnTime => "planned missions inside window",
             KpiId::MarketProfit => "period trade + contract credits",
         }
@@ -546,7 +546,7 @@ impl GameState {
                 .iter()
                 .map(|b| b.forecast - b.actual)
                 .sum(),
-            KpiId::Incidents => self.classification.incidents.len() as f64,
+            KpiId::Incidents => self.open_count() as f64,
             KpiId::MissionOnTime => {
                 let schedule = self.mission_schedule(now);
                 let total = schedule.missions.len();

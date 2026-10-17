@@ -47,6 +47,7 @@ pub enum Screen {
     Automation,
     Finance,
     Kpis,
+    Incidents,
     Map,
     Cockpit,
 }
@@ -823,6 +824,7 @@ impl App {
             Screen::Automation => HelpContext::Automation,
             Screen::Finance => HelpContext::Finance,
             Screen::Kpis => HelpContext::Kpis,
+            Screen::Incidents => HelpContext::Incidents,
             Screen::Map => HelpContext::Map,
             Screen::Cockpit => HelpContext::Cockpit,
         }
@@ -1282,6 +1284,7 @@ impl App {
             Screen::Map => "dispatch",
             Screen::Finance => "approve",
             Screen::Kpis => "events",
+            Screen::Incidents => "resolve",
             Screen::Cockpit
             | Screen::Achievements
             | Screen::Daily
@@ -1712,6 +1715,7 @@ impl App {
             Screen::Automation => self.activate_automation(),
             Screen::Finance => self.activate_finance(now_unix),
             Screen::Kpis => self.activate_kpi(),
+            Screen::Incidents => self.activate_incident(),
             Screen::Market => self.activate_market(now_unix),
             Screen::Diplomacy => self.activate_diplomacy(now_unix),
             Screen::Laws => self.activate_law(now_unix),
@@ -2087,7 +2091,8 @@ impl App {
             | Screen::Reports
             | Screen::Ops
             | Screen::Finance
-            | Screen::Kpis => {}
+            | Screen::Kpis
+            | Screen::Incidents => {}
             Screen::Automation => self.remove_selected_automation_rule(),
         }
     }
@@ -2120,6 +2125,7 @@ impl App {
             }
             Screen::Finance => self.state.finance.pending.len() + self.state.finance.budgets.len(),
             Screen::Kpis => self.state.kpi_snapshot().measurements.len(),
+            Screen::Incidents => self.state.incident_snapshot().open.len(),
             Screen::Ops => {
                 self.state.vehicles.len()
                     + self.state.planned.len()
@@ -2319,6 +2325,9 @@ impl App {
                 Screen::Kpis => {
                     format!("{select}  {confirm} events")
                 }
+                Screen::Incidents => {
+                    format!("{select}  {confirm} resolve")
+                }
                 Screen::Ops => select,
                 Screen::Map => format!(
                     "{}{}{}{} cursor  {confirm} dispatch  {} detail",
@@ -2458,6 +2467,7 @@ impl App {
             Screen::Automation => self.automation_lines(height),
             Screen::Finance => self.finance_lines(height),
             Screen::Kpis => self.kpi_lines(height),
+            Screen::Incidents => self.incident_lines(height),
             Screen::Map => self.map_lines(height),
             Screen::Cockpit => Vec::new(),
         }
@@ -3728,6 +3738,78 @@ impl App {
                 .join(",");
             self.status = format!("{} {} events {ids}", row.kpi.as_key(), row.owner.as_key());
         }
+    }
+
+    fn activate_incident(&mut self) {
+        let snap = self.state.incident_snapshot();
+        let Some(row) = snap.open.get(self.selected) else {
+            self.status = "select an incident".into();
+            return;
+        };
+        let id = row.id;
+        match self.state.resolve_incident(
+            id,
+            "resolved from ops",
+            hoshi_core::Actor::Player,
+            self.state.last_tick_unix,
+        ) {
+            Ok(()) => self.status = format!("incident #{id} resolved"),
+            Err(e) => self.status = e.to_string(),
+        }
+    }
+
+    fn incident_lines(&self, height: usize) -> Vec<Line<'static>> {
+        let snap = self.state.incident_snapshot();
+        let mut rows = vec![Line::from(format!(
+            "[incidents] {} open  {} risks  {} reviews",
+            snap.open.len(),
+            snap.risks.len(),
+            snap.reviews.len()
+        ))];
+        for (i, row) in snap.open.iter().enumerate() {
+            let mark = if i == self.selected { '>' } else { ' ' };
+            let owner = row
+                .owner
+                .map(|id| format!("leader:{id}"))
+                .unwrap_or_else(|| "unassigned".into());
+            rows.push(Line::from(format!(
+                "{mark} #{} {} {} {} {owner}",
+                row.id,
+                row.kind.as_key(),
+                row.severity.as_key(),
+                row.status.as_key()
+            )));
+        }
+        if snap.open.is_empty() {
+            rows.push(Line::from(" no open incidents"));
+        } else if let Some(row) = snap.open.get(self.selected) {
+            let objects = if row.objects.is_empty() {
+                "-".into()
+            } else {
+                row.objects.join(",")
+            };
+            rows.push(Line::from(format!(
+                "  objects {objects}  events {}",
+                row.event_ids.len()
+            )));
+            if let Some(action) = row.actions.last() {
+                rows.push(Line::from(format!("  last {action}")));
+            }
+            if let Some(review) = snap.reviews.iter().rev().find(|r| r.incident_id == row.id) {
+                rows.push(Line::from(format!("  review: {}", review.root_cause)));
+            }
+        }
+        for risk in snap.risks.iter().take(4) {
+            rows.push(Line::from(format!(
+                "risk {} L{:.2} {} review {}",
+                risk.name,
+                risk.likelihood,
+                risk.impact.as_key(),
+                risk.review_at
+            )));
+        }
+        rows.truncate(height.max(1));
+        rows
     }
 
     fn kpi_lines(&self, height: usize) -> Vec<Line<'static>> {
@@ -5212,6 +5294,31 @@ mod tests {
     }
 
     #[test]
+    fn incident_screen_lists_open_rows_and_resolves() {
+        let mut state = GameState::new(1_000);
+        state
+            .open_incident(
+                hoshi_core::IncidentKind::Manual,
+                hoshi_core::Severity::High,
+                vec!["home".into()],
+                hoshi_core::Actor::Player,
+                1_000,
+            )
+            .unwrap();
+        let mut app = App::new(state);
+        app.open(Screen::Incidents);
+        assert_eq!(app.screen, Screen::Incidents);
+        let text = render_text(&app, 120, 32);
+        assert!(text.contains("Incidents"), "{text}");
+        assert!(text.contains("manual"), "{text}");
+        assert!(text.contains("objects home"), "{text}");
+        assert!(text.contains("pirate activity"), "{text}");
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.status.contains("resolved"), "{}", app.status);
+        assert!(app.state.incident_snapshot().open.is_empty());
+    }
+
+    #[test]
     fn victory_overlay_enter_keeps_playing() {
         let mut app = App::new(GameState::new(1_000));
         app.state.victory = Some(VictoryRecord {
@@ -6195,6 +6302,16 @@ mod tests {
         assert_eq!(app.screen, Screen::Diplomacy);
         app.handle_key(KeyCode::BackTab, 1_000);
         assert_eq!(app.screen, Screen::Kpis);
+        app.handle_key(KeyCode::Char('5'), 1_000);
+        assert_eq!(app.screen, Screen::Diplomacy);
+        app.handle_key(KeyCode::Char('5'), 1_000);
+        assert_eq!(app.screen, Screen::Laws);
+        app.handle_key(KeyCode::Char('5'), 1_000);
+        assert_eq!(app.screen, Screen::Staff);
+        app.handle_key(KeyCode::Char('5'), 1_000);
+        assert_eq!(app.screen, Screen::Automation);
+        app.handle_key(KeyCode::Char('5'), 1_000);
+        assert_eq!(app.screen, Screen::Incidents);
         app.handle_key(KeyCode::Char('1'), 1_000);
         assert_eq!(app.screen, Screen::Cockpit);
         let text = render_text(&app, 80, 24);

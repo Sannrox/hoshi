@@ -627,6 +627,7 @@ impl GameState {
             via: via.into(),
         });
         self.push_event(at, format!("classification leak via {via}"));
+        self.note_leak_incident(via, at);
     }
 }
 

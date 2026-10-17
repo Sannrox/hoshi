@@ -4,13 +4,15 @@
 
 ### Changed
 
-- TUI redesign ("Slate"): play opens on the bridge dashboard: alert callouts, a star map and an upcoming timeline (next 60 minutes) beside queues and fleets, under a navbar and a resource strip (stock / cap with a fill bar and hourly rate, energy in/out, heat load). Screens are grouped into six hubs (bridge, colony, fleet, trade with market, finance and KPIs, empire, records) opened with 1-6; a hub opens as a centred window over the dimmed bridge (full screen below 120x40) with tabs, a subtitle (planet, kind, queue or active research), a footer note and its actions. Tab walks screens in hub order, shift+tab goes back, esc returns to the bridge (x still cancels). Buildings use a table with level, Fe/Si/D cost (red above stock), time and a status chip, with the inspector beside it: level tag, properties, cost bars, a now/next/delta effect table and requirements. The status bar shows the breadcrumb and the keys for the current screen. The per-planet glance lines above each screen are gone; `[`/`]` changes the window subtitle and the table. Colours adapt to truecolor, 256 or 16 colours and honour `NO_COLOR`; high contrast drops fills for plain text.
+- TUI redesign ("Slate"): play opens on the bridge dashboard: alert callouts, a star map and an upcoming timeline (next 60 minutes) beside queues and fleets, under a navbar and a resource strip (stock / cap with a fill bar and hourly rate, energy in/out, heat load). Screens are grouped into six hubs (bridge, colony, fleet, trade with market, finance and KPIs, empire with incidents, records) opened with 1-6; a hub opens as a centred window over the dimmed bridge (full screen below 120x40) with tabs, a subtitle (planet, kind, queue or active research), a footer note and its actions. Tab walks screens in hub order, shift+tab goes back, esc returns to the bridge (x still cancels). Buildings use a table with level, Fe/Si/D cost (red above stock), time and a status chip, with the inspector beside it: level tag, properties, cost bars, a now/next/delta effect table and requirements. The status bar shows the breadcrumb and the keys for the current screen. The per-planet glance lines above each screen are gone; `[`/`]` changes the window subtitle and the table. Colours adapt to truecolor, 256 or 16 colours and honour `NO_COLOR`; high contrast drops fills for plain text.
 
 ### Fixed
 
 - Story, away, and spy overlays clear the screen underneath so numbered choices stay readable. Inline portraits are erased while an overlay is open.
 
 ### Added
+
+- Incidents opened from raids, heat overflow, missed contracts and classification leaks, with leader assignment, resolution and post-incident reviews. A risk register reviews pirate activity, heat margins and the single home world daily. Incidents screen in the Empire hub and `hoshi incidents` / `open` / `assign` / `resolve` / `review`. Save schema v43. See `crates/hoshi-core/data/incidents.toml`.
 
 - KPIs for output, energy, heat, budget variance, incidents, on-time missions and market profit. Targets belong to the empire, a colony or a role. Catch-up archives a daily report with variance and source events. KPI screen, cockpit widget, and `hoshi kpis` / `kpis set` / `kpis report` (JSON plus Markdown). Save schema v42. See `crates/hoshi-core/data/kpis.toml`.
 

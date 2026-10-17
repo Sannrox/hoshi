@@ -413,6 +413,7 @@ pub struct GameState {
     /// Treasury, department budgets and held spends.
     pub finance: crate::FinanceState,
     pub kpis: crate::KpiState,
+    pub incidents: crate::IncidentState,
     pub config: BalanceConfig,
 }
 
@@ -519,6 +520,7 @@ impl GameState {
             frontier: crate::FrontierBoard::default(),
             finance: crate::FinanceState::new(now_unix, &crate::FinanceConfig::bundled()),
             kpis: crate::KpiState::new(now_unix, &crate::KpiConfig::bundled()),
+            incidents: crate::IncidentState::new(now_unix, &crate::IncidentConfig::bundled()),
             config,
         };
         state.seed_pirate_home(now_unix);
@@ -674,7 +676,10 @@ impl GameState {
                                                     self.next_automation_event(),
                                                     min_time(
                                                         self.next_finance_event(),
-                                                        self.next_kpi_event(),
+                                                        min_time(
+                                                            self.next_kpi_event(),
+                                                            self.next_incident_event(),
+                                                        ),
                                                     ),
                                                 ),
                                             ),
@@ -691,6 +696,7 @@ impl GameState {
                 self.apply_automation_at(now_unix);
                 self.apply_finance_at(now_unix);
                 self.apply_kpis_at(now_unix);
+                self.apply_incidents_at(now_unix);
                 self.tick_staff(now_unix);
                 self.resolve_story(now_unix);
                 self.evaluate_achievements(now_unix);
@@ -706,6 +712,7 @@ impl GameState {
                 self.apply_automation_at(now_unix);
                 self.apply_finance_at(now_unix);
                 self.apply_kpis_at(now_unix);
+                self.apply_incidents_at(now_unix);
                 self.tick_staff(now_unix);
                 self.resolve_story(now_unix);
                 self.evaluate_achievements(now_unix);
@@ -720,6 +727,7 @@ impl GameState {
             self.apply_automation_at(done_at);
             self.apply_finance_at(done_at);
             self.apply_kpis_at(done_at);
+            self.apply_incidents_at(done_at);
             self.tick_staff(done_at);
             if home_build_at == Some(done_at) {
                 let job = self.build_queue.remove(0);
@@ -4337,6 +4345,7 @@ impl GameState {
         self.fleet = report.defender_after;
         let plunder = self.take_raid_plunder(report.winner);
         self.apply_raid_standing(report.winner, done_at);
+        self.note_raid_incident(report.winner, done_at);
         if report.winner != CombatWinner::Attacker {
             self.raids_survived = self.raids_survived.saturating_add(1);
         }

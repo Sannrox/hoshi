@@ -1,0 +1,4 @@
+# Risk and incident management. Formulas and lifecycle live in incident.rs.
+
+archive_cap = 32
+risk_review_secs = 86400

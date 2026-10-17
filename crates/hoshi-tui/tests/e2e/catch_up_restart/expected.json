@@ -79,6 +79,10 @@
     },
     {
       "at": 3600,
+      "text": "incident #1 raid high"
+    },
+    {
+      "at": 3600,
       "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder Fe249 Si260 D0. winner attacker"
     },
     {
@@ -87,11 +91,19 @@
     },
     {
       "at": 32400,
+      "text": "incident #2 raid high"
+    },
+    {
+      "at": 32400,
       "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder Fe323 Si218 D0. winner attacker"
     },
     {
       "at": 61200,
       "text": "standing: Pirate clans -4 -> -8 (raid)"
+    },
+    {
+      "at": 61200,
+      "text": "incident #3 raid high"
     },
     {
       "at": 61200,
@@ -107,11 +119,19 @@
     },
     {
       "at": 90000,
+      "text": "incident #4 raid high"
+    },
+    {
+      "at": 90000,
       "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder Fe378 Si186 D0. winner attacker"
     },
     {
       "at": 118800,
       "text": "standing: Pirate clans -6 -> -10 (raid)"
+    },
+    {
+      "at": 118800,
+      "text": "incident #5 raid high"
     },
     {
       "at": 118800,
@@ -123,11 +143,19 @@
     },
     {
       "at": 140400,
+      "text": "incident #6 raid high"
+    },
+    {
+      "at": 140400,
       "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder Fe342 Si157 D0. winner attacker"
     },
     {
       "at": 162000,
       "text": "standing: Pirate clans -9 -> -13 (raid)"
+    },
+    {
+      "at": 162000,
+      "text": "incident #7 raid high"
     },
     {
       "at": 162000,
@@ -164,6 +192,11 @@
   "heat": {
     "load": 23.4,
     "sink": 80.0
+  },
+  "incident_board": {
+    "open": 7,
+    "reviews": 0,
+    "risks": 3
   },
   "incidents": [],
   "kpis": {
@@ -361,7 +394,7 @@
     "empires": [],
     "enabled": false
   },
-  "save_schema": 42,
+  "save_schema": 43,
   "schema_version": 2,
   "season": null,
   "species": null,

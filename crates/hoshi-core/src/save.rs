@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 42;
+pub const SCHEMA_VERSION: u32 = 43;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -226,7 +226,11 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM kpi_measurements;
          DELETE FROM kpi_reports;
          DELETE FROM kpi_targets;
-         DELETE FROM kpi_meta;",
+         DELETE FROM kpi_meta;
+         DELETE FROM incident_rows;
+         DELETE FROM incident_reviews;
+         DELETE FROM incident_risks;
+         DELETE FROM incident_meta;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
@@ -470,6 +474,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
     )?;
     persist_finance(&tx, state)?;
     persist_kpi(&tx, state)?;
+    persist_incidents(&tx, state)?;
     tx.execute(
         "INSERT INTO activity_boosts (id, prod_until, prod_factor, research_until, research_factor)
          VALUES (1, ?1, ?2, ?3, ?4)",
@@ -1772,6 +1777,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     };
     read_finance(conn, &mut state)?;
     read_kpi(conn, &mut state)?;
+    read_incidents(conn, &mut state)?;
     state.next_route_id = state
         .routes
         .iter()
@@ -2957,6 +2963,10 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "kpi_targets" => "SELECT COUNT(*) FROM kpi_targets",
         "kpi_reports" => "SELECT COUNT(*) FROM kpi_reports",
         "kpi_measurements" => "SELECT COUNT(*) FROM kpi_measurements",
+        "incident_meta" => "SELECT COUNT(*) FROM incident_meta",
+        "incident_rows" => "SELECT COUNT(*) FROM incident_rows",
+        "incident_reviews" => "SELECT COUNT(*) FROM incident_reviews",
+        "incident_risks" => "SELECT COUNT(*) FROM incident_risks",
         _ => return Err(SaveError::Corrupt("unknown save table")),
     };
     Ok(conn.query_row(sql, [], |row| row.get(0))?)
@@ -3059,7 +3069,11 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "kpi_meta")?
         + count_rows(conn, "kpi_targets")?
         + count_rows(conn, "kpi_reports")?
-        + count_rows(conn, "kpi_measurements")?)
+        + count_rows(conn, "kpi_measurements")?
+        + count_rows(conn, "incident_meta")?
+        + count_rows(conn, "incident_rows")?
+        + count_rows(conn, "incident_reviews")?
+        + count_rows(conn, "incident_risks")?)
 }
 
 fn migrate(conn: &Connection) -> Result<(), SaveError> {
@@ -3195,6 +3209,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 42 {
         migrate_v42(conn)?;
+    }
+    if found < 43 {
+        migrate_v43(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -4287,6 +4304,50 @@ fn migrate_v41(conn: &Connection) -> Result<(), SaveError> {
             s INTEGER,
             p INTEGER,
             credits REAL NOT NULL
+        );
+        ",
+    )?;
+    Ok(())
+}
+
+fn migrate_v43(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS incident_meta (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            next_id INTEGER NOT NULL,
+            next_review_id INTEGER NOT NULL,
+            next_risk_id INTEGER NOT NULL,
+            next_review_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS incident_rows (
+            id INTEGER PRIMARY KEY,
+            kind TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            status TEXT NOT NULL,
+            opened_at INTEGER NOT NULL,
+            objects TEXT NOT NULL,
+            owner INTEGER,
+            actions TEXT NOT NULL,
+            resolution TEXT,
+            closed_at INTEGER,
+            event_ids TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS incident_reviews (
+            id INTEGER PRIMARY KEY,
+            incident_id INTEGER NOT NULL,
+            at INTEGER NOT NULL,
+            root_cause TEXT NOT NULL,
+            timeline TEXT NOT NULL,
+            follow_ups TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS incident_risks (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            likelihood REAL NOT NULL,
+            impact TEXT NOT NULL,
+            review_at INTEGER NOT NULL,
+            last_reviewed_at INTEGER NOT NULL
         );
         ",
     )?;
@@ -7362,6 +7423,220 @@ fn read_kpi(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
     Ok(())
 }
 
+fn encode_incident_list(rows: &[String]) -> Result<String, SaveError> {
+    serde_json::to_string(rows).map_err(|_| SaveError::Corrupt("incident list"))
+}
+
+fn decode_incident_list(raw: &str) -> Result<Vec<String>, SaveError> {
+    if raw.is_empty() {
+        return Ok(Vec::new());
+    }
+    serde_json::from_str(raw).map_err(|_| SaveError::Corrupt("incident list"))
+}
+
+fn persist_incidents(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<(), SaveError> {
+    tx.execute(
+        "INSERT INTO incident_meta (id, next_id, next_review_id, next_risk_id, next_review_at)
+         VALUES (1, ?1, ?2, ?3, ?4)",
+        params![
+            state.incidents.next_id as i64,
+            state.incidents.next_review_id as i64,
+            state.incidents.next_risk_id as i64,
+            state.incidents.next_review_at as i64,
+        ],
+    )?;
+    for row in &state.incidents.incidents {
+        tx.execute(
+            "INSERT INTO incident_rows (id, kind, severity, status, opened_at, objects, owner, actions, resolution, closed_at, event_ids)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                row.id as i64,
+                row.kind.as_key(),
+                row.severity.as_key(),
+                row.status.as_key(),
+                row.opened_at as i64,
+                encode_incident_list(&row.objects)?,
+                row.owner.map(|id| id as i64),
+                encode_incident_list(&row.actions)?,
+                row.resolution.clone(),
+                row.closed_at.map(|t| t as i64),
+                row.event_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(","),
+            ],
+        )?;
+    }
+    for row in &state.incidents.reviews {
+        tx.execute(
+            "INSERT INTO incident_reviews (id, incident_id, at, root_cause, timeline, follow_ups)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                row.id as i64,
+                row.incident_id as i64,
+                row.at as i64,
+                row.root_cause.clone(),
+                encode_incident_list(&row.timeline)?,
+                encode_incident_list(&row.follow_ups)?,
+            ],
+        )?;
+    }
+    for row in &state.incidents.risks {
+        tx.execute(
+            "INSERT INTO incident_risks (id, name, likelihood, impact, review_at, last_reviewed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                row.id as i64,
+                row.name.clone(),
+                row.likelihood,
+                row.impact.as_key(),
+                row.review_at as i64,
+                row.last_reviewed_at as i64,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn read_incidents(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
+    let cfg = crate::IncidentConfig::bundled();
+    state.incidents = crate::IncidentState::new(state.last_tick_unix, &cfg);
+    let meta = conn
+        .query_row(
+            "SELECT next_id, next_review_id, next_risk_id, next_review_at FROM incident_meta WHERE id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((next_id, next_review_id, next_risk_id, next_review_at)) = meta else {
+        return Ok(());
+    };
+    state.incidents.next_id = u64::try_from(next_id).unwrap_or(1);
+    state.incidents.next_review_id = u64::try_from(next_review_id).unwrap_or(1);
+    state.incidents.next_risk_id = u64::try_from(next_risk_id).unwrap_or(1);
+    state.incidents.next_review_at = unix_ts(next_review_at)?;
+    let mut stmt = conn.prepare(
+        "SELECT id, kind, severity, status, opened_at, objects, owner, actions, resolution, closed_at, event_ids FROM incident_rows ORDER BY id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, Option<i64>>(6)?,
+            row.get::<_, String>(7)?,
+            row.get::<_, Option<String>>(8)?,
+            row.get::<_, Option<i64>>(9)?,
+            row.get::<_, String>(10)?,
+        ))
+    })?;
+    let mut incidents = Vec::new();
+    for row in rows {
+        let (
+            id,
+            kind,
+            severity,
+            status,
+            opened_at,
+            objects,
+            owner,
+            actions,
+            resolution,
+            closed_at,
+            event_ids,
+        ) = row?;
+        incidents.push(crate::Incident {
+            id: u64::try_from(id).map_err(|_| SaveError::Corrupt("incident id"))?,
+            kind: crate::IncidentKind::from_key(&kind)
+                .ok_or(SaveError::Corrupt("incident kind"))?,
+            severity: crate::Severity::from_key(&severity)
+                .ok_or(SaveError::Corrupt("incident severity"))?,
+            status: crate::IncidentStatus::from_key(&status)
+                .ok_or(SaveError::Corrupt("incident status"))?,
+            opened_at: unix_ts(opened_at)?,
+            objects: decode_incident_list(&objects)?,
+            owner: owner
+                .map(|id| u64::try_from(id).unwrap_or(0))
+                .filter(|&id| id > 0),
+            actions: decode_incident_list(&actions)?,
+            resolution,
+            closed_at: closed_at.map(unix_ts).transpose()?,
+            event_ids: if event_ids.is_empty() {
+                Vec::new()
+            } else {
+                event_ids
+                    .split(',')
+                    .filter_map(|s| s.parse::<u64>().ok())
+                    .collect()
+            },
+        });
+    }
+    state.incidents.incidents = incidents;
+    let mut stmt = conn.prepare(
+        "SELECT id, incident_id, at, root_cause, timeline, follow_ups FROM incident_reviews ORDER BY id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+        ))
+    })?;
+    let mut reviews = Vec::new();
+    for row in rows {
+        let (id, incident_id, at, root_cause, timeline, follow_ups) = row?;
+        reviews.push(crate::IncidentReview {
+            id: u64::try_from(id).map_err(|_| SaveError::Corrupt("review id"))?,
+            incident_id: u64::try_from(incident_id)
+                .map_err(|_| SaveError::Corrupt("review incident"))?,
+            at: unix_ts(at)?,
+            root_cause,
+            timeline: decode_incident_list(&timeline)?,
+            follow_ups: decode_incident_list(&follow_ups)?,
+        });
+    }
+    state.incidents.reviews = reviews;
+    let mut stmt = conn.prepare(
+        "SELECT id, name, likelihood, impact, review_at, last_reviewed_at FROM incident_risks ORDER BY id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, f64>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, i64>(5)?,
+        ))
+    })?;
+    let mut risks = Vec::new();
+    for row in rows {
+        let (id, name, likelihood, impact, review_at, last_reviewed_at) = row?;
+        risks.push(crate::Risk {
+            id: u64::try_from(id).map_err(|_| SaveError::Corrupt("risk id"))?,
+            name,
+            likelihood,
+            impact: crate::Severity::from_key(&impact).ok_or(SaveError::Corrupt("risk impact"))?,
+            review_at: unix_ts(review_at)?,
+            last_reviewed_at: unix_ts(last_reviewed_at)?,
+        });
+    }
+    if !risks.is_empty() {
+        state.incidents.risks = risks;
+    }
+    Ok(())
+}
+
 fn read_finance(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
     let cfg = crate::FinanceConfig::bundled();
     state.finance = crate::FinanceState::new(state.last_tick_unix, &cfg);
@@ -9163,6 +9438,53 @@ mod tests {
             matches!(err, SaveError::Sqlite(_)),
             "expected sqlite error, got {err:?}"
         );
+    }
+
+    #[test]
+    fn migrate_v43_round_trips_incidents() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        migrate_v43(&conn).unwrap();
+        migrate_v43(&conn).unwrap();
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.enabled = false;
+        cfg.market.enabled = false;
+        let mut state = GameState::with_seed(1_000, cfg, 9);
+        state.deterministic = true;
+        let id = state
+            .open_incident(
+                crate::IncidentKind::Manual,
+                crate::Severity::High,
+                vec!["home".into(), "bay\n2".into(), "a\"b".into()],
+                crate::Actor::Player,
+                1_000,
+            )
+            .unwrap();
+        state
+            .resolve_incident(id, "cleared\nwith note", crate::Actor::Player, 1_000)
+            .unwrap();
+        state
+            .review_incident(id, crate::Actor::Player, 1_000)
+            .unwrap();
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.incidents.incidents.len(), 1);
+        assert_eq!(
+            loaded.incidents.incidents[0].kind,
+            crate::IncidentKind::Manual
+        );
+        assert_eq!(
+            loaded.incidents.incidents[0].objects,
+            vec!["home".to_string(), "bay\n2".into(), "a\"b".into()]
+        );
+        assert_eq!(
+            loaded.incidents.incidents[0].resolution.as_deref(),
+            Some("cleared\nwith note")
+        );
+        assert_eq!(loaded.incidents.incidents[0].actions.len(), 2);
+        assert_eq!(loaded.incidents.reviews.len(), 1);
+        assert_eq!(loaded.incidents.risks.len(), 3);
+        assert_eq!(count_rows(&conn, "incident_meta").unwrap(), 1);
+        assert_eq!(count_rows(&conn, "incident_rows").unwrap(), 1);
     }
 
     #[test]

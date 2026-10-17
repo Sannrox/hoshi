@@ -180,7 +180,11 @@ pub fn dest_of(intent: &Intent) -> Option<Coord> {
         | Intent::RequestSpend { .. }
         | Intent::ApproveSpend { .. }
         | Intent::SetTarget { .. }
-        | Intent::GenerateReport { .. } => None,
+        | Intent::GenerateReport { .. }
+        | Intent::OpenIncident { .. }
+        | Intent::AssignIncident { .. }
+        | Intent::ResolveIncident { .. }
+        | Intent::ReviewIncident { .. } => None,
     }
 }
 
@@ -237,7 +241,11 @@ pub fn spend_of(state: &GameState, intent: &Intent, _now: u64) -> f64 {
         | Intent::SetBudget { .. }
         | Intent::ApproveSpend { .. }
         | Intent::SetTarget { .. }
-        | Intent::GenerateReport { .. } => 0.0,
+        | Intent::GenerateReport { .. }
+        | Intent::OpenIncident { .. }
+        | Intent::AssignIncident { .. }
+        | Intent::ResolveIncident { .. }
+        | Intent::ReviewIncident { .. } => 0.0,
         Intent::RequestSpend { amount, .. } => *amount,
     }
 }

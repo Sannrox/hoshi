@@ -24,6 +24,7 @@ mod frontier;
 mod galaxy;
 mod governance;
 mod history;
+mod incident;
 mod intent;
 mod kpi;
 mod ladder;
@@ -138,6 +139,10 @@ pub use governance::{
 pub use history::{
     EmpireSnapshot, HISTORY_EVENT_CAP, HistoryDraft, HistoryEvent, HistoryKind, HistoryLog,
     HistoryQuery,
+};
+pub use incident::{
+    Incident, IncidentConfig, IncidentError, IncidentKind, IncidentReview, IncidentSnapshot,
+    IncidentState, IncidentStatus, Risk, Severity,
 };
 pub use intent::{Intent, IntentError, Proposal, apply, propose};
 pub use kpi::{
