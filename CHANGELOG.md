@@ -8,6 +8,8 @@
 
 - Every hub screen is a table in the window: grouped rows (ships and defences, research tiers with ★ keystones, law templates and enacted laws, finance holds and budgets, automation tiers and rules, ops vehicles, missions and alerts), status chips for blocking reasons, and Fe/Si/D cost columns. Production, finance, goals and legacy open with a metric strip; the market shows pairs as `Fe → Si` with rate, trend sparkline, change and the amount you get; diplomacy draws a standing gauge with tier chip and tribute; goals, daily and feats use progress bars; the star map colours its slot grid with a legend. Empty screens (intel, history, staff, ops, automation) explain what fills them. Times read as `1m 40s` instead of seconds, names are written out (`Light fighter`, `Extract iron`), the inspector lists costs as Fe/Si/D with shorter bars, and portraits only appear on the staff screen.
 
+- Dispatch opens beside the star map at 120 columns and up instead of covering it: target and slot kind, a stepper per ship type with the owned count, flight time and fuel, and a warning when deuterium runs short. Smaller terminals keep the full-screen form.
+
 ### Fixed
 
 - Story, away, and spy overlays clear the screen underneath so numbered choices stay readable. Inline portraits are erased while an overlay is open.

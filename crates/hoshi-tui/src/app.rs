@@ -243,6 +243,12 @@ impl App {
             && self.current_detail().is_some()
     }
 
+    fn docks_dispatch(&self) -> bool {
+        self.dispatch.is_some()
+            && self.screen == Screen::Map
+            && self.last_width.get() >= DOCK_MIN_WIDTH
+    }
+
     fn shows_detail_overlay(&self) -> bool {
         self.detail_overlay
             && self.last_width.get() < DOCK_MIN_WIDTH
@@ -968,7 +974,7 @@ impl App {
             tabs,
         );
         frame.render_widget(Paragraph::new(callouts), callout_area);
-        if self.shows_docked_detail() {
+        if self.shows_docked_detail() || self.docks_dispatch() {
             let [list, divider, card] = Layout::horizontal([
                 Constraint::Min(24),
                 Constraint::Length(3),
@@ -983,7 +989,9 @@ impl App {
                     &Line::styled("│", t.line()),
                 );
             }
-            if let Some(detail) = self.current_detail() {
+            if let Some(form) = self.dispatch.as_ref().filter(|_| self.docks_dispatch()) {
+                frame.render_widget(Paragraph::new(self.dispatch_lines(form)), card);
+            } else if let Some(detail) = self.current_detail() {
                 let (kind, extra) = self.inspector_context();
                 let levelled = matches!(
                     self.detail_subject(),
@@ -1396,7 +1404,9 @@ impl App {
         } else if self.pending_invasion.is_some() {
             self.draw_invasion_approval(frame);
         } else if let Some(form) = &self.dispatch {
-            self.draw_dispatch(frame, form);
+            if !self.docks_dispatch() {
+                self.draw_dispatch(frame, form);
+            }
         } else if self.screen == Screen::History && self.history_pane != HistoryPane::List {
             self.draw_history_overlay(frame);
         }
@@ -1961,28 +1971,7 @@ impl App {
     }
 
     fn draw_dispatch(&self, frame: &mut Frame<'_>, form: &DispatchForm) {
-        let mut lines = vec![Line::from(format!("to {}", form.dest))];
-        if !form.ships.is_empty() {
-            match self.state.flight_time_and_fuel(form.ships, form.dest, 100) {
-                Ok((eta, fuel)) => {
-                    lines.push(Line::from(format!("ETA {eta}s  fuel {fuel:.1}")));
-                }
-                Err(e) => lines.push(Line::from(e.to_string())),
-            }
-        } else {
-            lines.push(Line::from("pick ships with +/-"));
-        }
-        for (i, kind) in ShipKind::ALL.iter().enumerate() {
-            let mark = if i == form.selected { '>' } else { ' ' };
-            lines.push(Line::from(format!(
-                "{mark} {} {}/{}",
-                kind.as_key(),
-                form.ships.get(*kind),
-                self.state.fleet.get(*kind)
-            )));
-        }
-        lines.push(Line::from("enter launch  +/- count  x close"));
-        render_overlay(frame, " dispatch ", lines);
+        render_overlay(frame, " dispatch ", self.dispatch_lines(form));
     }
 
     fn activate_diplomacy(&mut self, now_unix: u64) {
@@ -4636,7 +4625,7 @@ mod tests {
         assert!(overlay.contains("dispatch"), "{overlay}");
         assert!(overlay.contains("to 1:1:2"), "{overlay}");
         assert!(overlay.contains("pick ships"), "{overlay}");
-        assert!(overlay.contains("small_cargo"), "{overlay}");
+        assert!(overlay.contains("Small cargo"), "{overlay}");
         assert!(
             !overlay.contains("Fleet / Star map"),
             "dispatch overlay left the map chrome visible:\n{overlay}"
@@ -4653,6 +4642,24 @@ mod tests {
         assert!(text.contains("fleet #"), "{text}");
         assert!(text.contains("outbound"), "{text}");
         assert!(text.contains("launched to 1:1:2"), "{text}");
+    }
+
+    #[test]
+    fn wide_dispatch_docks_beside_the_map() {
+        let mut state = GameState::new(1_000);
+        state.fleet.add(ShipKind::SmallCargo, 2);
+        state.resources.deuterium = 10_000.0;
+        let mut app = App::new(state);
+        app.open(Screen::Map);
+        app.handle_key(KeyCode::Char('l'), 1_000);
+        app.handle_key(KeyCode::Enter, 1_000);
+        app.handle_key(KeyCode::Char('+'), 1_000);
+        let text = render_text(&app, 140, 44);
+        assert!(text.contains("Fleet / Star map"), "{text}");
+        assert!(text.contains("home"), "{text}");
+        assert!(text.contains("to 1:1:2"), "{text}");
+        assert!(text.contains("ETA"), "{text}");
+        assert!(text.contains("launch"), "{text}");
     }
 
     #[test]
