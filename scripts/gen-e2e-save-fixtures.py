@@ -1152,6 +1152,40 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             );
             """
         )
+    elif version == 42:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS kpi_meta (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                next_report_at INTEGER NOT NULL,
+                next_id INTEGER NOT NULL,
+                period_trade REAL NOT NULL,
+                period_contract REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS kpi_targets (
+                kpi TEXT NOT NULL,
+                owner TEXT NOT NULL,
+                value REAL NOT NULL,
+                set_at INTEGER NOT NULL,
+                PRIMARY KEY (kpi, owner)
+            );
+            CREATE TABLE IF NOT EXISTS kpi_reports (
+                id INTEGER PRIMARY KEY,
+                at INTEGER NOT NULL,
+                pending INTEGER NOT NULL,
+                highlights TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS kpi_measurements (
+                report_id INTEGER NOT NULL,
+                kpi TEXT NOT NULL,
+                owner TEXT NOT NULL,
+                value REAL NOT NULL,
+                target REAL,
+                event_ids TEXT NOT NULL,
+                PRIMARY KEY (report_id, kpi, owner)
+            );
+            """
+        )
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"

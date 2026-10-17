@@ -110,6 +110,21 @@ enum Command {
     },
     KpisReport,
     KpisGenerate,
+    IncidentsOpen {
+        kind: String,
+        severity: String,
+    },
+    IncidentsAssign {
+        id: u64,
+        leader: u64,
+    },
+    IncidentsResolve {
+        id: u64,
+        note: String,
+    },
+    IncidentsReview {
+        id: u64,
+    },
     AutomationAdd {
         cond: String,
         planet: Coord,
@@ -804,6 +819,46 @@ fn apply(
                 .map_err(|e| CliError::Refused(e.to_string()))?;
             Ok(kpis_value(state))
         }
+        Command::IncidentsOpen { kind, severity } => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            let kind = hoshi_core::IncidentKind::from_key(kind)
+                .ok_or_else(|| CliError::Invalid(format!("unknown incident kind {kind}")))?;
+            let severity = hoshi_core::Severity::from_key(severity)
+                .ok_or_else(|| CliError::Invalid(format!("unknown severity {severity}")))?;
+            state
+                .open_incident(kind, severity, Vec::new(), Actor::Player, now)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ops_incidents_value(state))
+        }
+        Command::IncidentsAssign { id, leader } => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            state
+                .assign_incident(*id, *leader, Actor::Player, now)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, "incident assigned"))
+        }
+        Command::IncidentsResolve { id, note } => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            state
+                .resolve_incident(*id, note, Actor::Player, now)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, "incident resolved"))
+        }
+        Command::IncidentsReview { id } => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            state
+                .review_incident(*id, Actor::Player, now)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ops_incidents_value(state))
+        }
         Command::Automation | Command::AutomationDryRun => {
             if !state.deterministic {
                 state.catch_up(now);
@@ -1490,6 +1545,41 @@ fn automation_value(state: &hoshi_core::GameState) -> serde_json::Value {
     })
 }
 
+fn ops_incidents_value(state: &hoshi_core::GameState) -> serde_json::Value {
+    let snap = state.incident_snapshot();
+    json!({
+        "ok": true,
+        "schema_version": SCHEMA_VERSION,
+        "open": snap.open.iter().map(|row| json!({
+            "id": row.id,
+            "kind": row.kind.as_key(),
+            "severity": row.severity.as_key(),
+            "status": row.status.as_key(),
+            "opened_at": row.opened_at,
+            "objects": row.objects,
+            "owner": row.owner,
+            "resolution": row.resolution,
+            "event_ids": row.event_ids,
+        })).collect::<Vec<_>>(),
+        "risks": snap.risks.iter().map(|row| json!({
+            "id": row.id,
+            "name": row.name,
+            "likelihood": row.likelihood,
+            "impact": row.impact.as_key(),
+            "review_at": row.review_at,
+            "last_reviewed_at": row.last_reviewed_at,
+        })).collect::<Vec<_>>(),
+        "reviews": snap.reviews.iter().map(|row| json!({
+            "id": row.id,
+            "incident_id": row.incident_id,
+            "at": row.at,
+            "root_cause": row.root_cause,
+            "timeline": row.timeline,
+            "follow_ups": row.follow_ups,
+        })).collect::<Vec<_>>(),
+    })
+}
+
 fn kpis_value(state: &hoshi_core::GameState) -> serde_json::Value {
     let snap = state.kpi_snapshot();
     json!({
@@ -1719,18 +1809,22 @@ fn ok_state_as(state: &GameState, message: &str, actor: Actor) -> Value {
 }
 
 fn incidents_value(state: &GameState, actor: Actor) -> Value {
-    json!({
-        "schema_version": SCHEMA_VERSION,
-        "ok": true,
-        "incidents": state.visible_incidents(actor).iter().map(|row| json!({
-            "id": row.id,
-            "at": row.at,
-            "source": row.source,
-            "kind": row.kind.as_key(),
-            "object_id": row.object_id,
-            "via": row.via,
-        })).collect::<Vec<_>>(),
-    })
+    let mut value = ops_incidents_value(state);
+    value["incidents"] = json!(
+        state
+            .visible_incidents(actor)
+            .iter()
+            .map(|row| json!({
+                "id": row.id,
+                "at": row.at,
+                "source": row.source,
+                "kind": row.kind.as_key(),
+                "object_id": row.object_id,
+                "via": row.via,
+            }))
+            .collect::<Vec<_>>()
+    );
+    value
 }
 
 fn marking_value(state: &GameState, kind: ClassifiedKind, id: &str) -> Value {
@@ -2056,6 +2150,11 @@ fn state_value(state: &GameState, actor: Actor) -> Value {
         "targets": state.kpis.targets.len(),
         "reports": state.kpis.reports.len(),
     });
+    value["incident_board"] = json!({
+        "open": state.open_count(),
+        "risks": state.incidents.risks.len(),
+        "reviews": state.incidents.reviews.len(),
+    });
     value["season"] = match &state.season {
         Some(run) => json!({
             "id": run.ruleset_id,
@@ -2221,6 +2320,46 @@ fn parse_seed(v: &str) -> Result<u64, CliError> {
         .map_err(|_| CliError::Invalid(format!("invalid --seed {v}")))
 }
 
+fn parse_incidents_command(args: &[String]) -> Result<Command, CliError> {
+    match args.get(1).map(String::as_str) {
+        None | Some("--as") => parse_actor_command(args, |actor| Command::Incidents { actor }),
+        Some("open") => {
+            let kind = nth(args, 2, "incidents open <kind> [severity]")?.to_string();
+            let severity = args.get(3).cloned().unwrap_or_else(|| "medium".into());
+            if args.get(3).is_some() {
+                expect_end(args, 4)?;
+            } else {
+                expect_end(args, 3)?;
+            }
+            Ok(Command::IncidentsOpen { kind, severity })
+        }
+        Some("assign") => {
+            let id = parse_law_id(nth(args, 2, "incidents assign <id> <leader>")?)?;
+            let leader = parse_law_id(nth(args, 3, "incidents assign <id> <leader>")?)?;
+            expect_end(args, 4)?;
+            Ok(Command::IncidentsAssign { id, leader })
+        }
+        Some("resolve") => {
+            let id = parse_law_id(nth(args, 2, "incidents resolve <id> [note]")?)?;
+            let note = args.get(3).cloned().unwrap_or_default();
+            if args.get(3).is_some() {
+                expect_end(args, 4)?;
+            } else {
+                expect_end(args, 3)?;
+            }
+            Ok(Command::IncidentsResolve { id, note })
+        }
+        Some("review") => {
+            let id = parse_law_id(nth(args, 2, "incidents review <id>")?)?;
+            expect_end(args, 3)?;
+            Ok(Command::IncidentsReview { id })
+        }
+        Some(other) => Err(CliError::Invalid(format!(
+            "unknown incidents command {other}"
+        ))),
+    }
+}
+
 fn parse_command(args: &[String]) -> Result<Command, CliError> {
     let Some(name) = args.first().map(String::as_str) else {
         return Err(CliError::Invalid("missing command".into()));
@@ -2229,7 +2368,7 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
         "state" => parse_actor_command(args, |actor| Command::State { actor }),
         "classify" => parse_classify_command(args),
         "share" => parse_share_command(args),
-        "incidents" => parse_actor_command(args, |actor| Command::Incidents { actor }),
+        "incidents" => parse_incidents_command(args),
         "advise" => {
             expect_end(args, 1)?;
             Ok(Command::Advise)

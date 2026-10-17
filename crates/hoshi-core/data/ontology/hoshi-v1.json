@@ -104,6 +104,26 @@
     {
       "name": "Report",
       "description": "An archived period of KPI measurements, highlights and pending decisions."
+    },
+    {
+      "name": "Incident",
+      "description": "A structured lifecycle for a raid, failure, shortage, accident or contract miss."
+    },
+    {
+      "name": "Risk",
+      "description": "A known threat with likelihood, impact and a review date."
+    },
+    {
+      "name": "Resolution",
+      "description": "The closing action and note on an incident."
+    },
+    {
+      "name": "Review",
+      "description": "A post-incident archive with timeline, root cause and follow-ups."
+    },
+    {
+      "name": "FollowUp",
+      "description": "A recommended law, maintenance or fleet change from a review."
     }
   ],
   "relations": [
@@ -178,6 +198,36 @@
       "domain": "Report",
       "range": "Measurement",
       "description": "The samples archived into a periodic report."
+    },
+    {
+      "name": "affects",
+      "domain": "Incident",
+      "range": "Planet",
+      "description": "Objects named on an open incident."
+    },
+    {
+      "name": "assigned-to",
+      "domain": "Incident",
+      "range": "Player",
+      "description": "The leader who owns the incident."
+    },
+    {
+      "name": "caused-by",
+      "domain": "Incident",
+      "range": "Report",
+      "description": "History events that opened or explain the incident."
+    },
+    {
+      "name": "closed-by",
+      "domain": "Incident",
+      "range": "Resolution",
+      "description": "The resolution that closed the incident."
+    },
+    {
+      "name": "reviewed-in",
+      "domain": "Incident",
+      "range": "Review",
+      "description": "The post-incident review archived for a serious case."
     }
   ],
   "provenance": [

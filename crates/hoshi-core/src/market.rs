@@ -1168,6 +1168,7 @@ impl GameState {
                 at,
                 format!("market: contract #{id} missed; penalty {take:.0}"),
             );
+            self.note_contract_incident(id, at);
         }
     }
 

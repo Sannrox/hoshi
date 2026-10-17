@@ -77,6 +77,25 @@ pub enum Intent {
     GenerateReport {
         actor: Actor,
     },
+    OpenIncident {
+        kind: String,
+        severity: String,
+        actor: Actor,
+    },
+    AssignIncident {
+        id: u64,
+        leader: u64,
+        actor: Actor,
+    },
+    ResolveIncident {
+        id: u64,
+        note: String,
+        actor: Actor,
+    },
+    ReviewIncident {
+        id: u64,
+        actor: Actor,
+    },
 }
 
 impl Intent {
@@ -96,6 +115,10 @@ impl Intent {
             Intent::ApproveSpend { .. } => "approve_spend",
             Intent::SetTarget { .. } => "set_target",
             Intent::GenerateReport { .. } => "generate_report",
+            Intent::OpenIncident { .. } => "open_incident",
+            Intent::AssignIncident { .. } => "assign_incident",
+            Intent::ResolveIncident { .. } => "resolve_incident",
+            Intent::ReviewIncident { .. } => "review_incident",
         }
     }
 }
@@ -115,6 +138,7 @@ pub enum IntentError {
     Market(MarketError),
     Finance(crate::FinanceError),
     Kpi(crate::KpiError),
+    Incident(crate::IncidentError),
     Save(String),
 }
 
@@ -127,6 +151,7 @@ impl fmt::Display for IntentError {
             IntentError::Market(e) => write!(f, "{e}"),
             IntentError::Finance(e) => write!(f, "{e}"),
             IntentError::Kpi(e) => write!(f, "{e}"),
+            IntentError::Incident(e) => write!(f, "{e}"),
             IntentError::Save(e) => write!(f, "save backend: {e}"),
         }
     }
@@ -232,6 +257,29 @@ fn proposal_id(intent: &Intent, now_unix: u64, tick: u64) -> String {
         ),
         Intent::GenerateReport { actor } => {
             format!("generate_report:{now_unix}:{tick}:{}", actor.as_key())
+        }
+        Intent::OpenIncident {
+            kind,
+            severity,
+            actor,
+        } => format!(
+            "open_incident:{now_unix}:{tick}:{kind}:{severity}:{}",
+            actor.as_key()
+        ),
+        Intent::AssignIncident { id, leader, actor } => {
+            format!(
+                "assign_incident:{now_unix}:{tick}:{id}:{leader}:{}",
+                actor.as_key()
+            )
+        }
+        Intent::ResolveIncident { id, note, actor } => {
+            format!(
+                "resolve_incident:{now_unix}:{tick}:{id}:{note}:{}",
+                actor.as_key()
+            )
+        }
+        Intent::ReviewIncident { id, actor } => {
+            format!("review_incident:{now_unix}:{tick}:{id}:{}", actor.as_key())
         }
     }
 }
@@ -345,6 +393,32 @@ fn apply_inner(state: &mut GameState, intent: &Intent, now_unix: u64) -> Result<
             .generate_kpi_report(*actor, now_unix)
             .map(|_| ())
             .map_err(IntentError::Kpi),
+        Intent::OpenIncident {
+            kind,
+            severity,
+            actor,
+        } => {
+            let kind = crate::IncidentKind::from_key(kind).ok_or(IntentError::Incident(
+                crate::IncidentError::Parse("unknown kind".into()),
+            ))?;
+            let severity = crate::Severity::from_key(severity).ok_or(IntentError::Incident(
+                crate::IncidentError::Parse("unknown severity".into()),
+            ))?;
+            state
+                .open_incident(kind, severity, Vec::new(), *actor, now_unix)
+                .map(|_| ())
+                .map_err(IntentError::Incident)
+        }
+        Intent::AssignIncident { id, leader, actor } => state
+            .assign_incident(*id, *leader, *actor, now_unix)
+            .map_err(IntentError::Incident),
+        Intent::ResolveIncident { id, note, actor } => state
+            .resolve_incident(*id, note, *actor, now_unix)
+            .map_err(IntentError::Incident),
+        Intent::ReviewIncident { id, actor } => state
+            .review_incident(*id, *actor, now_unix)
+            .map(|_| ())
+            .map_err(IntentError::Incident),
     }
 }
 
@@ -428,6 +502,29 @@ mod tests {
             }
             .as_key(),
             Intent::GenerateReport {
+                actor: Actor::Player,
+            }
+            .as_key(),
+            Intent::OpenIncident {
+                kind: "manual".into(),
+                severity: "low".into(),
+                actor: Actor::Player,
+            }
+            .as_key(),
+            Intent::AssignIncident {
+                id: 1,
+                leader: 1,
+                actor: Actor::Player,
+            }
+            .as_key(),
+            Intent::ResolveIncident {
+                id: 1,
+                note: "done".into(),
+                actor: Actor::Player,
+            }
+            .as_key(),
+            Intent::ReviewIncident {
+                id: 1,
                 actor: Actor::Player,
             }
             .as_key(),
