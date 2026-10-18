@@ -16,6 +16,8 @@
 
 ### Fixed
 
+- Nightly and release aarch64 `--version` smokes run qemu with the Ubuntu cross sysroot so the dynamic linker is found.
+
 - Story, away, and spy overlays clear the screen underneath so numbered choices stay readable. Inline portraits are erased while an overlay is open.
 
 ### Added

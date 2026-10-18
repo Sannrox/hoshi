@@ -90,7 +90,9 @@ jobs:
           if [ "${{ matrix.native }}" = "true" ]; then
             out="$("${BIN}" --version)"
           else
-            out="$(qemu-aarch64-static "${BIN}" --version)"
+            # Cross libc lives under /usr/aarch64-linux-gnu; qemu prepends -L
+            # to the ELF interpreter path /lib/ld-linux-aarch64.so.1.
+            out="$(qemu-aarch64-static -L /usr/aarch64-linux-gnu "${BIN}" --version)"
           fi
           printf '%s\n' "${out}"
           printf '%s\n' "${out}" | grep -F "${want}"
