@@ -45,6 +45,14 @@ pub struct UserConfig {
     pub serve_bind: String,
     /// Save path for `hoshi serve`. Empty means the default save slot.
     pub serve_save: String,
+    /// Bearer secret for the process save. Empty rejects `/v1`. Not stored in the save.
+    pub serve_token: String,
+    /// Extra token file (`secret<whitespace>save-path` per line). Empty skips it.
+    pub serve_token_file: String,
+    /// Max `/v1` calls per token and action inside the window.
+    pub serve_rate_limit: u32,
+    /// Sliding window in seconds for serve rate limits.
+    pub serve_rate_window_secs: u64,
     pub keys: Keymap,
 }
 
@@ -87,6 +95,10 @@ impl Default for UserConfig {
             detail_panel: true,
             serve_bind: String::new(),
             serve_save: String::new(),
+            serve_token: String::new(),
+            serve_token_file: String::new(),
+            serve_rate_limit: crate::serve::DEFAULT_RATE_LIMIT,
+            serve_rate_window_secs: crate::serve::DEFAULT_RATE_WINDOW_SECS,
             keys: Keymap::defaults(),
         }
     }
@@ -174,6 +186,18 @@ impl UserConfig {
                 "detail_panel" => cfg.detail_panel = value == "true",
                 "serve_bind" => cfg.serve_bind = value.trim_matches('"').to_string(),
                 "serve_save" => cfg.serve_save = value.trim_matches('"').to_string(),
+                "serve_token" => cfg.serve_token = value.trim_matches('"').to_string(),
+                "serve_token_file" => cfg.serve_token_file = value.trim_matches('"').to_string(),
+                "serve_rate_limit" => {
+                    if let Ok(n) = value.parse() {
+                        cfg.serve_rate_limit = n;
+                    }
+                }
+                "serve_rate_window_secs" => {
+                    if let Ok(n) = value.parse() {
+                        cfg.serve_rate_window_secs = n;
+                    }
+                }
                 key if key.starts_with("keys.") => {
                     key_overrides.push((key[5..].to_string(), value.to_string()));
                 }
@@ -202,7 +226,7 @@ impl UserConfig {
             _ => String::new(),
         };
         let text = format!(
-            "reduced_motion = {}\nno_animation = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\narena = {}\nself_play = {}\nrivals = {}\nseason = {}\ndemo = {}\ngovernance = {}\nchisei = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}\ntutorial = {}\nreset_tutorial = {}\nnotify = {}\nnotify_build = {}\nnotify_raid = {}\nnotify_fleet = {}\ncommentary = {}\ncommentary_model_url = \"{}\"\nadvisor_model_url = \"{}\"\nadvisor_model_name = \"{}\"\nadvisor_allow_lan = {}\ncockpit_layout = \"{}\"\ncockpit_overview = \"{}\"\ncockpit_economy = \"{}\"\ncockpit_war = \"{}\"\ndetail_panel = {}\nserve_bind = \"{}\"\nserve_save = \"{}\"\n{quiet}{}\n",
+            "reduced_motion = {}\nno_animation = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\narena = {}\nself_play = {}\nrivals = {}\nseason = {}\ndemo = {}\ngovernance = {}\nchisei = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}\ntutorial = {}\nreset_tutorial = {}\nnotify = {}\nnotify_build = {}\nnotify_raid = {}\nnotify_fleet = {}\ncommentary = {}\ncommentary_model_url = \"{}\"\nadvisor_model_url = \"{}\"\nadvisor_model_name = \"{}\"\nadvisor_allow_lan = {}\ncockpit_layout = \"{}\"\ncockpit_overview = \"{}\"\ncockpit_economy = \"{}\"\ncockpit_war = \"{}\"\ndetail_panel = {}\nserve_bind = \"{}\"\nserve_save = \"{}\"\nserve_token = \"{}\"\nserve_token_file = \"{}\"\nserve_rate_limit = {}\nserve_rate_window_secs = {}\n{quiet}{}\n",
             self.reduced_motion,
             self.no_animation,
             self.high_contrast,
@@ -236,6 +260,10 @@ impl UserConfig {
             self.detail_panel,
             self.serve_bind.replace('"', ""),
             self.serve_save.replace('"', ""),
+            self.serve_token.replace('"', ""),
+            self.serve_token_file.replace('"', ""),
+            self.serve_rate_limit,
+            self.serve_rate_window_secs,
             self.keys.to_config_lines().trim_end(),
         );
         std::fs::write(Self::path(dir), text)
@@ -338,6 +366,8 @@ mod tests {
         assert!(!again.detail_panel);
         assert_eq!(again.serve_bind, "127.0.0.1:0");
         assert_eq!(again.serve_save, "slot.sqlite");
+        assert!(again.serve_token.is_empty());
+        assert_eq!(again.serve_rate_limit, crate::serve::DEFAULT_RATE_LIMIT);
         assert!(!again.notify);
         assert!(again.commentary);
         assert_eq!(again.commentary_model_url, "http://127.0.0.1:8080/v1");
@@ -347,6 +377,22 @@ mod tests {
         assert!(!again.portraits);
         assert_eq!(again.portrait_protocol, ProtocolChoice::Off);
         assert_eq!(again.keys, Keymap::defaults());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn loads_serve_token_and_rate_limits() {
+        let dir = unique_dir();
+        std::fs::write(
+            UserConfig::path(&dir),
+            "serve_token = \"abc\"\nserve_token_file = \"tokens.txt\"\nserve_rate_limit = 3\nserve_rate_window_secs = 9\n",
+        )
+        .unwrap();
+        let cfg = UserConfig::load(&dir);
+        assert_eq!(cfg.serve_token, "abc");
+        assert_eq!(cfg.serve_token_file, "tokens.txt");
+        assert_eq!(cfg.serve_rate_limit, 3);
+        assert_eq!(cfg.serve_rate_window_secs, 9);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
