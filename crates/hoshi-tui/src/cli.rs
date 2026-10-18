@@ -429,7 +429,51 @@ pub fn is_cli_invocation(args: &[String]) -> bool {
 }
 
 pub fn run_cli(args: &[String]) -> CliOutcome {
-    match run_cli_inner(args) {
+    outcome(run_cli_with_lock(args, true))
+}
+
+/// Apply a CLI command to `save` without taking the lock.
+///
+/// `hoshi serve` already holds the exclusive lock for the process lifetime.
+/// Command words are parsed as a CLI command only: they cannot retarget
+/// `--save`, `--balance`, or `--seed`.
+pub(crate) fn run_unlocked(save: &Path, parts: &[&str]) -> CliOutcome {
+    let rest: Vec<String> = parts.iter().map(|part| (*part).to_string()).collect();
+    outcome(run_unlocked_inner(save, &rest))
+}
+
+fn run_unlocked_inner(save: &Path, rest: &[String]) -> Result<Value, CliError> {
+    let command = parse_command(rest)?;
+    if matches!(
+        command,
+        Command::Feedback { .. }
+            | Command::ArenaRun { .. }
+            | Command::ArenaBoard { .. }
+            | Command::SelfPlay { .. }
+            | Command::DemoGovernance { .. }
+            | Command::Tick { .. }
+    ) {
+        return Err(CliError::Invalid("not found".into()));
+    }
+    let config = match std::env::var_os("HOSHI_BALANCE") {
+        Some(path) => BalanceConfig::load_file(Path::new(&path))
+            .map_err(|e| CliError::Invalid(e.to_string()))?,
+        None => BalanceConfig::default(),
+    };
+    let mut store = open_storage(save).map_err(|e| CliError::Internal(e.to_string()))?;
+    let mut state = store
+        .load_or_new(SystemClock.now_unix(), config)
+        .map_err(|e| CliError::Internal(e.to_string()))?;
+    let now = now_for(&state);
+    let value = apply(&mut state, now, &command, save)?;
+    store
+        .save(&state)
+        .map_err(|e| CliError::Internal(e.to_string()))?;
+    Ok(value)
+}
+
+fn outcome(result: Result<Value, CliError>) -> CliOutcome {
+    match result {
         Ok(value) => CliOutcome {
             json: render(value),
             exit: EXIT_OK,
@@ -451,7 +495,7 @@ fn render(value: Value) -> String {
     out
 }
 
-fn run_cli_inner(args: &[String]) -> Result<Value, CliError> {
+fn run_cli_with_lock(args: &[String], take_lock: bool) -> Result<Value, CliError> {
     let opts = parse_cli(args)?;
     if let Command::Feedback { note } = &opts.command {
         return run_feedback(opts.save.as_deref(), note);
@@ -472,10 +516,14 @@ fn run_cli_inner(args: &[String]) -> Result<Value, CliError> {
         opts.save.as_deref(),
         std::env::var_os("HOSHI_SAVE").as_deref(),
     );
-    let _lock = lock_save(&save).map_err(|e| match e {
-        SaveError::Locked => CliError::Locked,
-        other => CliError::Internal(other.to_string()),
-    })?;
+    let _lock = if take_lock {
+        Some(lock_save(&save).map_err(|e| match e {
+            SaveError::Locked => CliError::Locked,
+            other => CliError::Internal(other.to_string()),
+        })?)
+    } else {
+        None
+    };
     let config = match opts.balance.as_deref() {
         Some(path) => {
             BalanceConfig::load_file(path).map_err(|e| CliError::Invalid(e.to_string()))?
