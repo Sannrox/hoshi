@@ -51,6 +51,11 @@ hoshi --save PATH research <tech>
 hoshi --save PATH cancel <queue-item>
 hoshi --save PATH fleet send <from> <to> <mission> <ships...>
 hoshi --save PATH tick --advance <dur>
+hoshi --save PATH scenario create
+hoshi --save PATH scenario queue build <planet> <building>
+hoshi --save PATH scenario advance <dur>
+hoshi --save PATH scenario compare
+hoshi --save PATH scenario promote
 hoshi --save PATH prestige
 hoshi --save PATH prestige buy <id>
 hoshi --save PATH prestige reset
@@ -139,6 +144,8 @@ type (`+`/`-`) and opens lineage (Enter) or the glance (`r`).
 `staff` lists leaders, roles, assignments and delegations. `staff recruit` spends the configured cost. `staff assign` places one role per leader (reassignment waits `reassign_secs`). `staff delegate` lets that leader act with an optional spending cap; `staff revoke` removes it. `staff clearance` grants extra classification and compartments. `build --as leader:ID` runs the same queue checks under that leader's permissions.
 
 `classify` marks a `report`, `law`, `plan` or `fact`. Missing markings are Open. `state --as leader:ID` and `incidents --as` omit objects that role cannot see. Admirals start at Restricted/fleet, governors Internal/planet, ministers Internal/policy; the player is unrestricted. `share` writes an agreement with a faction at favored, honored or truce standing. Detected spy waves and the `disloyal` leader trait open leak incidents. Hidden data never leaves core for the TUI, CLI or a Chisei tenant save; the shared graph does not copy marked object ids.
+
+`scenario create` writes a plan file beside the save (`*.scenario.json`), not into SQLite. `scenario queue build` appends a real build intent after proposing it on a fork at the live tick, not wall-clock idle. `scenario advance` fast-forwards that fork with the same catch-up as play. `scenario compare` prints baseline vs scenario resources, KPIs, and risk. `scenario promote` re-validates the plan against live `propose`/`apply` and refuses a stale plan. Create, queue, advance, and compare do not write the live save. Hidden simulation (RNG, pending intel, deceived) stays off the JSON.
 
 `--seed` on a new save starts deterministic mode: the wall clock is ignored and
 `tick --advance` is allowed. Live saves refuse `tick --advance`. The TUI refuses

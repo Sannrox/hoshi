@@ -5,9 +5,9 @@ use hoshi_core::{
     Classification, ClassifiedKind, Clock, Coord, Customer, DefenceKind, FakeClock, Fleet,
     GameState, HistoryKind, HistoryQuery, Intent, Jurisdiction, JurisdictionKind, MoonFacility,
     OrderSide, Payload, Permission, PlanRequest, ResourceKind, RoleKind, RoundAction,
-    SCHEMA_VERSION as SAVE_SCHEMA, SaveError, ShipKind, SpeciesCatalog, SpyReport, SystemClock,
-    TransferKind, advise, blueprint_dir, inspect_save, lock_save, open_storage, resolve_save_path,
-    save_is_locked,
+    SCHEMA_VERSION as SAVE_SCHEMA, SaveError, Scenario, ShipKind, SpeciesCatalog, SpyReport,
+    SystemClock, TransferKind, advise, blueprint_dir, inspect_save, lock_save, open_storage,
+    resolve_save_path, save_is_locked,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -334,6 +334,17 @@ enum Command {
     BlueprintImport {
         path: PathBuf,
     },
+    ScenarioCreate,
+    ScenarioQueueBuild {
+        planet: Coord,
+        building: BuildingKind,
+        actor: Actor,
+    },
+    ScenarioAdvance {
+        secs: u64,
+    },
+    ScenarioCompare,
+    ScenarioPromote,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -459,6 +470,11 @@ fn serve_command(rest: &[String]) -> Result<Command, CliError> {
             | Command::SelfPlay { .. }
             | Command::DemoGovernance { .. }
             | Command::Tick { .. }
+            | Command::ScenarioCreate
+            | Command::ScenarioQueueBuild { .. }
+            | Command::ScenarioAdvance { .. }
+            | Command::ScenarioCompare
+            | Command::ScenarioPromote
     ) {
         return Err(CliError::Invalid("not found".into()));
     }
@@ -488,10 +504,13 @@ fn run_unlocked_inner(save: &Path, rest: &[String]) -> Result<Value, CliError> {
         .load_or_new(SystemClock.now_unix(), config)
         .map_err(|e| CliError::Internal(e.to_string()))?;
     let now = now_for(&state);
+    let persist = command_writes_save(&command);
     let value = apply(&mut state, now, &command, save)?;
-    store
-        .save(&state)
-        .map_err(|e| CliError::Internal(e.to_string()))?;
+    if persist {
+        store
+            .save(&state)
+            .map_err(|e| CliError::Internal(e.to_string()))?;
+    }
     Ok(value)
 }
 
@@ -565,10 +584,13 @@ fn run_cli_with_lock(args: &[String], take_lock: bool) -> Result<Value, CliError
     }
     .map_err(|e| CliError::Internal(e.to_string()))?;
     let now = now_for(&state);
+    let persist = command_writes_save(&opts.command);
     let value = apply(&mut state, now, &opts.command, &save)?;
-    store
-        .save(&state)
-        .map_err(|e| CliError::Internal(e.to_string()))?;
+    if persist {
+        store
+            .save(&state)
+            .map_err(|e| CliError::Internal(e.to_string()))?;
+    }
     Ok(value)
 }
 
@@ -666,6 +688,170 @@ fn governed(state: &mut GameState, intent: Intent, now: u64) -> Result<(), CliEr
     let proposal =
         hoshi_core::propose(state, &intent, now).map_err(|e| CliError::Refused(e.to_string()))?;
     hoshi_core::apply(state, &proposal, now).map_err(|e| CliError::Refused(e.to_string()))
+}
+
+fn command_writes_save(command: &Command) -> bool {
+    !matches!(
+        command,
+        Command::ScenarioCreate
+            | Command::ScenarioQueueBuild { .. }
+            | Command::ScenarioAdvance { .. }
+            | Command::ScenarioCompare
+    )
+}
+
+fn scenario_plan_path(save: &Path) -> PathBuf {
+    save.with_extension("scenario.json")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ScenarioPlan {
+    baseline_at: u64,
+    until: u64,
+    queue: Vec<QueuedBuild>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct QueuedBuild {
+    planet: Coord,
+    building: BuildingKind,
+    actor: Actor,
+}
+
+impl QueuedBuild {
+    fn intent(&self) -> Intent {
+        Intent::Build {
+            planet: self.planet,
+            building: self.building,
+            actor: self.actor,
+        }
+    }
+}
+
+fn load_scenario_plan(save: &Path) -> Result<ScenarioPlan, CliError> {
+    let path = scenario_plan_path(save);
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|_| CliError::Invalid("no scenario; run scenario create".into()))?;
+    let value: Value =
+        serde_json::from_str(&raw).map_err(|e| CliError::Invalid(format!("scenario plan: {e}")))?;
+    if value["schema_version"] != SCHEMA_VERSION {
+        return Err(CliError::Invalid(
+            "scenario plan schema_version must be 2".into(),
+        ));
+    }
+    let baseline_at = value["baseline_at"]
+        .as_u64()
+        .ok_or_else(|| CliError::Invalid("scenario plan missing baseline_at".into()))?;
+    let until = value["until"]
+        .as_u64()
+        .ok_or_else(|| CliError::Invalid("scenario plan missing until".into()))?;
+    let mut queue = Vec::new();
+    for row in value["queue"]
+        .as_array()
+        .ok_or_else(|| CliError::Invalid("scenario plan missing queue".into()))?
+    {
+        if row["kind"] != "build" {
+            return Err(CliError::Invalid(
+                "scenario plan has an unknown queued kind".into(),
+            ));
+        }
+        let planet = parse_coord(
+            row["planet"]
+                .as_str()
+                .ok_or_else(|| CliError::Invalid("queued build missing planet".into()))?,
+        )?;
+        let building = BuildingKind::from_key(
+            row["building"]
+                .as_str()
+                .ok_or_else(|| CliError::Invalid("queued build missing building".into()))?,
+        )
+        .ok_or_else(|| CliError::Invalid("unknown building".into()))?;
+        let actor = match row.get("actor").and_then(Value::as_str) {
+            None => Actor::Player,
+            Some(raw) => Actor::parse(raw)
+                .ok_or_else(|| CliError::Invalid(format!("invalid actor {raw}")))?,
+        };
+        queue.push(QueuedBuild {
+            planet,
+            building,
+            actor,
+        });
+    }
+    Ok(ScenarioPlan {
+        baseline_at,
+        until,
+        queue,
+    })
+}
+
+fn write_scenario_plan(save: &Path, plan: &ScenarioPlan) -> Result<(), CliError> {
+    let path = scenario_plan_path(save);
+    let value = json!({
+        "schema_version": SCHEMA_VERSION,
+        "baseline_at": plan.baseline_at,
+        "until": plan.until,
+        "queue": plan.queue.iter().map(|row| json!({
+            "kind": "build",
+            "planet": row.planet.to_string(),
+            "building": row.building.as_key(),
+            "actor": row.actor.as_key(),
+        })).collect::<Vec<_>>(),
+    });
+    std::fs::write(
+        &path,
+        format!("{}\n", serde_json::to_string_pretty(&value).unwrap()),
+    )
+    .map_err(|e| CliError::Internal(e.to_string()))
+}
+
+/// Reconstruct the sandbox from live plus the sidecar plan.
+///
+/// Queue at the fork tick (`live.last_tick_unix`), not CLI wall-clock `now`.
+/// On a live save `now_for` is `SystemClock`; proposing at that time would
+/// catch the sandbox up through idle production and raids before the planned
+/// actions, so `advance` can become a no-op and compare mixes idle into the
+/// what-if. Promote still uses wall-clock `now`, like `hoshi build`.
+fn replay_scenario(live: &GameState, plan: &ScenarioPlan) -> Result<Scenario, CliError> {
+    let mut scenario = Scenario::create(live);
+    let fork = live.last_tick_unix;
+    for row in &plan.queue {
+        scenario
+            .queue(row.intent(), fork)
+            .map_err(|e| CliError::Refused(e.to_string()))?;
+    }
+    if plan.until > scenario.baseline().at {
+        scenario.advance(plan.until);
+    }
+    Ok(scenario)
+}
+
+fn outcome_json(outcome: &hoshi_core::Outcome) -> Value {
+    json!({
+        "at": outcome.at,
+        "resources": resources_json(outcome.resources),
+        "kpis": outcome.kpis.iter().map(|m| json!({
+            "kpi": m.kpi.as_key(),
+            "owner": m.owner.as_key(),
+            "value": m.value,
+            "target": m.target,
+            "variance": m.variance(),
+            "progress": m.progress(),
+            "event_ids": m.event_ids,
+        })).collect::<Vec<_>>(),
+        "risks": outcome.risks.iter().map(|row| json!({
+            "id": row.id,
+            "name": row.name,
+            "likelihood": row.likelihood,
+            "impact": row.impact.as_key(),
+            "review_at": row.review_at,
+            "last_reviewed_at": row.last_reviewed_at,
+        })).collect::<Vec<_>>(),
+        "intel": outcome.intel.iter().map(|fact| json!({
+            "object": fact.object,
+            "field": fact.field,
+            "observations": fact.observations.iter().map(observation_value).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+    })
 }
 
 fn apply(
@@ -1578,6 +1764,72 @@ fn apply(
                     .collect::<Vec<_>>()
             );
             Ok(value)
+        }
+        Command::ScenarioCreate => {
+            let plan = ScenarioPlan {
+                baseline_at: state.last_tick_unix,
+                until: state.last_tick_unix,
+                queue: Vec::new(),
+            };
+            write_scenario_plan(save, &plan)?;
+            Ok(json!({
+                "schema_version": SCHEMA_VERSION,
+                "ok": true,
+                "message": "scenario created",
+                "baseline_at": plan.baseline_at,
+            }))
+        }
+        Command::ScenarioQueueBuild {
+            planet,
+            building,
+            actor,
+        } => {
+            let mut plan = load_scenario_plan(save)?;
+            plan.queue.push(QueuedBuild {
+                planet: *planet,
+                building: *building,
+                actor: *actor,
+            });
+            replay_scenario(state, &plan)?;
+            write_scenario_plan(save, &plan)?;
+            Ok(json!({
+                "schema_version": SCHEMA_VERSION,
+                "ok": true,
+                "message": "scenario queued",
+                "queued": plan.queue.len(),
+            }))
+        }
+        Command::ScenarioAdvance { secs } => {
+            let mut plan = load_scenario_plan(save)?;
+            plan.until = plan.until.saturating_add(*secs);
+            replay_scenario(state, &plan)?;
+            write_scenario_plan(save, &plan)?;
+            Ok(json!({
+                "schema_version": SCHEMA_VERSION,
+                "ok": true,
+                "message": "scenario advanced",
+                "until": plan.until,
+            }))
+        }
+        Command::ScenarioCompare => {
+            let plan = load_scenario_plan(save)?;
+            let baseline = Scenario::create(state).outcome();
+            let scenario = replay_scenario(state, &plan)?;
+            Ok(json!({
+                "schema_version": SCHEMA_VERSION,
+                "ok": true,
+                "message": "scenario compare",
+                "baseline": outcome_json(&baseline),
+                "scenario": outcome_json(&scenario.outcome()),
+            }))
+        }
+        Command::ScenarioPromote => {
+            let plan = load_scenario_plan(save)?;
+            let scenario = replay_scenario(state, &plan)?;
+            scenario
+                .promote(state, now)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, "scenario promoted"))
         }
     }
 }
@@ -2975,6 +3227,7 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
                 advance: advance.ok_or_else(|| CliError::Invalid("tick needs --advance".into()))?,
             })
         }
+        "scenario" => parse_scenario_command(args),
         other => Err(CliError::Invalid(format!("unknown command {other}"))),
     }
 }
@@ -4588,6 +4841,63 @@ fn parse_ships(args: &[String]) -> Result<Fleet, CliError> {
     Ok(fleet)
 }
 
+fn parse_scenario_command(args: &[String]) -> Result<Command, CliError> {
+    match args.get(1).map(String::as_str) {
+        Some("create") => {
+            expect_end(args, 2)?;
+            Ok(Command::ScenarioCreate)
+        }
+        Some("queue") => {
+            if nth(args, 2, "scenario queue build <planet> <building>")? != "build" {
+                return Err(CliError::Invalid(
+                    "scenario queue supports build <planet> <building>".into(),
+                ));
+            }
+            let planet = parse_coord(nth(args, 3, "scenario queue build <planet> <building>")?)?;
+            let building =
+                BuildingKind::from_key(nth(args, 4, "scenario queue build <planet> <building>")?)
+                    .ok_or_else(|| CliError::Invalid("unknown building".into()))?;
+            let mut actor = Actor::Player;
+            let mut i = 5;
+            while i < args.len() {
+                let a = args[i].as_str();
+                if a == "--as" {
+                    let raw = nth(args, i + 1, "scenario queue --as <actor>")?;
+                    actor = Actor::parse(raw)
+                        .ok_or_else(|| CliError::Invalid(format!("invalid --as {raw}")))?;
+                    i += 2;
+                    continue;
+                }
+                return Err(CliError::Invalid(format!("unexpected argument {a}")));
+            }
+            Ok(Command::ScenarioQueueBuild {
+                planet,
+                building,
+                actor,
+            })
+        }
+        Some("advance") => {
+            let secs = parse_advance(nth(args, 2, "scenario advance <dur>")?)?;
+            expect_end(args, 3)?;
+            Ok(Command::ScenarioAdvance { secs })
+        }
+        Some("compare") => {
+            expect_end(args, 2)?;
+            Ok(Command::ScenarioCompare)
+        }
+        Some("promote") => {
+            expect_end(args, 2)?;
+            Ok(Command::ScenarioPromote)
+        }
+        Some(other) => Err(CliError::Invalid(format!(
+            "unknown scenario command {other}"
+        ))),
+        None => Err(CliError::Invalid(
+            "scenario needs create, queue, advance, compare, or promote".into(),
+        )),
+    }
+}
+
 fn parse_advance(text: &str) -> Result<u64, CliError> {
     let err = || CliError::Invalid(format!("invalid --advance {text}"));
     if let Some(n) = text.strip_suffix('s') {
@@ -4611,7 +4921,7 @@ fn parse_advance(text: &str) -> Result<u64, CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hoshi_core::{BuildError, open_save, save_state};
+    use hoshi_core::{BuildError, load_state, open_save, save_state};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_save(tag: &str) -> PathBuf {
@@ -5758,6 +6068,125 @@ mod tests {
         assert_eq!(exit, EXIT_OK, "{imported}");
         assert_eq!(imported["name"], "core");
         let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&save);
+    }
+
+    #[test]
+    fn scenario_queue_advance_compare_does_not_write_live() {
+        let save = unique_save("scenario-live");
+        let (created, exit) = run_on(&save, &["--seed=1", "state"]);
+        assert_eq!(exit, EXIT_OK, "{created}");
+        let before = created["resources"].clone();
+        let (created_sc, exit) = run_on(&save, &["scenario", "create"]);
+        assert_eq!(exit, EXIT_OK, "{created_sc}");
+        let (queued, exit) = run_on(&save, &["scenario", "queue", "build", "home", "metal_mine"]);
+        assert_eq!(exit, EXIT_OK, "{queued}");
+        let (advanced, exit) = run_on(&save, &["scenario", "advance", "1h"]);
+        assert_eq!(exit, EXIT_OK, "{advanced}");
+        let (cmp, exit) = run_on(&save, &["scenario", "compare"]);
+        assert_eq!(exit, EXIT_OK, "{cmp}");
+        assert_eq!(cmp["message"], "scenario compare");
+        assert_ne!(
+            cmp["scenario"]["resources"]["iron"],
+            cmp["baseline"]["resources"]["iron"]
+        );
+        assert!(cmp["scenario"]["kpis"].is_array());
+        assert!(cmp["scenario"]["risks"].is_array());
+        let (after, exit) = run_on(&save, &["state"]);
+        assert_eq!(exit, EXIT_OK, "{after}");
+        assert_eq!(after["resources"], before);
+        assert!(after["build_queue"].as_array().unwrap().is_empty());
+        let _ = std::fs::remove_file(save.with_extension("scenario.json"));
+        let _ = std::fs::remove_file(&save);
+    }
+
+    #[test]
+    fn scenario_promote_applies_and_stale_plan_is_refused() {
+        let save = unique_save("scenario-promote");
+        let (_, exit) = run_on(&save, &["--seed=1", "state"]);
+        assert_eq!(exit, EXIT_OK);
+        let (_, exit) = run_on(&save, &["scenario", "create"]);
+        assert_eq!(exit, EXIT_OK);
+        let (_, exit) = run_on(&save, &["scenario", "queue", "build", "home", "metal_mine"]);
+        assert_eq!(exit, EXIT_OK);
+        let (promoted, exit) = run_on(&save, &["scenario", "promote"]);
+        assert_eq!(exit, EXIT_OK, "{promoted}");
+        let (state, exit) = run_on(&save, &["state"]);
+        assert_eq!(exit, EXIT_OK, "{state}");
+        assert_eq!(state["build_queue"].as_array().unwrap().len(), 1);
+        assert_eq!(state["build_queue"][0]["building"], "metal_mine");
+
+        let stale = unique_save("scenario-stale");
+        let (_, exit) = run_on(&stale, &["--seed=1", "state"]);
+        assert_eq!(exit, EXIT_OK);
+        let (_, exit) = run_on(&stale, &["scenario", "create"]);
+        assert_eq!(exit, EXIT_OK);
+        let (_, exit) = run_on(
+            &stale,
+            &["scenario", "queue", "build", "home", "metal_mine"],
+        );
+        assert_eq!(exit, EXIT_OK);
+        let mut conn = open_save(&stale).unwrap();
+        let mut emptied = GameState::with_seed(0, BalanceConfig::default(), 1);
+        emptied.resources = hoshi_core::Resources::ZERO;
+        save_state(&mut conn, &emptied).unwrap();
+        drop(conn);
+        let (value, exit) = run_on(&stale, &["scenario", "promote"]);
+        assert_eq!(exit, EXIT_REFUSED, "{value}");
+        let (after, exit) = run_on(&stale, &["state"]);
+        assert_eq!(exit, EXIT_OK, "{after}");
+        assert!(after["build_queue"].as_array().unwrap().is_empty());
+        let _ = std::fs::remove_file(save.with_extension("scenario.json"));
+        let _ = std::fs::remove_file(&save);
+        let _ = std::fs::remove_file(stale.with_extension("scenario.json"));
+        let _ = std::fs::remove_file(&stale);
+    }
+
+    #[test]
+    fn scenario_compare_omits_hidden_simulation() {
+        let save = unique_save("scenario-fair");
+        let (_, exit) = run_on(&save, &["--seed=1", "state"]);
+        assert_eq!(exit, EXIT_OK);
+        let (_, exit) = run_on(&save, &["scenario", "create"]);
+        assert_eq!(exit, EXIT_OK);
+        let (cmp, exit) = run_on(&save, &["scenario", "compare"]);
+        assert_eq!(exit, EXIT_OK, "{cmp}");
+        let dump = cmp.to_string();
+        assert!(!dump.contains("next_raid_at"), "{dump}");
+        assert!(!dump.contains("deceived"), "{dump}");
+        assert!(!dump.contains("rng"), "{dump}");
+        assert!(!dump.contains("unrevealed"), "{dump}");
+        assert!(cmp["baseline"].get("resources").is_some());
+        let _ = std::fs::remove_file(save.with_extension("scenario.json"));
+        let _ = std::fs::remove_file(&save);
+    }
+
+    #[test]
+    fn scenario_replay_queues_at_fork_not_wall_clock() {
+        let save = unique_save("scenario-fork");
+        let (created, exit) = run_on(&save, &["state"]);
+        assert_eq!(exit, EXIT_OK, "{created}");
+        let mut conn = open_save(&save).unwrap();
+        let mut live = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert!(!live.deterministic, "live save so now_for is wall-clock");
+        let gap: u64 = 10 * 3600;
+        let fork = live.last_tick_unix.saturating_sub(gap);
+        live.last_tick_unix = fork;
+        save_state(&mut conn, &live).unwrap();
+        drop(conn);
+
+        let (_, exit) = run_on(&save, &["scenario", "create"]);
+        assert_eq!(exit, EXIT_OK);
+        let (_, exit) = run_on(&save, &["scenario", "queue", "build", "home", "metal_mine"]);
+        assert_eq!(exit, EXIT_OK);
+        let (_, exit) = run_on(&save, &["scenario", "advance", "1h"]);
+        assert_eq!(exit, EXIT_OK);
+        let (cmp, exit) = run_on(&save, &["scenario", "compare"]);
+        assert_eq!(exit, EXIT_OK, "{cmp}");
+        assert_eq!(cmp["baseline"]["at"].as_u64(), Some(fork));
+        assert_eq!(cmp["scenario"]["at"].as_u64(), Some(fork + 3600));
+
+        let _ = std::fs::remove_file(save.with_extension("scenario.json"));
         let _ = std::fs::remove_file(&save);
     }
 }
