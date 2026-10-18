@@ -16,7 +16,7 @@
       "type": "object",
       "required": ["code", "message"],
       "properties": {
-        "code": { "enum": ["invalid", "refused", "internal"] },
+        "code": { "enum": ["invalid", "refused", "internal", "unauthorized", "rate_limited"] },
         "message": { "type": "string" }
       }
     }

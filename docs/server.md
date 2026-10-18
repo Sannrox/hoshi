@@ -24,10 +24,32 @@ JSON line with the bound address, then serves until it exits.
 ```toml
 serve_bind = "127.0.0.1:8787"
 serve_save = ""
+serve_token = ""
+serve_token_file = ""
+serve_rate_limit = 60
+serve_rate_window_secs = 60
 ```
 
 Empty `serve_bind` uses loopback port 8787. Empty `serve_save` uses the default
 save slot (`--save` / `HOSHI_SAVE` still win).
+
+## Tokens and limits
+
+`/v1` requires `Authorization: Bearer <token>`. `GET /healthz` stays open.
+
+Set the secret at runtime, never in the save:
+
+- `HOSHI_SERVE_TOKEN` or `serve_token` in `config.toml`: one secret scoped to the
+  process save.
+- `HOSHI_SERVE_TOKEN_FILE` or `serve_token_file`: extra lines
+  `secret<whitespace>save-path`. A secret bound to another save is refused.
+
+An empty token list rejects every `/v1` call. Secrets are compared in constant
+time. They are not written to SQLite.
+
+Rate limits are per token and per action path (`/v1/state`, `/v1/build`, …).
+The sliding window uses `serve_rate_limit` (default 60) and
+`serve_rate_window_secs` (default 60). A 429 response may include `Retry-After`.
 
 ## Lock
 
@@ -81,9 +103,11 @@ Every error is JSON with HTTP status:
 | HTTP | `error.code` | Meaning |
 | --- | --- | --- |
 | 400 | `invalid` | Bad path, method, JSON, or arguments |
+| 401 | `unauthorized` | Missing, unknown, or wrong-save bearer token |
 | 404 | `invalid` | Unknown route |
 | 405 | `invalid` | Known route, wrong method |
 | 409 | `refused` | Rule refusal (same as CLI exit 3) |
+| 429 | `rate_limited` | Token exceeded the per-action window |
 | 500 | `internal` | Save or IO failure |
 
 ## Not a shard

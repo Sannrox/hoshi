@@ -5,10 +5,16 @@ use hoshi_core::{
     resolve_save_path,
 };
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+/// Default allowed `/v1` calls per token and action inside [`DEFAULT_RATE_WINDOW_SECS`].
+pub const DEFAULT_RATE_LIMIT: u32 = 60;
+/// Sliding window for per-token, per-action limits.
+pub const DEFAULT_RATE_WINDOW_SECS: u64 = 60;
 
 /// Loopback bind used when config and flags omit one.
 pub const DEFAULT_BIND: &str = "127.0.0.1:8787";
@@ -59,11 +65,184 @@ pub struct ServeOptions {
     pub save: PathBuf,
 }
 
+/// One bearer secret bound to one save path. Never stored in the save file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopedToken {
+    pub secret: String,
+    pub save: PathBuf,
+}
+
+/// Bearer gate and sliding-window limits for `/v1`.
+#[derive(Debug, Clone)]
+pub struct Auth {
+    tokens: Vec<ScopedToken>,
+    limit: u32,
+    window_secs: u64,
+    hits: HashMap<(usize, String), Vec<u64>>,
+}
+
+impl Auth {
+    pub fn empty() -> Self {
+        Self::with_tokens(Vec::new(), DEFAULT_RATE_LIMIT, DEFAULT_RATE_WINDOW_SECS)
+    }
+
+    #[cfg(test)]
+    pub fn single(save: &Path, secret: &str) -> Self {
+        if secret.is_empty() {
+            return Self::empty();
+        }
+        Self::with_tokens(
+            vec![ScopedToken {
+                secret: secret.into(),
+                save: save.to_path_buf(),
+            }],
+            DEFAULT_RATE_LIMIT,
+            DEFAULT_RATE_WINDOW_SECS,
+        )
+    }
+
+    pub fn with_tokens(tokens: Vec<ScopedToken>, limit: u32, window_secs: u64) -> Self {
+        Self {
+            tokens,
+            limit: if limit == 0 {
+                DEFAULT_RATE_LIMIT
+            } else {
+                limit
+            },
+            window_secs: if window_secs == 0 {
+                DEFAULT_RATE_WINDOW_SECS
+            } else {
+                window_secs
+            },
+            hits: HashMap::new(),
+        }
+    }
+
+    /// Load operator secrets from config and process environment. Never the save.
+    pub fn load(
+        save: &Path,
+        config_token: &str,
+        token_file: Option<&Path>,
+        limit: u32,
+        window_secs: u64,
+    ) -> Self {
+        let mut tokens = Vec::new();
+        if !config_token.is_empty() {
+            tokens.push(ScopedToken {
+                secret: config_token.into(),
+                save: save.to_path_buf(),
+            });
+        }
+        if let Ok(env) = std::env::var("HOSHI_SERVE_TOKEN")
+            && !env.is_empty()
+        {
+            tokens.push(ScopedToken {
+                secret: env,
+                save: save.to_path_buf(),
+            });
+        }
+        let file = std::env::var_os("HOSHI_SERVE_TOKEN_FILE")
+            .map(PathBuf::from)
+            .or_else(|| token_file.map(Path::to_path_buf));
+        if let Some(path) = file {
+            tokens.extend(load_token_file(&path));
+        }
+        Self::with_tokens(tokens, limit, window_secs)
+    }
+
+    fn allow(
+        &mut self,
+        save: &Path,
+        action: &str,
+        authorization: Option<&str>,
+        now: u64,
+    ) -> Result<(), (u16, Value)> {
+        let presented = match bearer(authorization) {
+            Some(token) => token,
+            None => return Err((401, error_body("unauthorized", "unauthorized"))),
+        };
+        let Some(idx) = self
+            .tokens
+            .iter()
+            .position(|token| eq_secret(token.secret.as_bytes(), presented.as_bytes()))
+        else {
+            return Err((401, error_body("unauthorized", "unauthorized")));
+        };
+        if !same_save(&self.tokens[idx].save, save) {
+            return Err((401, error_body("unauthorized", "unauthorized")));
+        }
+        let window = self.window_secs;
+        let limit = self.limit;
+        let hits = self.hits.entry((idx, action.to_string())).or_default();
+        hits.retain(|at| now.saturating_sub(*at) < window);
+        if hits.len() as u32 >= limit {
+            return Err((429, error_body("rate_limited", "rate limited")));
+        }
+        hits.push(now);
+        Ok(())
+    }
+}
+
+fn load_token_file(path: &Path) -> Vec<ScopedToken> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((secret, save)) = line.split_once(char::is_whitespace) else {
+            continue;
+        };
+        let secret = secret.trim();
+        let save = save.trim();
+        if secret.is_empty() || save.is_empty() {
+            continue;
+        }
+        out.push(ScopedToken {
+            secret: secret.into(),
+            save: PathBuf::from(save),
+        });
+    }
+    out
+}
+
+fn bearer(header: Option<&str>) -> Option<&str> {
+    let raw = header?.trim();
+    let (scheme, rest) = raw.split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("bearer") {
+        return None;
+    }
+    let token = rest.trim();
+    (!token.is_empty()).then_some(token)
+}
+
+fn eq_secret(left: &[u8], right: &[u8]) -> bool {
+    let mut acc = left.len() ^ right.len();
+    let n = left.len().max(right.len());
+    for i in 0..n {
+        let a = left.get(i).copied().unwrap_or(0);
+        let b = right.get(i).copied().unwrap_or(0);
+        acc |= (a ^ b) as usize;
+    }
+    acc == 0
+}
+
+fn same_save(left: &Path, right: &Path) -> bool {
+    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => left == right,
+    }
+}
+
 /// Listener plus the exclusive save lock.
 pub struct Server {
     listener: TcpListener,
     _lock: SaveLock,
     save: PathBuf,
+    auth: Auth,
 }
 
 impl Server {
@@ -81,7 +260,13 @@ impl Server {
             listener,
             _lock: lock,
             save: opts.save,
+            auth: Auth::empty(),
         })
+    }
+
+    pub fn with_auth(mut self, auth: Auth) -> Self {
+        self.auth = auth;
+        self
     }
 
     pub fn local_addr(&self) -> Result<SocketAddr, ServeError> {
@@ -89,10 +274,10 @@ impl Server {
     }
 
     /// Serve until the listener fails. Tests call [`serve_one`] instead.
-    pub fn run(self) -> Result<(), ServeError> {
+    pub fn run(mut self) -> Result<(), ServeError> {
         loop {
             let (stream, _) = self.listener.accept()?;
-            let _ = serve_one(&self.save, stream);
+            let _ = serve_one(&self.save, stream, &mut self.auth);
         }
     }
 }
@@ -230,9 +415,11 @@ fn status_phrase(status: u16) -> &'static str {
     match status {
         200 => "OK",
         400 => "Bad Request",
+        401 => "Unauthorized",
         404 => "Not Found",
         405 => "Method Not Allowed",
         409 => "Conflict",
+        429 => "Too Many Requests",
         500 => "Internal Server Error",
         _ => "Error",
     }
@@ -330,13 +517,26 @@ fn v1_parts(method: &str, path: &str, body: &Value) -> Result<Vec<String>, (u16,
 }
 
 /// Dispatch one HTTP request against the locked save.
-pub fn handle(save: &Path, method: &str, path: &str, body: &[u8]) -> (u16, Value) {
+pub fn handle(
+    save: &Path,
+    method: &str,
+    path: &str,
+    body: &[u8],
+    authorization: Option<&str>,
+    auth: &mut Auth,
+    now: u64,
+) -> (u16, Value) {
     let path = path.split('?').next().unwrap_or(path);
     if path == "/healthz" {
         if method != "GET" {
             return (405, error_body("invalid", "method not allowed"));
         }
         return (200, healthz_body());
+    }
+    if path.starts_with("/v1")
+        && let Err(err) = auth.allow(save, path, authorization, now)
+    {
+        return err;
     }
     let json_body = if body.is_empty() {
         json!({})
@@ -365,19 +565,23 @@ fn header_end(buf: &[u8]) -> Option<(usize, usize)> {
 }
 
 fn content_length(headers: &str) -> Option<usize> {
+    header_value(headers, "content-length")?.parse().ok()
+}
+
+fn header_value(headers: &str, want: &str) -> Option<String> {
     for line in headers.lines() {
         let line = line.trim();
         let Some((name, value)) = line.split_once(':') else {
             continue;
         };
-        if name.eq_ignore_ascii_case("content-length") {
-            return value.trim().parse().ok();
+        if name.eq_ignore_ascii_case(want) {
+            return Some(value.trim().to_string());
         }
     }
     None
 }
 
-fn serve_one(save: &Path, mut stream: TcpStream) -> std::io::Result<()> {
+fn serve_one(save: &Path, mut stream: TcpStream, auth: &mut Auth) -> std::io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     let mut buf = Vec::new();
@@ -424,10 +628,25 @@ fn serve_one(save: &Path, mut stream: TcpStream) -> std::io::Result<()> {
     } else {
         buf[header_len.min(buf.len())..].to_vec()
     };
-    let (status, value) = handle(save, method, path, &body);
+    let authorization = header_value(&headers, "authorization");
+    let now = SystemClock.now_unix();
+    let (status, value) = handle(
+        save,
+        method,
+        path,
+        &body,
+        authorization.as_deref(),
+        auth,
+        now,
+    );
     let body = serde_json::to_vec(&value).unwrap_or_else(|_| b"{\"ok\":false}".to_vec());
+    let extra = match status {
+        401 => "WWW-Authenticate: Bearer\r\n".to_string(),
+        429 => format!("Retry-After: {}\r\n", auth.window_secs),
+        _ => String::new(),
+    };
     let header = format!(
-        "HTTP/1.1 {status} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{extra}Connection: close\r\n\r\n",
         status_phrase(status),
         body.len()
     );
@@ -450,7 +669,24 @@ pub fn run(args: &[String]) -> Result<(), ServeError> {
     let cfg = crate::config::UserConfig::load(&dir);
     let save = resolve_save(cli_save.as_deref(), &cfg.serve_save);
     let bind = resolve_bind(cli_bind.as_deref(), &cfg.serve_bind)?;
-    let server = Server::open(ServeOptions { bind, save })?;
+    let token_file = if cfg.serve_token_file.is_empty() {
+        None
+    } else {
+        let path = PathBuf::from(&cfg.serve_token_file);
+        Some(if path.is_absolute() {
+            path
+        } else {
+            dir.join(path)
+        })
+    };
+    let auth = Auth::load(
+        &save,
+        &cfg.serve_token,
+        token_file.as_deref(),
+        cfg.serve_rate_limit,
+        cfg.serve_rate_window_secs,
+    );
+    let server = Server::open(ServeOptions { bind, save })?.with_auth(auth);
     let addr = server.local_addr()?;
     println!(
         "{}",
@@ -480,13 +716,40 @@ mod tests {
 
     static UNIQUE: AtomicU64 = AtomicU64::new(0);
 
+    const TEST_TOKEN: &str = "test-token";
+
+    fn handle_v1(save: &Path, method: &str, path: &str, body: &[u8]) -> (u16, Value) {
+        let mut auth = Auth::single(save, TEST_TOKEN);
+        handle(
+            save,
+            method,
+            path,
+            body,
+            Some("Bearer test-token"),
+            &mut auth,
+            1_000,
+        )
+    }
+
     fn get_path(addr: SocketAddr, path: &str) -> std::io::Result<(u16, String)> {
+        get_path_auth(addr, path, None)
+    }
+
+    fn get_path_auth(
+        addr: SocketAddr,
+        path: &str,
+        authorization: Option<&str>,
+    ) -> std::io::Result<(u16, String)> {
         let mut stream = TcpStream::connect(addr)?;
         stream.set_read_timeout(Some(Duration::from_secs(5)))?;
         stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+        let auth_line = match authorization {
+            Some(value) => format!("Authorization: {value}\r\n"),
+            None => String::new(),
+        };
         write!(
             stream,
-            "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+            "GET {path} HTTP/1.1\r\nHost: localhost\r\n{auth_line}Connection: close\r\n\r\n"
         )?;
         let mut buf = String::new();
         stream.read_to_string(&mut buf)?;
@@ -517,11 +780,13 @@ mod tests {
     }
 
     fn ephemeral(save: PathBuf) -> Server {
+        let auth = Auth::single(&save, TEST_TOKEN);
         Server::open(ServeOptions {
             bind: parse_bind("127.0.0.1:0").unwrap(),
             save,
         })
         .expect("bind serve")
+        .with_auth(auth)
     }
 
     #[test]
@@ -552,7 +817,7 @@ mod tests {
             .unwrap();
         write!(
             stream,
-            "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            "POST {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {TEST_TOKEN}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         )
         .unwrap();
@@ -580,8 +845,9 @@ mod tests {
         assert!(addr.ip().is_loopback());
         assert_ne!(addr.port(), 8787);
         let thread = std::thread::spawn(move || {
+            let mut server = server;
             let (stream, _) = server.listener.accept().unwrap();
-            serve_one(&server.save, stream).unwrap();
+            serve_one(&server.save, stream, &mut server.auth).unwrap();
             server
         });
         let (status, body) = get_path(addr, "/healthz").unwrap();
@@ -604,8 +870,9 @@ mod tests {
         let server = ephemeral(save.clone());
         let addr = server.local_addr().unwrap();
         let thread = std::thread::spawn(move || {
+            let mut server = server;
             let (stream, _) = server.listener.accept().unwrap();
-            serve_one(&server.save, stream).unwrap();
+            serve_one(&server.save, stream, &mut server.auth).unwrap();
             server
         });
         let (status, body) = post_json(
@@ -699,10 +966,12 @@ mod tests {
         }
     }
 
+    fn schema_doc() -> Value {
+        serde_json::from_str(include_str!("../../../docs/schema/serve-v1.json")).unwrap()
+    }
+
     fn schema_required() -> Vec<String> {
-        let schema: Value =
-            serde_json::from_str(include_str!("../../../docs/schema/serve-v1.json")).unwrap();
-        schema["required"]
+        schema_doc()["required"]
             .as_array()
             .unwrap()
             .iter()
@@ -716,6 +985,26 @@ mod tests {
         }
         assert_eq!(value["schema_version"], crate::cli::SCHEMA_VERSION);
         assert!(value["ok"].is_boolean());
+    }
+
+    #[test]
+    fn serve_schema_lists_auth_error_codes() {
+        let schema = schema_doc();
+        let codes = schema["properties"]["error"]["properties"]["code"]["enum"]
+            .as_array()
+            .expect("error.code enum");
+        for want in [
+            "invalid",
+            "refused",
+            "internal",
+            "unauthorized",
+            "rate_limited",
+        ] {
+            assert!(
+                codes.iter().any(|code| code.as_str() == Some(want)),
+                "missing {want} in {codes:?}"
+            );
+        }
     }
 
     #[test]
@@ -772,7 +1061,7 @@ mod tests {
         let mut last_cli = json!({});
         for ((method, path, body), words) in sequence.iter().zip(cli_words) {
             let raw = serde_json::to_vec(body).unwrap();
-            let (status, http) = handle(&save_http, method, path, &raw);
+            let (status, http) = handle_v1(&save_http, method, path, &raw);
             assert_schema(&http);
             assert!(
                 status == 200 || status == 400 || status == 409,
@@ -842,7 +1131,7 @@ mod tests {
             "mission": "attack",
             "ships": [format!("--save={}", other.display()), "light_fighter:1"]
         });
-        let (status, value) = handle(
+        let (status, value) = handle_v1(
             &save,
             "POST",
             "/v1/fleet/send",
@@ -857,7 +1146,7 @@ mod tests {
             "mission": "attack",
             "ships": ["--balance=/tmp/cheat.toml", "light_fighter:1"]
         });
-        let (status, value) = handle(
+        let (status, value) = handle_v1(
             &save,
             "POST",
             "/v1/fleet/send",
@@ -872,7 +1161,7 @@ mod tests {
     fn v1_fair_play_hides_truth_and_refuses_tick() {
         let save = unique_save();
         seed_save(&save);
-        let (status, state) = handle(&save, "GET", "/v1/state", b"");
+        let (status, state) = handle_v1(&save, "GET", "/v1/state", b"");
         assert_eq!(status, 200);
         assert_schema(&state);
         let mut keys = Vec::new();
@@ -898,10 +1187,175 @@ mod tests {
                 assert_eq!(key, "lands_in_secs", "hidden raid field {key}");
             }
         }
-        let (tick_get, body) = handle(&save, "GET", "/v1/tick", b"");
+        let (tick_get, body) = handle_v1(&save, "GET", "/v1/tick", b"");
         assert_eq!(tick_get, 404, "{body}");
-        let (tick_post, body) = handle(&save, "POST", "/v1/tick", br#"{"advance":"60"}"#);
+        let (tick_post, body) = handle_v1(&save, "POST", "/v1/tick", br#"{"advance":"60"}"#);
         assert_eq!(tick_post, 404, "{body}");
+        let _ = std::fs::remove_file(&save);
+        let _ = std::fs::remove_file(save_lock_path(&save));
+    }
+
+    #[test]
+    fn v1_rejects_unauthenticated_requests() {
+        let save = unique_save();
+        seed_save(&save);
+        let mut auth = Auth::single(&save, TEST_TOKEN);
+        let (status, value) = handle(&save, "GET", "/v1/state", b"", None, &mut auth, 1_000);
+        assert_eq!(status, 401, "{value}");
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["error"]["code"], "unauthorized");
+        assert_schema(&value);
+        let (status, value) = handle(
+            &save,
+            "GET",
+            "/v1/state",
+            b"",
+            Some("Bearer "),
+            &mut auth,
+            1_000,
+        );
+        assert_eq!(status, 401, "{value}");
+        let _ = std::fs::remove_file(&save);
+        let _ = std::fs::remove_file(save_lock_path(&save));
+    }
+
+    #[test]
+    fn v1_accepts_token_for_this_save_and_refuses_another() {
+        let save = unique_save();
+        seed_save(&save);
+        let other = unique_save();
+        seed_save(&other);
+        let mine = format!(
+            "tok-this-save-{}-{}",
+            std::process::id(),
+            UNIQUE.load(Ordering::Relaxed)
+        );
+        let theirs = format!(
+            "tok-other-save-{}-{}",
+            std::process::id(),
+            UNIQUE.load(Ordering::Relaxed)
+        );
+        let tokens = vec![
+            ScopedToken {
+                secret: mine.clone(),
+                save: save.clone(),
+            },
+            ScopedToken {
+                secret: theirs.clone(),
+                save: other.clone(),
+            },
+        ];
+        let mut auth = Auth::with_tokens(tokens, DEFAULT_RATE_LIMIT, DEFAULT_RATE_WINDOW_SECS);
+        let header = format!("Bearer {mine}");
+        let (status, value) = handle(
+            &save,
+            "GET",
+            "/v1/state",
+            b"",
+            Some(&header),
+            &mut auth,
+            1_000,
+        );
+        assert_eq!(status, 200, "{value}");
+        assert_eq!(value["ok"], true);
+        let other_header = format!("Bearer {theirs}");
+        let (status, value) = handle(
+            &save,
+            "GET",
+            "/v1/state",
+            b"",
+            Some(&other_header),
+            &mut auth,
+            1_001,
+        );
+        assert_eq!(status, 401, "{value}");
+        assert_eq!(value["error"]["code"], "unauthorized");
+        let bytes = std::fs::read(&save).unwrap();
+        assert!(
+            !bytes.windows(mine.len()).any(|w| w == mine.as_bytes()),
+            "token must not land in the save"
+        );
+        let _ = std::fs::remove_file(&save);
+        let _ = std::fs::remove_file(&other);
+        let _ = std::fs::remove_file(save_lock_path(&save));
+        let _ = std::fs::remove_file(save_lock_path(&other));
+    }
+
+    #[test]
+    fn v1_rate_limits_per_token_and_action() {
+        let save = unique_save();
+        seed_save(&save);
+        let mut auth = Auth::with_tokens(
+            vec![ScopedToken {
+                secret: "mine".into(),
+                save: save.clone(),
+            }],
+            2,
+            10,
+        );
+        let (a, _) = handle(
+            &save,
+            "GET",
+            "/v1/state",
+            b"",
+            Some("Bearer mine"),
+            &mut auth,
+            1_000,
+        );
+        let (b, _) = handle(
+            &save,
+            "GET",
+            "/v1/state",
+            b"",
+            Some("Bearer mine"),
+            &mut auth,
+            1_001,
+        );
+        let (c, limited) = handle(
+            &save,
+            "GET",
+            "/v1/state",
+            b"",
+            Some("Bearer mine"),
+            &mut auth,
+            1_002,
+        );
+        assert_eq!(a, 200);
+        assert_eq!(b, 200);
+        assert_eq!(c, 429, "{limited}");
+        assert_eq!(limited["error"]["code"], "rate_limited");
+        assert_schema(&limited);
+        let (other_action, value) = handle(
+            &save,
+            "POST",
+            "/v1/build",
+            br#"{"planet":"home","building":"metal_mine"}"#,
+            Some("Bearer mine"),
+            &mut auth,
+            1_002,
+        );
+        assert_eq!(other_action, 200, "{value}");
+        let (after_window, value) = handle(
+            &save,
+            "GET",
+            "/v1/state",
+            b"",
+            Some("Bearer mine"),
+            &mut auth,
+            1_012,
+        );
+        assert_eq!(after_window, 200, "{value}");
+        let _ = std::fs::remove_file(&save);
+        let _ = std::fs::remove_file(save_lock_path(&save));
+    }
+
+    #[test]
+    fn healthz_stays_open_without_a_token() {
+        let save = unique_save();
+        let mut auth = Auth::empty();
+        let (status, value) = handle(&save, "GET", "/healthz", b"", None, &mut auth, 1);
+        assert_eq!(status, 200, "{value}");
+        assert_eq!(value["ok"], true);
         let _ = std::fs::remove_file(&save);
         let _ = std::fs::remove_file(save_lock_path(&save));
     }

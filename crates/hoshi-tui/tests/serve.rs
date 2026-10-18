@@ -11,13 +11,18 @@ fn request(
     method: &str,
     path: &str,
     body: &[u8],
+    authorization: Option<&str>,
 ) -> std::io::Result<(u16, String)> {
     let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    let auth_line = match authorization {
+        Some(value) => format!("Authorization: {value}\r\n"),
+        None => String::new(),
+    };
     write!(
         stream,
-        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "{method} {path} HTTP/1.1\r\nHost: localhost\r\n{auth_line}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     )?;
     stream.write_all(body)?;
@@ -38,8 +43,10 @@ fn request(
 }
 
 fn get_path(addr: SocketAddr, path: &str) -> std::io::Result<(u16, String)> {
-    request(addr, "GET", path, b"")
+    request(addr, "GET", path, b"", None)
 }
+
+const TEST_TOKEN: &str = "bin-test-token";
 
 fn unique_save() -> std::path::PathBuf {
     let nanos = SystemTime::now()
@@ -61,6 +68,7 @@ fn spawn_serve(save: &std::path::Path) -> (std::process::Child, SocketAddr) {
             "--bind",
             "127.0.0.1:0",
         ])
+        .env("HOSHI_SERVE_TOKEN", TEST_TOKEN)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -101,8 +109,14 @@ fn binary_healthz_twice_and_lock_blocks_cli() {
         "{v}"
     );
 
-    let (s1, b1) = get_path(addr, "/v1/state").expect("state 1");
-    let (s2, b2) = get_path(addr, "/v1/state").expect("state 2");
+    let bearer = Some("Bearer bin-test-token");
+    let (denied, denied_body) = request(addr, "GET", "/v1/state", b"", None).expect("unauth");
+    assert_eq!(denied, 401, "{denied_body}");
+    let denied_json: Value = serde_json::from_str(denied_body.trim()).unwrap();
+    assert_eq!(denied_json["error"]["code"], "unauthorized");
+
+    let (s1, b1) = request(addr, "GET", "/v1/state", b"", bearer).expect("state 1");
+    let (s2, b2) = request(addr, "GET", "/v1/state", b"", bearer).expect("state 2");
     assert_eq!(s1, 200, "{b1}");
     assert_eq!(s2, 200, "{b2}");
     let state: Value = serde_json::from_str(b1.trim()).unwrap();
@@ -113,6 +127,7 @@ fn binary_healthz_twice_and_lock_blocks_cli() {
         "POST",
         "/v1/build",
         br#"{"planet":"home","building":"metal_mine"}"#,
+        bearer,
     )
     .expect("build");
     assert_eq!(build_status, 200, "{build_body}");
