@@ -1,4 +1,4 @@
-//! `hoshi serve`: remote view of one local save. No game HTTP yet.
+//! `hoshi serve`: remote view of one local save, including HTTP `/v1` actions.
 
 use hoshi_core::{
     BalanceConfig, Clock, SaveError, SaveLock, SystemClock, lock_save, open_storage,
@@ -13,7 +13,7 @@ use std::time::Duration;
 /// Loopback bind used when config and flags omit one.
 pub const DEFAULT_BIND: &str = "127.0.0.1:8787";
 
-/// Contract versions this process advertises. Game routes arrive in a follow-up.
+/// Contract versions this process advertises.
 pub const CONTRACT_VERSIONS: &[&str] = &["v1"];
 
 #[derive(Debug)]
@@ -63,6 +63,7 @@ pub struct ServeOptions {
 pub struct Server {
     listener: TcpListener,
     _lock: SaveLock,
+    save: PathBuf,
 }
 
 impl Server {
@@ -79,6 +80,7 @@ impl Server {
         Ok(Self {
             listener,
             _lock: lock,
+            save: opts.save,
         })
     }
 
@@ -90,7 +92,7 @@ impl Server {
     pub fn run(self) -> Result<(), ServeError> {
         loop {
             let (stream, _) = self.listener.accept()?;
-            let _ = serve_one(stream);
+            let _ = serve_one(&self.save, stream);
         }
     }
 }
@@ -216,46 +218,217 @@ pub fn parse_serve_args(args: &[String]) -> Result<ServeArgs, ServeError> {
     Ok((bind, save, config_dir))
 }
 
-fn serve_one(mut stream: TcpStream) -> std::io::Result<()> {
+fn error_body(code: &str, message: &str) -> Value {
+    json!({
+        "schema_version": crate::cli::SCHEMA_VERSION,
+        "ok": false,
+        "error": { "code": code, "message": message },
+    })
+}
+
+fn status_phrase(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        400 => "Bad Request",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        409 => "Conflict",
+        500 => "Internal Server Error",
+        _ => "Error",
+    }
+}
+
+fn http_status(exit: i32) -> u16 {
+    match exit {
+        crate::cli::EXIT_OK => 200,
+        crate::cli::EXIT_INVALID => 400,
+        crate::cli::EXIT_REFUSED => 409,
+        _ => 500,
+    }
+}
+
+fn require_str<'a>(body: &'a Value, key: &str) -> Result<&'a str, String> {
+    body.get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("missing {key}"))
+}
+
+/// Map one `/v1` request onto the same CLI words the harness already uses.
+fn v1_parts(method: &str, path: &str, body: &Value) -> Result<Vec<String>, (u16, Value)> {
+    let known = matches!(
+        path,
+        "/v1/state" | "/v1/build" | "/v1/research" | "/v1/cancel" | "/v1/fleet/send"
+    );
+    if path.starts_with("/v1/tick") || path == "/v1/tick" {
+        return Err((404, error_body("invalid", "not found")));
+    }
+    if !known {
+        return Err((404, error_body("invalid", "not found")));
+    }
+    let want_get = path == "/v1/state";
+    if want_get && method != "GET" {
+        return Err((405, error_body("invalid", "method not allowed")));
+    }
+    if !want_get && method != "POST" {
+        return Err((405, error_body("invalid", "method not allowed")));
+    }
+    let parts = match path {
+        "/v1/state" => vec!["state".into()],
+        "/v1/build" => vec![
+            "build".into(),
+            require_str(body, "planet")
+                .map_err(|m| (400, error_body("invalid", &m)))?
+                .into(),
+            require_str(body, "building")
+                .map_err(|m| (400, error_body("invalid", &m)))?
+                .into(),
+        ],
+        "/v1/research" => vec![
+            "research".into(),
+            require_str(body, "tech")
+                .map_err(|m| (400, error_body("invalid", &m)))?
+                .into(),
+        ],
+        "/v1/cancel" => vec![
+            "cancel".into(),
+            require_str(body, "item")
+                .map_err(|m| (400, error_body("invalid", &m)))?
+                .into(),
+        ],
+        "/v1/fleet/send" => {
+            let mut parts = vec![
+                "fleet".into(),
+                "send".into(),
+                require_str(body, "from")
+                    .map_err(|m| (400, error_body("invalid", &m)))?
+                    .into(),
+                require_str(body, "to")
+                    .map_err(|m| (400, error_body("invalid", &m)))?
+                    .into(),
+                require_str(body, "mission")
+                    .map_err(|m| (400, error_body("invalid", &m)))?
+                    .into(),
+            ];
+            let ships = body
+                .get("ships")
+                .and_then(Value::as_array)
+                .ok_or_else(|| (400, error_body("invalid", "missing ships")))?;
+            if ships.is_empty() {
+                return Err((400, error_body("invalid", "missing ships")));
+            }
+            for spec in ships {
+                let spec = spec
+                    .as_str()
+                    .ok_or_else(|| (400, error_body("invalid", "invalid ship spec")))?;
+                parts.push(spec.into());
+            }
+            parts
+        }
+        _ => return Err((404, error_body("invalid", "not found"))),
+    };
+    Ok(parts)
+}
+
+/// Dispatch one HTTP request against the locked save.
+pub fn handle(save: &Path, method: &str, path: &str, body: &[u8]) -> (u16, Value) {
+    let path = path.split('?').next().unwrap_or(path);
+    if path == "/healthz" {
+        if method != "GET" {
+            return (405, error_body("invalid", "method not allowed"));
+        }
+        return (200, healthz_body());
+    }
+    let json_body = if body.is_empty() {
+        json!({})
+    } else {
+        match serde_json::from_slice::<Value>(body) {
+            Ok(value) => value,
+            Err(_) => return (400, error_body("invalid", "invalid json")),
+        }
+    };
+    let parts = match v1_parts(method, path, &json_body) {
+        Ok(parts) => parts,
+        Err(err) => return err,
+    };
+    let words: Vec<&str> = parts.iter().map(String::as_str).collect();
+    let out = crate::cli::run_unlocked(save, &words);
+    let value: Value = serde_json::from_str(&out.json)
+        .unwrap_or_else(|_| error_body("internal", "malformed command result"));
+    (http_status(out.exit), value)
+}
+
+fn header_end(buf: &[u8]) -> Option<(usize, usize)> {
+    buf.windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|i| (i, 4))
+        .or_else(|| buf.windows(2).position(|w| w == b"\n\n").map(|i| (i, 2)))
+}
+
+fn content_length(headers: &str) -> Option<usize> {
+    for line in headers.lines() {
+        let line = line.trim();
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case("content-length") {
+            return value.trim().parse().ok();
+        }
+    }
+    None
+}
+
+fn serve_one(save: &Path, mut stream: TcpStream) -> std::io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     let mut buf = Vec::new();
     let mut tmp = [0u8; 512];
+    let mut header_mark = None;
     loop {
         let n = stream.read(&mut tmp)?;
         if n == 0 {
-            return Ok(());
-        }
-        buf.extend_from_slice(&tmp[..n]);
-        if buf.windows(4).any(|w| w == b"\r\n\r\n") || buf.windows(2).any(|w| w == b"\n\n") {
             break;
         }
-        if buf.len() > 8192 {
+        buf.extend_from_slice(&tmp[..n]);
+        if header_mark.is_none() {
+            if let Some(mark) = header_end(&buf) {
+                header_mark = Some(mark);
+            } else if buf.len() > 8192 {
+                return Ok(());
+            }
+        }
+        if let Some((start, sep)) = header_mark {
+            let header_len = start + sep;
+            let want = content_length(std::str::from_utf8(&buf[..start]).unwrap_or(""))
+                .unwrap_or(0)
+                .min(65_536);
+            if buf.len() >= header_len + want {
+                break;
+            }
+        }
+        if buf.len() > 65_536 + 8192 {
             return Ok(());
         }
     }
-    let req = String::from_utf8_lossy(&buf);
-    let path = req
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .unwrap_or("/");
-    let (status, reason, body) = if path == "/healthz" {
-        (
-            200,
-            "OK",
-            serde_json::to_vec(&healthz_body()).unwrap_or_else(|_| b"{\"ok\":true}".to_vec()),
-        )
-    } else {
-        (
-            404,
-            "Not Found",
-            serde_json::to_vec(&json!({"ok": false, "error": "not found"}))
-                .unwrap_or_else(|_| b"{\"ok\":false}".to_vec()),
-        )
+    let Some((start, sep)) = header_mark.or_else(|| header_end(&buf)) else {
+        return Ok(());
     };
+    let header_len = start + sep;
+    let headers = String::from_utf8_lossy(&buf[..start]);
+    let request_line = headers.lines().next().unwrap_or("");
+    let mut words = request_line.split_whitespace();
+    let method = words.next().unwrap_or("GET");
+    let path = words.next().unwrap_or("/");
+    let want = content_length(&headers).unwrap_or(0).min(65_536);
+    let body = if header_len + want <= buf.len() {
+        buf[header_len..header_len + want].to_vec()
+    } else {
+        buf[header_len.min(buf.len())..].to_vec()
+    };
+    let (status, value) = handle(save, method, path, &body);
+    let body = serde_json::to_vec(&value).unwrap_or_else(|_| b"{\"ok\":false}".to_vec());
     let header = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        status_phrase(status),
         body.len()
     );
     stream.write_all(header.as_bytes())?;
@@ -369,6 +542,36 @@ mod tests {
         assert_eq!(from_default.port(), 8787);
     }
 
+    fn post_json(addr: SocketAddr, path: &str, body: &str) -> (u16, String) {
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        write!(
+            stream,
+            "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        let mut buf = String::new();
+        stream.read_to_string(&mut buf).unwrap();
+        let status = buf
+            .split_whitespace()
+            .nth(1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let text = buf
+            .split("\r\n\r\n")
+            .nth(1)
+            .or_else(|| buf.split("\n\n").nth(1))
+            .unwrap_or("")
+            .to_string();
+        (status, text)
+    }
+
     #[test]
     fn healthz_lists_contract_versions() {
         let save = unique_save();
@@ -378,7 +581,7 @@ mod tests {
         assert_ne!(addr.port(), 8787);
         let thread = std::thread::spawn(move || {
             let (stream, _) = server.listener.accept().unwrap();
-            serve_one(stream).unwrap();
+            serve_one(&server.save, stream).unwrap();
             server
         });
         let (status, body) = get_path(addr, "/healthz").unwrap();
@@ -389,6 +592,31 @@ mod tests {
             value["contract_versions"],
             json!(CONTRACT_VERSIONS.to_vec())
         );
+        drop(thread.join().unwrap());
+        let _ = std::fs::remove_file(&save);
+        let _ = std::fs::remove_file(save_lock_path(&save));
+    }
+
+    #[test]
+    fn tcp_post_build_reads_json_body() {
+        let save = unique_save();
+        seed_save(&save);
+        let server = ephemeral(save.clone());
+        let addr = server.local_addr().unwrap();
+        let thread = std::thread::spawn(move || {
+            let (stream, _) = server.listener.accept().unwrap();
+            serve_one(&server.save, stream).unwrap();
+            server
+        });
+        let (status, body) = post_json(
+            addr,
+            "/v1/build",
+            r#"{"planet":"home","building":"metal_mine"}"#,
+        );
+        assert_eq!(status, 200, "{body}");
+        let value: Value = serde_json::from_str(body.trim()).unwrap();
+        assert_eq!(value["ok"], true, "{value}");
+        assert_eq!(value["message"], "queued build");
         drop(thread.join().unwrap());
         let _ = std::fs::remove_file(&save);
         let _ = std::fs::remove_file(save_lock_path(&save));
@@ -433,5 +661,248 @@ mod tests {
             "127.0.0.1:0".into(),
         ];
         assert_eq!(first_positional(&args), Some("serve"));
+    }
+
+    fn seed_save(path: &Path) -> Value {
+        let argv = vec![
+            "hoshi".into(),
+            format!("--save={}", path.display()),
+            "--seed=1".into(),
+            "state".into(),
+        ];
+        let out = crate::cli::run_cli(&argv);
+        assert_eq!(out.exit, 0, "{}", out.json);
+        serde_json::from_str(&out.json).unwrap()
+    }
+
+    fn cli_on(path: &Path, parts: &[&str]) -> (Value, i32) {
+        let mut argv = vec!["hoshi".into(), format!("--save={}", path.display())];
+        argv.extend(parts.iter().map(|s| (*s).to_string()));
+        let out = crate::cli::run_cli(&argv);
+        (serde_json::from_str(&out.json).unwrap(), out.exit)
+    }
+
+    fn collect_keys(value: &Value, out: &mut Vec<String>) {
+        match value {
+            Value::Object(map) => {
+                for (key, child) in map {
+                    out.push(key.clone());
+                    collect_keys(child, out);
+                }
+            }
+            Value::Array(items) => {
+                for child in items {
+                    collect_keys(child, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn schema_required() -> Vec<String> {
+        let schema: Value =
+            serde_json::from_str(include_str!("../../../docs/schema/serve-v1.json")).unwrap();
+        schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect()
+    }
+
+    fn assert_schema(value: &Value) {
+        for key in schema_required() {
+            assert!(value.get(&key).is_some(), "missing {key} in {value}");
+        }
+        assert_eq!(value["schema_version"], crate::cli::SCHEMA_VERSION);
+        assert!(value["ok"].is_boolean());
+    }
+
+    #[test]
+    fn v1_state_build_research_cancel_fleet_match_cli_and_core() {
+        let save_cli = unique_save();
+        let save_http = unique_save();
+        seed_save(&save_cli);
+        seed_save(&save_http);
+
+        let sequence = [
+            ("GET", "/v1/state", json!({})),
+            (
+                "POST",
+                "/v1/build",
+                json!({"planet": "home", "building": "metal_mine"}),
+            ),
+            ("POST", "/v1/cancel", json!({"item": "0"})),
+            (
+                "POST",
+                "/v1/build",
+                json!({"planet": "home", "building": "metal_mine"}),
+            ),
+            ("POST", "/v1/research", json!({"tech": "energy"})),
+            (
+                "POST",
+                "/v1/fleet/send",
+                json!({
+                    "from": "home",
+                    "to": "1:1:8",
+                    "mission": "attack",
+                    "ships": ["light_fighter:1"]
+                }),
+            ),
+            ("GET", "/v1/state", json!({})),
+        ];
+        let cli_words = [
+            &["state"][..],
+            &["build", "home", "metal_mine"][..],
+            &["cancel", "0"][..],
+            &["build", "home", "metal_mine"][..],
+            &["research", "energy"][..],
+            &[
+                "fleet",
+                "send",
+                "home",
+                "1:1:8",
+                "attack",
+                "light_fighter:1",
+            ][..],
+            &["state"][..],
+        ];
+
+        let mut last_http = json!({});
+        let mut last_cli = json!({});
+        for ((method, path, body), words) in sequence.iter().zip(cli_words) {
+            let raw = serde_json::to_vec(body).unwrap();
+            let (status, http) = handle(&save_http, method, path, &raw);
+            assert_schema(&http);
+            assert!(
+                status == 200 || status == 400 || status == 409,
+                "{method} {path} {status} {http}"
+            );
+            let (cli, exit) = cli_on(&save_cli, words);
+            assert_schema(&cli);
+            assert_eq!(http, cli, "{method} {path}");
+            assert_eq!(
+                http_status(exit),
+                status,
+                "{method} {path} exit {exit} status {status}"
+            );
+            last_http = http;
+            last_cli = cli;
+        }
+
+        let mut core = hoshi_core::GameState::with_seed(0, BalanceConfig::default(), 1);
+        core.enqueue_build(hoshi_core::BuildingKind::MetalMine, 0)
+            .unwrap();
+        core.cancel_build(0, 0).unwrap();
+        core.enqueue_build(hoshi_core::BuildingKind::MetalMine, 0)
+            .unwrap();
+        let _ = hoshi_core::propose(
+            &core,
+            &hoshi_core::Intent::Research {
+                tech: "energy".into(),
+            },
+            0,
+        )
+        .and_then(|p| hoshi_core::apply(&mut core, &p, 0));
+        let ships = {
+            let mut fleet = hoshi_core::Fleet::default();
+            fleet.add(hoshi_core::ShipKind::LightFighter, 1);
+            fleet
+        };
+        let dest = hoshi_core::Coord::from_key("1:1:8").unwrap();
+        let _ = core.launch_attack(ships, dest, 100, 0);
+
+        assert_eq!(last_http, last_cli);
+        assert_eq!(
+            last_http["buildings"]["metal_mine"],
+            json!(core.buildings.metal_mine)
+        );
+        assert!(
+            (last_http["resources"]["iron"].as_f64().unwrap() - core.resources.iron).abs() < 1e-6
+        );
+        assert_eq!(
+            last_http["research"]["levels"]["energy"],
+            json!(core.tech_level("energy"))
+        );
+
+        let _ = std::fs::remove_file(&save_cli);
+        let _ = std::fs::remove_file(&save_http);
+        let _ = std::fs::remove_file(save_lock_path(&save_cli));
+        let _ = std::fs::remove_file(save_lock_path(&save_http));
+    }
+
+    #[test]
+    fn v1_fleet_ships_cannot_retarget_save_or_balance() {
+        let save = unique_save();
+        seed_save(&save);
+        let other = unique_save();
+        let body = json!({
+            "from": "home",
+            "to": "1:1:8",
+            "mission": "attack",
+            "ships": [format!("--save={}", other.display()), "light_fighter:1"]
+        });
+        let (status, value) = handle(
+            &save,
+            "POST",
+            "/v1/fleet/send",
+            &serde_json::to_vec(&body).unwrap(),
+        );
+        assert_eq!(status, 400, "{value}");
+        assert_eq!(value["ok"], false);
+        assert!(!other.exists(), "injected --save must not create a file");
+        let body = json!({
+            "from": "home",
+            "to": "1:1:8",
+            "mission": "attack",
+            "ships": ["--balance=/tmp/cheat.toml", "light_fighter:1"]
+        });
+        let (status, value) = handle(
+            &save,
+            "POST",
+            "/v1/fleet/send",
+            &serde_json::to_vec(&body).unwrap(),
+        );
+        assert_eq!(status, 400, "{value}");
+        let _ = std::fs::remove_file(&save);
+        let _ = std::fs::remove_file(save_lock_path(&save));
+    }
+
+    #[test]
+    fn v1_fair_play_hides_truth_and_refuses_tick() {
+        let save = unique_save();
+        seed_save(&save);
+        let (status, state) = handle(&save, "GET", "/v1/state", b"");
+        assert_eq!(status, 200);
+        assert_schema(&state);
+        let mut keys = Vec::new();
+        collect_keys(&state, &mut keys);
+        for banned in [
+            "rng",
+            "rng_state",
+            "deceived",
+            "unrevealed",
+            "pending_reports",
+            "pirate_timer",
+            "next_raid_at",
+        ] {
+            assert!(
+                !keys.iter().any(|k| k == banned),
+                "leaked {banned} in {keys:?}"
+            );
+        }
+        if let Some(raid) = state.get("raid")
+            && raid.is_object()
+        {
+            for key in raid.as_object().unwrap().keys() {
+                assert_eq!(key, "lands_in_secs", "hidden raid field {key}");
+            }
+        }
+        let (tick_get, body) = handle(&save, "GET", "/v1/tick", b"");
+        assert_eq!(tick_get, 404, "{body}");
+        let (tick_post, body) = handle(&save, "POST", "/v1/tick", br#"{"advance":"60"}"#);
+        assert_eq!(tick_post, 404, "{body}");
+        let _ = std::fs::remove_file(&save);
+        let _ = std::fs::remove_file(save_lock_path(&save));
     }
 }
