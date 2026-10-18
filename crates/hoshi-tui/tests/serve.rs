@@ -46,6 +46,40 @@ fn get_path(addr: SocketAddr, path: &str) -> std::io::Result<(u16, String)> {
     request(addr, "GET", path, b"", None)
 }
 
+fn ws_upgrade(
+    addr: SocketAddr,
+    path: &str,
+    authorization: Option<&str>,
+) -> std::io::Result<(u16, String)> {
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))?;
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    let auth_line = match authorization {
+        Some(value) => format!("Authorization: {value}\r\n"),
+        None => String::new(),
+    };
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n{auth_line}\r\n"
+    )?;
+    let mut buf = Vec::new();
+    let mut tmp = [0u8; 1];
+    loop {
+        stream.read_exact(&mut tmp)?;
+        buf.push(tmp[0]);
+        if buf.windows(4).any(|w| w == b"\r\n\r\n") || buf.len() > 8192 {
+            break;
+        }
+    }
+    let text = String::from_utf8_lossy(&buf).into_owned();
+    let status = text
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    Ok((status, text))
+}
+
 const TEST_TOKEN: &str = "bin-test-token";
 
 fn unique_save() -> std::path::PathBuf {
@@ -114,6 +148,16 @@ fn binary_healthz_twice_and_lock_blocks_cli() {
     assert_eq!(denied, 401, "{denied_body}");
     let denied_json: Value = serde_json::from_str(denied_body.trim()).unwrap();
     assert_eq!(denied_json["error"]["code"], "unauthorized");
+
+    let unauth_ws = ws_upgrade(addr, "/v1/events", None).expect("unauth ws");
+    assert_eq!(unauth_ws.0, 401, "{}", unauth_ws.1);
+    assert!(
+        !unauth_ws.1.contains("Switching Protocols"),
+        "{}",
+        unauth_ws.1
+    );
+    let auth_ws = ws_upgrade(addr, "/v1/events", Some("Bearer bin-test-token")).expect("auth ws");
+    assert_eq!(auth_ws.0, 101, "{}", auth_ws.1);
 
     let (s1, b1) = request(addr, "GET", "/v1/state", b"", bearer).expect("state 1");
     let (s2, b2) = request(addr, "GET", "/v1/state", b"", bearer).expect("state 2");

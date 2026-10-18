@@ -15,6 +15,7 @@ mod portraits;
 mod serve;
 mod title;
 mod ui;
+mod ws;
 
 use app::{Action, App};
 use hoshi_core::{

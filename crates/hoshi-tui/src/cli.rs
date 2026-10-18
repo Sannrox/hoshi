@@ -437,12 +437,19 @@ pub fn run_cli(args: &[String]) -> CliOutcome {
 /// `hoshi serve` already holds the exclusive lock for the process lifetime.
 /// Command words are parsed as a CLI command only: they cannot retarget
 /// `--save`, `--balance`, or `--seed`.
+#[cfg(test)]
 pub(crate) fn run_unlocked(save: &Path, parts: &[&str]) -> CliOutcome {
     let rest: Vec<String> = parts.iter().map(|part| (*part).to_string()).collect();
     outcome(run_unlocked_inner(save, &rest))
 }
 
-fn run_unlocked_inner(save: &Path, rest: &[String]) -> Result<Value, CliError> {
+/// Apply command words to an already-loaded save. Used by `hoshi serve`.
+pub(crate) fn apply_unlocked(state: &mut GameState, save: &Path, parts: &[&str]) -> CliOutcome {
+    let rest: Vec<String> = parts.iter().map(|part| (*part).to_string()).collect();
+    outcome(apply_unlocked_inner(state, save, &rest))
+}
+
+fn serve_command(rest: &[String]) -> Result<Command, CliError> {
     let command = parse_command(rest)?;
     if matches!(
         command,
@@ -455,6 +462,22 @@ fn run_unlocked_inner(save: &Path, rest: &[String]) -> Result<Value, CliError> {
     ) {
         return Err(CliError::Invalid("not found".into()));
     }
+    Ok(command)
+}
+
+fn apply_unlocked_inner(
+    state: &mut GameState,
+    save: &Path,
+    rest: &[String],
+) -> Result<Value, CliError> {
+    let command = serve_command(rest)?;
+    let now = now_for(state);
+    apply(state, now, &command, save)
+}
+
+#[cfg(test)]
+fn run_unlocked_inner(save: &Path, rest: &[String]) -> Result<Value, CliError> {
+    let command = serve_command(rest)?;
     let config = match std::env::var_os("HOSHI_BALANCE") {
         Some(path) => BalanceConfig::load_file(Path::new(&path))
             .map_err(|e| CliError::Invalid(e.to_string()))?,

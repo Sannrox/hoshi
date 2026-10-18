@@ -92,6 +92,33 @@ POST bodies are JSON:
 There is no `tick --advance` route. Clients see only what a player sees
 through the CLI.
 
+## Events
+
+`GET /v1/events` is a WebSocket (RFC 6455) on the same bind. It uses the same
+bearer token as `/v1`. Unauthenticated sockets receive `401` and are not
+upgraded. `/healthz` stays open while a socket is held.
+
+Reconnect with `?cursor=<id>`, where `<id>` is the last event `id` the client
+stored. The server replays every retained public event with `id` greater than
+that cursor, then sends new ones as they land. The log keeps the last 256
+events; a cursor older than that window has already dropped.
+
+Each text frame is JSON (`schema_version` 2):
+
+```json
+{"schema_version":2,"ok":true,"id":12,"cursor":12,"at":1710000000,"type":"build","action":"complete","objects":["home","metal_mine"],"outcome":"lv 1"}
+```
+
+| `type` | History kind | When it fires |
+| --- | --- | --- |
+| `build` | build | queued or finished construction |
+| `research` | research | started or finished research |
+| `fleet` | fleet | launch, arrival, or other fleet motion |
+| `raid` | combat | pirate raid and other fight results |
+
+Frames omit hidden simulation fields (RNG, unrevealed map, pending intel,
+`next_raid_at`). A breaking event shape bumps `schema_version`.
+
 ### Errors
 
 Every error is JSON with HTTP status:
