@@ -28,6 +28,8 @@
 
 - `hoshi serve` `/v1` requires a bearer token scoped to that save (`HOSHI_SERVE_TOKEN` / `serve_token`, optional token file). Unauthenticated calls and tokens for another save return `unauthorized` (401). Per-token, per-action rate limits return `rate_limited` (429). `/healthz` stays open. Secrets stay out of the save. See `docs/server.md`.
 
+- `hoshi serve` `GET /v1/events` is a WebSocket of build, research, fleet, and raid events. Reconnect with `?cursor=<id>` to replay missed rows. Unauthenticated sockets are refused. Same bearer as `/v1`. See `docs/server.md`.
+
 - Shard player raids: a Chisei-hosted shard catches up both empires, then resolves against that snapshot with the same fleet combat as local play. Newbie protection and per-identity attack caps are enforced; plunder uses the defender share then cap. Local play is unchanged.
 
 - Shard anti-cheat gate: a Chisei-hosted shard applies commands on its own clock (client timestamps ignored), rejects unsigned or altered bridge pulses, and rate-limits commands per identity. Local play is unchanged.

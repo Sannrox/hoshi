@@ -1,15 +1,19 @@
 //! `hoshi serve`: remote view of one local save, including HTTP `/v1` actions.
 
 use hoshi_core::{
-    BalanceConfig, Clock, SaveError, SaveLock, SystemClock, lock_save, open_storage,
-    resolve_save_path,
+    BalanceConfig, Clock, GameState, HistoryEvent, HistoryKind, SaveError, SaveLock, SystemClock,
+    lock_save, open_storage, resolve_save_path,
 };
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use crate::ws;
 
 /// Default allowed `/v1` calls per token and action inside [`DEFAULT_RATE_WINDOW_SECS`].
 pub const DEFAULT_RATE_LIMIT: u32 = 60;
@@ -237,30 +241,57 @@ fn same_save(left: &Path, right: &Path) -> bool {
     }
 }
 
+/// Decrements the accept-loop inflight count when a worker (or a failed spawn) drops.
+struct Inflight(Arc<AtomicUsize>);
+
+impl Drop for Inflight {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// In-memory save for the process. Catch-up stays here; disk writes are throttled.
+#[derive(Clone)]
+struct Live {
+    state: GameState,
+    last_save_tick: u64,
+    saved_next_id: u64,
+}
+
+/// Match the TUI idle save cadence so an open socket does not rewrite every second.
+const SAVE_IDLE_SECS: u64 = 5;
+
 /// Listener plus the exclusive save lock.
 pub struct Server {
     listener: TcpListener,
     _lock: SaveLock,
     save: PathBuf,
     auth: Auth,
+    live: Arc<Mutex<Live>>,
 }
 
 impl Server {
     pub fn open(opts: ServeOptions) -> Result<Self, ServeError> {
         let lock = lock_save(&opts.save)?;
         let mut store = open_storage(&opts.save)?;
-        store
-            .load_or_new(SystemClock.now_unix(), BalanceConfig::default())
+        let state = store
+            .load_or_new(SystemClock.now_unix(), serve_balance()?)
             .map_err(|e| ServeError {
                 message: e.to_string(),
                 exit: crate::cli::EXIT_INTERNAL,
             })?;
+        let live = Live {
+            last_save_tick: state.last_tick_unix,
+            saved_next_id: state.history.next_id,
+            state,
+        };
         let listener = TcpListener::bind(opts.bind)?;
         Ok(Self {
             listener,
             _lock: lock,
             save: opts.save,
             auth: Auth::empty(),
+            live: Arc::new(Mutex::new(live)),
         })
     }
 
@@ -274,11 +305,42 @@ impl Server {
     }
 
     /// Serve until the listener fails. Tests call [`serve_one`] instead.
-    pub fn run(mut self) -> Result<(), ServeError> {
-        loop {
-            let (stream, _) = self.listener.accept()?;
-            let _ = serve_one(&self.save, stream, &mut self.auth);
+    pub fn run(self) -> Result<(), ServeError> {
+        let save = Arc::new(self.save);
+        let auth = Arc::new(Mutex::new(self.auth));
+        let live = self.live;
+        let inflight = Arc::new(AtomicUsize::new(0));
+        let accept_err = loop {
+            let (stream, _) = match self.listener.accept() {
+                Ok(pair) => pair,
+                Err(err) => break err,
+            };
+            inflight.fetch_add(1, Ordering::SeqCst);
+            let save = Arc::clone(&save);
+            let auth = Arc::clone(&auth);
+            let live = Arc::clone(&live);
+            let worker = Inflight(Arc::clone(&inflight));
+            let _ = std::thread::Builder::new()
+                .name("hoshi-serve".into())
+                .spawn(move || {
+                    let _worker = worker;
+                    let _ = serve_one(save.as_path(), stream, &auth, live.as_ref());
+                });
+        };
+        while inflight.load(Ordering::SeqCst) > 0 {
+            std::thread::sleep(Duration::from_millis(10));
         }
+        Err(accept_err.into())
+    }
+}
+
+fn serve_balance() -> Result<BalanceConfig, ServeError> {
+    match std::env::var_os("HOSHI_BALANCE") {
+        Some(path) => BalanceConfig::load_file(Path::new(&path)).map_err(|err| ServeError {
+            message: err.to_string(),
+            exit: crate::cli::EXIT_INVALID,
+        }),
+        None => Ok(BalanceConfig::default()),
     }
 }
 
@@ -411,6 +473,80 @@ fn error_body(code: &str, message: &str) -> Value {
     })
 }
 
+/// Public stream type for a history kind. Hidden kinds stay off the wire.
+fn stream_type(kind: HistoryKind) -> Option<&'static str> {
+    match kind {
+        HistoryKind::Build => Some("build"),
+        HistoryKind::Research => Some("research"),
+        HistoryKind::Fleet => Some("fleet"),
+        HistoryKind::Combat => Some("raid"),
+        _ => None,
+    }
+}
+
+fn event_frame(event: &HistoryEvent) -> Option<Value> {
+    let kind = stream_type(event.kind)?;
+    Some(json!({
+        "schema_version": crate::cli::SCHEMA_VERSION,
+        "ok": true,
+        "id": event.id,
+        "cursor": event.id,
+        "at": event.at,
+        "type": kind,
+        "action": event.action,
+        "objects": event.objects,
+        "outcome": event.outcome,
+    }))
+}
+
+/// History rows with `id > cursor` that the stream is allowed to send.
+fn events_after(events: &[HistoryEvent], cursor: u64) -> Vec<Value> {
+    events
+        .iter()
+        .filter(|event| event.id > cursor)
+        .filter_map(event_frame)
+        .collect()
+}
+
+fn parse_cursor(path: &str) -> Result<u64, (u16, Value)> {
+    let Some((_, query)) = path.split_once('?') else {
+        return Ok(0);
+    };
+    for pair in query.split('&') {
+        let Some((name, value)) = pair.split_once('=') else {
+            continue;
+        };
+        if name == "cursor" {
+            return value
+                .parse()
+                .map_err(|_| (400, error_body("invalid", "invalid cursor")));
+        }
+    }
+    Ok(0)
+}
+
+fn lock_poison<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|err| err.into_inner())
+}
+
+fn persist(save: &Path, live: &mut Live, force: bool) -> Result<(), ServeError> {
+    let due = force
+        || live.state.history.next_id != live.saved_next_id
+        || live
+            .state
+            .last_tick_unix
+            .saturating_sub(live.last_save_tick)
+            >= SAVE_IDLE_SECS;
+    if !due {
+        return Ok(());
+    }
+    let mut store = open_storage(save)?;
+    store.save(&live.state)?;
+    live.last_save_tick = live.state.last_tick_unix;
+    live.saved_next_id = live.state.history.next_id;
+    Ok(())
+}
+
 fn status_phrase(status: u16) -> &'static str {
     match status {
         200 => "OK",
@@ -517,6 +653,7 @@ fn v1_parts(method: &str, path: &str, body: &Value) -> Result<Vec<String>, (u16,
 }
 
 /// Dispatch one HTTP request against the locked save.
+#[cfg(test)]
 pub fn handle(
     save: &Path,
     method: &str,
@@ -538,6 +675,9 @@ pub fn handle(
     {
         return err;
     }
+    if path == "/v1/events" {
+        return (400, error_body("invalid", "websocket upgrade required"));
+    }
     let json_body = if body.is_empty() {
         json!({})
     } else {
@@ -552,9 +692,42 @@ pub fn handle(
     };
     let words: Vec<&str> = parts.iter().map(String::as_str).collect();
     let out = crate::cli::run_unlocked(save, &words);
+    command_result(out)
+}
+
+/// Parse JSON and map the route before touching Live. Invalid calls must not catch up.
+fn parse_v1(method: &str, path: &str, body: &[u8]) -> Result<Vec<String>, (u16, Value)> {
+    let path = path.split('?').next().unwrap_or(path);
+    let json_body = if body.is_empty() {
+        json!({})
+    } else {
+        match serde_json::from_slice::<Value>(body) {
+            Ok(value) => value,
+            Err(_) => return Err((400, error_body("invalid", "invalid json"))),
+        }
+    };
+    v1_parts(method, path, &json_body)
+}
+
+fn command_result(out: crate::cli::CliOutcome) -> (u16, Value) {
     let value: Value = serde_json::from_str(&out.json)
         .unwrap_or_else(|_| error_body("internal", "malformed command result"));
     (http_status(out.exit), value)
+}
+
+/// Catch up, apply, and persist. A save error restores Live so a retry cannot double-apply.
+fn mutate_live(save: &Path, live: &mut Live, parts: &[String], now: u64) -> (u16, Value) {
+    let snapshot = live.clone();
+    if !live.state.deterministic {
+        live.state.catch_up(now);
+    }
+    let words: Vec<&str> = parts.iter().map(String::as_str).collect();
+    let (status, value) = command_result(crate::cli::apply_unlocked(&mut live.state, save, &words));
+    if persist(save, live, true).is_err() {
+        *live = snapshot;
+        return (500, error_body("internal", "save failed"));
+    }
+    (status, value)
 }
 
 fn header_end(buf: &[u8]) -> Option<(usize, usize)> {
@@ -581,7 +754,28 @@ fn header_value(headers: &str, want: &str) -> Option<String> {
     None
 }
 
-fn serve_one(save: &Path, mut stream: TcpStream, auth: &mut Auth) -> std::io::Result<()> {
+fn write_http(
+    stream: &mut TcpStream,
+    status: u16,
+    value: &Value,
+    extra: &str,
+) -> std::io::Result<()> {
+    let body = serde_json::to_vec(value).unwrap_or_else(|_| b"{\"ok\":false}".to_vec());
+    let header = format!(
+        "HTTP/1.1 {status} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{extra}Connection: close\r\n\r\n",
+        status_phrase(status),
+        body.len()
+    );
+    stream.write_all(header.as_bytes())?;
+    stream.write_all(&body)
+}
+
+fn serve_one(
+    save: &Path,
+    mut stream: TcpStream,
+    auth: &Mutex<Auth>,
+    live: &Mutex<Live>,
+) -> std::io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     let mut buf = Vec::new();
@@ -630,28 +824,161 @@ fn serve_one(save: &Path, mut stream: TcpStream, auth: &mut Auth) -> std::io::Re
     };
     let authorization = header_value(&headers, "authorization");
     let now = SystemClock.now_unix();
-    let (status, value) = handle(
-        save,
-        method,
-        path,
-        &body,
-        authorization.as_deref(),
-        auth,
-        now,
-    );
-    let body = serde_json::to_vec(&value).unwrap_or_else(|_| b"{\"ok\":false}".to_vec());
-    let extra = match status {
-        401 => "WWW-Authenticate: Bearer\r\n".to_string(),
-        429 => format!("Retry-After: {}\r\n", auth.window_secs),
-        _ => String::new(),
+    let route = path.split('?').next().unwrap_or(path);
+    if route == "/healthz" {
+        if method != "GET" {
+            return write_http(
+                &mut stream,
+                405,
+                &error_body("invalid", "method not allowed"),
+                "",
+            );
+        }
+        return write_http(&mut stream, 200, &healthz_body(), "");
+    }
+    if route == "/v1/events" {
+        if method != "GET" {
+            return write_http(
+                &mut stream,
+                405,
+                &error_body("invalid", "method not allowed"),
+                "",
+            );
+        }
+        return serve_events(
+            save,
+            &mut stream,
+            path,
+            &headers,
+            authorization.as_deref(),
+            auth,
+            live,
+        );
+    }
+    if !route.starts_with("/v1") {
+        return write_http(&mut stream, 404, &error_body("invalid", "not found"), "");
+    }
+    let gate = {
+        let mut auth = lock_poison(auth);
+        match auth.allow(save, route, authorization.as_deref(), now) {
+            Ok(()) => Ok(auth.window_secs),
+            Err((status, value)) => Err((status, value, auth.window_secs)),
+        }
     };
-    let header = format!(
-        "HTTP/1.1 {status} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{extra}Connection: close\r\n\r\n",
-        status_phrase(status),
-        body.len()
-    );
-    stream.write_all(header.as_bytes())?;
-    stream.write_all(&body)?;
+    if let Err((status, value, retry_after)) = gate {
+        let extra = match status {
+            401 => "WWW-Authenticate: Bearer\r\n".to_string(),
+            429 => format!("Retry-After: {retry_after}\r\n"),
+            _ => String::new(),
+        };
+        return write_http(&mut stream, status, &value, &extra);
+    }
+    let parts = match parse_v1(method, path, &body) {
+        Ok(parts) => parts,
+        Err((status, value)) => return write_http(&mut stream, status, &value, ""),
+    };
+    let (status, value) = {
+        let mut live = lock_poison(live);
+        mutate_live(save, &mut live, &parts, now)
+    };
+    write_http(&mut stream, status, &value, "")
+}
+
+fn serve_events(
+    save: &Path,
+    stream: &mut TcpStream,
+    path: &str,
+    headers: &str,
+    authorization: Option<&str>,
+    auth: &Mutex<Auth>,
+    live: &Mutex<Live>,
+) -> std::io::Result<()> {
+    let now = SystemClock.now_unix();
+    let gate = {
+        let mut auth = lock_poison(auth);
+        auth.allow(save, "/v1/events", authorization, now)
+    };
+    if let Err((status, value)) = gate {
+        let extra = match status {
+            401 => "WWW-Authenticate: Bearer\r\n",
+            _ => "",
+        };
+        return write_http(stream, status, &value, extra);
+    }
+    let cursor = match parse_cursor(path) {
+        Ok(cursor) => cursor,
+        Err((status, value)) => return write_http(stream, status, &value, ""),
+    };
+    if !ws::is_upgrade(headers) || !ws::websocket_version_ok(headers) {
+        return write_http(
+            stream,
+            400,
+            &error_body("invalid", "websocket upgrade required"),
+            "",
+        );
+    }
+    let Some(key) = ws::websocket_key(headers) else {
+        return write_http(
+            stream,
+            400,
+            &error_body("invalid", "websocket upgrade required"),
+            "",
+        );
+    };
+    ws::write_opening(stream, &key)?;
+    let mut cursor = cursor;
+    if pump_events(save, stream, live, &mut cursor, now).is_err() {
+        return Ok(());
+    }
+    let mut incoming = ws::Reader::new();
+    loop {
+        stream.set_read_timeout(Some(Duration::from_millis(200)))?;
+        match incoming.poll(stream) {
+            Ok(Some(ws::Frame::Close)) => {
+                let _ = ws::write_close(stream);
+                return Ok(());
+            }
+            Ok(Some(ws::Frame::Ping(payload))) => {
+                let _ = ws::write_pong(stream, &payload);
+            }
+            Ok(Some(ws::Frame::Text(payload))) => {
+                if payload.len() > 65_536 {
+                    return Ok(());
+                }
+            }
+            Ok(Some(ws::Frame::Pong | ws::Frame::Other) | None) => {}
+            Err(_) => return Ok(()),
+        }
+        let now = SystemClock.now_unix();
+        if pump_events(save, stream, live, &mut cursor, now).is_err() {
+            return Ok(());
+        }
+    }
+}
+
+fn pump_events(
+    save: &Path,
+    stream: &mut TcpStream,
+    live: &Mutex<Live>,
+    cursor: &mut u64,
+    now: u64,
+) -> std::io::Result<()> {
+    let events = {
+        let mut live = lock_poison(live);
+        if !live.state.deterministic {
+            live.state.catch_up(now);
+        }
+        let events = events_after(&live.state.history.events, *cursor);
+        persist(save, &mut live, false).map_err(std::io::Error::other)?;
+        events
+    };
+    for event in events {
+        let payload = serde_json::to_vec(&event).map_err(std::io::Error::other)?;
+        ws::write_text(stream, &payload)?;
+        if let Some(id) = event.get("id").and_then(Value::as_u64) {
+            *cursor = (*cursor).max(id);
+        }
+    }
     Ok(())
 }
 
@@ -711,6 +1038,7 @@ pub fn config_dir_for_save(path: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use hoshi_core::{lock_save, save_lock_path};
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -845,10 +1173,9 @@ mod tests {
         assert!(addr.ip().is_loopback());
         assert_ne!(addr.port(), 8787);
         let thread = std::thread::spawn(move || {
-            let mut server = server;
+            let auth = Mutex::new(server.auth);
             let (stream, _) = server.listener.accept().unwrap();
-            serve_one(&server.save, stream, &mut server.auth).unwrap();
-            server
+            serve_one(&server.save, stream, &auth, server.live.as_ref()).unwrap();
         });
         let (status, body) = get_path(addr, "/healthz").unwrap();
         assert_eq!(status, 200, "{body}");
@@ -858,7 +1185,7 @@ mod tests {
             value["contract_versions"],
             json!(CONTRACT_VERSIONS.to_vec())
         );
-        drop(thread.join().unwrap());
+        thread.join().unwrap();
         let _ = std::fs::remove_file(&save);
         let _ = std::fs::remove_file(save_lock_path(&save));
     }
@@ -870,10 +1197,9 @@ mod tests {
         let server = ephemeral(save.clone());
         let addr = server.local_addr().unwrap();
         let thread = std::thread::spawn(move || {
-            let mut server = server;
+            let auth = Mutex::new(server.auth);
             let (stream, _) = server.listener.accept().unwrap();
-            serve_one(&server.save, stream, &mut server.auth).unwrap();
-            server
+            serve_one(&server.save, stream, &auth, server.live.as_ref()).unwrap();
         });
         let (status, body) = post_json(
             addr,
@@ -884,7 +1210,7 @@ mod tests {
         let value: Value = serde_json::from_str(body.trim()).unwrap();
         assert_eq!(value["ok"], true, "{value}");
         assert_eq!(value["message"], "queued build");
-        drop(thread.join().unwrap());
+        thread.join().unwrap();
         let _ = std::fs::remove_file(&save);
         let _ = std::fs::remove_file(save_lock_path(&save));
     }
@@ -1356,6 +1682,357 @@ mod tests {
         let (status, value) = handle(&save, "GET", "/healthz", b"", None, &mut auth, 1);
         assert_eq!(status, 200, "{value}");
         assert_eq!(value["ok"], true);
+        let _ = std::fs::remove_file(&save);
+        let _ = std::fs::remove_file(save_lock_path(&save));
+    }
+
+    fn spawn_run(server: Server) -> SocketAddr {
+        let addr = server.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let _ = server.run();
+        });
+        addr
+    }
+
+    fn read_http_headers(stream: &mut TcpStream) -> (u16, String) {
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 1];
+        loop {
+            stream.read_exact(&mut tmp).unwrap();
+            buf.push(tmp[0]);
+            if buf.windows(4).any(|w| w == b"\r\n\r\n") || buf.len() > 8192 {
+                break;
+            }
+        }
+        let text = String::from_utf8_lossy(&buf).into_owned();
+        let status = text
+            .split_whitespace()
+            .nth(1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        (status, text)
+    }
+
+    fn ws_open(
+        addr: SocketAddr,
+        path: &str,
+        authorization: Option<&str>,
+    ) -> (TcpStream, u16, String) {
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let auth_line = match authorization {
+            Some(value) => format!("Authorization: {value}\r\n"),
+            None => String::new(),
+        };
+        write!(
+            stream,
+            "GET {path} HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n{auth_line}\r\n"
+        )
+        .unwrap();
+        let (status, headers) = read_http_headers(&mut stream);
+        (stream, status, headers)
+    }
+
+    fn read_text_events(stream: &mut TcpStream, want: usize) -> Vec<Value> {
+        let mut out = Vec::new();
+        let mut incoming = crate::ws::Reader::new();
+        stream
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        let start = std::time::Instant::now();
+        while out.len() < want && start.elapsed() < Duration::from_secs(2) {
+            match incoming.poll(stream) {
+                Ok(Some(crate::ws::Frame::Text(bytes))) => {
+                    out.push(serde_json::from_slice(&bytes).expect("event json"));
+                }
+                Ok(Some(_) | None) => {}
+                Err(err)
+                    if err.kind() == std::io::ErrorKind::WouldBlock
+                        || err.kind() == std::io::ErrorKind::TimedOut => {}
+                Err(_) => break,
+            }
+        }
+        out
+    }
+
+    fn seed_stream_events(path: &Path) {
+        seed_save(path);
+        let mut store = open_storage(path).unwrap();
+        let mut state = store.load(BalanceConfig::default()).unwrap();
+        let at = state.last_tick_unix;
+        for (kind, action, objects, outcome) in [
+            (
+                hoshi_core::HistoryKind::Build,
+                "complete",
+                vec!["home", "metal_mine"],
+                "lv 1",
+            ),
+            (
+                hoshi_core::HistoryKind::Research,
+                "complete",
+                vec!["energy"],
+                "lv 1",
+            ),
+            (
+                hoshi_core::HistoryKind::Fleet,
+                "arrive",
+                vec!["1:1:8"],
+                "returned",
+            ),
+            (
+                hoshi_core::HistoryKind::Combat,
+                "fight",
+                vec!["defender"],
+                "1 rounds",
+            ),
+            (
+                hoshi_core::HistoryKind::Other,
+                "internal",
+                vec!["secret"],
+                "hidden",
+            ),
+        ] {
+            state.record_history(hoshi_core::HistoryDraft {
+                at,
+                kind,
+                actor: "player".into(),
+                action: action.into(),
+                objects: objects.into_iter().map(str::to_string).collect(),
+                outcome: outcome.into(),
+                ..hoshi_core::HistoryDraft::default()
+            });
+        }
+        store.save(&state).unwrap();
+    }
+
+    #[test]
+    fn events_after_cursor_keeps_public_kinds_and_replays() {
+        let events = vec![
+            hoshi_core::HistoryEvent {
+                id: 1,
+                at: 10,
+                kind: hoshi_core::HistoryKind::Build,
+                actor: "player".into(),
+                action: "queue".into(),
+                objects: vec!["home".into()],
+                inputs: String::new(),
+                outcome: "queued".into(),
+                reason: String::new(),
+                cause_key: None,
+                parent_ids: Vec::new(),
+                energy: 1.0,
+                heat: 1.0,
+                mass: 1.0,
+            },
+            hoshi_core::HistoryEvent {
+                id: 2,
+                at: 11,
+                kind: hoshi_core::HistoryKind::Other,
+                actor: "sim".into(),
+                action: "hide".into(),
+                objects: Vec::new(),
+                inputs: String::new(),
+                outcome: "no".into(),
+                reason: String::new(),
+                cause_key: None,
+                parent_ids: Vec::new(),
+                energy: 9.0,
+                heat: 9.0,
+                mass: 9.0,
+            },
+            hoshi_core::HistoryEvent {
+                id: 3,
+                at: 12,
+                kind: hoshi_core::HistoryKind::Combat,
+                actor: "sim".into(),
+                action: "fight".into(),
+                objects: vec!["defender".into()],
+                inputs: String::new(),
+                outcome: "1 rounds".into(),
+                reason: String::new(),
+                cause_key: None,
+                parent_ids: Vec::new(),
+                energy: 1.0,
+                heat: 1.0,
+                mass: 1.0,
+            },
+        ];
+        let replay = events_after(&events, 1);
+        assert_eq!(replay.len(), 1, "{replay:?}");
+        assert_eq!(replay[0]["id"], 3);
+        assert_eq!(replay[0]["cursor"], 3);
+        assert_eq!(replay[0]["type"], "raid");
+        assert!(replay[0].get("energy").is_none());
+        assert!(replay[0].get("heat").is_none());
+        let all = events_after(&events, 0);
+        let types: Vec<&str> = all.iter().map(|v| v["type"].as_str().unwrap()).collect();
+        assert_eq!(types, vec!["build", "raid"]);
+    }
+
+    #[test]
+    fn unknown_http_path_does_not_catch_up_or_write() {
+        let save = unique_save();
+        seed_save(&save);
+        let before = {
+            let store = open_storage(&save).unwrap();
+            store.load(BalanceConfig::default()).unwrap().last_tick_unix
+        };
+        let addr = spawn_run(ephemeral(save.clone()));
+        let (status, body) = get_path(addr, "/").unwrap();
+        assert_eq!(status, 404, "{body}");
+        let after = {
+            let store = open_storage(&save).unwrap();
+            store.load(BalanceConfig::default()).unwrap().last_tick_unix
+        };
+        assert_eq!(after, before, "unknown path must not advance the save");
+        let _ = std::fs::remove_file(&save);
+        let _ = std::fs::remove_file(save_lock_path(&save));
+    }
+
+    #[test]
+    fn invalid_authenticated_v1_does_not_catch_up_or_write() {
+        let save = unique_save();
+        seed_save(&save);
+        let before = {
+            let store = open_storage(&save).unwrap();
+            store.load(BalanceConfig::default()).unwrap().last_tick_unix
+        };
+        let addr = spawn_run(ephemeral(save.clone()));
+        let (status, body) =
+            get_path_auth(addr, "/v1/nonesuch", Some(&format!("Bearer {TEST_TOKEN}"))).unwrap();
+        assert_eq!(status, 404, "{body}");
+        let (status, body) = post_json(addr, "/v1/state", "{}");
+        assert_eq!(status, 405, "{body}");
+        let (status, body) = post_json(addr, "/v1/build", "{}");
+        assert_eq!(status, 400, "{body}");
+        let after = {
+            let store = open_storage(&save).unwrap();
+            store.load(BalanceConfig::default()).unwrap().last_tick_unix
+        };
+        assert_eq!(after, before, "invalid /v1 must not advance the save");
+        let _ = std::fs::remove_file(&save);
+        let _ = std::fs::remove_file(save_lock_path(&save));
+    }
+
+    #[test]
+    fn persist_failure_restores_live_and_returns_internal() {
+        let save = unique_save();
+        seed_save(&save);
+        let state = {
+            let store = open_storage(&save).unwrap();
+            store.load(BalanceConfig::default()).unwrap()
+        };
+        let mut live = Live {
+            last_save_tick: state.last_tick_unix,
+            saved_next_id: state.history.next_id,
+            state,
+        };
+        let before_tick = live.state.last_tick_unix;
+        let before_queue = live.state.build_queue.len();
+        std::fs::remove_file(&save).unwrap();
+        std::fs::create_dir(&save).unwrap();
+        let (status, value) = mutate_live(
+            &save,
+            &mut live,
+            &["build".into(), "home".into(), "metal_mine".into()],
+            SystemClock.now_unix(),
+        );
+        assert_eq!(status, 500, "{value}");
+        assert_eq!(value["error"]["code"], "internal");
+        assert_eq!(live.state.last_tick_unix, before_tick);
+        assert_eq!(live.state.build_queue.len(), before_queue);
+        let _ = std::fs::remove_dir(&save);
+    }
+
+    #[test]
+    fn unauthenticated_websocket_is_refused() {
+        let save = unique_save();
+        seed_save(&save);
+        let addr = spawn_run(ephemeral(save.clone()));
+        let (_stream, status, headers) = ws_open(addr, "/v1/events", None);
+        assert_eq!(status, 401, "{headers}");
+        assert!(!headers.contains("Switching Protocols"), "{headers}");
+        let (_stream, status, headers) = ws_open(addr, "/v1/events?cursor=nope", None);
+        assert_eq!(status, 401, "{headers}");
+        assert!(!headers.contains("Switching Protocols"), "{headers}");
+        let _ = std::fs::remove_file(&save);
+        let _ = std::fs::remove_file(save_lock_path(&save));
+    }
+
+    #[test]
+    fn websocket_delivers_build_research_fleet_raid() {
+        let save = unique_save();
+        seed_stream_events(&save);
+        let addr = spawn_run(ephemeral(save.clone()));
+        let (mut stream, status, headers) =
+            ws_open(addr, "/v1/events", Some(&format!("Bearer {TEST_TOKEN}")));
+        assert_eq!(status, 101, "{headers}");
+        assert!(
+            headers.contains("s3pPLMBiTxaQ9kYGzzhZRbK+xOo="),
+            "{headers}"
+        );
+        let events = read_text_events(&mut stream, 4);
+        let types: Vec<&str> = events
+            .iter()
+            .map(|v| v["type"].as_str().unwrap_or(""))
+            .collect();
+        for want in ["build", "research", "fleet", "raid"] {
+            assert!(types.contains(&want), "missing {want} in {types:?}");
+        }
+        assert!(!types.contains(&"other"), "{types:?}");
+        for event in &events {
+            assert_eq!(event["ok"], true);
+            assert_eq!(event["schema_version"], crate::cli::SCHEMA_VERSION);
+            assert!(event.get("energy").is_none(), "{event}");
+            assert!(event.get("rng").is_none(), "{event}");
+            assert!(event.get("next_raid_at").is_none(), "{event}");
+        }
+        let (health_status, body) = get_path(addr, "/healthz").unwrap();
+        assert_eq!(health_status, 200, "{body}");
+        let _ = std::fs::remove_file(&save);
+        let _ = std::fs::remove_file(save_lock_path(&save));
+    }
+
+    #[test]
+    fn websocket_reconnect_cursor_replays_missed_events() {
+        let save = unique_save();
+        seed_stream_events(&save);
+        let addr = spawn_run(ephemeral(save.clone()));
+        let auth = format!("Bearer {TEST_TOKEN}");
+        let (mut first, status, headers) = ws_open(addr, "/v1/events", Some(&auth));
+        assert_eq!(status, 101, "{headers}");
+        let first_events = read_text_events(&mut first, 4);
+        assert!(first_events.len() >= 4, "{first_events:?}");
+        let last = first_events
+            .iter()
+            .filter_map(|v| v["id"].as_u64())
+            .max()
+            .unwrap();
+        drop(first);
+        let (post_status, body) = post_json(
+            addr,
+            "/v1/build",
+            r#"{"planet":"home","building":"metal_mine"}"#,
+        );
+        assert_eq!(post_status, 200, "{body}");
+        let (mut second, status, headers) =
+            ws_open(addr, &format!("/v1/events?cursor={last}"), Some(&auth));
+        assert_eq!(status, 101, "{headers}");
+        let replayed = read_text_events(&mut second, 1);
+        assert!(!replayed.is_empty(), "missed events dropped");
+        for event in &replayed {
+            let id = event["id"].as_u64().unwrap();
+            assert!(id > last, "replayed id {id} <= cursor {last}");
+        }
+        assert!(
+            replayed.iter().any(|v| v["type"] == "build"),
+            "{replayed:?}"
+        );
         let _ = std::fs::remove_file(&save);
         let _ = std::fs::remove_file(save_lock_path(&save));
     }
