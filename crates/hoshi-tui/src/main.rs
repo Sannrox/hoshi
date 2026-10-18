@@ -12,6 +12,7 @@ mod hubs;
 mod keymap;
 mod notify;
 mod portraits;
+mod serve;
 mod title;
 mod ui;
 
@@ -83,6 +84,15 @@ fn main() {
     }
     if args.get(1).map(String::as_str) == Some("new") {
         match run_new_game(&args) {
+            Ok(()) => return,
+            Err(e) => {
+                eprintln!("hoshi: {e}");
+                std::process::exit(e.exit);
+            }
+        }
+    }
+    if serve::first_positional(&args) == Some("serve") {
+        match serve::run(&args) {
             Ok(()) => return,
             Err(e) => {
                 eprintln!("hoshi: {e}");
