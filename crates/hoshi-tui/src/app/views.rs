@@ -216,6 +216,7 @@ impl App {
             Screen::Maintenance => self.maintenance_view(),
             Screen::Map => self.map_view(),
             Screen::Cockpit => ListView::default(),
+            Screen::Scenarios => self.scenario_view(),
         }
     }
 
@@ -1860,6 +1861,59 @@ impl App {
                     Column::right("var", 6),
                     Column::left("progress", 18),
                     Column::right("ev", 3),
+                ],
+                rows,
+                groups: Vec::new(),
+                selected: Some(self.selected),
+            }),
+            ..ListView::default()
+        }
+    }
+
+    fn scenario_view(&self) -> ListView {
+        let t = &self.theme;
+        let Some(scenario) = self.scenario.as_ref() else {
+            return ListView {
+                head: callout_lines(
+                    t,
+                    Intent::Primary,
+                    "No scenario",
+                    "+ forks live into a sandbox. Queue a mine, space advances 1h, enter promotes.",
+                ),
+                ..ListView::default()
+            };
+        };
+        let live = Scenario::create(&self.state).outcome();
+        let plan = scenario.outcome();
+        let head = vec![self.props(&[
+            ("live", live.at.to_string()),
+            ("sandbox", plan.at.to_string()),
+            ("queued", scenario.planned().len().to_string()),
+        ])];
+        let rows: Vec<Vec<Line<'static>>> = self
+            .scenario_compare_rows()
+            .into_iter()
+            .map(|(metric, left, right, conf)| {
+                vec![
+                    Line::styled(humanize(&metric), t.text()),
+                    Line::styled(left, t.text()),
+                    Line::styled(right, t.strong()),
+                    if conf.is_empty() {
+                        Line::styled("-", t.faint())
+                    } else {
+                        Line::styled(conf, t.muted())
+                    },
+                ]
+            })
+            .collect();
+        ListView {
+            head,
+            table: Some(TableView {
+                columns: vec![
+                    Column::left("metric", 22),
+                    Column::right("live", 10),
+                    Column::right("sandbox", 10),
+                    Column::right("conf", 11),
                 ],
                 rows,
                 groups: Vec::new(),

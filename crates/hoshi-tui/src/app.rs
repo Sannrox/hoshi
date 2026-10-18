@@ -15,9 +15,9 @@ use crate::ui::{self, Depth, Intent, Surface, Theme};
 use hoshi_core::{
     Actor, AssignmentTarget, BuildingKind, CombatLog, CombatWinner, CommentaryCatalog, Coord,
     DefenceKind, Detail, DetailSubject, Fleet, GameState, HintScreen, HistoryKind, HistoryQuery,
-    Jurisdiction, JurisdictionKind, LawStatus, Permission, ResourceKind, Resources, RoleKind,
-    ShipKind, SpyReport, StoryEvent, TechBranch, TechNodeState, WonderError, advise,
-    encode_galaxy_seed, polish_all_named, rephrase_lines,
+    IntelValue, Jurisdiction, JurisdictionKind, LawStatus, Permission, ResourceKind, Resources,
+    RoleKind, Scenario, ShipKind, SpyReport, StoryEvent, TechBranch, TechNodeState, WonderError,
+    advise, encode_galaxy_seed, polish_all_named, rephrase_lines,
 };
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
@@ -53,6 +53,7 @@ pub enum Screen {
     Incidents,
     Map,
     Cockpit,
+    Scenarios,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,6 +147,7 @@ pub struct App {
     detail_overlay: bool,
     detail_dirty: bool,
     last_width: Cell<u16>,
+    scenario: Option<Scenario>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -216,6 +218,7 @@ impl App {
             detail_overlay: false,
             detail_dirty: false,
             last_width: Cell::new(80),
+            scenario: None,
         }
     }
 
@@ -687,8 +690,14 @@ impl App {
             Some(Binding::Increase) if self.screen == Screen::Automation => {
                 self.add_default_automation_rule();
             }
+            Some(Binding::Increase) if self.screen == Screen::Scenarios => {
+                self.scenario_fork_or_queue();
+            }
             Some(Binding::Toggle) if self.screen == Screen::Automation => {
                 self.toggle_selected_automation_rule();
+            }
+            Some(Binding::Toggle) if self.screen == Screen::Scenarios => {
+                self.scenario_advance();
             }
             Some(Binding::Decrease) if self.screen == Screen::Market => {
                 self.trade_amount = (self.trade_amount - 10.0).max(10.0);
@@ -837,6 +846,7 @@ impl App {
             Screen::Incidents => HelpContext::Incidents,
             Screen::Map => HelpContext::Map,
             Screen::Cockpit => HelpContext::Cockpit,
+            Screen::Scenarios => HelpContext::Scenarios,
         }
     }
 
@@ -1302,6 +1312,7 @@ impl App {
             Screen::Kpis => "events",
             Screen::Incidents => "resolve",
             Screen::Maintenance => "schedule",
+            Screen::Scenarios => "promote",
             Screen::Cockpit
             | Screen::Achievements
             | Screen::Daily
@@ -1751,6 +1762,148 @@ impl App {
         );
     }
 
+    fn scenario_fork_or_queue(&mut self) {
+        if self.scenario.is_none() {
+            self.scenario = Some(Scenario::create(&self.state));
+            self.status.clear();
+            return;
+        }
+        let Some(scenario) = self.scenario.as_mut() else {
+            return;
+        };
+        let fork = scenario.baseline().at;
+        let intent = hoshi_core::Intent::Build {
+            planet: Coord::HOME,
+            building: BuildingKind::MetalMine,
+            actor: Actor::Player,
+        };
+        match scenario.queue(intent, fork) {
+            Ok(()) => self.status.clear(),
+            Err(e) => self.status = e.to_string(),
+        }
+    }
+
+    fn scenario_advance(&mut self) {
+        let Some(scenario) = self.scenario.as_mut() else {
+            self.status = "no scenario".into();
+            return;
+        };
+        let until = scenario.outcome().at.saturating_add(3600);
+        scenario.advance(until);
+        self.status.clear();
+    }
+
+    fn scenario_promote(&mut self, now_unix: u64) {
+        let Some(scenario) = self.scenario.as_ref() else {
+            self.status = "no scenario".into();
+            return;
+        };
+        match scenario.promote(&mut self.state, now_unix) {
+            Ok(()) => {
+                self.scenario = None;
+                self.status.clear();
+            }
+            Err(e) => self.status = e.to_string(),
+        }
+    }
+
+    fn scenario_discard(&mut self) {
+        self.scenario = None;
+        self.status.clear();
+    }
+
+    fn scenario_row_count(&self) -> usize {
+        self.scenario_compare_rows().len()
+    }
+
+    fn scenario_compare_rows(&self) -> Vec<(String, String, String, String)> {
+        let Some(scenario) = self.scenario.as_ref() else {
+            return Vec::new();
+        };
+        let live = Scenario::create(&self.state).outcome();
+        let plan = scenario.outcome();
+        let mut rows = Vec::new();
+        for kind in ResourceKind::ALL {
+            rows.push((
+                kind.as_key().into(),
+                format!("{:.0}", live.resources.get(kind)),
+                format!("{:.0}", plan.resources.get(kind)),
+                String::new(),
+            ));
+        }
+        let mut kpi_keys = Vec::new();
+        for row in live.kpis.iter().chain(plan.kpis.iter()) {
+            let key = row.kpi.as_key();
+            if !kpi_keys.contains(&key) {
+                kpi_keys.push(key);
+            }
+        }
+        for key in kpi_keys {
+            let left = live
+                .kpis
+                .iter()
+                .find(|row| row.kpi.as_key() == key)
+                .map(|row| format!("{:.1}", row.value))
+                .unwrap_or_else(|| "-".into());
+            let right = plan
+                .kpis
+                .iter()
+                .find(|row| row.kpi.as_key() == key)
+                .map(|row| format!("{:.1}", row.value))
+                .unwrap_or_else(|| "-".into());
+            rows.push((key.into(), left, right, String::new()));
+        }
+        let mut risk_ids = Vec::new();
+        for row in live.risks.iter().chain(plan.risks.iter()) {
+            if !risk_ids.contains(&row.id) {
+                risk_ids.push(row.id);
+            }
+        }
+        for id in risk_ids {
+            let a = live.risks.iter().find(|row| row.id == id);
+            let b = plan.risks.iter().find(|row| row.id == id);
+            let name = a
+                .or(b)
+                .map(|row| row.name.as_str())
+                .unwrap_or("risk")
+                .to_string();
+            let left = a
+                .map(|row| format!("{:.2}", row.likelihood))
+                .unwrap_or_else(|| "-".into());
+            let right = b
+                .map(|row| format!("{:.2}", row.likelihood))
+                .unwrap_or_else(|| "-".into());
+            rows.push((name, left, right, String::new()));
+        }
+        let mut keys = Vec::new();
+        for fact in live.intel.iter().chain(plan.intel.iter()) {
+            let key = (fact.object.clone(), fact.field.clone());
+            if !keys.contains(&key) {
+                keys.push(key);
+            }
+        }
+        keys.sort();
+        for (object, field) in keys {
+            let left_fact = live
+                .intel
+                .iter()
+                .find(|fact| fact.object == object && fact.field == field);
+            let right_fact = plan
+                .intel
+                .iter()
+                .find(|fact| fact.object == object && fact.field == field);
+            rows.push((
+                format!("{object}.{field}"),
+                left_fact.map(intel_fact_cell).unwrap_or_else(|| "-".into()),
+                right_fact
+                    .map(intel_fact_cell)
+                    .unwrap_or_else(|| "-".into()),
+                intel_conf_cell(left_fact, right_fact),
+            ));
+        }
+        rows
+    }
+
     fn activate(&mut self, now_unix: u64) {
         match self.screen {
             Screen::Planet => {
@@ -1808,6 +1961,7 @@ impl App {
             Screen::Staff => self.activate_staff(now_unix),
             Screen::Map => self.activate_map(now_unix),
             Screen::Cockpit => self.cockpit_confirm(),
+            Screen::Scenarios => self.scenario_promote(now_unix),
             Screen::Reports => {
                 if self
                     .selected_outpost()
@@ -2175,6 +2329,7 @@ impl App {
             | Screen::Kpis
             | Screen::Incidents
             | Screen::Maintenance => {}
+            Screen::Scenarios => self.scenario_discard(),
             Screen::Automation => self.remove_selected_automation_rule(),
         }
     }
@@ -2220,6 +2375,7 @@ impl App {
             }
             Screen::Map => 0,
             Screen::Cockpit => crate::cockpit::select_len(&self.state, &self.cockpit),
+            Screen::Scenarios => self.scenario_row_count(),
         }
     }
 
@@ -2428,6 +2584,11 @@ impl App {
                     k.primary(Binding::Toggle),
                     k.primary(Binding::CursorLeft),
                     k.primary(Binding::CursorRight)
+                ),
+                Screen::Scenarios => format!(
+                    "{} fork/queue  {} 1h  {confirm} promote  {cancel} discard",
+                    k.primary(Binding::Increase),
+                    k.primary(Binding::Toggle)
                 ),
             }
         )
@@ -3189,6 +3350,54 @@ fn waste_detail_line(
         line.push_str("  WARN");
     }
     line
+}
+
+fn intel_conf_cell(
+    live: Option<&hoshi_core::IntelFact>,
+    plan: Option<&hoshi_core::IntelFact>,
+) -> String {
+    let a = live
+        .and_then(|fact| fact.observations.last())
+        .map(|obs| obs.confidence);
+    let b = plan
+        .and_then(|fact| fact.observations.last())
+        .map(|obs| obs.confidence);
+    match (a, b) {
+        (Some(a), Some(b)) if (a - b).abs() < 1e-9 => format!("{a:.2}"),
+        (Some(a), Some(b)) => format!("{a:.2}/{b:.2}"),
+        (Some(a), None) => format!("{a:.2}"),
+        (None, Some(b)) => format!("{b:.2}"),
+        (None, None) => String::new(),
+    }
+}
+
+fn intel_fact_cell(fact: &hoshi_core::IntelFact) -> String {
+    let nums: Vec<f64> = fact
+        .observations
+        .iter()
+        .filter_map(|obs| match &obs.value {
+            IntelValue::Count(n) => Some(f64::from(*n)),
+            IntelValue::Number(n) => Some(*n),
+            IntelValue::Text(_) => None,
+        })
+        .collect();
+    if nums.is_empty() {
+        return fact
+            .observations
+            .last()
+            .and_then(|obs| match &obs.value {
+                IntelValue::Text(text) => Some(text.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| "-".into());
+    }
+    let min = nums.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = nums.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    if (max - min).abs() < 1e-9 {
+        format!("{min:.0}")
+    } else {
+        format!("{min:.0}-{max:.0}")
+    }
 }
 
 fn pad_x(area: Rect, n: u16) -> Rect {
@@ -5448,5 +5657,220 @@ mod tests {
         let narrow = Rect::new(0, 0, 119, 48);
         let narrow_body = Rect::new(0, 4, 119, 43);
         assert_eq!(window_area(narrow, narrow_body), narrow_body);
+    }
+
+    #[test]
+    fn scenario_screen_compares_without_writing_live_until_promote() {
+        let mut app = App::new(GameState::new(1_000));
+        let iron = app.state.resources.iron;
+        app.open(Screen::Scenarios);
+        assert_eq!(app.screen, Screen::Scenarios);
+        app.handle_key(KeyCode::Char('+'), 1_000);
+        app.handle_key(KeyCode::Char('+'), 1_000);
+        app.handle_key(KeyCode::Char(' '), 1_000);
+        assert_eq!(app.state.resources.iron, iron);
+        assert!(app.state.build_queue.is_empty());
+        let sandbox_iron = app
+            .scenario
+            .as_ref()
+            .expect("sandbox")
+            .outcome()
+            .resources
+            .iron;
+        assert_ne!(sandbox_iron, iron);
+        let text = render_text(&app, 120, 32);
+        assert!(text.contains("Records / Scenarios"), "{text}");
+        assert!(text.contains("Iron"), "{text}");
+        assert!(text.contains("SANDBOX"), "{text}");
+        assert!(text.contains(&format!("{iron:.0}")), "{text}");
+        assert!(text.contains(&format!("{sandbox_iron:.0}")), "{text}");
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert_eq!(app.state.build_queue.len(), 1);
+        assert_eq!(app.state.build_queue[0].building, BuildingKind::MetalMine);
+        assert!(app.scenario.is_none());
+    }
+
+    #[test]
+    fn scenario_promote_refuses_a_stale_plan() {
+        let mut app = App::new(GameState::new(1_000));
+        app.open(Screen::Scenarios);
+        app.handle_key(KeyCode::Char('+'), 1_000);
+        app.handle_key(KeyCode::Char('+'), 1_000);
+        app.state.resources = Resources::ZERO;
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(
+            app.status.contains("afford") || !app.status.is_empty(),
+            "{}",
+            app.status
+        );
+        assert!(app.state.build_queue.is_empty());
+        assert!(app.scenario.is_some());
+    }
+
+    #[test]
+    fn scenario_compare_shows_intel_confidence_ranges() {
+        let mut state = GameState::new(1_000);
+        let dest = state.outposts[0].coord;
+        state.spy_reports.push(hoshi_core::SpyReport {
+            id: 1,
+            target: dest,
+            created_at: 900,
+            probes_sent: 1,
+            probes_lost: 0,
+            detected: false,
+            score: 4.0,
+            tier: "garrison".into(),
+            resources: Some(Resources {
+                iron: 12.0,
+                ..Resources::ZERO
+            }),
+            fleet: None,
+            defences: None,
+            garrison: Some(2),
+            kind: Some(state.outposts[0].kind),
+            size: Some(state.outposts[0].size),
+            formation: None,
+            stance: None,
+            source: "probe".into(),
+            observed_at: 900,
+            arrives_at: 0,
+            confidence: 0.8,
+            deceived: false,
+        });
+        state.spy_reports.push(hoshi_core::SpyReport {
+            id: 2,
+            target: dest,
+            created_at: 950,
+            probes_sent: 1,
+            probes_lost: 0,
+            detected: false,
+            score: 4.0,
+            tier: "garrison".into(),
+            resources: Some(Resources {
+                iron: 20.0,
+                ..Resources::ZERO
+            }),
+            fleet: None,
+            defences: None,
+            garrison: Some(2),
+            kind: Some(state.outposts[0].kind),
+            size: Some(state.outposts[0].size),
+            formation: None,
+            stance: None,
+            source: "probe".into(),
+            observed_at: 950,
+            arrives_at: 0,
+            confidence: 0.6,
+            deceived: false,
+        });
+        let mut app = App::new(state);
+        app.open(Screen::Scenarios);
+        app.handle_key(KeyCode::Char('+'), 1_000);
+        let text = render_text(&app, 120, 36);
+        assert!(text.contains("CONF"), "{text}");
+        assert!(text.contains("12-20"), "{text}");
+        assert!(text.contains("0.60"), "{text}");
+        assert!(text.contains("Rare earths"), "{text}");
+        assert!(text.contains("Helium 3"), "{text}");
+        assert!(!text.contains("deceived"), "{text}");
+        assert!(!text.contains("next_raid_at"), "{text}");
+    }
+
+    #[test]
+    fn scenario_compare_joins_intel_by_object_and_field() {
+        let mut state = GameState::new(1_000);
+        let dest = state.outposts[0].coord;
+        state.spy_reports.push(hoshi_core::SpyReport {
+            id: 1,
+            target: dest,
+            created_at: 900,
+            probes_sent: 1,
+            probes_lost: 0,
+            detected: false,
+            score: 4.0,
+            tier: "garrison".into(),
+            resources: Some(Resources {
+                iron: 12.0,
+                ..Resources::ZERO
+            }),
+            fleet: None,
+            defences: None,
+            garrison: Some(2),
+            kind: Some(state.outposts[0].kind),
+            size: Some(state.outposts[0].size),
+            formation: None,
+            stance: None,
+            source: "probe".into(),
+            observed_at: 900,
+            arrives_at: 0,
+            confidence: 0.8,
+            deceived: false,
+        });
+        let mut inbound = Fleet::default();
+        inbound.add(ShipKind::LightFighter, 7);
+        state.spy_reports.push(hoshi_core::SpyReport {
+            id: 2,
+            target: dest,
+            created_at: 950,
+            probes_sent: 1,
+            probes_lost: 0,
+            detected: false,
+            score: 4.0,
+            tier: "fleet".into(),
+            resources: None,
+            fleet: Some(inbound),
+            defences: None,
+            garrison: None,
+            kind: None,
+            size: None,
+            formation: None,
+            stance: None,
+            source: "probe".into(),
+            observed_at: 950,
+            arrives_at: 1_500,
+            confidence: 0.9,
+            deceived: false,
+        });
+        let mut app = App::new(state);
+        app.open(Screen::Scenarios);
+        app.handle_key(KeyCode::Char('+'), 1_000);
+        app.handle_key(KeyCode::Char(' '), 1_000);
+        let rows = app.scenario_compare_rows();
+        let iron = rows
+            .iter()
+            .find(|(metric, _, _, _)| metric.contains("resources.iron"))
+            .expect("iron fact");
+        assert_eq!(iron.1, "12");
+        assert_eq!(iron.2, "12");
+        let fleet = rows
+            .iter()
+            .find(|(metric, _, _, _)| metric.contains("fleet.light_fighter"))
+            .expect("fleet fact");
+        assert_eq!(fleet.1, "-");
+        assert_eq!(fleet.2, "7");
+        let sandbox_conf = app
+            .scenario
+            .as_ref()
+            .expect("sandbox")
+            .outcome()
+            .intel
+            .iter()
+            .find(|fact| fact.field == "fleet.light_fighter")
+            .and_then(|fact| fact.observations.last())
+            .map(|obs| format!("{:.2}", obs.confidence))
+            .expect("sandbox fleet confidence");
+        assert_eq!(fleet.3, sandbox_conf);
+        assert!(
+            iron.3.contains('/'),
+            "aged sandbox confidence should differ from live: {}",
+            iron.3
+        );
+        app.selected = rows
+            .iter()
+            .position(|(metric, _, _, _)| metric.contains("resources.iron"))
+            .expect("iron fact index");
+        let text = render_text(&app, 120, 36);
+        assert!(text.contains(&iron.3), "{text}");
+        assert!(app.state.build_queue.is_empty());
     }
 }

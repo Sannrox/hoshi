@@ -26,6 +26,8 @@
 
 - CLI: `hoshi scenario create`, `queue build`, `advance`, `compare`, and `promote`. The plan file sits beside the save. Compare prints baseline vs scenario resources, KPIs, and risk. Promote refuses a stale plan. Hidden simulation stays off the JSON.
 
+- TUI Scenarios screen (Records hub): live vs sandbox resources, KPIs, risk, and intel confidence/ranges side by side. Fork, queue a mine, and advance stay on the copy. Promote uses the same core path as the CLI and refuses a stale plan.
+
 - `hoshi serve`: optional process that wraps one local save, takes the TUI/CLI lock, binds loopback by default, and answers `GET /healthz` with supported contract versions. Off unless started. Not a shared universe. See `docs/server.md`.
 
 - `hoshi serve` `/v1` actions: `GET /v1/state`, `POST /v1/build`, `/v1/research`, `/v1/cancel`, and `/v1/fleet/send` call the same core actions as the CLI. Responses carry `schema_version` 2 (`docs/schema/serve-v1.json`). Fair-play: no hidden timers, RNG, unrevealed map, or `tick --advance`.

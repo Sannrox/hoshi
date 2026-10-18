@@ -57,7 +57,7 @@ impl Hub {
                 Screen::Automation,
                 Screen::Incidents,
             ],
-            Hub::Records => &[Screen::History, Screen::Prestige],
+            Hub::Records => &[Screen::History, Screen::Scenarios, Screen::Prestige],
         }
     }
 
@@ -98,6 +98,7 @@ pub fn label(screen: Screen) -> &'static str {
         Screen::Automation => "Automation",
         Screen::Incidents => "Incidents",
         Screen::History => "History",
+        Screen::Scenarios => "Scenarios",
         Screen::Prestige => "Legacy",
     }
 }
@@ -130,7 +131,7 @@ pub fn enter(current: Screen, hub: Hub) -> Screen {
 mod tests {
     use super::*;
 
-    const EVERY: [Screen; 23] = [
+    const EVERY: [Screen; 24] = [
         Screen::Overview,
         Screen::Planet,
         Screen::Shipyard,
@@ -146,6 +147,7 @@ mod tests {
         Screen::Laws,
         Screen::Reports,
         Screen::History,
+        Screen::Scenarios,
         Screen::Staff,
         Screen::Ops,
         Screen::Automation,
