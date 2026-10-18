@@ -44,6 +44,7 @@ mod production;
 mod research;
 mod rivals;
 mod save;
+mod scenario;
 mod season;
 mod self_play;
 mod shard;
@@ -217,6 +218,7 @@ pub use save::{
     load_state, lock_save, open_save, resolve_save_path, save_is_locked, save_lock_path,
     save_state,
 };
+pub use scenario::{Baseline, Outcome, PlannedAction, Scenario, ScenarioError};
 pub use season::{
     SEASON_SYSTEMS, SeasonCatalog, SeasonError, SeasonRuleset, SeasonRun, SeasonWindow,
     season_slot_name,
