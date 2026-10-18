@@ -20,6 +20,7 @@ replacement name. `state` lists those stockpiles plus `energy` and `heat`.
 
 ```sh
 hoshi --version
+hoshi serve [--save PATH] [--bind HOST:PORT] [--config DIR]
 hoshi --save PATH [--seed N] [--balance PATH] state [--as player|leader:ID] [--json]
 hoshi --save PATH intel [coord] [--as player|leader:ID]
 hoshi --save PATH intel provenance <coord> <field> [--as player|leader:ID]

@@ -20,6 +20,8 @@
 
 ### Added
 
+- `hoshi serve`: optional process that wraps one local save, takes the TUI/CLI lock, binds loopback by default, and answers `GET /healthz` with supported contract versions. Off unless started. Not a shared universe. See `docs/server.md`.
+
 - Shard player raids: a Chisei-hosted shard catches up both empires, then resolves against that snapshot with the same fleet combat as local play. Newbie protection and per-identity attack caps are enforced; plunder uses the defender share then cap. Local play is unchanged.
 
 - Shard anti-cheat gate: a Chisei-hosted shard applies commands on its own clock (client timestamps ignored), rejects unsigned or altered bridge pulses, and rate-limits commands per identity. Local play is unchanged.

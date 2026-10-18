@@ -41,6 +41,10 @@ pub struct UserConfig {
     pub cockpit_economy: String,
     pub cockpit_war: String,
     pub detail_panel: bool,
+    /// Bind `host:port` for `hoshi serve`. Empty means the loopback default.
+    pub serve_bind: String,
+    /// Save path for `hoshi serve`. Empty means the default save slot.
+    pub serve_save: String,
     pub keys: Keymap,
 }
 
@@ -81,6 +85,8 @@ impl Default for UserConfig {
             cockpit_economy: crate::cockpit::ECONOMY_PANELS.into(),
             cockpit_war: crate::cockpit::WAR_PANELS.into(),
             detail_panel: true,
+            serve_bind: String::new(),
+            serve_save: String::new(),
             keys: Keymap::defaults(),
         }
     }
@@ -166,6 +172,8 @@ impl UserConfig {
                 "cockpit_economy" => cfg.cockpit_economy = value.to_string(),
                 "cockpit_war" => cfg.cockpit_war = value.to_string(),
                 "detail_panel" => cfg.detail_panel = value == "true",
+                "serve_bind" => cfg.serve_bind = value.trim_matches('"').to_string(),
+                "serve_save" => cfg.serve_save = value.trim_matches('"').to_string(),
                 key if key.starts_with("keys.") => {
                     key_overrides.push((key[5..].to_string(), value.to_string()));
                 }
@@ -194,7 +202,7 @@ impl UserConfig {
             _ => String::new(),
         };
         let text = format!(
-            "reduced_motion = {}\nno_animation = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\narena = {}\nself_play = {}\nrivals = {}\nseason = {}\ndemo = {}\ngovernance = {}\nchisei = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}\ntutorial = {}\nreset_tutorial = {}\nnotify = {}\nnotify_build = {}\nnotify_raid = {}\nnotify_fleet = {}\ncommentary = {}\ncommentary_model_url = \"{}\"\nadvisor_model_url = \"{}\"\nadvisor_model_name = \"{}\"\nadvisor_allow_lan = {}\ncockpit_layout = \"{}\"\ncockpit_overview = \"{}\"\ncockpit_economy = \"{}\"\ncockpit_war = \"{}\"\ndetail_panel = {}\n{quiet}{}\n",
+            "reduced_motion = {}\nno_animation = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\narena = {}\nself_play = {}\nrivals = {}\nseason = {}\ndemo = {}\ngovernance = {}\nchisei = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}\ntutorial = {}\nreset_tutorial = {}\nnotify = {}\nnotify_build = {}\nnotify_raid = {}\nnotify_fleet = {}\ncommentary = {}\ncommentary_model_url = \"{}\"\nadvisor_model_url = \"{}\"\nadvisor_model_name = \"{}\"\nadvisor_allow_lan = {}\ncockpit_layout = \"{}\"\ncockpit_overview = \"{}\"\ncockpit_economy = \"{}\"\ncockpit_war = \"{}\"\ndetail_panel = {}\nserve_bind = \"{}\"\nserve_save = \"{}\"\n{quiet}{}\n",
             self.reduced_motion,
             self.no_animation,
             self.high_contrast,
@@ -226,6 +234,8 @@ impl UserConfig {
             self.cockpit_economy.replace('"', ""),
             self.cockpit_war.replace('"', ""),
             self.detail_panel,
+            self.serve_bind.replace('"', ""),
+            self.serve_save.replace('"', ""),
             self.keys.to_config_lines().trim_end(),
         );
         std::fs::write(Self::path(dir), text)
@@ -309,6 +319,8 @@ mod tests {
         cfg.cockpit_layout = "war".into();
         cfg.cockpit_war = "map,fleets".into();
         cfg.detail_panel = false;
+        cfg.serve_bind = "127.0.0.1:0".into();
+        cfg.serve_save = "slot.sqlite".into();
         cfg.save(&dir).unwrap();
         let again = UserConfig::load(&dir);
         assert!(again.reduced_motion);
@@ -324,6 +336,8 @@ mod tests {
         assert_eq!(again.cockpit_layout, "war");
         assert_eq!(again.cockpit_war, "map,fleets");
         assert!(!again.detail_panel);
+        assert_eq!(again.serve_bind, "127.0.0.1:0");
+        assert_eq!(again.serve_save, "slot.sqlite");
         assert!(!again.notify);
         assert!(again.commentary);
         assert_eq!(again.commentary_model_url, "http://127.0.0.1:8080/v1");
