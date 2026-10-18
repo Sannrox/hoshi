@@ -24,6 +24,8 @@
 
 - In-memory what-if scenarios: fork live state, queue intents, and fast-forward the copy with the same catch-up as play. Promote re-validates the action list against current live state through `propose`/`apply`. Hidden simulation stays off the outcome snapshot. Scenarios are not saved.
 
+- CLI: `hoshi scenario create`, `queue build`, `advance`, `compare`, and `promote`. The plan file sits beside the save. Compare prints baseline vs scenario resources, KPIs, and risk. Promote refuses a stale plan. Hidden simulation stays off the JSON.
+
 - `hoshi serve`: optional process that wraps one local save, takes the TUI/CLI lock, binds loopback by default, and answers `GET /healthz` with supported contract versions. Off unless started. Not a shared universe. See `docs/server.md`.
 
 - `hoshi serve` `/v1` actions: `GET /v1/state`, `POST /v1/build`, `/v1/research`, `/v1/cancel`, and `/v1/fleet/send` call the same core actions as the CLI. Responses carry `schema_version` 2 (`docs/schema/serve-v1.json`). Fair-play: no hidden timers, RNG, unrevealed map, or `tick --advance`.

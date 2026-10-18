@@ -64,6 +64,14 @@
       "type": "array",
       "description": "Remote intel facts from `hoshi intel`. Each fact keeps every arrived observation for one object field."
     },
+    "baseline": {
+      "type": "object",
+      "description": "Public outcome snapshot of live state from `hoshi scenario compare` (resources, KPIs, risk, aged intel)."
+    },
+    "scenario": {
+      "type": "object",
+      "description": "Public outcome snapshot of the sandbox from `hoshi scenario compare`. Hidden simulation is omitted."
+    },
     "observations": {
       "type": "array",
       "description": "Provenance chain from `hoshi intel provenance`. Source, time, age, confidence and the player-visible value; never hidden truth."
