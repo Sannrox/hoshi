@@ -42,8 +42,49 @@ writer on that file is refused (CLI exit 4). Closing the process drops the lock.
 {"ok":true,"contract_versions":["v1"]}
 ```
 
-`contract_versions` lists the HTTP contract this binary will speak. Game
-routes are not served yet.
+`contract_versions` lists the HTTP contract this binary speaks.
+
+## `/v1` actions
+
+Game routes call the same hoshi-core actions as the CLI. Responses carry
+`schema_version` 2 and match `docs/schema/cli-v1.json` plus
+`docs/schema/serve-v1.json`. A breaking shape bumps that version.
+
+| Method | Path | CLI |
+| --- | --- | --- |
+| `GET` | `/v1/state` | `hoshi state` |
+| `POST` | `/v1/build` | `hoshi build <planet> <building>` |
+| `POST` | `/v1/research` | `hoshi research <tech>` |
+| `POST` | `/v1/cancel` | `hoshi cancel <queue-item>` |
+| `POST` | `/v1/fleet/send` | `hoshi fleet send <from> <to> <mission> <ships...>` |
+
+POST bodies are JSON:
+
+```json
+{"planet":"home","building":"metal_mine"}
+{"tech":"energy"}
+{"item":"0"}
+{"from":"home","to":"1:1:8","mission":"attack","ships":["light_fighter:1"]}
+```
+
+There is no `tick --advance` route. Clients see only what a player sees
+through the CLI.
+
+### Errors
+
+Every error is JSON with HTTP status:
+
+```json
+{"schema_version":2,"ok":false,"error":{"code":"invalid","message":"not found"}}
+```
+
+| HTTP | `error.code` | Meaning |
+| --- | --- | --- |
+| 400 | `invalid` | Bad path, method, JSON, or arguments |
+| 404 | `invalid` | Unknown route |
+| 405 | `invalid` | Known route, wrong method |
+| 409 | `refused` | Rule refusal (same as CLI exit 3) |
+| 500 | `internal` | Save or IO failure |
 
 ## Not a shard
 

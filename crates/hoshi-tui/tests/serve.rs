@@ -6,14 +6,21 @@ use std::net::{SocketAddr, TcpStream};
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-fn get_path(addr: SocketAddr, path: &str) -> std::io::Result<(u16, String)> {
+fn request(
+    addr: SocketAddr,
+    method: &str,
+    path: &str,
+    body: &[u8],
+) -> std::io::Result<(u16, String)> {
     let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     write!(
         stream,
-        "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
     )?;
+    stream.write_all(body)?;
     let mut buf = String::new();
     stream.read_to_string(&mut buf)?;
     let status = buf
@@ -21,13 +28,17 @@ fn get_path(addr: SocketAddr, path: &str) -> std::io::Result<(u16, String)> {
         .nth(1)
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
-    let body = buf
+    let text = buf
         .split("\r\n\r\n")
         .nth(1)
         .or_else(|| buf.split("\n\n").nth(1))
         .unwrap_or("")
         .to_string();
-    Ok((status, body))
+    Ok((status, text))
+}
+
+fn get_path(addr: SocketAddr, path: &str) -> std::io::Result<(u16, String)> {
+    request(addr, "GET", path, b"")
 }
 
 fn unique_save() -> std::path::PathBuf {
@@ -89,6 +100,25 @@ fn binary_healthz_twice_and_lock_blocks_cli() {
             .any(|x| x.as_str() == Some("v1")),
         "{v}"
     );
+
+    let (s1, b1) = get_path(addr, "/v1/state").expect("state 1");
+    let (s2, b2) = get_path(addr, "/v1/state").expect("state 2");
+    assert_eq!(s1, 200, "{b1}");
+    assert_eq!(s2, 200, "{b2}");
+    let state: Value = serde_json::from_str(b1.trim()).unwrap();
+    assert_eq!(state["ok"], true);
+    assert_eq!(state["schema_version"], 2);
+    let (build_status, build_body) = request(
+        addr,
+        "POST",
+        "/v1/build",
+        br#"{"planet":"home","building":"metal_mine"}"#,
+    )
+    .expect("build");
+    assert_eq!(build_status, 200, "{build_body}");
+    let built: Value = serde_json::from_str(build_body.trim()).unwrap();
+    assert_eq!(built["ok"], true, "{built}");
+    assert_eq!(built["message"], "queued build");
 
     let cli = Command::new(env!("CARGO_BIN_EXE_hoshi"))
         .args(["--save", save.to_str().unwrap(), "--seed", "1", "state"])

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "hoshi serve /v1 response",
+  "description": "HTTP /v1 responses use the same JSON as the CLI (schema_version 2). A breaking change bumps that version.",
+  "type": "object",
+  "required": ["schema_version", "ok"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {
+      "const": 2,
+      "description": "Same version as docs/schema/cli-v1.json. Bump on a breaking response change."
+    },
+    "ok": { "type": "boolean" },
+    "message": { "type": "string" },
+    "error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "enum": ["invalid", "refused", "internal"] },
+        "message": { "type": "string" }
+      }
+    }
+  }
+}
