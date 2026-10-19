@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -268,6 +268,7 @@ pub struct Server {
     save: PathBuf,
     auth: Auth,
     live: Arc<Mutex<Live>>,
+    push: Arc<Mutex<crate::push::Gate<crate::push::Noop>>>,
 }
 
 impl Server {
@@ -285,6 +286,11 @@ impl Server {
             saved_next_id: state.history.next_id,
             state,
         };
+        let push = crate::push::Gate::new(
+            crate::push::Settings::default(),
+            &live.state,
+            crate::push::Noop,
+        );
         let listener = TcpListener::bind(opts.bind)?;
         Ok(Self {
             listener,
@@ -292,11 +298,21 @@ impl Server {
             save: opts.save,
             auth: Auth::empty(),
             live: Arc::new(Mutex::new(live)),
+            push: Arc::new(Mutex::new(push)),
         })
     }
 
     pub fn with_auth(mut self, auth: Auth) -> Self {
         self.auth = auth;
+        self
+    }
+
+    pub fn with_push(mut self, settings: crate::push::Settings) -> Self {
+        let gate = {
+            let live = lock_poison(&self.live);
+            crate::push::Gate::new(settings, &live.state, crate::push::Noop)
+        };
+        self.push = Arc::new(Mutex::new(gate));
         self
     }
 
@@ -309,7 +325,38 @@ impl Server {
         let save = Arc::new(self.save);
         let auth = Arc::new(Mutex::new(self.auth));
         let live = self.live;
+        let push = self.push;
         let inflight = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        if lock_poison(push.as_ref()).armed() {
+            inflight.fetch_add(1, Ordering::SeqCst);
+            let save = Arc::clone(&save);
+            let live = Arc::clone(&live);
+            let push = Arc::clone(&push);
+            let stop = Arc::clone(&stop);
+            let worker = Inflight(Arc::clone(&inflight));
+            let _ = std::thread::Builder::new()
+                .name("hoshi-push".into())
+                .spawn(move || {
+                    let _worker = worker;
+                    while !stop.load(Ordering::SeqCst) {
+                        std::thread::sleep(Duration::from_secs(1));
+                        if stop.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        if !lock_poison(push.as_ref()).armed() {
+                            continue;
+                        }
+                        let now = SystemClock.now_unix();
+                        let mut live = lock_poison(live.as_ref());
+                        if !live.state.deterministic {
+                            live.state.catch_up(now);
+                        }
+                        lock_poison(push.as_ref()).poll(&live.state, now);
+                        let _ = persist(save.as_path(), &mut live, false);
+                    }
+                });
+        }
         let accept_err = loop {
             let (stream, _) = match self.listener.accept() {
                 Ok(pair) => pair,
@@ -319,14 +366,16 @@ impl Server {
             let save = Arc::clone(&save);
             let auth = Arc::clone(&auth);
             let live = Arc::clone(&live);
+            let push = Arc::clone(&push);
             let worker = Inflight(Arc::clone(&inflight));
             let _ = std::thread::Builder::new()
                 .name("hoshi-serve".into())
                 .spawn(move || {
                     let _worker = worker;
-                    let _ = serve_one(save.as_path(), stream, &auth, live.as_ref());
+                    let _ = serve_one(save.as_path(), stream, &auth, live.as_ref(), push.as_ref());
                 });
         };
+        stop.store(true, Ordering::SeqCst);
         while inflight.load(Ordering::SeqCst) > 0 {
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -775,6 +824,7 @@ fn serve_one(
     mut stream: TcpStream,
     auth: &Mutex<Auth>,
     live: &Mutex<Live>,
+    push: &Mutex<crate::push::Gate<crate::push::Noop>>,
 ) -> std::io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
@@ -853,6 +903,7 @@ fn serve_one(
             authorization.as_deref(),
             auth,
             live,
+            push,
         );
     }
     if !route.starts_with("/v1") {
@@ -879,11 +930,14 @@ fn serve_one(
     };
     let (status, value) = {
         let mut live = lock_poison(live);
-        mutate_live(save, &mut live, &parts, now)
+        let result = mutate_live(save, &mut live, &parts, now);
+        lock_poison(push).poll(&live.state, now);
+        result
     };
     write_http(&mut stream, status, &value, "")
 }
 
+#[allow(clippy::too_many_arguments)]
 fn serve_events(
     save: &Path,
     stream: &mut TcpStream,
@@ -892,6 +946,7 @@ fn serve_events(
     authorization: Option<&str>,
     auth: &Mutex<Auth>,
     live: &Mutex<Live>,
+    push: &Mutex<crate::push::Gate<crate::push::Noop>>,
 ) -> std::io::Result<()> {
     let now = SystemClock.now_unix();
     let gate = {
@@ -927,7 +982,7 @@ fn serve_events(
     };
     ws::write_opening(stream, &key)?;
     let mut cursor = cursor;
-    if pump_events(save, stream, live, &mut cursor, now).is_err() {
+    if pump_events(save, stream, live, push, &mut cursor, now).is_err() {
         return Ok(());
     }
     let mut incoming = ws::Reader::new();
@@ -950,7 +1005,7 @@ fn serve_events(
             Err(_) => return Ok(()),
         }
         let now = SystemClock.now_unix();
-        if pump_events(save, stream, live, &mut cursor, now).is_err() {
+        if pump_events(save, stream, live, push, &mut cursor, now).is_err() {
             return Ok(());
         }
     }
@@ -960,6 +1015,7 @@ fn pump_events(
     save: &Path,
     stream: &mut TcpStream,
     live: &Mutex<Live>,
+    push: &Mutex<crate::push::Gate<crate::push::Noop>>,
     cursor: &mut u64,
     now: u64,
 ) -> std::io::Result<()> {
@@ -968,6 +1024,7 @@ fn pump_events(
         if !live.state.deterministic {
             live.state.catch_up(now);
         }
+        lock_poison(push).poll(&live.state, now);
         let events = events_after(&live.state.history.events, *cursor);
         persist(save, &mut live, false).map_err(std::io::Error::other)?;
         events
@@ -1013,7 +1070,9 @@ pub fn run(args: &[String]) -> Result<(), ServeError> {
         cfg.serve_rate_limit,
         cfg.serve_rate_window_secs,
     );
-    let server = Server::open(ServeOptions { bind, save })?.with_auth(auth);
+    let server = Server::open(ServeOptions { bind, save })?
+        .with_auth(auth)
+        .with_push(crate::push::Settings::from_config(&cfg));
     let addr = server.local_addr()?;
     println!(
         "{}",
@@ -1118,6 +1177,24 @@ mod tests {
     }
 
     #[test]
+    fn with_push_arms_only_when_opt_in_and_vapid_are_set() {
+        let save = unique_save();
+        let off = ephemeral(save.clone());
+        assert!(!lock_poison(off.push.as_ref()).armed());
+        drop(off);
+        let on = ephemeral(save.clone()).with_push(crate::push::Settings {
+            opt_in: true,
+            vapid_private: "k".into(),
+            vapid_subject: "mailto:hoshi@localhost".into(),
+            endpoint: String::new(),
+        });
+        assert!(lock_poison(on.push.as_ref()).armed());
+        drop(on);
+        let _ = std::fs::remove_file(&save);
+        let _ = std::fs::remove_file(save_lock_path(&save));
+    }
+
+    #[test]
     fn default_bind_is_loopback() {
         let addr = parse_bind(DEFAULT_BIND).unwrap();
         assert!(addr.ip().is_loopback());
@@ -1175,7 +1252,14 @@ mod tests {
         let thread = std::thread::spawn(move || {
             let auth = Mutex::new(server.auth);
             let (stream, _) = server.listener.accept().unwrap();
-            serve_one(&server.save, stream, &auth, server.live.as_ref()).unwrap();
+            serve_one(
+                &server.save,
+                stream,
+                &auth,
+                server.live.as_ref(),
+                server.push.as_ref(),
+            )
+            .unwrap();
         });
         let (status, body) = get_path(addr, "/healthz").unwrap();
         assert_eq!(status, 200, "{body}");
@@ -1199,7 +1283,14 @@ mod tests {
         let thread = std::thread::spawn(move || {
             let auth = Mutex::new(server.auth);
             let (stream, _) = server.listener.accept().unwrap();
-            serve_one(&server.save, stream, &auth, server.live.as_ref()).unwrap();
+            serve_one(
+                &server.save,
+                stream,
+                &auth,
+                server.live.as_ref(),
+                server.push.as_ref(),
+            )
+            .unwrap();
         });
         let (status, body) = post_json(
             addr,

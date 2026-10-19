@@ -36,6 +36,8 @@
 
 - `hoshi serve` `GET /v1/events` is a WebSocket of build, research, fleet, and raid events. Reconnect with `?cursor=<id>` to replay missed rows. Unauthenticated sockets are refused. Same bearer as `/v1`. See `docs/server.md`.
 
+- `hoshi serve` opt-in web push for raid warnings and finished builds. Operator VAPID keys stay in runtime config, never the save. Off until the player opts in. Payloads are public `kind`/`title`/`body` only. See `docs/server.md`.
+
 - Shard player raids: a Chisei-hosted shard catches up both empires, then resolves against that snapshot with the same fleet combat as local play. Newbie protection and per-identity attack caps are enforced; plunder uses the defender share then cap. Local play is unchanged.
 
 - Shard anti-cheat gate: a Chisei-hosted shard applies commands on its own clock (client timestamps ignored), rejects unsigned or altered bridge pulses, and rate-limits commands per identity. Local play is unchanged.

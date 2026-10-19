@@ -12,6 +12,7 @@ mod hubs;
 mod keymap;
 mod notify;
 mod portraits;
+mod push;
 mod serve;
 mod title;
 mod ui;
