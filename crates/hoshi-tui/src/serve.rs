@@ -185,6 +185,17 @@ impl Auth {
         hits.push(now);
         Ok(())
     }
+
+    /// Bind a new secret to this process save. Never written to SQLite.
+    pub fn mint(&mut self, save: &Path, secret: String) {
+        if secret.is_empty() {
+            return;
+        }
+        self.tokens.push(ScopedToken {
+            secret,
+            save: save.to_path_buf(),
+        });
+    }
 }
 
 fn load_token_file(path: &Path) -> Vec<ScopedToken> {
@@ -269,6 +280,7 @@ pub struct Server {
     auth: Auth,
     live: Arc<Mutex<Live>>,
     push: Arc<Mutex<crate::push::Gate<crate::push::Noop>>>,
+    oidc: Arc<Mutex<crate::oidc::Gate>>,
 }
 
 impl Server {
@@ -299,6 +311,9 @@ impl Server {
             auth: Auth::empty(),
             live: Arc::new(Mutex::new(live)),
             push: Arc::new(Mutex::new(push)),
+            oidc: Arc::new(Mutex::new(crate::oidc::Gate::noop(
+                crate::oidc::Settings::default(),
+            ))),
         })
     }
 
@@ -316,16 +331,33 @@ impl Server {
         self
     }
 
+    pub fn with_oidc(mut self, settings: crate::oidc::Settings) -> Self {
+        self.oidc = Arc::new(Mutex::new(crate::oidc::Gate::noop(settings)));
+        self
+    }
+
+    #[cfg(test)]
+    pub fn with_oidc_exchange(
+        mut self,
+        settings: crate::oidc::Settings,
+        transport: Box<dyn crate::oidc::TokenExchange>,
+    ) -> Self {
+        self.oidc = Arc::new(Mutex::new(crate::oidc::Gate::new(settings, transport)));
+        self
+    }
+
     pub fn local_addr(&self) -> Result<SocketAddr, ServeError> {
         Ok(self.listener.local_addr()?)
     }
 
     /// Serve until the listener fails. Tests call [`serve_one`] instead.
     pub fn run(self) -> Result<(), ServeError> {
+        let bind = self.listener.local_addr()?;
         let save = Arc::new(self.save);
         let auth = Arc::new(Mutex::new(self.auth));
         let live = self.live;
         let push = self.push;
+        let oidc = self.oidc;
         let inflight = Arc::new(AtomicUsize::new(0));
         let stop = Arc::new(AtomicBool::new(false));
         if lock_poison(push.as_ref()).armed() {
@@ -367,12 +399,21 @@ impl Server {
             let auth = Arc::clone(&auth);
             let live = Arc::clone(&live);
             let push = Arc::clone(&push);
+            let oidc = Arc::clone(&oidc);
             let worker = Inflight(Arc::clone(&inflight));
             let _ = std::thread::Builder::new()
                 .name("hoshi-serve".into())
                 .spawn(move || {
                     let _worker = worker;
-                    let _ = serve_one(save.as_path(), stream, &auth, live.as_ref(), push.as_ref());
+                    let _ = serve_one(
+                        save.as_path(),
+                        stream,
+                        &auth,
+                        live.as_ref(),
+                        push.as_ref(),
+                        oidc.as_ref(),
+                        bind,
+                    );
                 });
         };
         stop.store(true, Ordering::SeqCst);
@@ -599,6 +640,7 @@ fn persist(save: &Path, live: &mut Live, force: bool) -> Result<(), ServeError> 
 fn status_phrase(status: u16) -> &'static str {
     match status {
         200 => "OK",
+        302 => "Found",
         400 => "Bad Request",
         401 => "Unauthorized",
         404 => "Not Found",
@@ -819,12 +861,37 @@ fn write_http(
     stream.write_all(&body)
 }
 
+fn callback_addr(stream: &TcpStream, bind: SocketAddr) -> SocketAddr {
+    concrete_socket(stream.local_addr().unwrap_or(bind))
+}
+
+fn concrete_socket(addr: SocketAddr) -> SocketAddr {
+    if !addr.ip().is_unspecified() {
+        return addr;
+    }
+    match addr {
+        SocketAddr::V6(v6) => SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, v6.port())),
+        SocketAddr::V4(v4) => SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, v4.port())),
+    }
+}
+
+fn write_redirect(stream: &mut TcpStream, location: &str) -> std::io::Result<()> {
+    let location = location.replace(['\r', '\n'], "");
+    let header = format!(
+        "HTTP/1.1 302 {}\r\nLocation: {location}\r\nCache-Control: no-store\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        status_phrase(302),
+    );
+    stream.write_all(header.as_bytes())
+}
+
 fn serve_one(
     save: &Path,
     mut stream: TcpStream,
     auth: &Mutex<Auth>,
     live: &Mutex<Live>,
     push: &Mutex<crate::push::Gate<crate::push::Noop>>,
+    oidc: &Mutex<crate::oidc::Gate>,
+    bind: SocketAddr,
 ) -> std::io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
@@ -886,6 +953,9 @@ fn serve_one(
         }
         return write_http(&mut stream, 200, &healthz_body(), "");
     }
+    if route == "/v1/oidc/start" || route == "/v1/oidc/callback" {
+        return serve_oidc(save, &mut stream, method, path, auth, oidc, bind);
+    }
     if route == "/v1/events" {
         if method != "GET" {
             return write_http(
@@ -935,6 +1005,93 @@ fn serve_one(
         result
     };
     write_http(&mut stream, status, &value, "")
+}
+
+fn serve_oidc(
+    save: &Path,
+    stream: &mut TcpStream,
+    method: &str,
+    path: &str,
+    auth: &Mutex<Auth>,
+    oidc: &Mutex<crate::oidc::Gate>,
+    bind: SocketAddr,
+) -> std::io::Result<()> {
+    let route = path.split('?').next().unwrap_or(path);
+    if method != "GET" {
+        return write_http(
+            stream,
+            405,
+            &error_body("invalid", "method not allowed"),
+            "",
+        );
+    }
+    let redirect = format!("http://{}/v1/oidc/callback", callback_addr(stream, bind));
+    if route == "/v1/oidc/start" {
+        let location = {
+            let mut oidc = lock_poison(oidc);
+            if !oidc.armed() {
+                return write_http(stream, 404, &error_body("invalid", "not found"), "");
+            }
+            let entropy = match crate::oidc::entropy() {
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    return write_http(stream, 500, &error_body("internal", "entropy failed"), "");
+                }
+            };
+            match oidc.start(&redirect, entropy) {
+                Ok(location) => location,
+                Err(_) => {
+                    return write_http(stream, 404, &error_body("invalid", "not found"), "");
+                }
+            }
+        };
+        return write_redirect(stream, &location);
+    }
+    let code = crate::oidc::query_value(path, "code").unwrap_or_default();
+    let state = crate::oidc::query_value(path, "state").unwrap_or_default();
+    {
+        let mut oidc = lock_poison(oidc);
+        if !oidc.armed() {
+            return write_http(stream, 404, &error_body("invalid", "not found"), "");
+        }
+        match oidc.callback(&code, &state, &redirect) {
+            Ok(_) => {}
+            Err(crate::oidc::CallbackError::Off) => {
+                return write_http(stream, 404, &error_body("invalid", "not found"), "");
+            }
+            Err(crate::oidc::CallbackError::Invalid) => {
+                return write_http(stream, 400, &error_body("invalid", "invalid"), "");
+            }
+            Err(_) => {
+                return write_http(
+                    stream,
+                    401,
+                    &error_body("unauthorized", "unauthorized"),
+                    "WWW-Authenticate: Bearer\r\n",
+                );
+            }
+        }
+    }
+    let secret = match crate::oidc::secret_entropy() {
+        Ok(bytes) => crate::oidc::secret_from_entropy(bytes),
+        Err(_) => {
+            return write_http(stream, 500, &error_body("internal", "entropy failed"), "");
+        }
+    };
+    {
+        let mut auth = lock_poison(auth);
+        auth.mint(save, secret.clone());
+    }
+    write_http(
+        stream,
+        200,
+        &json!({
+            "schema_version": crate::cli::SCHEMA_VERSION,
+            "ok": true,
+            "token": secret,
+        }),
+        "Cache-Control: no-store\r\n",
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1072,7 +1229,8 @@ pub fn run(args: &[String]) -> Result<(), ServeError> {
     );
     let server = Server::open(ServeOptions { bind, save })?
         .with_auth(auth)
-        .with_push(crate::push::Settings::from_config(&cfg));
+        .with_push(crate::push::Settings::from_config(&cfg))
+        .with_oidc(crate::oidc::Settings::from_config(&cfg));
     let addr = server.local_addr()?;
     println!(
         "{}",
@@ -1127,6 +1285,15 @@ mod tests {
         path: &str,
         authorization: Option<&str>,
     ) -> std::io::Result<(u16, String)> {
+        let (status, _headers, body) = get_full(addr, path, authorization)?;
+        Ok((status, body))
+    }
+
+    fn get_full(
+        addr: SocketAddr,
+        path: &str,
+        authorization: Option<&str>,
+    ) -> std::io::Result<(u16, String, String)> {
         let mut stream = TcpStream::connect(addr)?;
         stream.set_read_timeout(Some(Duration::from_secs(5)))?;
         stream.set_write_timeout(Some(Duration::from_secs(5)))?;
@@ -1145,13 +1312,23 @@ mod tests {
             .nth(1)
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-        let body = buf
-            .split("\r\n\r\n")
-            .nth(1)
-            .or_else(|| buf.split("\n\n").nth(1))
-            .unwrap_or("")
-            .to_string();
-        Ok((status, body))
+        let (headers, body) = match buf.split_once("\r\n\r\n") {
+            Some(pair) => pair,
+            None => buf.split_once("\n\n").unwrap_or((buf.as_str(), "")),
+        };
+        Ok((status, headers.to_string(), body.to_string()))
+    }
+
+    fn header_line(headers: &str, want: &str) -> Option<String> {
+        for line in headers.lines() {
+            let Some((name, value)) = line.split_once(':') else {
+                continue;
+            };
+            if name.eq_ignore_ascii_case(want) {
+                return Some(value.trim().to_string());
+            }
+        }
+        None
     }
 
     fn unique_save() -> PathBuf {
@@ -1192,6 +1369,96 @@ mod tests {
         drop(on);
         let _ = std::fs::remove_file(&save);
         let _ = std::fs::remove_file(save_lock_path(&save));
+    }
+
+    fn oidc_settings() -> crate::oidc::Settings {
+        crate::oidc::Settings {
+            opt_in: true,
+            issuer: "http://127.0.0.1/issuer".into(),
+            client_id: "hoshi".into(),
+            authorization: "http://127.0.0.1/authorize".into(),
+            token: "http://127.0.0.1/token".into(),
+        }
+    }
+
+    #[test]
+    fn oidc_off_leaves_bearer_unchanged_and_start_is_not_a_login() {
+        let save = unique_save();
+        seed_save(&save);
+        let server = ephemeral(save.clone());
+        let addr = spawn_run(server);
+        let (status, body) = get_path(addr, "/v1/oidc/start").unwrap();
+        assert_eq!(status, 404, "{body}");
+        let (status, body) =
+            get_path_auth(addr, "/v1/state", Some(&format!("Bearer {TEST_TOKEN}"))).unwrap();
+        assert_eq!(status, 200, "{body}");
+        let (status, body) = get_path(addr, "/v1/state").unwrap();
+        assert_eq!(status, 401, "{body}");
+        let _ = std::fs::remove_file(&save);
+        let _ = std::fs::remove_file(save_lock_path(&save));
+    }
+
+    #[test]
+    fn oidc_pkce_issues_a_save_scoped_token() {
+        let save = unique_save();
+        seed_save(&save);
+        let rec = std::sync::Arc::new(crate::oidc::Recording::default());
+        let server = ephemeral(save.clone())
+            .with_auth(Auth::empty())
+            .with_oidc_exchange(oidc_settings(), Box::new(std::sync::Arc::clone(&rec)));
+        let addr = spawn_run(server);
+        let (status, body) = get_path(addr, "/v1/state").unwrap();
+        assert_eq!(status, 401, "{body}");
+        let (status, headers, _body) = get_full(addr, "/v1/oidc/start", None).unwrap();
+        assert_eq!(status, 302, "{headers}");
+        let location = header_line(&headers, "location").expect("Location");
+        assert!(
+            location.contains("code_challenge_method=S256"),
+            "{location}"
+        );
+        assert!(location.contains("response_type=code"), "{location}");
+        let query = location.split_once('?').map(|(_, q)| q).unwrap_or("");
+        let state = crate::oidc::query_value(&format!("x?{query}"), "state").expect("state");
+        let challenge =
+            crate::oidc::query_value(&format!("x?{query}"), "code_challenge").expect("challenge");
+        let (status, body) = get_path(
+            addr,
+            &format!("/v1/oidc/callback?code=one-time&state={state}"),
+        )
+        .unwrap();
+        assert_eq!(status, 200, "{body}");
+        let value: Value = serde_json::from_str(body.trim()).unwrap();
+        assert_eq!(value["ok"], true);
+        let token = value["token"].as_str().expect("token").to_string();
+        assert!(!token.is_empty());
+        let req = rec
+            .last
+            .lock()
+            .expect("recording")
+            .clone()
+            .expect("exchanged");
+        assert_eq!(req.code, "one-time");
+        assert_eq!(crate::oidc::s256(&req.verifier), challenge);
+        let (status, body) =
+            get_path_auth(addr, "/v1/state", Some(&format!("Bearer {token}"))).unwrap();
+        assert_eq!(status, 200, "{body}");
+        let bytes = std::fs::read(&save).unwrap();
+        assert!(
+            !bytes.windows(token.len()).any(|w| w == token.as_bytes()),
+            "minted token must not land in the save"
+        );
+        let _ = std::fs::remove_file(&save);
+        let _ = std::fs::remove_file(save_lock_path(&save));
+    }
+
+    #[test]
+    fn oidc_callback_maps_unspecified_bind_to_loopback() {
+        let v4: SocketAddr = "0.0.0.0:8787".parse().unwrap();
+        assert_eq!(concrete_socket(v4), "127.0.0.1:8787".parse().unwrap());
+        let loopback: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        assert_eq!(concrete_socket(loopback), loopback);
+        let v6: SocketAddr = "[::]:8787".parse().unwrap();
+        assert_eq!(concrete_socket(v6), "[::1]:8787".parse().unwrap());
     }
 
     #[test]
@@ -1258,6 +1525,8 @@ mod tests {
                 &auth,
                 server.live.as_ref(),
                 server.push.as_ref(),
+                server.oidc.as_ref(),
+                addr,
             )
             .unwrap();
         });
@@ -1289,6 +1558,8 @@ mod tests {
                 &auth,
                 server.live.as_ref(),
                 server.push.as_ref(),
+                server.oidc.as_ref(),
+                addr,
             )
             .unwrap();
         });

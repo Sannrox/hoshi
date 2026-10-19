@@ -61,6 +61,16 @@ pub struct UserConfig {
     pub serve_vapid_subject: String,
     /// Push subscription endpoint. Empty skips a live POST.
     pub serve_push_endpoint: String,
+    /// Player opt-in for optional identity login. Off by default.
+    pub serve_oidc: bool,
+    /// Identity issuer URL. Runtime config, never the save.
+    pub serve_oidc_issuer: String,
+    /// Relying-party client id at the issuer.
+    pub serve_oidc_client_id: String,
+    /// Authorization endpoint. Empty keeps the flow off.
+    pub serve_oidc_authorization: String,
+    /// Token endpoint. Unused until a live exchange exists.
+    pub serve_oidc_token: String,
     pub keys: Keymap,
 }
 
@@ -111,6 +121,11 @@ impl Default for UserConfig {
             serve_vapid_private: String::new(),
             serve_vapid_subject: String::new(),
             serve_push_endpoint: String::new(),
+            serve_oidc: false,
+            serve_oidc_issuer: String::new(),
+            serve_oidc_client_id: String::new(),
+            serve_oidc_authorization: String::new(),
+            serve_oidc_token: String::new(),
             keys: Keymap::defaults(),
         }
     }
@@ -220,6 +235,15 @@ impl UserConfig {
                 "serve_push_endpoint" => {
                     cfg.serve_push_endpoint = value.trim_matches('"').to_string()
                 }
+                "serve_oidc" => cfg.serve_oidc = value == "true",
+                "serve_oidc_issuer" => cfg.serve_oidc_issuer = value.trim_matches('"').to_string(),
+                "serve_oidc_client_id" => {
+                    cfg.serve_oidc_client_id = value.trim_matches('"').to_string()
+                }
+                "serve_oidc_authorization" => {
+                    cfg.serve_oidc_authorization = value.trim_matches('"').to_string()
+                }
+                "serve_oidc_token" => cfg.serve_oidc_token = value.trim_matches('"').to_string(),
                 key if key.starts_with("keys.") => {
                     key_overrides.push((key[5..].to_string(), value.to_string()));
                 }
@@ -248,7 +272,7 @@ impl UserConfig {
             _ => String::new(),
         };
         let text = format!(
-            "reduced_motion = {}\nno_animation = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\narena = {}\nself_play = {}\nrivals = {}\nseason = {}\ndemo = {}\ngovernance = {}\nchisei = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}\ntutorial = {}\nreset_tutorial = {}\nnotify = {}\nnotify_build = {}\nnotify_raid = {}\nnotify_fleet = {}\ncommentary = {}\ncommentary_model_url = \"{}\"\nadvisor_model_url = \"{}\"\nadvisor_model_name = \"{}\"\nadvisor_allow_lan = {}\ncockpit_layout = \"{}\"\ncockpit_overview = \"{}\"\ncockpit_economy = \"{}\"\ncockpit_war = \"{}\"\ndetail_panel = {}\nserve_bind = \"{}\"\nserve_save = \"{}\"\nserve_token = \"{}\"\nserve_token_file = \"{}\"\nserve_rate_limit = {}\nserve_rate_window_secs = {}\nserve_push = {}\nserve_vapid_private = \"{}\"\nserve_vapid_subject = \"{}\"\nserve_push_endpoint = \"{}\"\n{quiet}{}\n",
+            "reduced_motion = {}\nno_animation = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\narena = {}\nself_play = {}\nrivals = {}\nseason = {}\ndemo = {}\ngovernance = {}\nchisei = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}\ntutorial = {}\nreset_tutorial = {}\nnotify = {}\nnotify_build = {}\nnotify_raid = {}\nnotify_fleet = {}\ncommentary = {}\ncommentary_model_url = \"{}\"\nadvisor_model_url = \"{}\"\nadvisor_model_name = \"{}\"\nadvisor_allow_lan = {}\ncockpit_layout = \"{}\"\ncockpit_overview = \"{}\"\ncockpit_economy = \"{}\"\ncockpit_war = \"{}\"\ndetail_panel = {}\nserve_bind = \"{}\"\nserve_save = \"{}\"\nserve_token = \"{}\"\nserve_token_file = \"{}\"\nserve_rate_limit = {}\nserve_rate_window_secs = {}\nserve_push = {}\nserve_vapid_private = \"{}\"\nserve_vapid_subject = \"{}\"\nserve_push_endpoint = \"{}\"\nserve_oidc = {}\nserve_oidc_issuer = \"{}\"\nserve_oidc_client_id = \"{}\"\nserve_oidc_authorization = \"{}\"\nserve_oidc_token = \"{}\"\n{quiet}{}\n",
             self.reduced_motion,
             self.no_animation,
             self.high_contrast,
@@ -290,6 +314,11 @@ impl UserConfig {
             self.serve_vapid_private.replace('"', ""),
             self.serve_vapid_subject.replace('"', ""),
             self.serve_push_endpoint.replace('"', ""),
+            self.serve_oidc,
+            self.serve_oidc_issuer.replace('"', ""),
+            self.serve_oidc_client_id.replace('"', ""),
+            self.serve_oidc_authorization.replace('"', ""),
+            self.serve_oidc_token.replace('"', ""),
             self.keys.to_config_lines().trim_end(),
         );
         std::fs::write(Self::path(dir), text)
@@ -396,6 +425,8 @@ mod tests {
         assert_eq!(again.serve_rate_limit, crate::serve::DEFAULT_RATE_LIMIT);
         assert!(!again.serve_push);
         assert!(again.serve_vapid_private.is_empty());
+        assert!(!again.serve_oidc);
+        assert!(again.serve_oidc_issuer.is_empty());
         assert!(!again.notify);
         assert!(again.commentary);
         assert_eq!(again.commentary_model_url, "http://127.0.0.1:8080/v1");
@@ -441,6 +472,27 @@ mod tests {
         let again = UserConfig::load(&dir);
         assert!(again.serve_push);
         assert_eq!(again.serve_vapid_private, "k");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn loads_serve_oidc() {
+        let dir = unique_dir();
+        std::fs::write(
+            UserConfig::path(&dir),
+            "serve_oidc = true\nserve_oidc_issuer = \"http://127.0.0.1/iss\"\nserve_oidc_client_id = \"hoshi\"\nserve_oidc_authorization = \"http://127.0.0.1/auth\"\nserve_oidc_token = \"http://127.0.0.1/token\"\n",
+        )
+        .unwrap();
+        let cfg = UserConfig::load(&dir);
+        assert!(cfg.serve_oidc);
+        assert_eq!(cfg.serve_oidc_issuer, "http://127.0.0.1/iss");
+        assert_eq!(cfg.serve_oidc_client_id, "hoshi");
+        assert_eq!(cfg.serve_oidc_authorization, "http://127.0.0.1/auth");
+        assert_eq!(cfg.serve_oidc_token, "http://127.0.0.1/token");
+        cfg.save(&dir).unwrap();
+        let again = UserConfig::load(&dir);
+        assert!(again.serve_oidc);
+        assert_eq!(again.serve_oidc_client_id, "hoshi");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

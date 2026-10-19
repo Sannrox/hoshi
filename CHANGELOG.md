@@ -38,6 +38,8 @@
 
 - `hoshi serve` opt-in web push for raid warnings and finished builds. Operator VAPID keys stay in runtime config, never the save. Off until the player opts in. Payloads are public `kind`/`title`/`body` only. See `docs/server.md`.
 
+- `hoshi serve` optional identity login (Authorization Code with PKCE). Off by default. A successful callback mints a save-scoped bearer token. Provider settings stay in runtime config, never the save. See `docs/server.md`.
+
 - Shard player raids: a Chisei-hosted shard catches up both empires, then resolves against that snapshot with the same fleet combat as local play. Newbie protection and per-identity attack caps are enforced; plunder uses the defender share then cap. Local play is unchanged.
 
 - Shard anti-cheat gate: a Chisei-hosted shard applies commands on its own clock (client timestamps ignored), rejects unsigned or altered bridge pulses, and rate-limits commands per identity. Local play is unchanged.

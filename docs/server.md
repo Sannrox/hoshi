@@ -32,6 +32,11 @@ serve_push = false
 serve_vapid_private = ""
 serve_vapid_subject = ""
 serve_push_endpoint = ""
+serve_oidc = false
+serve_oidc_issuer = ""
+serve_oidc_client_id = ""
+serve_oidc_authorization = ""
+serve_oidc_token = ""
 ```
 
 Empty `serve_bind` uses loopback port 8787. Empty `serve_save` uses the default
@@ -76,6 +81,32 @@ builds are seen without a connected client. The process does not add a TLS
 HTTP client; a transport is injected for tests.
 
 This is not the in-session WebSocket and not a shared-universe notifier.
+
+## Identity login
+
+Optional Authorization Code with PKCE (S256). Off until the operator opts in.
+Bearer tokens stay the default. Identity-provider settings are runtime config,
+never the save.
+
+- `HOSHI_SERVE_OIDC` or `serve_oidc`: opt-in (default off).
+- `HOSHI_SERVE_OIDC_ISSUER` / `serve_oidc_issuer`: issuer identifier.
+- `HOSHI_SERVE_OIDC_CLIENT_ID` / `serve_oidc_client_id`: relying-party id.
+- `HOSHI_SERVE_OIDC_AUTHORIZATION` / `serve_oidc_authorization`: authorization
+  endpoint. Incomplete settings leave the flow off even when opt-in is on.
+- `HOSHI_SERVE_OIDC_TOKEN` / `serve_oidc_token`: token endpoint. The process
+  does not add a TLS HTTP client; a token exchange is injected for tests.
+
+`GET /v1/oidc/start` redirects to the authorization endpoint with `state`,
+`nonce`, and a PKCE `code_challenge`. The callback URI is `http://<listen-address>/v1/oidc/callback` from the
+accepted socket (loopback when the process bound an unspecified address),
+not the request Host header. `GET /v1/oidc/callback` exchanges the code and
+mints a bearer secret scoped to this save. That secret is the same kind of
+token `/v1` already accepts. Anyone the configured issuer authenticates can
+mint one; the issuer's user set is the access list. Unauthenticated `/v1`
+game routes stay rejected. `/healthz` stays open. Callback JSON sets
+`Cache-Control: no-store`.
+
+This is not a shared-universe account system and does not replace bearer tokens.
 
 ## Lock
 
