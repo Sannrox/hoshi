@@ -49,7 +49,7 @@ impl Prefs {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kind {
+pub(crate) enum Kind {
     Build,
     Raid,
     Fleet,
@@ -58,9 +58,9 @@ enum Kind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Notice {
-    kind: Kind,
-    title: String,
-    body: String,
+    pub(crate) kind: Kind,
+    pub(crate) title: String,
+    pub(crate) body: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

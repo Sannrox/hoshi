@@ -28,6 +28,10 @@ serve_token = ""
 serve_token_file = ""
 serve_rate_limit = 60
 serve_rate_window_secs = 60
+serve_push = false
+serve_vapid_private = ""
+serve_vapid_subject = ""
+serve_push_endpoint = ""
 ```
 
 Empty `serve_bind` uses loopback port 8787. Empty `serve_save` uses the default
@@ -50,6 +54,28 @@ time. They are not written to SQLite.
 Rate limits are per token and per action path (`/v1/state`, `/v1/build`, …).
 The sliding window uses `serve_rate_limit` (default 60) and
 `serve_rate_window_secs` (default 60). A 429 response may include `Retry-After`.
+
+## Web push
+
+Raid warnings and finished builds, off until the player opts in and the
+operator sets VAPID keys. Keys never enter the save.
+
+- `HOSHI_SERVE_PUSH` or `serve_push`: player opt-in (default off).
+- `HOSHI_SERVE_VAPID_PRIVATE` / `serve_vapid_private` and
+  `HOSHI_SERVE_VAPID_SUBJECT` / `serve_vapid_subject`: operator VAPID private
+  key and contact URI (`mailto:` or `https:`). Incomplete keys send nothing
+  even when opt-in is on.
+- `HOSHI_SERVE_PUSH_ENDPOINT` / `serve_push_endpoint`: subscription URL the
+  player registered.
+
+Payloads use the same public build and raid text as the TUI (`kind`, `title`,
+`body`). They omit hidden simulation (`next_raid_at`, RNG, unrevealed map).
+Fleet returns stay off this channel. While opt-in and VAPID keys are set, the
+process catches up the save about once a second so raid warnings and finished
+builds are seen without a connected client. The process does not add a TLS
+HTTP client; a transport is injected for tests.
+
+This is not the in-session WebSocket and not a shared-universe notifier.
 
 ## Lock
 

@@ -53,6 +53,14 @@ pub struct UserConfig {
     pub serve_rate_limit: u32,
     /// Sliding window in seconds for serve rate limits.
     pub serve_rate_window_secs: u64,
+    /// Player opt-in for out-of-session web push. Off by default.
+    pub serve_push: bool,
+    /// Operator VAPID private key. Runtime config, never the save.
+    pub serve_vapid_private: String,
+    /// Operator VAPID contact URI (`mailto:` or `https:`).
+    pub serve_vapid_subject: String,
+    /// Push subscription endpoint. Empty skips a live POST.
+    pub serve_push_endpoint: String,
     pub keys: Keymap,
 }
 
@@ -99,6 +107,10 @@ impl Default for UserConfig {
             serve_token_file: String::new(),
             serve_rate_limit: crate::serve::DEFAULT_RATE_LIMIT,
             serve_rate_window_secs: crate::serve::DEFAULT_RATE_WINDOW_SECS,
+            serve_push: false,
+            serve_vapid_private: String::new(),
+            serve_vapid_subject: String::new(),
+            serve_push_endpoint: String::new(),
             keys: Keymap::defaults(),
         }
     }
@@ -198,6 +210,16 @@ impl UserConfig {
                         cfg.serve_rate_window_secs = n;
                     }
                 }
+                "serve_push" => cfg.serve_push = value == "true",
+                "serve_vapid_private" => {
+                    cfg.serve_vapid_private = value.trim_matches('"').to_string()
+                }
+                "serve_vapid_subject" => {
+                    cfg.serve_vapid_subject = value.trim_matches('"').to_string()
+                }
+                "serve_push_endpoint" => {
+                    cfg.serve_push_endpoint = value.trim_matches('"').to_string()
+                }
                 key if key.starts_with("keys.") => {
                     key_overrides.push((key[5..].to_string(), value.to_string()));
                 }
@@ -226,7 +248,7 @@ impl UserConfig {
             _ => String::new(),
         };
         let text = format!(
-            "reduced_motion = {}\nno_animation = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\narena = {}\nself_play = {}\nrivals = {}\nseason = {}\ndemo = {}\ngovernance = {}\nchisei = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}\ntutorial = {}\nreset_tutorial = {}\nnotify = {}\nnotify_build = {}\nnotify_raid = {}\nnotify_fleet = {}\ncommentary = {}\ncommentary_model_url = \"{}\"\nadvisor_model_url = \"{}\"\nadvisor_model_name = \"{}\"\nadvisor_allow_lan = {}\ncockpit_layout = \"{}\"\ncockpit_overview = \"{}\"\ncockpit_economy = \"{}\"\ncockpit_war = \"{}\"\ndetail_panel = {}\nserve_bind = \"{}\"\nserve_save = \"{}\"\nserve_token = \"{}\"\nserve_token_file = \"{}\"\nserve_rate_limit = {}\nserve_rate_window_secs = {}\n{quiet}{}\n",
+            "reduced_motion = {}\nno_animation = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\narena = {}\nself_play = {}\nrivals = {}\nseason = {}\ndemo = {}\ngovernance = {}\nchisei = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}\ntutorial = {}\nreset_tutorial = {}\nnotify = {}\nnotify_build = {}\nnotify_raid = {}\nnotify_fleet = {}\ncommentary = {}\ncommentary_model_url = \"{}\"\nadvisor_model_url = \"{}\"\nadvisor_model_name = \"{}\"\nadvisor_allow_lan = {}\ncockpit_layout = \"{}\"\ncockpit_overview = \"{}\"\ncockpit_economy = \"{}\"\ncockpit_war = \"{}\"\ndetail_panel = {}\nserve_bind = \"{}\"\nserve_save = \"{}\"\nserve_token = \"{}\"\nserve_token_file = \"{}\"\nserve_rate_limit = {}\nserve_rate_window_secs = {}\nserve_push = {}\nserve_vapid_private = \"{}\"\nserve_vapid_subject = \"{}\"\nserve_push_endpoint = \"{}\"\n{quiet}{}\n",
             self.reduced_motion,
             self.no_animation,
             self.high_contrast,
@@ -264,6 +286,10 @@ impl UserConfig {
             self.serve_token_file.replace('"', ""),
             self.serve_rate_limit,
             self.serve_rate_window_secs,
+            self.serve_push,
+            self.serve_vapid_private.replace('"', ""),
+            self.serve_vapid_subject.replace('"', ""),
+            self.serve_push_endpoint.replace('"', ""),
             self.keys.to_config_lines().trim_end(),
         );
         std::fs::write(Self::path(dir), text)
@@ -368,6 +394,8 @@ mod tests {
         assert_eq!(again.serve_save, "slot.sqlite");
         assert!(again.serve_token.is_empty());
         assert_eq!(again.serve_rate_limit, crate::serve::DEFAULT_RATE_LIMIT);
+        assert!(!again.serve_push);
+        assert!(again.serve_vapid_private.is_empty());
         assert!(!again.notify);
         assert!(again.commentary);
         assert_eq!(again.commentary_model_url, "http://127.0.0.1:8080/v1");
@@ -393,6 +421,26 @@ mod tests {
         assert_eq!(cfg.serve_token_file, "tokens.txt");
         assert_eq!(cfg.serve_rate_limit, 3);
         assert_eq!(cfg.serve_rate_window_secs, 9);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn loads_serve_push_and_vapid() {
+        let dir = unique_dir();
+        std::fs::write(
+            UserConfig::path(&dir),
+            "serve_push = true\nserve_vapid_private = \"k\"\nserve_vapid_subject = \"mailto:hoshi@localhost\"\nserve_push_endpoint = \"http://127.0.0.1/push\"\n",
+        )
+        .unwrap();
+        let cfg = UserConfig::load(&dir);
+        assert!(cfg.serve_push);
+        assert_eq!(cfg.serve_vapid_private, "k");
+        assert_eq!(cfg.serve_vapid_subject, "mailto:hoshi@localhost");
+        assert_eq!(cfg.serve_push_endpoint, "http://127.0.0.1/push");
+        cfg.save(&dir).unwrap();
+        let again = UserConfig::load(&dir);
+        assert!(again.serve_push);
+        assert_eq!(again.serve_vapid_private, "k");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
