@@ -11,6 +11,7 @@ mod detail_panel;
 mod hubs;
 mod keymap;
 mod notify;
+mod oidc;
 mod portraits;
 mod push;
 mod serve;
