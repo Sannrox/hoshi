@@ -176,11 +176,50 @@ impl Drop for TempDir {
 }
 
 fn tempfile_dist() -> TempDir {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let unique = NEXT.fetch_add(1, Ordering::Relaxed);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let path = std::env::temp_dir().join(format!("hoshi-formula-{}-{}", std::process::id(), nanos));
-    fs::create_dir_all(&path).unwrap();
+    let path = std::env::temp_dir().join(format!(
+        "hoshi-formula-{}-{nanos}-{unique}",
+        std::process::id()
+    ));
+    fs::create_dir(&path).unwrap();
     TempDir(path)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn deb_includes_man_and_shell_completions() {
+    let root = repo_root();
+    let dist = tempfile_dist();
+    let output = Command::new("bash")
+        .arg(root.join("scripts/build-deb.sh"))
+        .args(["v0.1.0", "amd64", env!("CARGO_BIN_EXE_hoshi")])
+        .arg(dist.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = Command::new("dpkg-deb")
+        .arg("--contents")
+        .arg(dist.path().join("hoshi_0.1.0_amd64.deb"))
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let contents = String::from_utf8(output.stdout).unwrap();
+    for path in [
+        "usr/share/man/man1/hoshi.1",
+        "usr/share/bash-completion/completions/hoshi",
+        "usr/share/zsh/vendor-completions/_hoshi",
+        "usr/share/fish/vendor_completions.d/hoshi.fish",
+    ] {
+        assert!(contents.contains(path), "missing {path}: {contents}");
+    }
 }

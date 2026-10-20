@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Human CLI help, man pages, shell completions, TUI command examples, and generated command documentation share one catalog.
+
 - Solar energy follows inverse-square orbital distance; colony forecasts and advice account for reduced outer-orbit output.
 
 ### Changed

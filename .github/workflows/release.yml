@@ -141,11 +141,13 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Stage command reference
+        run: cp docs/generated/hoshi.* dist/
       - name: Checksums
         working-directory: dist
         run: |
           set -euo pipefail
-          sha256sum hoshi-* hoshi_*.deb | tee SHA256SUMS
+          sha256sum hoshi-* hoshi_*.deb hoshi.1 hoshi.bash hoshi.zsh hoshi.fish | tee SHA256SUMS
       - name: Release notes
         run: |
           set -euo pipefail

@@ -202,6 +202,7 @@ pub struct Title {
     rename_to: String,
     play_path: Option<PathBuf>,
     help_open: bool,
+    help_commands: bool,
     keys_selected: usize,
     listening: bool,
     reset_confirm: Option<ResetConfirm>,
@@ -259,6 +260,7 @@ impl Title {
             rename_to: String::new(),
             play_path: None,
             help_open: false,
+            help_commands: false,
             keys_selected: 0,
             listening: false,
             reset_confirm: None,
@@ -434,6 +436,10 @@ impl Title {
 
     pub fn handle_key(&mut self, code: KeyCode) -> TitleAction {
         if self.help_open {
+            if matches!(code, KeyCode::Tab | KeyCode::BackTab) {
+                self.help_commands = !self.help_commands;
+                return TitleAction::None;
+            }
             if self.config.keys.matches(Binding::Quit, code) && self.page == Page::Menu {
                 return TitleAction::Quit;
             }
@@ -450,6 +456,7 @@ impl Title {
             && self.config.keys.lookup(self.help_context(), code) == Some(Binding::Help)
         {
             self.help_open = true;
+            self.help_commands = false;
             return TitleAction::None;
         }
         match self.page {
@@ -1447,7 +1454,7 @@ impl Title {
     }
 
     fn handle_settings(&mut self, code: KeyCode) -> TitleAction {
-        let items = 10;
+        let items = 11;
         match self.config.keys.lookup(HelpContext::TitleSettings, code) {
             Some(Binding::Cancel) => {
                 self.page = Page::Menu;
@@ -1488,6 +1495,11 @@ impl Title {
                         self.advisor_probe = None;
                         self.advisor_probe_status.clear();
                         self.status.clear();
+                        return TitleAction::None;
+                    }
+                    10 => {
+                        self.help_open = true;
+                        self.help_commands = false;
                         return TitleAction::None;
                     }
                     _ => {}
@@ -2106,6 +2118,7 @@ impl Title {
                 lines.push(menu_line("reset tutorial hints", self.selected == 7));
                 lines.push(menu_line("keybindings", self.selected == 8));
                 lines.push(menu_line("advisor model", self.selected == 9));
+                lines.push(menu_line("Help", self.selected == 10));
             }
             Page::Advisor => {
                 let endpoint = if self.advisor_editing && self.advisor_selected == 1 {
@@ -2328,10 +2341,15 @@ impl Title {
             frame.render_widget(Paragraph::new(lines).style(t.text()), inner);
         }
         if self.help_open {
-            let help = self
-                .config
-                .keys
-                .help_lines(self.help_context())
+            let mut help_lines = if self.help_commands {
+                crate::help::command_lines("bridge")
+            } else {
+                let mut lines = self.config.keys.help_lines(self.help_context());
+                lines.insert(0, "[Keys]   Commands".into());
+                lines
+            };
+            help_lines.push("tab page   ? close   esc close".into());
+            let help = help_lines
                 .into_iter()
                 .map(|line| Line::styled(line, t.text()))
                 .collect::<Vec<_>>();
@@ -2783,6 +2801,24 @@ mod tests {
         let path = dir.join(format!("{name}.sqlite"));
         let mut conn = open_save(&path).unwrap();
         save_state(&mut conn, state).unwrap();
+    }
+
+    #[test]
+    fn settings_help_opens_both_pages_without_opening_a_save() {
+        let dir = unique_dir();
+        let mut title = Title::new(dir.clone(), 1_000);
+        title.page = Page::Settings;
+        title.selected = 10;
+        title.handle_key(KeyCode::Enter);
+        assert!(render(&title, 80, 24).contains("[Keys]"));
+        title.handle_key(KeyCode::Tab);
+        let commands = render(&title, 80, 24);
+        for command in ["hoshi state", "hoshi advise", "hoshi goals"] {
+            assert!(commands.contains(command), "{commands}");
+        }
+        title.handle_key(KeyCode::Esc);
+        assert!(!title.help_open);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

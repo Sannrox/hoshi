@@ -133,14 +133,17 @@ jobs:
       GH_REPO: ${{ github.repository }}
       VERSION: ${{ needs.plan.outputs.version }}
     steps:
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v4
         with:
           path: dist
           pattern: nightly-*
           merge-multiple: true
+      - name: Stage command reference
+        run: cp docs/generated/hoshi.* dist/
       - name: Checksums
         working-directory: dist
-        run: sha256sum hoshi-* hoshi_*.deb | tee SHA256SUMS
+        run: sha256sum hoshi-* hoshi_*.deb hoshi.1 hoshi.bash hoshi.zsh hoshi.fish | tee SHA256SUMS
       - name: Release notes
         run: |
           set -euo pipefail

@@ -28,6 +28,10 @@ PKG="${STAGE}/hoshi_${VERSION}_${ARCH}"
 
 install -Dm755 "${BIN}" "${PKG}/usr/bin/hoshi"
 install -Dm644 "${ROOT}/LICENSE" "${PKG}/usr/share/doc/hoshi/copyright"
+install -Dm644 "${ROOT}/docs/generated/hoshi.1" "${PKG}/usr/share/man/man1/hoshi.1"
+install -Dm644 "${ROOT}/docs/generated/hoshi.bash" "${PKG}/usr/share/bash-completion/completions/hoshi"
+install -Dm644 "${ROOT}/docs/generated/hoshi.zsh" "${PKG}/usr/share/zsh/vendor-completions/_hoshi"
+install -Dm644 "${ROOT}/docs/generated/hoshi.fish" "${PKG}/usr/share/fish/vendor_completions.d/hoshi.fish"
 
 mkdir -p "${PKG}/DEBIAN"
 cat > "${PKG}/DEBIAN/control" << EOF

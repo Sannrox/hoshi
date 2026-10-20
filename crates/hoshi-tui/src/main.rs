@@ -8,6 +8,7 @@ mod cockpit;
 mod config;
 mod demo;
 mod detail_panel;
+mod help;
 mod hubs;
 mod keymap;
 mod notify;
@@ -51,6 +52,17 @@ fn write_notify(bytes: Vec<u8>) {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if let Some((output, exit)) = help::invocation(&args) {
+        let mut stdout = std::io::stdout();
+        if stdout
+            .write_all(output.as_bytes())
+            .and_then(|_| stdout.flush())
+            .is_err()
+        {
+            std::process::exit(cli::EXIT_INTERNAL);
+        }
+        std::process::exit(exit);
+    }
     if args.iter().any(|a| a == "--version" || a == "-V") {
         match option_env!("HOSHI_BUILD") {
             Some(build) => println!("hoshi {} ({build})", env!("CARGO_PKG_VERSION")),
