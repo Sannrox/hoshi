@@ -83,6 +83,14 @@ fn bash_completes_commands_flags_and_nested_help() {
             .lines()
             .any(|candidate| candidate == manifest.join("Cargo.toml").to_str().unwrap())
     );
+    let output = Command::new("bash").args(["-c", "source \"$1\"; COMP_WORDS=(hoshi --save = \"$2\"); COMP_CWORD=3; _hoshi; printf '%s\\n' \"${COMPREPLY[@]}\"", "_"]).arg(&script).arg(manifest.join("Cargo.t")).output().unwrap();
+    assert!(output.status.success());
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .any(|candidate| candidate == manifest.join("Cargo.toml").to_str().unwrap())
+    );
     let output = Command::new("bash").args(["-c", "source \"$1\"; COMP_WORDS=(hoshi automation add \"\"); COMP_CWORD=3; _hoshi; printf '%s\\n' \"${COMPREPLY[@]}\"", "_"]).arg(&script).output().unwrap();
     assert!(output.status.success());
     assert!(
