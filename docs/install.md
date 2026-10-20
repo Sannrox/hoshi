@@ -93,3 +93,32 @@ cargo install hoshi --locked
 ```
 
 Until then, use git, a GitHub Release binary, the Ubuntu package, or Homebrew.
+
+## Command help, man page and completions
+
+`hoshi --help` lists commands and launch flags. `hoshi help state`,
+`hoshi help fleet send`, and `hoshi serve --help` show usage and examples.
+In the TUI, `?` opens Keys; Tab switches to Commands for the current hub.
+Title Settings → Help opens the same two pages.
+
+Release assets include `hoshi.1`, `hoshi.bash`, `hoshi.zsh`, and `hoshi.fish`.
+Ubuntu packages install the man page and all three completion scripts.
+For another installation, generate the files from the installed binary:
+
+```sh
+hoshi help --man > hoshi.1
+man -l ./hoshi.1
+hoshi help --completions bash > hoshi.bash
+source ./hoshi.bash
+hoshi help --completions zsh > _hoshi
+hoshi help --completions fish > hoshi.fish
+```
+
+For persistent Bash completion, source `hoshi.bash` from your shell startup
+file. For Zsh, put `_hoshi` in a directory on `$fpath` before `compinit`.
+For Fish, put `hoshi.fish` in `~/.config/fish/completions/`.
+
+Contributors run `scripts/generate-help.sh` after editing the catalog.
+CI tests parser-valid examples, catalog coverage, golden help text, and drift
+in `docs/commands.md`, the man page, and completion scripts. Update and changelog
+entries are explicitly marked planned until their commands ship.

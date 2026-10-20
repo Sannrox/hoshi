@@ -1,0 +1,13 @@
+fleet send
+Dispatch ships on a mission.
+
+Usage: hoshi fleet send FROM TO MISSION SHIP:COUNT...
+
+Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair-play restrictions.
+
+Example:
+  hoshi fleet send home 1:1:2 expedition small_cargo:1
+
+Environment: HOSHI_SAVE, HOSHI_BALANCE
+Exit codes: 0 success; 2 invalid input; 3 action refused; 4 save locked; 5 internal or save error.
+

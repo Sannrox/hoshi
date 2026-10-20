@@ -1,5 +1,9 @@
 # Scriptable CLI
 
+The generated [command reference](commands.md) lists usage, examples, flags,
+environment variables and exit codes. Use `hoshi help` or `hoshi help TOPIC`
+for the same reference without opening a save.
+
 Harnesses and bots play through the same rules as the TUI. Every command prints
 JSON with `schema_version` 2 (see `docs/schema/cli-v1.json`). A breaking change
 bumps that version. Resource ids are `iron`, `silicon`, `rare_earths`,

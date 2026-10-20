@@ -1,0 +1,13 @@
+serve
+Serve a versioned HTTP and WebSocket API for one save.
+
+Usage: hoshi serve [--save PATH] [--bind ADDRESS:PORT] [--config DIR]
+
+Wraps one locked local save. Loopback binding is the default; authenticated remote actions use the same core rules. No automatic update request is made.
+
+Example:
+  hoshi serve --save game.sqlite
+
+Environment: HOSHI_SAVE, HOSHI_BALANCE, HOSHI_SERVE_TOKEN, HOSHI_SERVE_TOKEN_FILE, HOSHI_SERVE_PUSH, HOSHI_SERVE_PUSH_ENDPOINT, HOSHI_SERVE_VAPID_PRIVATE, HOSHI_SERVE_VAPID_SUBJECT, HOSHI_SERVE_OIDC, HOSHI_SERVE_OIDC_ISSUER, HOSHI_SERVE_OIDC_CLIENT_ID, HOSHI_SERVE_OIDC_AUTHORIZATION, HOSHI_SERVE_OIDC_TOKEN
+Exit codes: 0 success; 2 invalid input; 3 action refused; 4 save locked; 5 internal or save error.
+

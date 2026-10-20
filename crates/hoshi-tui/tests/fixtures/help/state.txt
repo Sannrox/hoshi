@@ -1,0 +1,13 @@
+state
+Read player-visible state.
+
+Usage: hoshi state [--as ACTOR]
+
+Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair-play restrictions.
+
+Example:
+  hoshi state
+
+Environment: HOSHI_SAVE, HOSHI_BALANCE
+Exit codes: 0 success; 2 invalid input; 3 action refused; 4 save locked; 5 internal or save error.
+

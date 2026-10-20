@@ -39,20 +39,23 @@ enum AutomationActionSpec {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Command {
+crate::help::catalog_commands! {
+    #[help("state", "Read player-visible state.", "state [--as ACTOR]", "state")]
     State {
         actor: Actor,
     },
+    #[help("intel", "Inspect observed intelligence.", "intel [COORD] [--as ACTOR]", "intel")]
     Intel {
         actor: Actor,
         target: Option<Coord>,
     },
+    #[help("intel provenance", "Trace the source of an intelligence field.", "intel provenance COORD FIELD [--as ACTOR]", "intel provenance 1:1:2 iron")]
     IntelProvenance {
         actor: Actor,
         target: Coord,
         field: String,
     },
+    #[help("classify", "Set a classification marking on an object.", "classify KIND ID --class CLASS [--compartment ID] [--as ACTOR]", "classify law 1 --class internal")]
     Classify {
         kind: ClassifiedKind,
         id: String,
@@ -60,91 +63,123 @@ enum Command {
         compartments: Vec<String>,
         actor: Actor,
     },
+    #[help("share", "Share classified information with a faction.", "share FACTION --class CLASS [--compartment ID]", "share traders --class open")]
     Share {
         faction: String,
         class: Classification,
         compartments: Vec<String>,
     },
+    #[help("incidents", "List incidents visible to an actor.", "incidents [--as ACTOR]", "incidents")]
     Incidents {
         actor: Actor,
     },
+    #[help("build", "Queue a building upgrade on an owned planet.", "build PLANET BUILDING [--as ACTOR]", "build home solar_plant")]
     Build {
         planet: Coord,
         building: BuildingKind,
         actor: Actor,
     },
+    #[help("research", "Start research through the ordinary rules path.", "research TECH", "research energy")]
     Research {
         tech: String,
     },
+    #[help("cancel", "Cancel queued construction or research.", "cancel QUEUE-ITEM", "cancel research")]
     Cancel {
         item: CancelItem,
     },
+    #[help("fleet send", "Dispatch ships on a mission.", "fleet send FROM TO MISSION SHIP:COUNT...", "fleet send home 1:1:2 expedition small_cargo:1")]
     FleetSend {
         from: Coord,
         to: Coord,
         mission: MissionKind,
         ships: Fleet,
     },
+    #[help("tick", "Advance a deterministic harness save.", "tick --advance DURATION", "tick --advance 60")]
     Tick {
         advance: u64,
     },
+    #[help("prestige", "Inspect legacy progress and bonuses.", "prestige", "prestige")]
     Prestige,
+    #[help("prestige buy", "Buy a permanent prestige bonus.", "prestige buy ID", "prestige buy mine_focus")]
     PrestigeBuy {
         id: String,
     },
+    #[help("prestige reset", "Reset the galaxy when prestige requirements are met.", "prestige reset", "prestige reset")]
     PrestigeReset,
+    #[help("goals", "Show victory goals and progress.", "goals", "goals")]
     Goals,
+    #[help("goals keep", "Continue playing after a victory.", "goals keep", "goals keep")]
     GoalsKeep,
+    #[help("automation", "List automation rules and progression.", "automation", "automation")]
     Automation,
+    #[help("automation dry-run", "Preview automation without applying actions.", "automation dry-run", "automation dry-run")]
     AutomationDryRun,
+    #[help("automation toggle", "Enable or disable an automation rule.", "automation toggle ID", "automation toggle 1")]
     AutomationToggle {
         id: u64,
     },
+    #[help("automation remove", "Remove an automation rule.", "automation remove ID", "automation remove 1")]
     AutomationRemove {
         id: u64,
     },
+    #[help("finance", "Inspect treasury and spending budgets.", "finance", "finance")]
     Finance,
+    #[help("finance set", "Set a spending-center limit.", "finance set CENTER LIMIT", "finance set construction 1000")]
     FinanceSet {
         center: String,
         limit: String,
     },
+    #[help("finance approve", "Approve a pending spending request.", "finance approve ID", "finance approve 1")]
     FinanceApprove {
         id: u64,
     },
+    #[help("kpis", "Inspect performance targets.", "kpis", "kpis")]
     Kpis,
+    #[help("kpis set", "Set a performance target for an owner.", "kpis set KPI VALUE [OWNER]", "kpis set energy_balance 10 empire")]
     KpisSet {
         kpi: String,
         value: String,
         owner: String,
     },
+    #[help("kpis report", "Read archived performance reports.", "kpis report", "kpis report")]
     KpisReport,
+    #[help("kpis generate", "Generate a performance report now.", "kpis generate", "kpis generate")]
     KpisGenerate,
+    #[help("incidents open", "Open an incident for investigation.", "incidents open KIND [SEVERITY]", "incidents open shortage low")]
     IncidentsOpen {
         kind: String,
         severity: String,
     },
+    #[help("incidents assign", "Assign an incident to a leader.", "incidents assign ID LEADER", "incidents assign 1 1")]
     IncidentsAssign {
         id: u64,
         leader: u64,
     },
+    #[help("incidents resolve", "Resolve an incident and record a note.", "incidents resolve ID [NOTE]", "incidents resolve 1 repaired")]
     IncidentsResolve {
         id: u64,
         note: String,
     },
+    #[help("incidents review", "Record a post-incident review.", "incidents review ID", "incidents review 1")]
     IncidentsReview {
         id: u64,
     },
+    #[help("maintenance", "Inspect asset health and work orders.", "maintenance", "maintenance")]
     Maintenance,
+    #[help("maintenance schedule", "Schedule time-based or usage-based maintenance.", "maintenance schedule ASSET-ID [time|usage]", "maintenance schedule 1 time")]
     MaintenanceSchedule {
         id: u64,
         plan: String,
     },
+    #[help("maintenance complete", "Complete a due work order.", "maintenance complete ORDER-ID", "maintenance complete 1")]
     MaintenanceComplete {
         id: u64,
     },
+    #[help("maintenance telemetry", "Read or export asset telemetry.", "maintenance telemetry [--export PATH]", "maintenance telemetry")]
     MaintenanceTelemetry {
         export: Option<PathBuf>,
     },
+    #[help("automation add", "Add a stock-triggered build or transfer rule.", "automation add CONDITION PLANET RESOURCE AMOUNT queue_build PLANET BUILDING", "automation add stock_below home iron 100 queue_build home metal_mine")]
     AutomationAdd {
         cond: String,
         planet: Coord,
@@ -152,75 +187,95 @@ enum Command {
         amount: String,
         action: AutomationActionSpec,
     },
+    #[help("law propose", "Propose a governed law change.", "law propose TEMPLATE [--param N] [--jurisdiction TARGET] [--effective DURATION]", "law propose emission_cap --param 0.8 --jurisdiction home")]
     LawPropose {
         template: String,
         param: Option<String>,
         jurisdiction: Option<String>,
         effective: u64,
     },
+    #[help("law approve", "Approve a proposed law.", "law approve ID", "law approve 1")]
     LawApprove {
         id: u64,
     },
+    #[help("law repeal", "Schedule the repeal of a law.", "law repeal ID [--effective DURATION]", "law repeal 1")]
     LawRepeal {
         id: u64,
         effective: u64,
     },
+    #[help("moon build", "Build a phalanx or jump gate on a moon.", "moon build PLANET FACILITY", "moon build home phalanx")]
     MoonBuild {
         planet: Coord,
         facility: MoonFacility,
     },
+    #[help("moon jump", "Move ships between ready jump gates.", "moon jump FROM TO SHIP:COUNT...", "moon jump home 1:1:2 small_cargo:1")]
     MoonJump {
         from: Coord,
         to: Coord,
         ships: Fleet,
     },
+    #[help("moon scan", "Read a moon phalanx scan.", "moon scan PLANET", "moon scan home")]
     MoonScan {
         planet: Coord,
     },
+    #[help("tutorial skip", "Hide tutorial hints for this save.", "tutorial skip", "tutorial skip")]
     TutorialSkip,
+    #[help("tutorial reset", "Restore tutorial hints.", "tutorial reset", "tutorial reset")]
     TutorialReset,
+    #[help("tactics set", "Set fleet formation, stance, or retreat threshold.", "tactics set [formation ID] [stance ID] [retreat FRACTION]", "tactics set formation neutral")]
     TacticsSet {
         formation: Option<String>,
         stance: Option<String>,
         retreat: Option<String>,
     },
+    #[help("tactics action", "Choose an action in a pending tactical battle.", "tactics action ACTION", "tactics action hold")]
     TacticsAction {
         action: RoundAction,
     },
+    #[help("feedback", "Record a playtest note.", "feedback [NOTE...]", "feedback build_queue_is_clear")]
     Feedback {
         note: String,
     },
+    #[help("advise", "Read suggestions without taking actions.", "advise", "advise")]
     Advise,
+    #[help("log", "Search history, inspect lineage, or export events.", "log [--type KIND] [--actor ID] [--object ID] [--from UNIX] [--to UNIX] [--lineage ID] [--at UNIX] [--export PATH]", "log")]
     Log {
         query: HistoryQuery,
         lineage: Option<u64>,
         as_of: Option<u64>,
         export: Option<PathBuf>,
     },
+    #[help("staff", "List leaders and assignments.", "staff", "staff")]
     Staff,
+    #[help("staff recruit", "Recruit a leader.", "staff recruit [--name TEXT] [--trait ID]", "staff recruit")]
     StaffRecruit {
         name: String,
         trait_id: String,
     },
+    #[help("staff assign", "Assign a leader to a role and target.", "staff assign ID ROLE [--target TARGET]", "staff assign 1 governor --target home")]
     StaffAssign {
         id: u64,
         role: RoleKind,
         target: AssignmentTarget,
     },
+    #[help("staff delegate", "Delegate a permission with an optional spending cap.", "staff delegate ID [--permission ID] [--cap N]", "staff delegate 1 --permission queue_build --cap 100")]
     StaffDelegate {
         id: u64,
         permission: Permission,
         cap: Option<String>,
     },
+    #[help("staff revoke", "Revoke delegated permissions.", "staff revoke ID [--permission ID]", "staff revoke 1")]
     StaffRevoke {
         id: u64,
         permission: Option<Permission>,
     },
+    #[help("staff clearance", "Set a leader clearance and compartments.", "staff clearance ID --class CLASS [--compartment ID]", "staff clearance 1 --class internal")]
     StaffClearance {
         id: u64,
         class: Classification,
         compartments: Vec<String>,
     },
+    #[help("arena run", "Run opted-in bots against deterministic simulations.", "arena run --seed N [--days N] [--actions N] [--timeout-ms N] [--board PATH] BOT...", "--arena arena run --seed 1 --days 1 bot")]
     ArenaRun {
         seed: Option<u64>,
         days: u32,
@@ -231,10 +286,12 @@ enum Command {
         opt_in: bool,
         backend: Option<bool>,
     },
+    #[help("arena board", "Show the opted-in bot leaderboard.", "arena board [--board PATH]", "--arena arena board")]
     ArenaBoard {
         board: PathBuf,
         opt_in: bool,
     },
+    #[help("self-play", "Run deterministic balance self-play.", "self-play [--matrix pr|nightly] [--seed N] [--report PATH] [--bots]", "--self-play self-play --matrix pr")]
     SelfPlay {
         matrix: String,
         seed: Option<u64>,
@@ -242,24 +299,30 @@ enum Command {
         opt_in: bool,
         bots: bool,
     },
+    #[help("demo governance", "Run the optional governed-action demonstration.", "demo governance --seed N [--report PATH]", "--demo demo governance --seed 1")]
     DemoGovernance {
         seed: Option<u64>,
         report: Option<PathBuf>,
         opt_in: bool,
     },
+    #[help("vehicle list", "List registered fleet vehicles.", "vehicle [list]", "vehicle list")]
     VehicleList,
+    #[help("vehicle register", "Register parked ships as a vehicle.", "vehicle register PLANET SHIP:COUNT...", "vehicle register home small_cargo:1")]
     VehicleRegister {
         planet: Coord,
         ships: Fleet,
     },
+    #[help("vehicle dissolve", "Return a registered vehicle to parked ships.", "vehicle dissolve ID", "vehicle dissolve 1")]
     VehicleDissolve {
         id: u64,
     },
+    #[help("mission windows", "Calculate transfer windows.", "mission windows FROM TO [--transfer KIND]", "mission windows home 1:1:2")]
     MissionWindows {
         from: Coord,
         to: Coord,
         transfer: TransferKind,
     },
+    #[help("mission plan", "Plan a vehicle delivery through a transfer window.", "mission plan TO --vehicle ID [--transfer KIND] [--customer ID] [--iron N] [--silicon N] [--deuterium N] [--window N]", "mission plan 1:1:2 --vehicle 1 --iron 10")]
     MissionPlan {
         to: Coord,
         vehicle: u64,
@@ -270,10 +333,13 @@ enum Command {
         deuterium: String,
         window: Option<usize>,
     },
+    #[help("mission schedule", "Show planned departures and arrivals.", "mission schedule", "mission schedule")]
     MissionSchedule,
+    #[help("market region", "Inspect a regional market and contracts.", "market [region [COORD]]", "market region")]
     MarketRegion {
         region: Option<Coord>,
     },
+    #[help("market order", "Place a regional buy or sell order.", "market order REGION buy|sell GOOD AMOUNT [--limit PRICE] [--ttl SECS]", "market order home buy iron 10")]
     MarketOrder {
         region: Coord,
         side: OrderSide,
@@ -282,12 +348,15 @@ enum Command {
         limit: Option<String>,
         ttl: Option<u64>,
     },
+    #[help("market contract accept", "Accept a market contract.", "market contract accept ID", "market contract accept 1")]
     MarketAccept {
         id: u64,
     },
+    #[help("market contract fulfil", "Fulfil an accepted market contract.", "market contract fulfil ID", "market contract fulfil 1")]
     MarketFulfil {
         id: u64,
     },
+    #[help("market ship", "Ship stock between owned planets.", "market ship FROM TO [--iron N] [--silicon N] [--deuterium N] [--contract ID]", "market ship home 1:1:2 --iron 10")]
     MarketShip {
         from: Coord,
         to: Coord,
@@ -296,54 +365,74 @@ enum Command {
         deuterium: String,
         contract: Option<u64>,
     },
+    #[help("market history", "Read or export market history.", "market history [COORD] [--export PATH]", "market history")]
     MarketHistory {
         region: Option<Coord>,
         export: Option<PathBuf>,
     },
+    #[help("species", "Inspect playable species and unlocks.", "species", "species")]
     Species,
+    #[help("species unlock", "Unlock a species using prestige.", "species unlock ID", "species unlock aurelian")]
     SpeciesUnlock {
         id: String,
     },
+    #[help("transmute", "Convert stock using the species transmutation action.", "transmute FROM TO AMOUNT", "transmute iron silicon 10")]
     Transmute {
         from: ResourceKind,
         to: ResourceKind,
         amount: String,
     },
+    #[help("brew", "Use the species brewing action.", "brew", "brew")]
     Brew,
+    #[help("flagship relocate", "Move the species flagship to a new orbit.", "flagship relocate COORD", "flagship relocate 1:1:2")]
     FlagshipRelocate {
         dest: Coord,
     },
+    #[help("flagship anchor", "Anchor the species flagship.", "flagship anchor", "flagship anchor")]
     FlagshipAnchor,
+    #[help("rivals", "Inspect known rival empires.", "rivals", "rivals")]
     Rivals,
+    #[help("frontier", "Inspect frontier unlocks and revealed worlds.", "frontier", "frontier")]
     Frontier,
+    #[help("blueprint list", "List saved planet blueprints.", "blueprint list", "blueprint list")]
     BlueprintList,
+    #[help("blueprint show", "Show a named planet blueprint.", "blueprint show NAME", "blueprint show mining")]
     BlueprintShow {
         name: String,
     },
+    #[help("blueprint capture", "Capture an owned planet as a blueprint.", "blueprint capture PLANET NAME", "blueprint capture home mining")]
     BlueprintCapture {
         planet: Coord,
         name: String,
     },
+    #[help("blueprint apply", "Queue a blueprint on an owned planet.", "blueprint apply NAME PLANET", "blueprint apply mining home")]
     BlueprintApply {
         planet: Coord,
         name: String,
     },
+    #[help("blueprint export", "Export a named blueprint.", "blueprint export NAME", "blueprint export mining")]
     BlueprintExport {
         name: String,
     },
+    #[help("blueprint import", "Import a blueprint file.", "blueprint import PATH", "blueprint import mining.json")]
     BlueprintImport {
         path: PathBuf,
     },
+    #[help("scenario create", "Fork a what-if scenario without changing live play.", "scenario create", "scenario create")]
     ScenarioCreate,
+    #[help("scenario queue build", "Queue a build on the sandbox copy.", "scenario queue build PLANET BUILDING [--as ACTOR]", "scenario queue build home solar_plant")]
     ScenarioQueueBuild {
         planet: Coord,
         building: BuildingKind,
         actor: Actor,
     },
+    #[help("scenario advance", "Fast-forward the sandbox copy.", "scenario advance DURATION", "scenario advance 60")]
     ScenarioAdvance {
         secs: u64,
     },
+    #[help("scenario compare", "Compare sandbox and baseline outcomes.", "scenario compare", "scenario compare")]
     ScenarioCompare,
+    #[help("scenario promote", "Promote planned actions through normal live rules.", "scenario promote", "scenario promote")]
     ScenarioPromote,
 }
 
@@ -4923,6 +5012,48 @@ mod tests {
     use super::*;
     use hoshi_core::{BuildError, load_state, open_save, save_state};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn catalog_examples_parse_without_actions() {
+        for topic in crate::help::topics()
+            .into_iter()
+            .filter(|t| t.area == "cli" && !["simulate", "post"].contains(&t.name))
+        {
+            let argv: Vec<_> = std::iter::once("hoshi")
+                .chain(topic.example.split_whitespace())
+                .map(str::to_owned)
+                .collect();
+            assert!(
+                parse_cli(&argv).is_ok(),
+                "invalid example for {}: {}",
+                topic.name,
+                topic.example
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_domain_examples_execute_with_supported_identifiers() {
+        for name in ["kpis set", "incidents open", "law propose", "prestige buy"] {
+            let topic = crate::help::topics()
+                .into_iter()
+                .find(|topic| topic.name == name)
+                .unwrap();
+            let argv: Vec<_> = std::iter::once("hoshi")
+                .chain(topic.example.split_whitespace())
+                .map(str::to_owned)
+                .collect();
+            let command = parse_cli(&argv).unwrap().command;
+            let mut state = GameState::new(0);
+            state.deterministic = true;
+            state.prestige.currency = 10;
+            assert!(
+                apply(&mut state, 0, &command, Path::new("unused")).is_ok(),
+                "{}",
+                topic.example
+            );
+        }
+    }
 
     fn unique_save(tag: &str) -> PathBuf {
         let nanos = SystemTime::now()

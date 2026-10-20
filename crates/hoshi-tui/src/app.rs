@@ -101,6 +101,7 @@ pub struct App {
     pub portraits: PortraitView,
     keymap: Keymap,
     help_open: bool,
+    help_commands: bool,
     screen: Screen,
     selected: usize,
     planet_index: usize,
@@ -172,6 +173,7 @@ impl App {
             portraits: PortraitView::default(),
             keymap,
             help_open: false,
+            help_commands: false,
             screen: Screen::Cockpit,
             selected: 0,
             planet_index: 0,
@@ -468,6 +470,10 @@ impl App {
         self.state.catch_up(now_unix);
         self.clamp_planet();
         if self.help_open {
+            if matches!(code, KeyCode::Tab | KeyCode::BackTab) {
+                self.help_commands = !self.help_commands;
+                return Action::None;
+            }
             if self.keymap.matches(Binding::Quit, code) {
                 return Action::Quit;
             }
@@ -515,6 +521,7 @@ impl App {
         let ctx = self.help_context();
         if self.keymap.lookup(ctx, code) == Some(Binding::Help) {
             self.help_open = true;
+            self.help_commands = false;
             return Action::None;
         }
         if self.replay.is_some() {
@@ -2624,6 +2631,13 @@ impl App {
         lines.insert(2, "Fe iron  Si silicon  REE rare earths".into());
         lines.insert(3, "H2O water ice  He3 helium-3  D deuterium".into());
         lines.insert(4, String::new());
+        if self.help_commands {
+            lines = crate::help::command_lines(&Hub::of(self.screen).title().to_ascii_lowercase());
+        } else {
+            if let Some(first) = lines.first_mut() {
+                first.push_str("   [Keys]   Commands");
+            }
+        }
         let t = &self.theme;
         let lines = lines
             .into_iter()
@@ -2634,7 +2648,10 @@ impl App {
             "Help",
             String::new(),
             lines,
-            &[(self.keymap.primary(Binding::Help), "close")],
+            &[
+                ("tab".into(), "page"),
+                (self.keymap.primary(Binding::Help), "close"),
+            ],
         );
     }
 
@@ -5190,6 +5207,25 @@ mod tests {
         let market = render_text(&app, 80, 24);
         assert!(market.contains("increase amount"), "{market}");
         assert!(!market.contains("send spy probe"), "{market}");
+        app.handle_key(KeyCode::Tab, 1_000);
+        let commands = render_text(&app, 80, 24);
+        assert!(commands.contains("hoshi market region"), "{commands}");
+        assert!(commands.contains("hoshi finance"), "{commands}");
+        assert!(commands.contains("hoshi kpis"), "{commands}");
+        app.handle_key(KeyCode::BackTab, 1_000);
+        assert!(render_text(&app, 80, 24).contains("increase amount"));
+        app.handle_key(KeyCode::Esc, 1_000);
+        app.open(Screen::Planet);
+        app.handle_key(KeyCode::Char('?'), 1_000);
+        app.handle_key(KeyCode::Tab, 1_000);
+        let colony = render_text(&app, 80, 24);
+        for command in [
+            "hoshi state",
+            "hoshi build home solar_plant",
+            "hoshi research energy",
+        ] {
+            assert!(colony.contains(command), "{colony}");
+        }
     }
 
     #[test]
