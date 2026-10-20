@@ -2844,6 +2844,7 @@ impl GameState {
             .config
             .solar_plant
             .energy_output(colony.buildings.solar_plant)
+            * self.config.orbits.solar_flux(colony.coord)
             * (1.0 + energy_t + bonus.energy + rare.energy).max(0.0);
         let consumed = self.config.energy_draw(&colony.buildings);
         let energy = if consumed <= 0.0 {
@@ -3315,7 +3316,7 @@ impl GameState {
         self.tech_modifier(kind) + self.planet_bonus(planet, kind)
     }
 
-    fn tech_modifier(&self, kind: ModifierKind) -> f64 {
+    pub(crate) fn tech_modifier(&self, kind: ModifierKind) -> f64 {
         self.tech_modifier_range(kind, self.last_tick_unix, self.last_tick_unix)
     }
 
@@ -4769,6 +4770,7 @@ impl GameState {
                         .config
                         .solar_plant
                         .energy_output(colony.buildings.solar_plant)
+                        * self.config.orbits.solar_flux(colony.coord)
                         * (1.0
                             + self.tech_modifier(ModifierKind::EnergyOutput)
                             + bonus.energy
@@ -5542,6 +5544,7 @@ impl GameState {
                 let produced = config
                     .solar_plant
                     .energy_output(colony.buildings.solar_plant)
+                    * config.orbits.solar_flux(colony.coord)
                     * (1.0 + energy_t + bonus.energy).max(0.0);
                 let consumed = config.energy_draw(&colony.buildings);
                 let energy = if consumed <= 0.0 {
@@ -5690,6 +5693,7 @@ impl GameState {
                     .config
                     .solar_plant
                     .energy_output(colony.buildings.solar_plant)
+                    * self.config.orbits.solar_flux(colony.coord)
                     * (1.0 + energy_t + bonus.energy + rare.energy).max(0.0);
                 let consumed = self.config.energy_draw(&colony.buildings);
                 let energy = if consumed <= 0.0 {
@@ -5851,7 +5855,13 @@ impl GameState {
         self.config
             .solar_plant
             .energy_output(self.buildings.solar_plant)
+            * self.config.orbits.solar_flux(self.home)
             * (1.0 + self.modifier(ModifierKind::EnergyOutput)).max(0.0)
+    }
+
+    /// Current solar output for an owned planet, including orbit and local modifiers.
+    pub fn energy_produced_at(&self, coord: Coord) -> Option<f64> {
+        Some(self.site_energy_produced(coord, *self.buildings_at(coord)?, self.planet_kind(coord)?))
     }
 
     pub fn energy_consumed(&self) -> f64 {

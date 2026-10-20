@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Solar energy follows inverse-square orbital distance; colony forecasts and advice account for reduced outer-orbit output.
+
 ### Changed
 
 - TUI redesign ("Slate"): play opens on the bridge dashboard: alert callouts, a star map and an upcoming timeline (next 60 minutes) beside queues and fleets, under a navbar and a resource strip (stock / cap with a fill bar and hourly rate, energy in/out, heat load). Screens are grouped into six hubs (bridge, colony, fleet, trade with market, finance and KPIs, empire with incidents, records) opened with 1-6; a hub opens as a centred window over the dimmed bridge (full screen below 120x40) with tabs, a subtitle (planet, kind, queue or active research), a footer note and its actions. Tab walks screens in hub order, shift+tab goes back, esc returns to the bridge (x still cancels). Buildings use a table with level, Fe/Si/D cost (red above stock), time and a status chip, with the inspector beside it: level tag, properties, cost bars, a now/next/delta effect table and requirements. The status bar shows the breadcrumb and the keys for the current screen. The per-planet glance lines above each screen are gone; `[`/`]` changes the window subtitle and the table. Colours adapt to truecolor, 256 or 16 colours and honour `NO_COLOR`; high contrast drops fills for plain text.

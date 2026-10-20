@@ -1203,7 +1203,8 @@ fn energy_ok_after(state: &GameState, extra: BuildingKind) -> bool {
     let produced = state
         .config
         .solar_plant
-        .energy_output(buildings.solar_plant);
+        .energy_output(buildings.solar_plant)
+        * state.config.orbits.solar_flux(state.home);
     let consumed = state.config.energy_draw(&buildings);
     consumed <= 0.0 || produced + 1e-9 >= consumed
 }

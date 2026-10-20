@@ -45,6 +45,11 @@ impl Default for OrbitConfig {
 }
 
 impl OrbitConfig {
+    /// Solar flux relative to 1 AU, using the same radii as mission planning.
+    pub fn solar_flux(&self, coord: Coord) -> f64 {
+        (self.au_metres / heliocentric_radius_m(coord, self)).powi(2)
+    }
+
     pub fn ve_for_drive(&self, drive: &str) -> f64 {
         match drive {
             "impulse_drive" => self.impulse_ve,

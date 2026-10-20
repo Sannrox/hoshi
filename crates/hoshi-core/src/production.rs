@@ -243,7 +243,7 @@ impl GameState {
         (rare.0 + bonus, rare.1 + bonus, rare.2 + bonus)
     }
 
-    fn site_energy_produced(
+    pub(crate) fn site_energy_produced(
         &self,
         coord: Coord,
         buildings: crate::Buildings,
@@ -262,7 +262,8 @@ impl GameState {
             .map(|r| r.energy)
             .unwrap_or(0.0);
         self.config.solar_plant.energy_output(buildings.solar_plant)
-            * (1.0 + self.modifier(crate::ModifierKind::EnergyOutput) + bonus.energy + rare)
+            * self.config.orbits.solar_flux(coord)
+            * (1.0 + self.tech_modifier(crate::ModifierKind::EnergyOutput) + bonus.energy + rare)
                 .max(0.0)
     }
 
@@ -563,6 +564,70 @@ mod tests {
         let mut cfg = chain_cfg();
         cfg.recipes.retain(|recipe| recipe.id != "extract");
         cfg
+    }
+
+    #[test]
+    fn orbital_solar_output_and_colony_advice() {
+        let mut cfg = test_config();
+        cfg.chains = ChainConfig::default();
+        let mut state = GameState::with_config(0, cfg);
+        let rated = state.config.solar_plant.energy_output(1);
+        state.buildings.solar_plant = 1;
+        close(state.energy_produced(), rated);
+        for (position, flux) in [(11, 0.25), (16, 0.16)] {
+            let coord = Coord {
+                galaxy: 1,
+                system: 1,
+                position,
+            };
+            for kind in [PlanetType::Rocky, PlanetType::Ice] {
+                let buildings = Buildings {
+                    solar_plant: 1,
+                    ..Buildings::default()
+                };
+                close(
+                    state.site_energy_produced(coord, buildings, kind),
+                    rated * flux * (1.0 + state.config.planet_types.get(kind).energy),
+                );
+            }
+        }
+        let coord = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 16,
+        };
+        state.colonies.push(Colony {
+            coord,
+            kind: PlanetType::Rocky,
+            size: 120,
+            resources: Resources::ZERO,
+            buildings: Buildings {
+                metal_mine: 1,
+                solar_plant: 1,
+                ..Buildings::default()
+            },
+            fleet: Fleet::default(),
+            defences: crate::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            rare: None,
+            goods: BTreeMap::new(),
+        });
+        let report = state.production_report();
+        close(report.energy_supply, state.energy_produced() + rated * 0.16);
+        assert!(
+            crate::advisor::advise(&state)
+                .iter()
+                .any(|a| a.id == "energy" && a.text.contains(&coord.to_string()))
+        );
+        let mut stepped = state.clone();
+        state.catch_up(3_600);
+        for now in 1..=3_600 {
+            stepped.catch_up(now);
+        }
+        close(
+            state.colonies[0].resources.iron,
+            stepped.colonies[0].resources.iron,
+        );
     }
 
     #[test]

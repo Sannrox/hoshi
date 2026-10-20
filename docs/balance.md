@@ -168,3 +168,8 @@ when a species or path is more than `dominance_max` faster than the median, or
 (nightly, three or more seeds) when one species takes more than `win_share_max`
 of the fastest finishes. Thresholds live in `balance.toml`.
 
+
+Solar output uses the orbital radius from `[orbits]`: rated output times
+`(1 AU / radius)^2`, followed by technology and planet modifiers. At 1 AU
+output is unchanged; at 2 AU it is 25%, and at 2.5 AU it is 16%. Ice worlds
+retain their additional 10% penalty. Existing colonies use this rule on load.

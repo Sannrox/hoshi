@@ -135,6 +135,11 @@ impl GameState {
             });
         }
         deltas.push(DeltaLine {
+            label: "energy output".into(),
+            from: format!("{:.1}", projected.energy_produced_at(planet)?),
+            to: format!("{:.1}", next_state.energy_produced_at(planet)?),
+        });
+        deltas.push(DeltaLine {
             label: "energy draw".into(),
             from: format!("{energy_now:.0}"),
             to: format!("{energy_next:.0}"),
