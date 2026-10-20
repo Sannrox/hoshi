@@ -588,6 +588,8 @@ mod tests {
             .next()
             .expect("revealed world")
             .clone();
+        // Supply ample energy at both radii to isolate the frontier production bonus.
+        frontier.config.solar_plant.base_energy /= frontier.config.orbits.solar_flux(world.coord);
         let buildings = crate::Buildings {
             metal_mine: 4,
             solar_plant: 6,
@@ -614,7 +616,7 @@ mod tests {
         };
         home.kind = world.kind;
         frontier.colonies.push(colony);
-        let mut baseline = GameState::with_seed(0, quiet(), 3);
+        let mut baseline = GameState::with_seed(0, frontier.config.clone(), 3);
         baseline.colonies.push(home);
         frontier.catch_up(3_600);
         baseline.catch_up(3_600);

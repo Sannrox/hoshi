@@ -521,8 +521,7 @@ impl GameState {
 
     fn energy_balance_at(&self, coord: Coord) -> Option<f64> {
         let buildings = self.buildings_at(coord)?;
-        let produced = self.config.solar_plant.energy_output(buildings.solar_plant)
-            * (1.0 + self.modifier(crate::ModifierKind::EnergyOutput)).max(0.0);
+        let produced = self.site_energy_produced(coord, *buildings, self.planet_kind(coord)?);
         let consumed = self.config.energy_draw(buildings)
             + if coord == self.home {
                 self.automation_control_energy()

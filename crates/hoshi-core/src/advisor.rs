@@ -83,17 +83,31 @@ fn endpoint_allowed(endpoint: &str, allow_lan: bool) -> bool {
 }
 
 fn push_energy(state: &GameState, out: &mut Vec<Advice>) {
-    if state.energy_factor() + 1e-12 >= 1.0 {
-        return;
+    for (coord, buildings, kind) in std::iter::once((state.home, state.buildings, state.home_kind))
+        .chain(
+            state
+                .colonies
+                .iter()
+                .map(|c| (c.coord, c.buildings, c.kind)),
+        )
+    {
+        let produced = state.site_energy_produced(coord, buildings, kind);
+        let consumed = state.config.energy_draw(&buildings)
+            + if coord == state.home {
+                state.automation_control_energy()
+            } else {
+                0.0
+            };
+        if produced + 1e-12 >= consumed {
+            continue;
+        }
+        out.push(Advice {
+            id: "energy",
+            text: format!(
+                "energy is short at {coord} ({produced:.0}/{consumed:.0}); upgrade the solar plant or idle a mine"
+            ),
+        });
     }
-    out.push(Advice {
-        id: "energy",
-        text: format!(
-            "energy is short ({:.0}/{:.0}); upgrade the solar plant or idle a mine",
-            state.energy_produced(),
-            state.energy_consumed()
-        ),
-    });
 }
 
 fn push_raid(state: &GameState, out: &mut Vec<Advice>) {

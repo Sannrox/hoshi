@@ -194,7 +194,6 @@ silent extra departure; they extend this list.
 | Regional shipments bill fuel and transit from a cargo-capacity flight but leave the parked fleet in place | They model contracted haulers rather than a second fleet object. Catch-up stays event-driven. |
 | Construction stockpiles are iron / silicon / rare earths / water ice / helium-3 / deuterium | Names match deposits and chain goods; deuterium is enriched fuel, not a third mystery column. |
 | Credits value a spend at the live market mid plus a flat energy_credit; interest is simple per period on negative cash | Budgeting needs one unit of account. Compound curves and inflation wait for reports (#116). |
-| Solar output ignores orbital radius | Energy is already a cap; radius falloff is a follow-up, not a hidden extra. |
 | Round-based combat with rapid-fire tables | Seeded, short, offline-safe fights. Map new stats onto energy and mass rather than replacing the resolver. |
 | Formation, stance and role modifiers | Light tactics scale the existing resolver; Neutral is identity. Battles never wait for input. |
 | Catch-up splits at storage-full and input-empty instants, ceiled to whole seconds | Offline gaps stay event-driven and sub-second; `add_capped` still stops exactly at the cap. |
@@ -209,7 +208,6 @@ silent extra departure; they extend this list.
 These live values disagree with the rules above. They are follow-up work, not
 silent exceptions. Do not "fix" them in an unrelated PR.
 
-- `[solar_plant]` energy does not fall with distance from the star.
 - `[flight]` lengths and `ships.toml` `speed` values are unitless points
   (`speed = 5000`–`12500`), not metres per second or a documented scale.
 - Fuel is a flat `fuel_distance` band plus a per-ship constant, not

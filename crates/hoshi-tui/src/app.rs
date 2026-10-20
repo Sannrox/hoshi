@@ -2732,6 +2732,12 @@ impl App {
             queue.len(),
             self.state.build_queue_cap()
         )));
+        if let Some(output) = self.state.energy_produced_at(coord) {
+            rows.push(Line::from(format!(
+                "Solar {output:.1}  flux {:.0}%",
+                self.state.config.orbits.solar_flux(coord) * 100.0
+            )));
+        }
         if let Some(rare) = self.state.rare_bonus_at(coord) {
             rows.push(Line::from(format!(
                 "Rare: {}  {}",
