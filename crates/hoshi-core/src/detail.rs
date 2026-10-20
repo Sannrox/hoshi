@@ -163,6 +163,19 @@ impl GameState {
                     met: actual >= required,
                 }
             })
+            .chain(
+                spec.tech_prerequisites
+                    .iter()
+                    .map(|prerequisite| RequirementLine {
+                        text: format!(
+                            "{} {} (have {})",
+                            prerequisite.id,
+                            prerequisite.level,
+                            self.tech_level(&prerequisite.id)
+                        ),
+                        met: self.tech_level(&prerequisite.id) >= prerequisite.level,
+                    }),
+            )
             .collect();
         Some(Detail {
             name: kind.to_string(),

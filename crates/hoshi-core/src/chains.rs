@@ -44,6 +44,8 @@ pub struct Recipe {
     pub deposit: Option<String>,
     pub inputs: BTreeMap<String, f64>,
     pub outputs: BTreeMap<String, f64>,
+    /// Additional electrical draw per building level.
+    pub energy: f64,
     /// Extra waste heat per hour at building level 1. Scaled by level.
     pub heat: f64,
     /// Extra pollution per hour at building level 1. Scaled by level.
@@ -107,6 +109,12 @@ impl ChainConfig {
         }
         let mut recipe_ids = BTreeSet::new();
         for recipe in &self.recipes {
+            if !recipe.energy.is_finite() || recipe.energy < 0.0 {
+                return Err(format!(
+                    "recipe {} energy must be finite and >= 0",
+                    recipe.id
+                ));
+            }
             if !recipe_ids.insert(recipe.id.as_str()) {
                 return Err(format!("duplicate recipe {}", recipe.id));
             }
@@ -481,6 +489,8 @@ struct FileRecipe {
     #[serde(default)]
     heat: f64,
     #[serde(default)]
+    energy: f64,
+    #[serde(default)]
     pollution: f64,
 }
 
@@ -512,6 +522,7 @@ impl FileChains {
                 deposit: row.deposit,
                 inputs: row.inputs,
                 outputs: row.outputs,
+                energy: row.energy,
                 heat: row.heat,
                 pollution: row.pollution,
             });
@@ -563,6 +574,7 @@ mod tests {
                     deposit: Some("iron_ore".into()),
                     inputs: BTreeMap::new(),
                     outputs: BTreeMap::from([("iron_ore".into(), 1.0)]),
+                    energy: 0.0,
                     heat: 0.0,
                     pollution: 0.0,
                 },
@@ -572,6 +584,7 @@ mod tests {
                     deposit: None,
                     inputs: BTreeMap::from([("iron_ore".into(), 1.0)]),
                     outputs: BTreeMap::from([("steel".into(), 1.0)]),
+                    energy: 0.0,
                     heat: 0.0,
                     pollution: 0.0,
                 },
@@ -581,6 +594,7 @@ mod tests {
                     deposit: None,
                     inputs: BTreeMap::from([("steel".into(), 1.0)]),
                     outputs: BTreeMap::from([("frames".into(), 1.0)]),
+                    energy: 0.0,
                     heat: 0.0,
                     pollution: 0.0,
                 },

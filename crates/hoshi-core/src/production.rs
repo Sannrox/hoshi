@@ -143,7 +143,7 @@ impl GameState {
         }
     }
 
-    fn flows_at(&self, coord: Coord) -> Vec<RecipeFlow> {
+    pub(crate) fn flows_at(&self, coord: Coord) -> Vec<RecipeFlow> {
         let Some(buildings) = self.buildings_at(coord).copied() else {
             return Vec::new();
         };
@@ -249,8 +249,19 @@ impl GameState {
         buildings: crate::Buildings,
         planet: crate::PlanetType,
     ) -> f64 {
+        self.site_solar_produced(coord, buildings, planet) + self.reactor_output_at(coord)
+    }
+
+    pub(crate) fn site_solar_produced(
+        &self,
+        coord: Coord,
+        buildings: crate::Buildings,
+        planet: crate::PlanetType,
+    ) -> f64 {
         if coord == self.home {
-            return self.energy_produced();
+            return self.config.solar_plant.energy_output(buildings.solar_plant)
+                * self.config.orbits.solar_flux(coord)
+                * (1.0 + self.modifier(crate::ModifierKind::EnergyOutput)).max(0.0);
         }
         let bonus = self.config.planet_types.get(planet);
         let rare = self
@@ -533,6 +544,7 @@ mod tests {
                     deposit: Some("iron_ore".into()),
                     inputs: BTreeMap::new(),
                     outputs: BTreeMap::from([("iron_ore".into(), 1.0)]),
+                    energy: 0.0,
                     heat: 0.0,
                     pollution: 0.0,
                 },
@@ -542,6 +554,7 @@ mod tests {
                     deposit: None,
                     inputs: BTreeMap::from([("iron_ore".into(), 1.0)]),
                     outputs: BTreeMap::from([("steel".into(), 1.0)]),
+                    energy: 0.0,
                     heat: 0.0,
                     pollution: 0.0,
                 },
@@ -551,6 +564,7 @@ mod tests {
                     deposit: None,
                     inputs: BTreeMap::from([("steel".into(), 1.0)]),
                     outputs: BTreeMap::from([("frames".into(), 1.0)]),
+                    energy: 0.0,
                     heat: 0.0,
                     pollution: 0.0,
                 },

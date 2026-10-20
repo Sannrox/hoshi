@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 45;
+pub const SCHEMA_VERSION: u32 = 46;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -236,6 +236,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM maintenance_orders;
          DELETE FROM maintenance_readings;
          DELETE FROM maintenance_predictions;
+         DELETE FROM reactor_shutdowns;
          DELETE FROM maintenance_meta;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
@@ -482,6 +483,12 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
     persist_kpi(&tx, state)?;
     persist_incidents(&tx, state)?;
     persist_maintenance(&tx, state)?;
+    for (coord, shutdown) in &state.reactor_shutdowns {
+        tx.execute(
+            "INSERT INTO reactor_shutdowns (galaxy, system, position, at, thermal_power) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![i64::from(coord.galaxy), i64::from(coord.system), i64::from(coord.position), shutdown.at as i64, shutdown.thermal_power],
+        )?;
+    }
     tx.execute(
         "INSERT INTO activity_boosts (id, prod_until, prod_factor, research_until, research_factor)
          VALUES (1, ?1, ?2, ?3, ?4)",
@@ -1945,6 +1952,39 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         });
     }
 
+    let mut shutdowns =
+        conn.prepare("SELECT galaxy, system, position, at, thermal_power FROM reactor_shutdowns")?;
+    let rows = shutdowns.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, f64>(4)?,
+        ))
+    })?;
+    for row in rows {
+        let (galaxy, system, position, at, thermal_power) = row?;
+        if !thermal_power.is_finite() || thermal_power < 0.0 {
+            return Err(SaveError::Corrupt("invalid reactor shutdown power"));
+        }
+        let coord = Coord {
+            galaxy: u16_coord(galaxy)?,
+            system: u16_coord(system)?,
+            position: u16_coord(position)?,
+        };
+        if state.buildings_at(coord).is_none() {
+            return Err(SaveError::Corrupt("reactor shutdown on unowned planet"));
+        }
+        state.reactor_shutdowns.insert(
+            coord,
+            crate::ReactorShutdown {
+                at: unix_ts(at)?,
+                thermal_power,
+            },
+        );
+    }
+
     state.activity = ActivityTracker::default();
     if let Some((prod_until, prod_factor, research_until, research_factor)) = conn
         .query_row(
@@ -2984,6 +3024,7 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "incident_rows" => "SELECT COUNT(*) FROM incident_rows",
         "incident_reviews" => "SELECT COUNT(*) FROM incident_reviews",
         "incident_risks" => "SELECT COUNT(*) FROM incident_risks",
+        "reactor_shutdowns" => "SELECT COUNT(*) FROM reactor_shutdowns",
         "maintenance_meta" => "SELECT COUNT(*) FROM maintenance_meta",
         "maintenance_assets" => "SELECT COUNT(*) FROM maintenance_assets",
         "maintenance_plans" => "SELECT COUNT(*) FROM maintenance_plans",
@@ -3097,6 +3138,7 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "incident_rows")?
         + count_rows(conn, "incident_reviews")?
         + count_rows(conn, "incident_risks")?
+        + count_rows(conn, "reactor_shutdowns")?
         + count_rows(conn, "maintenance_meta")?
         + count_rows(conn, "maintenance_assets")?
         + count_rows(conn, "maintenance_plans")?
@@ -3247,6 +3289,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 45 {
         migrate_v45(conn)?;
+    }
+    if found < 46 {
+        migrate_v46(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -4341,6 +4386,18 @@ fn migrate_v41(conn: &Connection) -> Result<(), SaveError> {
             credits REAL NOT NULL
         );
         ",
+    )?;
+    Ok(())
+}
+
+fn migrate_v46(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS reactor_shutdowns (
+            galaxy INTEGER NOT NULL, system INTEGER NOT NULL, position INTEGER NOT NULL,
+            at INTEGER NOT NULL CHECK (at >= 0),
+            thermal_power REAL NOT NULL CHECK (thermal_power >= 0),
+            PRIMARY KEY (galaxy, system, position)
+        );",
     )?;
     Ok(())
 }
@@ -9986,6 +10043,20 @@ mod tests {
         assert!(!loaded.maintenance.orders.is_empty() || !loaded.maintenance.readings.is_empty());
         assert_eq!(count_rows(&conn, "maintenance_meta").unwrap(), 1);
         assert!(count_rows(&conn, "maintenance_assets").unwrap() >= 1);
+    }
+
+    #[test]
+    fn migrate_v46_adds_empty_shutdown_state_to_previous_save() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let state = GameState::new(100);
+        save_state(&mut conn, &state).unwrap();
+        conn.execute_batch("DROP TABLE reactor_shutdowns; PRAGMA user_version = 45;")
+            .unwrap();
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap();
+        let loaded = load_state(&conn, state.config.clone()).unwrap();
+        assert!(loaded.reactor_shutdowns.is_empty());
+        assert_eq!(loaded.buildings, state.buildings);
     }
 
     #[test]

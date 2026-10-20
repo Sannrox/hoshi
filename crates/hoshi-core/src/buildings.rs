@@ -10,6 +10,7 @@ pub enum BuildingKind {
     CrystalMine,
     DeuteriumSynthesizer,
     SolarPlant,
+    FissionReactor,
     MetalStorage,
     CrystalStorage,
     DeuteriumStorage,
@@ -27,6 +28,7 @@ impl BuildingKind {
             BuildingKind::CrystalMine => "crystal_mine",
             BuildingKind::DeuteriumSynthesizer => "deuterium_synthesizer",
             BuildingKind::SolarPlant => "solar_plant",
+            BuildingKind::FissionReactor => "fission_reactor",
             BuildingKind::MetalStorage => "metal_storage",
             BuildingKind::CrystalStorage => "crystal_storage",
             BuildingKind::DeuteriumStorage => "deuterium_storage",
@@ -44,6 +46,7 @@ impl BuildingKind {
             "crystal_mine" => BuildingKind::CrystalMine,
             "deuterium_synthesizer" => BuildingKind::DeuteriumSynthesizer,
             "solar_plant" => BuildingKind::SolarPlant,
+            "fission_reactor" => BuildingKind::FissionReactor,
             "metal_storage" => BuildingKind::MetalStorage,
             "crystal_storage" => BuildingKind::CrystalStorage,
             "deuterium_storage" => BuildingKind::DeuteriumStorage,
@@ -56,11 +59,12 @@ impl BuildingKind {
         })
     }
 
-    pub const ALL: [BuildingKind; 12] = [
+    pub const ALL: [BuildingKind; 13] = [
         BuildingKind::MetalMine,
         BuildingKind::CrystalMine,
         BuildingKind::DeuteriumSynthesizer,
         BuildingKind::SolarPlant,
+        BuildingKind::FissionReactor,
         BuildingKind::MetalStorage,
         BuildingKind::CrystalStorage,
         BuildingKind::DeuteriumStorage,
@@ -79,6 +83,7 @@ impl fmt::Display for BuildingKind {
             BuildingKind::CrystalMine => "crystal mine",
             BuildingKind::DeuteriumSynthesizer => "deuterium synthesizer",
             BuildingKind::SolarPlant => "solar plant",
+            BuildingKind::FissionReactor => "fission reactor",
             BuildingKind::MetalStorage => "metal storage",
             BuildingKind::CrystalStorage => "crystal storage",
             BuildingKind::DeuteriumStorage => "deuterium storage",
@@ -98,6 +103,7 @@ pub struct Buildings {
     pub crystal_mine: u32,
     pub deuterium_synthesizer: u32,
     pub solar_plant: u32,
+    pub fission_reactor: u32,
     pub metal_storage: u32,
     pub crystal_storage: u32,
     pub deuterium_storage: u32,
@@ -115,6 +121,7 @@ impl Buildings {
             BuildingKind::CrystalMine => self.crystal_mine,
             BuildingKind::DeuteriumSynthesizer => self.deuterium_synthesizer,
             BuildingKind::SolarPlant => self.solar_plant,
+            BuildingKind::FissionReactor => self.fission_reactor,
             BuildingKind::MetalStorage => self.metal_storage,
             BuildingKind::CrystalStorage => self.crystal_storage,
             BuildingKind::DeuteriumStorage => self.deuterium_storage,
@@ -132,6 +139,7 @@ impl Buildings {
             BuildingKind::CrystalMine => self.crystal_mine = level,
             BuildingKind::DeuteriumSynthesizer => self.deuterium_synthesizer = level,
             BuildingKind::SolarPlant => self.solar_plant = level,
+            BuildingKind::FissionReactor => self.fission_reactor = level,
             BuildingKind::MetalStorage => self.metal_storage = level,
             BuildingKind::CrystalStorage => self.crystal_storage = level,
             BuildingKind::DeuteriumStorage => self.deuterium_storage = level,
@@ -178,6 +186,11 @@ pub enum BuildError {
         required: u32,
         actual: u32,
     },
+    MissingTechnology {
+        id: String,
+        required: u32,
+        actual: u32,
+    },
     EmptySlot {
         index: usize,
         len: usize,
@@ -213,6 +226,11 @@ impl fmt::Display for BuildError {
                 required,
                 actual,
             } => write!(f, "requires {building} level {required} (have {actual})"),
+            BuildError::MissingTechnology {
+                id,
+                required,
+                actual,
+            } => write!(f, "requires {id} level {required} (have {actual})"),
             BuildError::EmptySlot { index, len } => {
                 write!(f, "no build job at index {index} (queue length {len})")
             }

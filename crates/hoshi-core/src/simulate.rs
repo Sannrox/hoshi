@@ -57,6 +57,7 @@ pub struct DaySnapshot {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SimReport {
     pub days: u32,
+    pub first_reactor_secs: Option<u64>,
     pub first_upgrade_secs: Option<u64>,
     pub metal_mine_level: u32,
     pub metal_without_bridge: f64,
@@ -162,6 +163,13 @@ impl SimReport {
         let mut out = String::new();
         out.push_str("# Pacing report\n\n");
         out.push_str(&format!("Simulated days: {}\n", self.days));
+        let reactor = self
+            .first_reactor_secs
+            .map(|secs| format!("{:.2} hours", secs as f64 / 3600.0))
+            .unwrap_or_else(|| "not reached within 30 days".into());
+        out.push_str(&format!(
+            "First reactor, default-seed research-focused economy: {reactor}\n"
+        ));
         out.push_str("Strategy: greedy mines; solar when energy would go short. Raids off.\n\n");
         out.push_str("## Targets\n\n");
         out.push_str(&format!(
@@ -401,6 +409,7 @@ pub fn simulate_greedy(config: BalanceConfig, days: u32) -> SimReport {
     } else {
         None
     };
+    let first_reactor_secs = simulate_first_reactor(config.clone());
     let prestige_runs = vec![
         prestige_row(&quiet, 1, 0),
         prestige_row(&run_once(config.clone(), days, false, 1), 2, 1),
@@ -413,6 +422,7 @@ pub fn simulate_greedy(config: BalanceConfig, days: u32) -> SimReport {
     };
     SimReport {
         days,
+        first_reactor_secs,
         first_upgrade_secs: quiet.first_upgrade_secs,
         metal_mine_level: quiet.metal_mine,
         metal_without_bridge: quiet.iron,
@@ -796,6 +806,110 @@ fn requires_tech(state: &GameState, from: &str, want: &str) -> bool {
     false
 }
 
+/// Research-focused baseline: grow mines to 6/4/8, then save for the
+/// lab, energy research, fission research, and the first reactor.
+fn simulate_first_reactor(mut config: BalanceConfig) -> Option<u64> {
+    config.raid = crate::RaidConfig::inactive();
+    config.market.enabled = false;
+    let mut state = GameState::with_config(0, config);
+    let end = 30 * 86_400;
+    for _ in 0..10_000 {
+        if state.buildings.fission_reactor > 0 {
+            return Some(state.last_tick_unix);
+        }
+        if state.last_tick_unix >= end {
+            break;
+        }
+        let research_id = if state.tech_level("energy") < 3 {
+            "energy"
+        } else {
+            "fission"
+        };
+        if state.research.is_none() && state.tech_level("fission") == 0 {
+            let _ = state.start_research(research_id, state.last_tick_unix);
+        }
+        let mut wanted = None;
+        if state.build_queue.is_empty() {
+            wanted = [
+                (BuildingKind::MetalMine, 6),
+                (BuildingKind::CrystalMine, 4),
+                (BuildingKind::DeuteriumSynthesizer, 8),
+                (BuildingKind::ResearchLab, 3),
+            ]
+            .into_iter()
+            .find(|(kind, level)| state.buildings.get(*kind) < *level)
+            .map(|(kind, _)| kind);
+            if state.tech_level("fission") > 0 {
+                wanted = Some(BuildingKind::FissionReactor);
+            }
+            if state.energy_factor() < 0.5 {
+                wanted = Some(BuildingKind::SolarPlant);
+            } else if !heat_ok_after(&state, BuildingKind::MetalMine) {
+                wanted = Some(BuildingKind::Radiator);
+            } else if !pollution_ok_after(&state, BuildingKind::MetalMine) {
+                wanted = Some(BuildingKind::Scrubber);
+            }
+            if let Some(spec) = state.config.techs.get(research_id) {
+                let cost = spec.cost(state.tech_level(research_id));
+                for (resource, storage) in [
+                    (ResourceKind::Iron, BuildingKind::MetalStorage),
+                    (ResourceKind::Silicon, BuildingKind::CrystalStorage),
+                    (ResourceKind::Deuterium, BuildingKind::DeuteriumStorage),
+                ] {
+                    if cost.get(resource) > state.storage_cap(resource) {
+                        wanted = Some(storage);
+                    }
+                }
+            }
+            if let Some(kind) = wanted {
+                let cost = state.build_cost(kind);
+                for (resource, storage) in [
+                    (ResourceKind::Iron, BuildingKind::MetalStorage),
+                    (ResourceKind::Silicon, BuildingKind::CrystalStorage),
+                    (ResourceKind::Deuterium, BuildingKind::DeuteriumStorage),
+                ] {
+                    if cost.get(resource) > state.storage_cap(resource) {
+                        wanted = Some(storage);
+                    }
+                }
+            }
+            if let Some(kind) = wanted {
+                let _ = state.enqueue_build(kind, state.last_tick_unix);
+            }
+        }
+        let completion = state
+            .build_queue
+            .first()
+            .and_then(|job| job.completes_at)
+            .unwrap_or(end);
+        let research = state
+            .research
+            .as_ref()
+            .map(|job| job.completes_at)
+            .unwrap_or(end);
+        let build_afford = wanted.and_then(|kind| secs_until_afford(&state, kind));
+        let research_afford = state
+            .config
+            .techs
+            .get(research_id)
+            .and_then(|spec| secs_until_cost(&state, spec.cost(state.tech_level(research_id))));
+        let afford = build_afford
+            .into_iter()
+            .chain(research_afford)
+            .filter(|wait| *wait > 0)
+            .min()
+            .map(|wait| state.last_tick_unix.saturating_add(wait))
+            .unwrap_or(end);
+        let next = completion
+            .min(research)
+            .min(afford)
+            .min(end)
+            .max(state.last_tick_unix + 1);
+        state.catch_up(next);
+    }
+    None
+}
+
 fn simulate_frontier_unlock(mut config: BalanceConfig) -> Option<u64> {
     if config.frontier.sectors == 0 {
         return None;
@@ -849,6 +963,7 @@ fn fill_frontier_queue(state: &mut GameState) {
                 Err(BuildError::QueueFull { .. }) => return,
                 Err(BuildError::InsufficientResources { .. })
                 | Err(BuildError::MissingPrerequisite { .. })
+                | Err(BuildError::MissingTechnology { .. })
                 | Err(BuildError::EmptySlot { .. })
                 | Err(BuildError::UnknownPlanet)
                 | Err(BuildError::NeedLogistics)
@@ -1152,6 +1267,7 @@ fn fill_queue(state: &mut GameState) {
                 Err(BuildError::QueueFull { .. }) => return,
                 Err(BuildError::InsufficientResources { .. })
                 | Err(BuildError::MissingPrerequisite { .. })
+                | Err(BuildError::MissingTechnology { .. })
                 | Err(BuildError::EmptySlot { .. })
                 | Err(BuildError::UnknownPlanet)
                 | Err(BuildError::NeedLogistics)
@@ -1547,6 +1663,17 @@ fn finish_conquest(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_reactor_is_reachable_without_grants() {
+        let seconds =
+            simulate_first_reactor(BalanceConfig::default()).expect("reachable first reactor");
+        eprintln!(
+            "first reactor, default seed: {:.2} hours",
+            seconds as f64 / 3600.0
+        );
+        assert!(seconds > 0 && seconds < 30 * 86_400);
+    }
 
     #[test]
     fn greedy_first_upgrade_meets_target() {

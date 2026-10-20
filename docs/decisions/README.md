@@ -10,3 +10,4 @@
 | [0006](0006-storage-trait.md) | Persistence through a Storage trait | Accepted |
 | [0007](0007-optional-chisei-backend.md) | Optional in-process Chisei backend | Accepted |
 | [0008](0008-human-help-catalog.md) | Human help from the command catalog | Accepted |
+| [0009](0009-fission-lifecycle.md) | Fuelled fission lifecycle in core | Accepted |

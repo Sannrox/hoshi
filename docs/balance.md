@@ -173,3 +173,30 @@ Solar output uses the orbital radius from `[orbits]`: rated output times
 `(1 AU / radius)^2`, followed by technology and planet modifiers. At 1 AU
 output is unchanged; at 2 AU it is 25%, and at 2.5 AU it is 16%. Ice worlds
 retain their additional 10% penalty. Existing colonies use this rule on load.
+
+
+Fission requires `energy` level 3, a level-3 research lab, then `fission` level 1.
+A reactor costs 900 frames and 500 electronics, takes 600 seconds before robotics,
+and requires a level-2 lab. Cost and time grow by 1.8 per level. Electrical output
+starts at 60 and grows by 1.1, independent of orbit and planet modifiers.
+
+Rocky and ice deposits yield uranium ore (richness 0.30 and 0.05); gas giants
+have none. Metal mines extract ore at 0.05 per recipe unit. Fabrication in the reactor complex consumes
+0.05 ore for 0.005 reactor fuel, adds 8 electrical draw per reactor level, and 0.6
+recipe heat. Delivered electricity consumes 0.01 fuel per energy-hour and leaves
+the same mass of spent fuel. Each reactor level provides 30 units of on-site
+pool capacity. A full pool stops generation. Spent fuel is excluded from raid
+loot, as are all intermediate goods under the current resource-only raid rules.
+
+Reactors reject twice their electrical output as heat. Output is capped by the
+remaining heat sink, so a radiator's 40 cooling permits 20 additional electricity
+until rated output. Protective maintenance shutdowns preserve the building and
+retain decay heat across saves and repairs: initially 7% of rated thermal power,
+1% after a day, then declining. Near-cap operation adds heat wear. Reprocessing
+and breeding are outside this fuel cycle.
+
+The pacing report also runs a research-focused baseline for the first reactor:
+mines at levels 6/4/8, level-3 lab, energy level 3, then fission and construction. It uses
+the default seed, tolerates half power while saving for research, and stops after
+30 days; its hours are separate from the greedy mining targets. The default seed
+reaches the first reactor in 317.85 hours (13.24 days) with this strategy.
