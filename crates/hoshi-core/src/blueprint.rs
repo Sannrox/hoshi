@@ -76,7 +76,7 @@ impl fmt::Display for BlueprintError {
 }
 
 /// Power first, then extraction, buffers, industry. Shipyard stays after robotics.
-pub const APPLY_ORDER: [BuildingKind; 12] = [
+pub const APPLY_ORDER: [BuildingKind; 13] = [
     BuildingKind::SolarPlant,
     BuildingKind::Radiator,
     BuildingKind::Scrubber,
@@ -88,6 +88,7 @@ pub const APPLY_ORDER: [BuildingKind; 12] = [
     BuildingKind::DeuteriumStorage,
     BuildingKind::RoboticsFactory,
     BuildingKind::ResearchLab,
+    BuildingKind::FissionReactor,
     BuildingKind::Shipyard,
 ];
 

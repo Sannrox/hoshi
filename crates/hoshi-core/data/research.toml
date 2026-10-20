@@ -461,3 +461,18 @@ time_growth = 1.0
 prereq_buildings = [{ building = "research_lab", level = 1 }]
 prereq_techs = [{ id = "ancient_drive", level = 1 }]
 modifiers = [{ kind = "weapon_damage", per_level = 0.25 }]
+
+[[tech]]
+id = "fission"
+name = "Fission"
+branch = "industry"
+tier = 2
+iron = 0.0
+silicon = 1200.0
+deuterium = 400.0
+cost_growth = 2.0
+base_seconds = 600.0
+time_growth = 2.0
+prereq_buildings = [{ building = "research_lab", level = 3 }]
+prereq_techs = [{ id = "energy", level = 3 }]
+modifiers = []

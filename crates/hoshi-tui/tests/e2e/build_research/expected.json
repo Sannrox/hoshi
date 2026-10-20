@@ -19,6 +19,7 @@
     "crystal_storage": 0,
     "deuterium_storage": 0,
     "deuterium_synthesizer": 0,
+    "fission_reactor": 0,
     "metal_mine": 2,
     "metal_storage": 0,
     "radiator": 0,
@@ -267,6 +268,7 @@
       "ecology": 0,
       "energy": 1,
       "espionage": 0,
+      "fission": 0,
       "galactic_senate": 0,
       "hyperspace": 0,
       "hyperspace_drive": 0,
@@ -296,7 +298,7 @@
     "empires": [],
     "enabled": false
   },
-  "save_schema": 45,
+  "save_schema": 46,
   "schema_version": 2,
   "season": null,
   "species": null,
@@ -339,7 +341,7 @@
   "waste": {
     "heat_load": 23.4,
     "heat_sink": 84.0,
-    "pollution_load": 9.749999999999998,
+    "pollution_load": 10.149999999999999,
     "pollution_sink": 50.0,
     "unrest": 1.0,
     "warn": false

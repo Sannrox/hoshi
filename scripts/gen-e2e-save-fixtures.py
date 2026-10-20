@@ -1288,6 +1288,17 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             );
             """
         )
+    elif version == 45:
+        for column, sql in [
+            ("source", "ALTER TABLE spy_reports ADD COLUMN source TEXT NOT NULL DEFAULT 'probe'"),
+            ("observed_at", "ALTER TABLE spy_reports ADD COLUMN observed_at INTEGER NOT NULL DEFAULT 0"),
+            ("arrives_at", "ALTER TABLE spy_reports ADD COLUMN arrives_at INTEGER NOT NULL DEFAULT 0"),
+            ("confidence", "ALTER TABLE spy_reports ADD COLUMN confidence REAL NOT NULL DEFAULT 1"),
+            ("deceived", "ALTER TABLE spy_reports ADD COLUMN deceived INTEGER NOT NULL DEFAULT 0"),
+        ]:
+            add_column(conn, "spy_reports", column, sql)
+        conn.execute("UPDATE spy_reports SET observed_at = created_at WHERE observed_at = 0")
+        conn.execute("UPDATE spy_reports SET arrives_at = created_at WHERE arrives_at = 0")
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"

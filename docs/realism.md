@@ -70,8 +70,12 @@ Sources, with tradeoffs:
 | Fission | Dense, independent of sunlight. | Fuel and waste; finite stock unless bred. |
 | Fusion | High output; deuterium is common in ice, helium-3 is not. | Hard to light; helium-3 wants giant-planet or regolith infrastructure. |
 
-A solar plant that yields the same energy on every planet type is a known
-gap. Distance from the star should matter once travel already uses it.
+Solar follows the inverse-square orbital flux. Fission rejects twice its
+electrical output as heat and throttles to available cooling. Uranium enrichment
+loses most ore mass from the usable fuel stream; burned fuel becomes equal mass
+of spent fuel in an on-site pool. Protective shutdowns leave declining decay
+heat, initially 7% of rated thermal power and about 1% after a day. These are
+compressed engineering approximations, with no explosions or area damage.
 
 ## Propulsion and travel time
 

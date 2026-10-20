@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Human CLI help, man pages, shell completions, TUI command examples, and generated command documentation share one catalog.
+- Add fuelled fission reactors with research gating, cooling limits, spent-fuel pools, and persistent protective-shutdown heat.
 
 - Solar energy follows inverse-square orbital distance; colony forecasts and advice account for reduced outer-orbit output.
 

@@ -41,6 +41,7 @@ mod planets;
 mod planning;
 mod prestige;
 mod production;
+mod reactor;
 mod research;
 mod rivals;
 mod save;
@@ -260,3 +261,5 @@ pub use victory::{
 };
 pub use waste::{WasteConfig, WasteReport, report as waste_report};
 pub use wonders::{WonderError, WonderJob, WonderModifier, WonderSpec, WonderStage};
+
+pub use reactor::{ReactorConfig, ReactorShutdown};

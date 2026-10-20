@@ -578,7 +578,18 @@ kind = "component"
 id = "electronics"
 kind = "component"
 
+[[chains.goods]]
+id = "uranium_ore"
+kind = "raw"
+[[chains.goods]]
+id = "reactor_fuel"
+kind = "refined"
+[[chains.goods]]
+id = "spent_fuel"
+kind = "refined"
+
 [chains.deposits.rocky]
+uranium_ore = 0.30
 iron_ore = 1.10
 silicon = 1.10
 rare_earths = 1.05
@@ -586,6 +597,7 @@ water_ice = 0.20
 helium_3 = 0.10
 
 [chains.deposits.ice]
+uranium_ore = 0.05
 iron_ore = 0.20
 silicon = 0.20
 rare_earths = 0.10
@@ -593,6 +605,7 @@ water_ice = 1.25
 helium_3 = 0.40
 
 [chains.deposits.gas_giant]
+uranium_ore = 0.0
 iron_ore = 0.10
 silicon = 0.10
 rare_earths = 0.05
@@ -614,6 +627,23 @@ deposit = "rare_earths"
 outputs = { rare_earths = 0.15 }
 heat = 0.0
 pollution = 0.1
+
+[[chains.recipes]]
+id = "extract_uranium"
+building = "metal_mine"
+deposit = "uranium_ore"
+outputs = { uranium_ore = 0.05 }
+heat = 0.0
+pollution = 0.2
+
+[[chains.recipes]]
+id = "fabricate_fuel"
+building = "fission_reactor"
+inputs = { uranium_ore = 0.05 }
+outputs = { reactor_fuel = 0.005 }
+energy = 8.0
+heat = 0.6
+pollution = 0.0
 
 [[chains.recipes]]
 id = "smelt_steel"
@@ -778,3 +808,23 @@ hub_deuterium = 10000.0
 npc_order_size = 50.0
 contract_penalty = 0.2
 order_ttl_secs = 86400
+
+[fission_reactor]
+base_energy = 60.0
+growth = 1.1
+reactor_fuel_per_energy_hour = 0.01
+spent_fuel_per_level = 30.0
+waste_heat_per_energy = 2.0
+decay_initial_fraction = 0.07
+decay_day_fraction = 0.01
+decay_time_constant_secs = 3600.0
+
+[buildings.fission_reactor]
+frames = 900.0
+electronics = 500.0
+fuel = 0.0
+cost_growth = 1.8
+base_seconds = 600.0
+time_growth = 1.8
+prerequisites = [{ building = "research_lab", level = 2 }]
+tech_prerequisites = [{ id = "fission", level = 1 }]

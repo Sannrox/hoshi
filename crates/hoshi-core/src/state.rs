@@ -313,6 +313,7 @@ pub struct GameState {
     pub resources: Resources,
     /// Intermediate goods on the home planet. Construction parts stay in `resources`.
     pub goods: BTreeMap<String, f64>,
+    pub reactor_shutdowns: BTreeMap<Coord, crate::reactor::ReactorShutdown>,
     pub buildings: Buildings,
     pub build_queue: Vec<BuildJob>,
     pub tech_levels: BTreeMap<String, u32>,
@@ -441,6 +442,7 @@ impl GameState {
         let mut state = Self {
             resources: config.starting_resources,
             goods: BTreeMap::new(),
+            reactor_shutdowns: BTreeMap::new(),
             buildings: config.starting_buildings,
             build_queue: Vec::new(),
             tech_levels: BTreeMap::new(),
@@ -1415,6 +1417,16 @@ impl GameState {
         let spend = cost.iron + cost.silicon + cost.deuterium;
         self.authorize(actor, crate::Permission::QueueBuild, Some(coord), spend)
             .map_err(|err| BuildError::PermissionDenied(err.to_string()))?;
+        for prerequisite in &self.config.buildings.get(kind).tech_prerequisites {
+            let actual = self.tech_level(&prerequisite.id);
+            if actual < prerequisite.level {
+                return Err(BuildError::MissingTechnology {
+                    id: prerequisite.id.clone(),
+                    required: prerequisite.level,
+                    actual,
+                });
+            }
+        }
         let cap = self.build_queue_cap();
         let resources = if coord == self.home {
             self.resources
@@ -2845,16 +2857,15 @@ impl GameState {
             .solar_plant
             .energy_output(colony.buildings.solar_plant)
             * self.config.orbits.solar_flux(colony.coord)
-            * (1.0 + energy_t + bonus.energy + rare.energy).max(0.0);
+            * (1.0 + energy_t + bonus.energy + rare.energy).max(0.0)
+            + self.reactor_output_at(colony.coord);
         let consumed = self.config.energy_draw(&colony.buildings);
         let energy = if consumed <= 0.0 {
             1.0
         } else {
             (produced / consumed).clamp(0.0, 1.0)
         };
-        let factor = energy
-            * self.unrest_for(colony.buildings, colony.kind)
-            * self.emission_factor(colony.coord);
+        let factor = energy * self.unrest_for(colony.coord) * self.emission_factor(colony.coord);
         let boost = self.prod_boost_mult();
         let staff = self.governor_factor(colony.coord);
         if self.config.chains.enabled() {
@@ -4642,6 +4653,9 @@ impl GameState {
                     push(&mut soonest, (cap - have) / rate * 3600.0);
                 }
             }
+            if let Some(secs) = self.next_reactor_event_secs(coord) {
+                push(&mut soonest, secs);
+            }
             for secs in self.chain_input_empty_secs(coord) {
                 push(&mut soonest, secs);
             }
@@ -4751,12 +4765,9 @@ impl GameState {
     }
 
     fn chain_throttle_at(&self, coord: Coord) -> f64 {
-        let Some(buildings) = self.buildings_at(coord).copied() else {
+        if self.buildings_at(coord).is_none() {
             return 0.0;
-        };
-        let Some(kind) = self.planet_kind(coord) else {
-            return 0.0;
-        };
+        }
         let energy = if coord == self.home {
             self.energy_factor()
         } else {
@@ -4775,7 +4786,8 @@ impl GameState {
                             + self.tech_modifier(ModifierKind::EnergyOutput)
                             + bonus.energy
                             + rare.energy)
-                            .max(0.0);
+                            .max(0.0)
+                        + self.reactor_output_at(colony.coord);
                     let consumed = self.config.energy_draw(&colony.buildings);
                     if consumed <= 0.0 {
                         1.0
@@ -4788,7 +4800,7 @@ impl GameState {
         let unrest = if coord == self.home {
             self.unrest_factor()
         } else {
-            self.unrest_for(buildings, kind)
+            self.unrest_for(coord)
         };
         energy.max(0.0)
             * unrest.max(0.0)
@@ -5486,8 +5498,12 @@ impl GameState {
         let hours = (now_unix - from) as f64 / 3600.0;
         let before = self.resources;
         let colony_before: Vec<Resources> = self.colonies.iter().map(|c| c.resources).collect();
-        let factor = self.energy_factor()
-            * self.unrest_factor()
+        let reactor_power: Vec<_> = self
+            .owned_coords()
+            .into_iter()
+            .map(|coord| (coord, self.reactor_output_for_hours(coord, hours)))
+            .collect();
+        let factor = self.reactor_production_factor(self.home, hours)
             * self.emission_factor_range(self.home, from, now_unix);
         let boost = self.prod_boost_mult();
         let home_staff = self.governor_factor(self.home);
@@ -5509,9 +5525,16 @@ impl GameState {
             let metal_t = self.tech_modifier_range(ModifierKind::MetalOutput, from, now_unix);
             let crystal_t = self.tech_modifier_range(ModifierKind::CrystalOutput, from, now_unix);
             let deut_t = self.tech_modifier_range(ModifierKind::DeuteriumOutput, from, now_unix);
-            let energy_t = self.tech_modifier_range(ModifierKind::EnergyOutput, from, now_unix);
-            let heat_t = self.tech_modifier_range(ModifierKind::HeatSink, from, now_unix);
-            let pollution_t = self.tech_modifier_range(ModifierKind::PollutionSink, from, now_unix);
+            let colony_factors: Vec<_> = self
+                .colonies
+                .iter()
+                .map(|colony| {
+                    (
+                        colony.coord,
+                        self.reactor_production_factor(colony.coord, hours),
+                    )
+                })
+                .collect();
             let colony_emission: Vec<f64> = self
                 .colonies
                 .iter()
@@ -5541,28 +5564,11 @@ impl GameState {
                 .zip(colony_health)
             {
                 let bonus = config.planet_types.get(colony.kind);
-                let produced = config
-                    .solar_plant
-                    .energy_output(colony.buildings.solar_plant)
-                    * config.orbits.solar_flux(colony.coord)
-                    * (1.0 + energy_t + bonus.energy).max(0.0);
-                let consumed = config.energy_draw(&colony.buildings);
-                let energy = if consumed <= 0.0 {
-                    1.0
-                } else {
-                    (produced / consumed).clamp(0.0, 1.0)
-                };
-                let factor = energy
-                    * crate::waste::report(
-                        &config.waste,
-                        &config.chains.recipes,
-                        config.industry_energy(&colony.buildings),
-                        colony.buildings,
-                        colony.kind,
-                        heat_t,
-                        pollution_t,
-                    )
-                    .unrest_factor(config.waste.unrest_per_overflow)
+                let factor = colony_factors
+                    .iter()
+                    .find(|(coord, _)| *coord == colony.coord)
+                    .map(|(_, factor)| *factor)
+                    .unwrap_or(0.0)
                     * emission;
                 let metal_rate = config
                     .metal_mine
@@ -5617,6 +5623,36 @@ impl GameState {
         self.accrue_production_income(hours, produced);
         self.tick_flagship(now_unix);
         self.last_tick_unix = now_unix;
+        for (coord, power) in reactor_power {
+            if power <= 0.0 {
+                continue;
+            }
+            let burn = power * hours * self.config.fission_reactor.reactor_fuel_per_energy_hour;
+            let goods = if coord == self.home {
+                &mut self.goods
+            } else {
+                let Some(colony) = self.colonies.iter_mut().find(|c| c.coord == coord) else {
+                    continue;
+                };
+                &mut colony.goods
+            };
+            let fuel = goods.entry("reactor_fuel".into()).or_default();
+            *fuel = (*fuel - burn).max(0.0);
+            let empty = *fuel <= 1e-12;
+            let spent = goods.entry("spent_fuel".into()).or_default();
+            *spent += burn;
+            let spent = *spent;
+            let level = self
+                .buildings_at(coord)
+                .map(|b| b.fission_reactor)
+                .unwrap_or(0);
+            if (empty && self.reactor_output_at(coord) <= 1e-9)
+                || spent + 1e-12 >= self.config.fission_reactor.pool_capacity(level)
+            {
+                self.note_reactor_shutdown(coord, now_unix);
+            }
+        }
+        self.last_tick_unix = now_unix;
         self.trim_event_log();
         self.sync_daily(now_unix);
     }
@@ -5655,6 +5691,14 @@ impl GameState {
         );
         let home_yard = home_buildings.shipyard as f64;
         let home_staff = self.governor_factor(self.home);
+        let home_fabrication = self.recipe_building_scale(
+            home_buildings,
+            home_kind,
+            (0.0, 0.0, 0.0),
+            BuildingKind::FissionReactor,
+            (from, to),
+            self.home,
+        );
         apply_recipes(
             RecipeRun {
                 config: &chains,
@@ -5666,6 +5710,7 @@ impl GameState {
             },
             |kind| match kind {
                 BuildingKind::MetalMine => home_metal,
+                BuildingKind::FissionReactor => home_fabrication,
                 BuildingKind::CrystalMine => home_crystal,
                 BuildingKind::DeuteriumSynthesizer => home_deut,
                 BuildingKind::Shipyard => home_yard,
@@ -5687,22 +5732,7 @@ impl GameState {
             let snapshot = {
                 let colony = &self.colonies[i];
                 let rare = self.rare_bonus_for(colony);
-                let bonus = self.config.planet_types.get(colony.kind);
-                let energy_t = self.tech_modifier(ModifierKind::EnergyOutput);
-                let produced = self
-                    .config
-                    .solar_plant
-                    .energy_output(colony.buildings.solar_plant)
-                    * self.config.orbits.solar_flux(colony.coord)
-                    * (1.0 + energy_t + bonus.energy + rare.energy).max(0.0);
-                let consumed = self.config.energy_draw(&colony.buildings);
-                let energy = if consumed <= 0.0 {
-                    1.0
-                } else {
-                    (produced / consumed).clamp(0.0, 1.0)
-                };
-                let factor = energy
-                    * self.unrest_for(colony.buildings, colony.kind)
+                let factor = self.reactor_production_factor(colony.coord, hours)
                     * self.emission_factor_range(colony.coord, from, to);
                 (
                     colony.coord,
@@ -5762,6 +5792,14 @@ impl GameState {
             );
             let yard_s = buildings.shipyard as f64;
             let staff = self.governor_factor(coord);
+            let fabrication_s = self.recipe_building_scale(
+                buildings,
+                kind,
+                (rare_m, rare_c, rare_d),
+                BuildingKind::FissionReactor,
+                (from, to),
+                coord,
+            );
             let colony = &mut self.colonies[i];
             apply_recipes(
                 RecipeRun {
@@ -5774,6 +5812,7 @@ impl GameState {
                 },
                 |b| match b {
                     BuildingKind::MetalMine => metal_s,
+                    BuildingKind::FissionReactor => fabrication_s,
                     BuildingKind::CrystalMine => crystal_s,
                     BuildingKind::DeuteriumSynthesizer => deut_s,
                     BuildingKind::Shipyard => yard_s,
@@ -5845,6 +5884,16 @@ impl GameState {
                         + self.planet_bonus(planet, ModifierKind::DeuteriumOutput)
                         + extra_deut)
             }
+            BuildingKind::FissionReactor => {
+                self.recipe_building_scale(
+                    buildings,
+                    planet,
+                    extra,
+                    BuildingKind::MetalMine,
+                    span,
+                    coord,
+                ) * f64::from(buildings.fission_reactor)
+            }
             BuildingKind::Shipyard => buildings.shipyard as f64,
             _ => 0.0,
         };
@@ -5857,9 +5906,10 @@ impl GameState {
             .energy_output(self.buildings.solar_plant)
             * self.config.orbits.solar_flux(self.home)
             * (1.0 + self.modifier(ModifierKind::EnergyOutput)).max(0.0)
+            + self.reactor_output_at(self.home)
     }
 
-    /// Current solar output for an owned planet, including orbit and local modifiers.
+    /// Current total electrical output for an owned planet, including orbit and local modifiers.
     pub fn energy_produced_at(&self, coord: Coord) -> Option<f64> {
         Some(self.site_energy_produced(coord, *self.buildings_at(coord)?, self.planet_kind(coord)?))
     }
@@ -5869,10 +5919,24 @@ impl GameState {
     }
 
     pub fn waste_home(&self) -> crate::WasteReport {
-        self.waste_for(self.buildings, self.home_kind)
+        self.waste_at(self.home)
+            .unwrap_or_else(|| self.waste_for(self.buildings, self.home_kind))
     }
 
     pub fn waste_at(&self, coord: Coord) -> Option<crate::WasteReport> {
+        let mut report = self.base_waste_at(coord)?;
+        if self.buildings_at(coord)?.fission_reactor == 0
+            && !self.reactor_shutdowns.contains_key(&coord)
+        {
+            return Some(report);
+        }
+        report.heat_load += self.reactor_output_at(coord)
+            * self.config.fission_reactor.waste_heat_per_energy
+            + self.reactor_decay_heat_at(coord);
+        Some(report)
+    }
+
+    pub(crate) fn base_waste_at(&self, coord: Coord) -> Option<crate::WasteReport> {
         Some(self.waste_for(*self.buildings_at(coord)?, self.planet_kind(coord)?))
     }
 
@@ -5889,7 +5953,7 @@ impl GameState {
     }
 
     pub fn unrest_factor(&self) -> f64 {
-        self.unrest_for(self.buildings, self.home_kind)
+        self.unrest_for(self.home)
     }
 
     /// Production throttle from an emission-cap law. `1.0` when no cap is in force.
@@ -6116,9 +6180,10 @@ impl GameState {
         Ok(())
     }
 
-    fn unrest_for(&self, buildings: Buildings, planet: PlanetType) -> f64 {
-        self.waste_for(buildings, planet)
-            .unrest_factor(self.config.waste.unrest_per_overflow)
+    fn unrest_for(&self, coord: Coord) -> f64 {
+        self.waste_at(coord)
+            .map(|report| report.unrest_factor(self.config.waste.unrest_per_overflow))
+            .unwrap_or(1.0)
     }
 
     /// Produced minus consumed. Negative when mines draw more than the plant supplies.
@@ -6138,8 +6203,11 @@ impl GameState {
     }
 
     pub fn energy_factor(&self) -> f64 {
+        self.energy_factor_for(self.energy_produced())
+    }
+
+    pub(crate) fn energy_factor_for(&self, produced: f64) -> f64 {
         let consumed = self.energy_consumed();
-        let produced = self.energy_produced();
         let base = if consumed <= 0.0 {
             1.0
         } else {
@@ -6216,6 +6284,14 @@ impl GameState {
             site.coord,
         );
         let yard_s = site.buildings.shipyard as f64;
+        let fabrication_s = self.recipe_building_scale(
+            site.buildings,
+            site.planet,
+            extra,
+            BuildingKind::FissionReactor,
+            (now, now),
+            site.coord,
+        );
         apply_recipes(
             RecipeRun {
                 config: &self.config.chains,
@@ -6227,6 +6303,7 @@ impl GameState {
             },
             |b| match b {
                 BuildingKind::MetalMine => metal_s,
+                BuildingKind::FissionReactor => fabrication_s,
                 BuildingKind::CrystalMine => crystal_s,
                 BuildingKind::DeuteriumSynthesizer => deut_s,
                 BuildingKind::Shipyard => yard_s,
@@ -6646,6 +6723,7 @@ mod tests {
                 base_energy: 20.0,
                 growth: 1.0,
             },
+            fission_reactor: crate::ReactorConfig::default(),
             metal_storage: crate::StorageSpec {
                 base: 1_000.0,
                 growth: 2.0,
@@ -6672,6 +6750,7 @@ mod tests {
                 shipyard: 0,
                 radiator: 0,
                 scrubber: 0,
+                fission_reactor: 0,
             },
             buildings: crate::BuildingCatalog::default(),
             max_build_queue: 5,
@@ -6782,7 +6861,7 @@ mod tests {
 
         let mut ok = raw.clone();
         ok.buildings.radiator = 5;
-        ok.buildings.scrubber = 2;
+        ok.buildings.scrubber = 3;
         assert!(!ok.waste_home().overflowing());
         close(ok.unrest_factor(), 1.0);
         assert!(ok.production_per_hour(ResourceKind::Iron) > quiet);
@@ -6819,6 +6898,7 @@ mod tests {
                     deposit: Some("iron_ore".into()),
                     inputs: BTreeMap::new(),
                     outputs: BTreeMap::from([("iron_ore".into(), 1.0)]),
+                    energy: 0.0,
                     heat: 0.0,
                     pollution: 0.0,
                 },
@@ -6828,6 +6908,7 @@ mod tests {
                     deposit: None,
                     inputs: BTreeMap::from([("iron_ore".into(), 1.0)]),
                     outputs: BTreeMap::from([("steel".into(), 1.0)]),
+                    energy: 0.0,
                     heat: 0.0,
                     pollution: 0.0,
                 },
@@ -6837,6 +6918,7 @@ mod tests {
                     deposit: None,
                     inputs: BTreeMap::from([("steel".into(), 1.0)]),
                     outputs: BTreeMap::from([("frames".into(), 1.0)]),
+                    energy: 0.0,
                     heat: 0.0,
                     pollution: 0.0,
                 },
@@ -7042,6 +7124,7 @@ mod tests {
                 deposit: None,
                 inputs: BTreeMap::new(),
                 outputs: BTreeMap::from([("frames".into(), 1.0)]),
+                energy: 0.0,
                 heat: 0.0,
                 pollution: 0.0,
             }],
@@ -7086,6 +7169,7 @@ mod tests {
                     deposit: Some("iron_ore".into()),
                     inputs: BTreeMap::new(),
                     outputs: BTreeMap::from([("iron_ore".into(), 1.0)]),
+                    energy: 0.0,
                     heat: 0.0,
                     pollution: 0.0,
                 },
@@ -7095,6 +7179,7 @@ mod tests {
                     deposit: None,
                     inputs: BTreeMap::from([("iron_ore".into(), 1.0)]),
                     outputs: BTreeMap::from([("steel".into(), 1.0)]),
+                    energy: 0.0,
                     heat: 0.0,
                     pollution: 0.0,
                 },
@@ -7104,6 +7189,7 @@ mod tests {
                     deposit: None,
                     inputs: BTreeMap::from([("steel".into(), 1.0)]),
                     outputs: BTreeMap::from([("frames".into(), 1.0)]),
+                    energy: 0.0,
                     heat: 0.0,
                     pollution: 0.0,
                 },
@@ -7196,6 +7282,7 @@ mod tests {
                     deposit: None,
                     inputs: BTreeMap::from([("steel".into(), 1.0)]),
                     outputs: BTreeMap::from([("frames".into(), 1.0)]),
+                    energy: 0.0,
                     heat: 0.0,
                     pollution: 0.0,
                 }],
@@ -7365,6 +7452,7 @@ mod tests {
                 deposit: None,
                 inputs: BTreeMap::from([("steel".into(), 1.0)]),
                 outputs: BTreeMap::from([("frames".into(), 1.0)]),
+                energy: 0.0,
                 heat: 0.0,
                 pollution: 0.0,
             }],
@@ -7409,6 +7497,7 @@ mod tests {
                     deposit: None,
                     inputs: BTreeMap::from([("steel".into(), 1.0)]),
                     outputs: BTreeMap::from([("frames".into(), 1.0)]),
+                    energy: 0.0,
                     heat: 0.0,
                     pollution: 0.0,
                 },
@@ -7418,6 +7507,7 @@ mod tests {
                     deposit: None,
                     inputs: BTreeMap::from([("steel".into(), 1.0)]),
                     outputs: BTreeMap::from([("electronics".into(), 1.0)]),
+                    energy: 0.0,
                     heat: 0.0,
                     pollution: 0.0,
                 },
@@ -7510,6 +7600,7 @@ mod tests {
             base_seconds: seconds,
             time_growth: 1.0,
             prerequisites: vec![],
+            tech_prerequisites: vec![],
         }
     }
 
@@ -7530,6 +7621,7 @@ mod tests {
             base_seconds: 100.0,
             time_growth: 1.0,
             prerequisites: vec![(BuildingKind::RoboticsFactory, 1)],
+            tech_prerequisites: vec![],
         };
         cfg.buildings.metal_storage = crate::BuildingSpec {
             metal_base: 50.0,
@@ -7539,6 +7631,7 @@ mod tests {
             base_seconds: 10.0,
             time_growth: 1.0,
             prerequisites: vec![],
+            tech_prerequisites: vec![],
         };
         cfg.max_build_queue = 5;
         cfg.robotics_speed_per_level = 1.0;
@@ -10056,6 +10149,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
                     shipyard: 0,
                     radiator: 0,
                     scrubber: 0,
+                    fission_reactor: 0,
                 },
                 fleet: Fleet::default(),
                 defences: crate::DefenceGrid::default(),

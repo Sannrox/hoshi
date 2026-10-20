@@ -579,6 +579,10 @@ impl GameState {
         if !self.resources.can_afford(cost) {
             return Err(MaintenanceError::Unaffordable);
         }
+        let asset = &self.maintenance.assets[idx];
+        if asset.key.ends_with(":fission_reactor") && self.reactor_output_at(asset.coord) > 0.0 {
+            self.note_reactor_shutdown(asset.coord, at);
+        }
         self.resources = self.resources.saturating_sub(cost);
         let ends = match kind {
             WorkKind::Scheduled => at.saturating_add(cfg.work_secs),
@@ -745,7 +749,12 @@ impl GameState {
         if !offline && !just_serviced {
             let use_w = cfg.wear_use_per_hour * hours;
             let age_w = cfg.wear_age_per_hour * hours;
-            let heat_w = if overflow {
+            let reactor_at_cap = self.maintenance.assets[idx]
+                .key
+                .ends_with(":fission_reactor")
+                && self.reactor_output_at(coord) > 0.0
+                && heat_ratio >= self.config.waste.warn_ratio;
+            let heat_w = if overflow || reactor_at_cap {
                 cfg.wear_heat_per_hour * hours
             } else {
                 0.0
@@ -817,6 +826,11 @@ impl GameState {
             return;
         }
         let key = self.maintenance.assets[idx].key.clone();
+        if key.ends_with(":fission_reactor")
+            && self.reactor_output_at(self.maintenance.assets[idx].coord) > 0.0
+        {
+            self.note_reactor_shutdown(self.maintenance.assets[idx].coord, at);
+        }
         let cond = (self.maintenance.assets[idx].condition * 0.5).clamp(0.05, 1.0);
         self.maintenance.assets[idx].condition = cond;
         let ends = at.saturating_add(cfg.offline_secs);
@@ -853,6 +867,82 @@ mod tests {
     use crate::incident::IncidentKind;
     use crate::leaders::Actor;
     use crate::state::GameState;
+
+    #[test]
+    fn reactor_failure_shuts_down_without_destroying_the_building() {
+        let mut state = GameState::new(1_000);
+        state.buildings.fission_reactor = 1;
+        state.buildings.radiator = 3;
+        state.goods.insert("reactor_fuel".into(), 10.0);
+        state.sync_maintenance_assets(1_000);
+        let asset = state
+            .maintenance
+            .assets
+            .iter()
+            .find(|asset| asset.key.ends_with(":fission_reactor"))
+            .unwrap()
+            .id;
+        assert_eq!(state.reactor_output_at(state.home), 60.0);
+        state
+            .maintenance
+            .assets
+            .iter_mut()
+            .find(|a| a.id == asset)
+            .unwrap()
+            .condition = 0.4;
+        assert!((state.reactor_output_at(state.home) - 42.0).abs() < 1e-9);
+        let config = state.maintenance_config();
+        state.fail_asset(asset, 1_000, &config);
+        assert_eq!(state.reactor_output_at(state.home), 0.0);
+        assert_eq!(state.buildings.fission_reactor, 1);
+        assert_eq!(
+            state
+                .maintenance
+                .assets
+                .iter()
+                .find(|a| a.id == asset)
+                .unwrap()
+                .offline_until,
+            Some(1_000 + config.offline_secs)
+        );
+        assert!(state.reactor_decay_heat_at(state.home) > 0.0);
+        assert!(
+            state
+                .incidents
+                .incidents
+                .iter()
+                .any(|i| i.kind == IncidentKind::Failure)
+        );
+        state.last_tick_unix += config.offline_secs;
+        state
+            .maintenance
+            .orders
+            .retain(|order| order.asset_id != asset);
+        assert!(state.reactor_decay_heat_at(state.home) > 0.0);
+        assert!(state.reactor_output_at(state.home) > 0.0);
+    }
+
+    #[test]
+    fn scheduled_reactor_service_records_decay_heat() {
+        let mut state = GameState::new(1_000);
+        state.buildings.fission_reactor = 1;
+        state.buildings.radiator = 3;
+        state.goods.insert("reactor_fuel".into(), 10.0);
+        state.sync_maintenance_assets(1_000);
+        let id = state
+            .maintenance
+            .assets
+            .iter()
+            .find(|asset| asset.key.ends_with(":fission_reactor"))
+            .unwrap()
+            .id;
+        state
+            .schedule_maintenance(id, crate::PlanKind::Time, Actor::Player, 1_000)
+            .unwrap();
+        assert_eq!(state.reactor_output_at(state.home), 0.0);
+        assert!(state.reactor_decay_heat_at(state.home) > 0.0);
+        assert_eq!(state.reactor_shutdowns[&state.home].at, 1_000);
+    }
 
     #[test]
     fn bundled_maintenance_parse() {

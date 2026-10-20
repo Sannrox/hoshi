@@ -271,6 +271,7 @@ mod tests {
             deposit: None,
             inputs: BTreeMap::new(),
             outputs: BTreeMap::new(),
+            energy: 0.0,
             heat,
             pollution,
         }
