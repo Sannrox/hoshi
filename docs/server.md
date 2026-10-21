@@ -222,3 +222,7 @@ ten-second timeout, daily cache and endpoint settings as interactive play.
 `server_update_available` notification per known newer version, outside the game
 history cursor. See [installation](install.md#update-checks-and-release-log) for
 the request contents and opt-outs.
+## Support reports
+
+The admin-only `/v1/admin/support-report` endpoint returns redacted local diagnostics
+and server counters. See [Support reports](support.md) for credentials and opt-out.

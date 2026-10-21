@@ -2455,6 +2455,76 @@ pub fn backup_save(path: &Path, destination: &Path) -> Result<(), SaveError> {
     Ok(())
 }
 
+/// Read-only diagnostic values. Events deliberately omit snapshots and seeds.
+#[derive(Debug)]
+pub struct DiagnosticEvent {
+    pub at: u64,
+    pub kind: String,
+    pub action: String,
+    pub outcome: String,
+}
+
+pub struct SaveDiagnostics {
+    pub glance: Result<SaveGlance, SaveError>,
+    pub events: Vec<DiagnosticEvent>,
+    pub sqlite_snapshot: Option<Vec<u8>>,
+}
+
+/// Capture event tails and an optional consistent SQLite image without migration.
+pub fn inspect_diagnostics(
+    path: &Path,
+    limit: usize,
+    include_save: bool,
+) -> Result<SaveDiagnostics, SaveError> {
+    if crate::storage::BackendKind::from_path(path) != crate::storage::BackendKind::Sqlite {
+        return Err(SaveError::Backend(
+            "diagnostic snapshots require a SQLite save".into(),
+        ));
+    }
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    conn.execute_batch("BEGIN")?;
+    let mut events = Vec::new();
+    if table_exists(&conn, "history_events") {
+        let mut query = conn.prepare(
+            "SELECT at, kind, action, outcome FROM history_events ORDER BY id DESC LIMIT ?1",
+        )?;
+        let rows = query.query_map([limit.min(10_000) as i64], |row| {
+            Ok(DiagnosticEvent {
+                at: row.get(0)?,
+                kind: row.get(1)?,
+                action: row.get(2)?,
+                outcome: row.get(3)?,
+            })
+        })?;
+        events = rows.collect::<Result<_, _>>()?;
+        events.reverse();
+    }
+    let sqlite_snapshot = if include_save {
+        let pages: u64 = conn.query_row("PRAGMA page_count", [], |row| row.get(0))?;
+        let size: u64 = conn.query_row("PRAGMA page_size", [], |row| row.get(0))?;
+        if pages.saturating_mul(size) > 256 * 1024 * 1024 {
+            return Err(SaveError::Backend(
+                "save exceeds the 256 MiB diagnostic snapshot limit".into(),
+            ));
+        }
+        let mut bytes = conn.serialize("main")?.to_vec();
+        // The image already contains committed WAL pages; make it standalone.
+        if bytes.len() >= 100 {
+            bytes[18] = 1;
+            bytes[19] = 1;
+        }
+        Some(bytes)
+    } else {
+        None
+    };
+    let glance = inspect_sqlite_glance(&conn);
+    Ok(SaveDiagnostics {
+        glance,
+        events,
+        sqlite_snapshot,
+    })
+}
+
 pub fn inspect_save(path: &Path) -> Result<SaveGlance, SaveError> {
     match crate::storage::BackendKind::from_path(path) {
         crate::storage::BackendKind::Mikura | crate::storage::BackendKind::Chisei => {
@@ -2469,6 +2539,10 @@ pub fn inspect_save(path: &Path) -> Result<SaveGlance, SaveError> {
         return Err(SaveError::Corrupt("missing save"));
     }
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    inspect_sqlite_glance(&conn)
+}
+
+fn inspect_sqlite_glance(conn: &Connection) -> Result<SaveGlance, SaveError> {
     let schema: u32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if schema > SCHEMA_VERSION {
         return Err(SaveError::SchemaTooNew {
@@ -2509,12 +2583,12 @@ pub fn inspect_save(path: &Path) -> Result<SaveGlance, SaveError> {
         .flatten()
         .unwrap_or(0)
         != 0;
-    let colonies = if table_exists(&conn, "colonies") {
-        u32::try_from(count_rows(&conn, "colonies")?).unwrap_or(0)
+    let colonies = if table_exists(conn, "colonies") {
+        u32::try_from(count_rows(conn, "colonies")?).unwrap_or(0)
     } else {
         0
     };
-    let fleet = if table_exists(&conn, "ships") {
+    let fleet = if table_exists(conn, "ships") {
         conn.query_row("SELECT COALESCE(SUM(count), 0) FROM ships", [], |row| {
             row.get::<_, i64>(0)
         })
@@ -2545,7 +2619,7 @@ pub fn inspect_save(path: &Path) -> Result<SaveGlance, SaveError> {
     } else {
         1
     };
-    let species_id = if table_exists(&conn, "species_run") {
+    let species_id = if table_exists(conn, "species_run") {
         conn.query_row(
             "SELECT species_id FROM species_run WHERE id = 1",
             [],
@@ -2555,7 +2629,7 @@ pub fn inspect_save(path: &Path) -> Result<SaveGlance, SaveError> {
     } else {
         None
     };
-    let rivals_enabled = if table_exists(&conn, "rivals_meta") {
+    let rivals_enabled = if table_exists(conn, "rivals_meta") {
         conn.query_row("SELECT enabled FROM rivals_meta WHERE id = 1", [], |row| {
             row.get::<_, i64>(0)
         })
@@ -2565,7 +2639,7 @@ pub fn inspect_save(path: &Path) -> Result<SaveGlance, SaveError> {
     } else {
         false
     };
-    let rival_personalities = if table_exists(&conn, "rivals") {
+    let rival_personalities = if table_exists(conn, "rivals") {
         let mut stmt = conn.prepare("SELECT personality FROM rivals ORDER BY rival_id")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         let mut ids = Vec::new();
@@ -2576,7 +2650,7 @@ pub fn inspect_save(path: &Path) -> Result<SaveGlance, SaveError> {
     } else {
         Vec::new()
     };
-    let season_id = if table_exists(&conn, "season") {
+    let season_id = if table_exists(conn, "season") {
         conn.query_row("SELECT ruleset_id FROM season WHERE id = 1", [], |row| {
             row.get::<_, String>(0)
         })
@@ -8745,6 +8819,49 @@ mod tests {
         drop(conn);
         std::fs::remove_file(source).unwrap();
         std::fs::remove_file(destination).unwrap();
+    }
+
+    #[test]
+    fn diagnostic_snapshot_includes_committed_wal_and_does_not_migrate_source() {
+        let path = unique_path("diagnostic-source");
+        let copy = unique_path("diagnostic-copy");
+        let mut conn = open_save(&path).unwrap();
+        conn.execute_batch("PRAGMA wal_autocheckpoint=0").unwrap();
+        let mut state = GameState::with_seed(100, BalanceConfig::default(), 987654321);
+        state.record_history(crate::HistoryDraft {
+            at: 100,
+            action: "diagnostic-fixture".into(),
+            outcome: "completed".into(),
+            ..Default::default()
+        });
+        save_state(&mut conn, &state).unwrap();
+        let metadata_only = inspect_diagnostics(&path, 1, false).unwrap();
+        assert!(metadata_only.sqlite_snapshot.is_none());
+        assert_eq!(metadata_only.events.len(), 1);
+        assert_eq!(metadata_only.events[0].action, "diagnostic-fixture");
+        let snapshot = inspect_diagnostics(&path, 1, true)
+            .unwrap()
+            .sqlite_snapshot
+            .unwrap();
+        std::fs::write(&copy, snapshot).unwrap();
+        let read =
+            Connection::open_with_flags(&copy, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let loaded = load_state(&read, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.galaxy_seed, state.galaxy_seed);
+        assert_eq!(
+            loaded.history.events.last().unwrap().action,
+            "diagnostic-fixture"
+        );
+        assert_eq!(
+            conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
+        drop(read);
+        drop(conn);
+        for file in [path, copy] {
+            let _ = std::fs::remove_file(file);
+        }
     }
 
     fn sample_state() -> GameState {

@@ -99,3 +99,5 @@ work: [docs/realism.md](docs/realism.md). Portrait art and licenses:
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
+
+For local diagnostic reports and crash files, see [Support reports](docs/support.md).

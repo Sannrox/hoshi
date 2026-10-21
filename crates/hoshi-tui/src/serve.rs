@@ -72,6 +72,7 @@ pub struct ServeOptions {
 /// One bearer secret bound to one save path. Never stored in the save file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopedToken {
+    pub admin: bool,
     pub secret: String,
     pub save: PathBuf,
 }
@@ -97,6 +98,7 @@ impl Auth {
         }
         Self::with_tokens(
             vec![ScopedToken {
+                admin: false,
                 secret: secret.into(),
                 save: save.to_path_buf(),
             }],
@@ -133,6 +135,7 @@ impl Auth {
         let mut tokens = Vec::new();
         if !config_token.is_empty() {
             tokens.push(ScopedToken {
+                admin: false,
                 secret: config_token.into(),
                 save: save.to_path_buf(),
             });
@@ -141,7 +144,17 @@ impl Auth {
             && !env.is_empty()
         {
             tokens.push(ScopedToken {
+                admin: false,
                 secret: env,
+                save: save.to_path_buf(),
+            });
+        }
+        if let Ok(secret) = std::env::var("HOSHI_SERVE_ADMIN_TOKEN")
+            && !secret.is_empty()
+        {
+            tokens.push(ScopedToken {
+                admin: true,
+                secret,
                 save: save.to_path_buf(),
             });
         }
@@ -152,6 +165,17 @@ impl Auth {
             tokens.extend(load_token_file(&path));
         }
         Self::with_tokens(tokens, limit, window_secs)
+    }
+
+    pub fn with_admin_token(mut self, save: &Path, secret: &str) -> Self {
+        if !secret.is_empty() {
+            self.tokens.push(ScopedToken {
+                admin: true,
+                secret: secret.into(),
+                save: save.to_path_buf(),
+            });
+        }
+        self
     }
 
     fn allow(
@@ -175,6 +199,9 @@ impl Auth {
         if !same_save(&self.tokens[idx].save, save) {
             return Err((401, error_body("unauthorized", "unauthorized")));
         }
+        if action == "/v1/admin/support-report" && !self.tokens[idx].admin {
+            return Err((403, error_body("unauthorized", "admin scope required")));
+        }
         let window = self.window_secs;
         let limit = self.limit;
         let hits = self.hits.entry((idx, action.to_string())).or_default();
@@ -192,6 +219,7 @@ impl Auth {
             return;
         }
         self.tokens.push(ScopedToken {
+            admin: false,
             secret,
             save: save.to_path_buf(),
         });
@@ -216,7 +244,12 @@ fn load_token_file(path: &Path) -> Vec<ScopedToken> {
         if secret.is_empty() || save.is_empty() {
             continue;
         }
+        let (admin, save) = save
+            .strip_prefix("admin:")
+            .map(|path| (true, path))
+            .unwrap_or((false, save));
         out.push(ScopedToken {
+            admin,
             secret: secret.into(),
             save: PathBuf::from(save),
         });
@@ -265,9 +298,39 @@ impl Drop for Inflight {
 #[derive(Clone)]
 struct Live {
     updates: Option<crate::update::CheckSession>,
+    config_dir: PathBuf,
+    stats: ServerStats,
     state: GameState,
     last_save_tick: u64,
     saved_next_id: u64,
+}
+
+#[derive(Clone)]
+struct ServerStats {
+    started_at: u64,
+    clients: usize,
+    requests: u64,
+    rate_limit_hits: u64,
+}
+impl ServerStats {
+    fn new() -> Self {
+        Self {
+            started_at: SystemClock.now_unix(),
+            clients: 0,
+            requests: 0,
+            rate_limit_hits: 0,
+        }
+    }
+    fn value(&self) -> Value {
+        json!({"uptime_secs": SystemClock.now_unix().saturating_sub(self.started_at), "connected_clients": self.clients, "requests": self.requests, "rate_limit_hits": self.rate_limit_hits})
+    }
+}
+struct Client<'a>(&'a Mutex<Live>);
+impl Drop for Client<'_> {
+    fn drop(&mut self) {
+        let mut live = lock_poison(self.0);
+        live.stats.clients = live.stats.clients.saturating_sub(1);
+    }
 }
 
 /// Match the TUI idle save cadence so an open socket does not rewrite every second.
@@ -296,6 +359,8 @@ impl Server {
             })?;
         let live = Live {
             updates: None,
+            config_dir: opts.save.parent().unwrap_or(Path::new(".")).to_path_buf(),
+            stats: ServerStats::new(),
             last_save_tick: state.last_tick_unix,
             saved_next_id: state.history.next_id,
             state,
@@ -657,6 +722,7 @@ fn status_phrase(status: u16) -> &'static str {
         302 => "Found",
         400 => "Bad Request",
         401 => "Unauthorized",
+        403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
         409 => "Conflict",
@@ -916,6 +982,12 @@ fn serve_one(
     oidc: &Mutex<crate::oidc::Gate>,
     bind: SocketAddr,
 ) -> std::io::Result<()> {
+    {
+        let mut live = lock_poison(live);
+        live.stats.clients += 1;
+        live.stats.requests += 1;
+    }
+    let _client = Client(live);
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     let mut buf = Vec::new();
@@ -984,6 +1056,17 @@ fn serve_one(
             .clone();
         return write_http(&mut stream, 200, &body, "");
     }
+    if route == "/v1/admin/support-report" {
+        return serve_support_report(
+            save,
+            &mut stream,
+            method,
+            authorization.as_deref(),
+            auth,
+            live,
+            bind,
+        );
+    }
     if route == "/v1/oidc/start" || route == "/v1/oidc/callback" {
         return serve_oidc(save, &mut stream, method, path, auth, oidc, bind);
     }
@@ -1018,6 +1101,17 @@ fn serve_one(
         }
     };
     if let Err((status, value, retry_after)) = gate {
+        crate::diagnostics::log(
+            "warn",
+            if status == 429 {
+                "server rate limit exceeded"
+            } else {
+                "server authentication failed"
+            },
+        );
+        if status == 429 {
+            lock_poison(live).stats.rate_limit_hits += 1;
+        }
         let extra = match status {
             401 => "WWW-Authenticate: Bearer\r\n".to_string(),
             429 => format!("Retry-After: {retry_after}\r\n"),
@@ -1051,6 +1145,87 @@ fn serve_one(
         result
     };
     write_http(&mut stream, status, &value, "")
+}
+
+fn serve_support_report(
+    save: &Path,
+    stream: &mut TcpStream,
+    method: &str,
+    authorization: Option<&str>,
+    auth: &Mutex<Auth>,
+    live: &Mutex<Live>,
+    bind: SocketAddr,
+) -> std::io::Result<()> {
+    let config_dir = lock_poison(live).config_dir.clone();
+    let dir = config_dir.as_path();
+    if !crate::config::UserConfig::load(dir).serve_support_report {
+        return write_http(stream, 404, &error_body("invalid", "not found"), "");
+    }
+    if method != "GET" {
+        return write_http(
+            stream,
+            405,
+            &error_body("invalid", "method not allowed"),
+            "",
+        );
+    }
+    let gate = {
+        let mut auth = lock_poison(auth);
+        if auth.tokens.is_empty()
+            && authorization.is_none()
+            && bind.ip().is_loopback()
+            && stream.peer_addr()?.ip().is_loopback()
+        {
+            Ok(())
+        } else {
+            auth.allow(
+                save,
+                "/v1/admin/support-report",
+                authorization,
+                SystemClock.now_unix(),
+            )
+        }
+    };
+    if let Err((status, body)) = gate {
+        if status == 429 {
+            lock_poison(live).stats.rate_limit_hits += 1;
+        }
+        crate::diagnostics::log("warn", "support report access refused");
+        return write_http(stream, status, &body, "");
+    }
+    let mut report = match crate::support::build(
+        save,
+        false,
+        100,
+        std::env::var_os("HOSHI_BALANCE").as_deref().map(Path::new),
+        false,
+        Some(dir),
+    ) {
+        Ok(report) => report,
+        Err(error) => {
+            crate::diagnostics::log("error", &error);
+            return write_http(
+                stream,
+                500,
+                &error_body("internal", "support report unavailable"),
+                "",
+            );
+        }
+    };
+    let stats = lock_poison(live).stats.value();
+    let health = healthz_body();
+    let extra = crate::redact::Redactor::for_dir(dir)
+        .redact(&format!(
+            "\n## Live server\n\nHealth: {health}\nStatistics: {stats}\n"
+        ))
+        .text;
+    report.markdown.push_str(&extra);
+    let header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/markdown; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        report.markdown.len()
+    );
+    stream.write_all(header.as_bytes())?;
+    stream.write_all(report.markdown.as_bytes())
 }
 
 fn serve_oidc(
@@ -1271,6 +1446,12 @@ pub fn run(args: &[String]) -> Result<(), ServeError> {
     });
     let cfg = crate::config::UserConfig::load(&dir);
     let save = resolve_save(cli_save.as_deref(), &cfg.serve_save);
+    crate::diagnostics::install(
+        save.parent().unwrap_or(Path::new(".")).to_path_buf(),
+        true,
+        std::env::var("HOSHI_LOG").unwrap_or_else(|_| cfg.log_level.clone()),
+        &dir,
+    );
     let bind = resolve_bind(cli_bind.as_deref(), &cfg.serve_bind)?;
     let token_file = if cfg.serve_token_file.is_empty() {
         None
@@ -1289,10 +1470,13 @@ pub fn run(args: &[String]) -> Result<(), ServeError> {
         cfg.serve_rate_limit,
         cfg.serve_rate_window_secs,
     );
+    let auth = auth.with_admin_token(&save, &cfg.serve_admin_token);
+    crate::diagnostics::log("info", "server startup");
     let mut server = Server::open(ServeOptions { bind, save })?
         .with_auth(auth)
         .with_push(crate::push::Settings::from_config(&cfg))
         .with_oidc(crate::oidc::Settings::from_config(&cfg));
+    lock_poison(&server.live).config_dir = dir.clone();
     if args.iter().any(|arg| arg == "--update-check") {
         let settings = crate::update::settings(&cfg, args);
         if let Ok(key) = crate::update::public_key() {
@@ -1691,6 +1875,74 @@ mod tests {
     }
 
     #[test]
+    fn support_report_requires_admin_redacts_and_can_be_disabled() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("hoshi-support-http-{}-{nonce}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let save = dir.join("save.sqlite");
+        seed_save(&save);
+        for (presented, empty, disabled, expected) in [
+            (Some(TEST_TOKEN), false, false, 403),
+            (Some("admin-fixture"), false, false, 200),
+            (None, false, false, 401),
+            (None, true, false, 200),
+            (Some("admin-fixture"), false, true, 404),
+        ] {
+            std::fs::write(
+                dir.join("config.toml"),
+                format!(
+                    "serve_token = {:?}\nserve_vapid_private = {:?}\nserve_support_report = {}\n",
+                    "credential-fixture", "private-fixture", !disabled
+                ),
+            )
+            .unwrap();
+            let auth = if empty {
+                Auth::empty()
+            } else {
+                Auth::single(&save, TEST_TOKEN).with_admin_token(&save, "admin-fixture")
+            };
+            let server = ephemeral(save.clone()).with_auth(auth);
+            let addr = server.local_addr().unwrap();
+            let worker = std::thread::spawn(move || {
+                let auth = Mutex::new(server.auth);
+                let (stream, _) = server.listener.accept().unwrap();
+                serve_one(
+                    &server.save,
+                    stream,
+                    &auth,
+                    server.live.as_ref(),
+                    server.push.as_ref(),
+                    server.oidc.as_ref(),
+                    addr,
+                )
+                .unwrap();
+            });
+            let header = presented.map(|token| format!("Bearer {token}"));
+            let (status, body) =
+                get_path_auth(addr, "/v1/admin/support-report", header.as_deref()).unwrap();
+            worker.join().unwrap();
+            assert_eq!(status, expected, "{body}");
+            if status == 200 {
+                assert!(
+                    body.contains("Schema:")
+                        && body.contains("Last tick:")
+                        && !body.contains("Summary unavailable")
+                        && body.contains("Live server")
+                        && body.contains("uptime_secs")
+                        && body.contains("rate_limit_hits"),
+                    "{body}"
+                );
+                assert!(!body.contains("credential-fixture") && !body.contains("private-fixture"));
+            }
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn first_positional_skips_flags() {
         let flags = vec![
             "hoshi".into(),
@@ -2046,10 +2298,12 @@ mod tests {
         );
         let tokens = vec![
             ScopedToken {
+                admin: false,
                 secret: mine.clone(),
                 save: save.clone(),
             },
             ScopedToken {
+                admin: false,
                 secret: theirs.clone(),
                 save: other.clone(),
             },
@@ -2096,6 +2350,7 @@ mod tests {
         seed_save(&save);
         let mut auth = Auth::with_tokens(
             vec![ScopedToken {
+                admin: false,
                 secret: "mine".into(),
                 save: save.clone(),
             }],
@@ -2412,6 +2667,8 @@ mod tests {
         };
         let mut live = Live {
             updates: None,
+            config_dir: PathBuf::new(),
+            stats: ServerStats::new(),
             last_save_tick: state.last_tick_unix,
             saved_next_id: state.history.next_id,
             state,

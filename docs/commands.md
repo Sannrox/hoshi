@@ -1127,6 +1127,22 @@ Environment: HOSHI_SAVE, HOSHI_BALANCE
 
 Area: cli.
 
+## report
+
+Preview and write a redacted local support report.
+
+```text
+hoshi report [--format markdown|archive] [--out PATH] [--include-save] [--log-lines N] [--yes] [--open-issue]
+```
+
+Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair-play restrictions.
+
+Example: `hoshi report --yes`
+
+Environment: HOSHI_SAVE, HOSHI_BALANCE
+
+Area: cli.
+
 ## research
 
 Start research through the ordinary rules path.
@@ -1677,6 +1693,8 @@ Area: help.
 
 ## Environment
 
+- `HOSHI_LOG`: Diagnostic log level: error, warn, info or debug.
+- `HOSHI_SERVE_ADMIN_TOKEN`: Save-scoped admin secret for local support reports.
 - `HOSHI_SAVE`: Save path when --save is absent.
 - `HOSHI_BALANCE`: Balance configuration path when --balance is absent.
 - `HOSHI_BUILD`: Build-time version annotation.

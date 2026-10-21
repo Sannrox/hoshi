@@ -1,5 +1,10 @@
 //! hoshi: an idle space-strategy game for the terminal.
 
+mod diagnostics;
+mod redact;
+mod support;
+mod support_ui;
+
 mod app;
 mod arena;
 mod cli;
@@ -79,6 +84,13 @@ fn main() {
         }
         return;
     }
+    if serve::first_positional(&args) == Some("report") {
+        if let Err(error) = support::run(&args) {
+            eprintln!("hoshi: {error}");
+            std::process::exit(2);
+        }
+        return;
+    }
     if args.get(1).map(String::as_str) == Some("changelog") {
         print!("{}", update::CHANGELOG);
         return;
@@ -136,7 +148,11 @@ fn main() {
         }
     }
     if cli::is_cli_invocation(&args) {
+        install_diagnostics(&args, false);
         let out = cli::run_cli(&args);
+        if out.exit != 0 {
+            diagnostics::log("error", &out.json);
+        }
         let mut stdout = std::io::stdout();
         if stdout
             .write_all(out.json.as_bytes())
@@ -147,6 +163,7 @@ fn main() {
         }
         std::process::exit(out.exit);
     }
+    install_diagnostics(&args, false);
     match run() {
         Ok(()) => {}
         Err(e) => {
@@ -154,6 +171,26 @@ fn main() {
             std::process::exit(e.exit);
         }
     }
+}
+
+fn install_diagnostics(args: &[String], server: bool) {
+    let save = args
+        .iter()
+        .position(|arg| arg == "--save")
+        .and_then(|index| args.get(index + 1))
+        .map(PathBuf::from)
+        .or_else(|| {
+            args.iter()
+                .find_map(|arg| arg.strip_prefix("--save=").map(PathBuf::from))
+        });
+    let save = resolve_save_path(save.as_deref(), std::env::var_os("HOSHI_SAVE").as_deref());
+    let dir = save
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let config = config::UserConfig::load(dir);
+    let level = std::env::var("HOSHI_LOG").unwrap_or(config.log_level);
+    diagnostics::install(dir.to_path_buf(), server, level, dir);
 }
 
 #[derive(Debug)]
@@ -986,8 +1023,10 @@ fn play_path(
         match event::poll(wait) {
             Ok(true) => match event::read() {
                 Ok(Event::Key(k)) if k.kind == KeyEventKind::Press => {
-                    if app.handle_key(k.code, clock.now_unix()) == Action::Quit {
-                        break Ok(());
+                    match app.handle_key(k.code, clock.now_unix()) {
+                        Action::Quit => break Ok(()),
+                        Action::SupportReport => app.open_support(path),
+                        Action::None => {}
                     }
                     if let Some(layout) = app.take_cockpit_layout() {
                         user.cockpit_layout = layout;

@@ -94,6 +94,7 @@ const TRADE_PAIRS: [(ResourceKind, ResourceKind); 6] = [
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
+    SupportReport,
     None,
     Quit,
 }
@@ -101,6 +102,7 @@ pub enum Action {
 pub struct App {
     pub updates: Option<crate::update_ui::UpdateUi>,
     dismantle_confirm: Option<(Coord, BuildingKind)>,
+    pub support: Option<crate::support_ui::SupportUi>,
     pub state: GameState,
     pub portraits: PortraitView,
     keymap: Keymap,
@@ -173,6 +175,7 @@ impl App {
     pub fn with_keymap(state: GameState, keymap: Keymap) -> Self {
         let watch = NotifyWatch::from_state(&state);
         Self {
+            support: None,
             state,
             portraits: PortraitView::default(),
             keymap,
@@ -471,7 +474,20 @@ impl App {
         crate::cockpit::record_gauge(&mut self.gauge_history, self.state.resources);
     }
 
+    pub fn open_support(&mut self, save: &std::path::Path) {
+        match crate::support_ui::SupportUi::open(save) {
+            Ok(report) => self.support = Some(report),
+            Err(error) => self.status = error,
+        }
+    }
+
     pub fn handle_key(&mut self, code: KeyCode, now_unix: u64) -> Action {
+        if let Some(report) = &mut self.support {
+            if report.handle_key(code) {
+                self.support = None;
+            }
+            return Action::None;
+        }
         if let Some(updates) = &mut self.updates {
             if self.help_open && code == KeyCode::Char('u') {
                 updates.dismiss_available();
@@ -488,6 +504,11 @@ impl App {
         if self.dismantle_confirm.is_some() {
             return self.handle_dismantle_confirm(code, now_unix);
         }
+
+        if self.help_open && code == KeyCode::Char('r') {
+            return Action::SupportReport;
+        }
+
         self.state.interactive_tactics = true;
         self.state.catch_up(now_unix);
         self.clamp_planet();
@@ -1483,6 +1504,9 @@ impl App {
         }
         if self.dismantle_confirm.is_some() {
             self.draw_dismantle_confirm(frame);
+        }
+        if let Some(report) = &self.support {
+            report.draw(frame);
         }
     }
 
@@ -2677,6 +2701,7 @@ impl App {
             }
         }
         lines.push("c Changelog   u dismiss update".into());
+        lines.push("r Support report".into());
         let t = &self.theme;
         let lines = lines
             .into_iter()
@@ -5236,6 +5261,34 @@ mod tests {
         assert_eq!(app.state.pending_hint().unwrap().id, "opening");
         app.handle_key(KeyCode::Char('x'), 1_000);
         assert!(app.state.pending_hint().is_none_or(|h| h.id != "opening"));
+    }
+
+    #[test]
+    fn support_preview_owns_input_above_update_shortcuts() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "hoshi-support-overlay-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let mut app = App::new(GameState::new(1_000));
+        app.updates = Some(crate::update_ui::UpdateUi::start(
+            dir.clone(),
+            &crate::config::UserConfig::default(),
+            &["hoshi".into(), "--offline".into()],
+            1_000,
+        ));
+        app.help_open = true;
+        app.open_support(&dir.join("missing.sqlite"));
+        assert!(app.support.is_some());
+        app.handle_key(KeyCode::Char('c'), 1_000);
+        assert!(!app.updates.as_ref().unwrap().overlay_open());
+        app.handle_key(KeyCode::Esc, 1_000);
+        assert!(app.support.is_none());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

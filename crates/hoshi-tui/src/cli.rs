@@ -234,6 +234,8 @@ crate::help::catalog_commands! {
     TacticsAction {
         action: RoundAction,
     },
+    #[help("report", "Preview and write a redacted local support report.", "report [--format markdown|archive] [--out PATH] [--include-save] [--log-lines N] [--yes] [--open-issue]", "report --yes")]
+    Report { options: crate::support::Options },
     #[help("feedback", "Record a playtest note.", "feedback [NOTE...]", "feedback build_queue_is_clear")]
     Feedback {
         note: String,
@@ -556,7 +558,8 @@ fn serve_command(rest: &[String]) -> Result<Command, CliError> {
     let command = parse_command(rest)?;
     if matches!(
         command,
-        Command::Feedback { .. }
+        Command::Report { .. }
+            | Command::Feedback { .. }
             | Command::ArenaRun { .. }
             | Command::ArenaBoard { .. }
             | Command::SelfPlay { .. }
@@ -1446,6 +1449,9 @@ fn apply(
             state.progress_tactical(now);
             Ok(ok_state(state, "tactical action"))
         }
+        Command::Report { .. } => Err(CliError::Invalid(
+            "report uses the local preview command".into(),
+        )),
         Command::Feedback { .. } => Err(CliError::Internal(
             "feedback is handled before apply".into(),
         )),
@@ -3315,6 +3321,9 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
         },
         "law" => parse_law_command(args),
         "moon" => parse_moon_command(args),
+        "report" => Ok(Command::Report {
+            options: crate::support::Options::parse(&args[1..]).map_err(CliError::Invalid)?,
+        }),
         "feedback" => {
             let note = args.get(1..).unwrap_or(&[]).join(" ");
             Ok(Command::Feedback {

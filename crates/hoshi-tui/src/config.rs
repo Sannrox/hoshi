@@ -7,6 +7,9 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct UserConfig {
+    pub log_level: String,
+    pub serve_support_report: bool,
+    pub serve_admin_token: String,
     pub update_check: bool,
     pub update_endpoint: String,
     pub collapse_changelog: bool,
@@ -81,6 +84,9 @@ pub struct UserConfig {
 impl Default for UserConfig {
     fn default() -> Self {
         Self {
+            log_level: "info".into(),
+            serve_support_report: true,
+            serve_admin_token: String::new(),
             update_check: true,
             update_endpoint: String::new(),
             collapse_changelog: false,
@@ -170,6 +176,26 @@ impl UserConfig {
             let key = key.trim();
             let value = value.trim().trim_matches('"');
             match key {
+                "log_level" => {
+                    if matches!(value, "error" | "warn" | "info" | "debug") {
+                        cfg.log_level = value.into();
+                    }
+                }
+                "serve_support_report" => {
+                    cfg.serve_support_report = value
+                        .split('#')
+                        .next()
+                        .unwrap_or("")
+                        .trim()
+                        .parse::<bool>()
+                        .unwrap_or(false)
+                }
+                "serve_admin_token" => {
+                    cfg.serve_admin_token = line
+                        .split_once('=')
+                        .and_then(|(_, raw)| serde_json::from_str(raw.trim()).ok())
+                        .unwrap_or_else(|| value.into())
+                }
                 "update_check" => {
                     cfg.update_check = value
                         .split('#')
@@ -364,6 +390,12 @@ impl UserConfig {
             self.serve_oidc_token.replace('"', ""),
             self.keys.to_config_lines().trim_end(),
         );
+        let text = format!(
+            "log_level = {}\nserve_support_report = {}\nserve_admin_token = {}\n{text}",
+            serde_json::to_string(&self.log_level)?,
+            self.serve_support_report,
+            serde_json::to_string(&self.serve_admin_token)?
+        );
         let mut text = format!(
             "update_check = {}\nupdate_endpoint = {}\ncollapse_changelog = {}\n{text}",
             self.update_check,
@@ -391,7 +423,8 @@ impl UserConfig {
                 use std::os::unix::fs::PermissionsExt;
                 file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
             }
-            std::io::Write::write_all(file, text.as_bytes())
+            std::io::Write::write_all(file, text.as_bytes())?;
+            file.sync_all()
         })
         .map_err(|error| std::io::Error::other(error.to_string()))
     }
@@ -486,6 +519,9 @@ mod tests {
         cfg.detail_panel = false;
         cfg.serve_bind = "127.0.0.1:0".into();
         cfg.serve_save = "slot.sqlite".into();
+        cfg.log_level = "debug".into();
+        cfg.serve_support_report = false;
+        cfg.serve_admin_token = "admin-\"quoted\"-fixture".into();
         cfg.save(&dir).unwrap();
         #[cfg(unix)]
         {
@@ -517,6 +553,9 @@ mod tests {
         assert!(!again.detail_panel);
         assert_eq!(again.serve_bind, "127.0.0.1:0");
         assert_eq!(again.serve_save, "slot.sqlite");
+        assert_eq!(again.log_level, "debug");
+        assert!(!again.serve_support_report);
+        assert_eq!(again.serve_admin_token, cfg.serve_admin_token);
         assert!(again.serve_token.is_empty());
         assert_eq!(again.serve_rate_limit, crate::serve::DEFAULT_RATE_LIMIT);
         assert!(!again.serve_push);

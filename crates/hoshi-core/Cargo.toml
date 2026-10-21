@@ -15,7 +15,7 @@ mikura = ["dep:mikura"]
 chisei = []
 
 [dependencies]
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.37", features = ["bundled", "serialize"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.152"
 toml = { version = "1.1.8", features = ["parse"] }
