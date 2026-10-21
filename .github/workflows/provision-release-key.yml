@@ -1,0 +1,51 @@
+name: Provision release signing key
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-signing-key
+  cancel-in-progress: false
+
+jobs:
+  provision:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: release-signing
+    steps:
+      - name: Generate only in CI and store in repository secrets
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_KEY_ADMIN_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          EXISTING_PUBLIC: ${{ vars.HOSHI_RELEASE_PUBLIC_KEY }}
+          EXISTING_PRIVATE: ${{ secrets.HOSHI_RELEASE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "Set RELEASE_KEY_ADMIN_TOKEN in the release-signing environment with repository secrets and variables write permission."
+            exit 1
+          fi
+          keydir="$(mktemp -d)"
+          trap 'rm -rf "${keydir}"' EXIT
+          umask 077
+          if [ -n "${EXISTING_PRIVATE}" ]; then
+            printf '%s' "${EXISTING_PRIVATE}" > "${keydir}/private.pem"
+          elif [ -n "${EXISTING_PUBLIC}" ]; then
+            echo "The public identity exists but its private key is missing. Restore the existing key; do not rotate it here."
+            exit 1
+          else
+            openssl genpkey -algorithm ED25519 -out "${keydir}/private.pem"
+            gh secret set HOSHI_RELEASE_SIGNING_KEY < "${keydir}/private.pem"
+          fi
+          unset EXISTING_PRIVATE
+          public="$(openssl pkey -in "${keydir}/private.pem" -pubout -outform DER | tail -c 32 | od -An -v -tx1 | tr -d ' \n')"
+          if [ -n "${EXISTING_PUBLIC}" ] && [ "${EXISTING_PUBLIC}" != "${public}" ]; then
+            echo "Existing signing key and public identity disagree. Reconcile them without generating a new identity."
+            exit 1
+          fi
+          gh variable set HOSHI_RELEASE_PUBLIC_KEY --body "${public}"
+          printf 'Compiled release public key: `%s`\n' "${public}" >> "${GITHUB_STEP_SUMMARY}"
+          echo "Remove RELEASE_KEY_ADMIN_TOKEN after provisioning." >> "${GITHUB_STEP_SUMMARY}"

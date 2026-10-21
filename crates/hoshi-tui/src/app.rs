@@ -97,6 +97,7 @@ pub enum Action {
 }
 
 pub struct App {
+    pub updates: Option<crate::update_ui::UpdateUi>,
     pub state: GameState,
     pub portraits: PortraitView,
     keymap: Keymap,
@@ -172,6 +173,7 @@ impl App {
             state,
             portraits: PortraitView::default(),
             keymap,
+            updates: None,
             help_open: false,
             help_commands: false,
             screen: Screen::Cockpit,
@@ -466,6 +468,19 @@ impl App {
     }
 
     pub fn handle_key(&mut self, code: KeyCode, now_unix: u64) -> Action {
+        if let Some(updates) = &mut self.updates {
+            if self.help_open && code == KeyCode::Char('u') {
+                updates.dismiss_available();
+                return Action::None;
+            }
+            if self.help_open && code == KeyCode::Char('c') {
+                updates.open_changelog();
+                return Action::None;
+            }
+            if updates.handle_key(code) {
+                return Action::None;
+            }
+        }
         self.state.interactive_tactics = true;
         self.state.catch_up(now_unix);
         self.clamp_planet();
@@ -1451,6 +1466,9 @@ impl App {
         if self.help_open {
             self.draw_help(frame);
         }
+        if let Some(updates) = &self.updates {
+            updates.draw(frame);
+        }
     }
 
     fn current_portrait_slot(&self) -> Slot {
@@ -1477,6 +1495,10 @@ impl App {
             return Ok(());
         }
         if self.help_open
+            || self
+                .updates
+                .as_ref()
+                .is_some_and(crate::update_ui::UpdateUi::overlay_open)
             || self.shows_detail_overlay()
             || self.activity_open
             || self.advisor_open
@@ -2638,6 +2660,7 @@ impl App {
                 first.push_str("   [Keys]   Commands");
             }
         }
+        lines.push("c Changelog   u dismiss update".into());
         let t = &self.theme;
         let lines = lines
             .into_iter()

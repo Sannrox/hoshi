@@ -199,3 +199,25 @@ Every error is JSON with HTTP status:
 A live shared shard is a Chisei-hosted deployment. `hoshi serve` wraps one
 local save for remote clients of the same player. It does not own a second
 clock or a shared galaxy.
+
+## Build versions and optional update checks
+
+`GET /healthz` includes running `version`, `channel`, `save_schema`,
+`cli_contract`, supported `contract_versions`, and `installed_version` when the
+managed installation has changed beneath the process. A differing installed
+version means the operator should restart the server.
+
+Authenticated `GET /v1/version` exposes the same version information with the
+CLI response schema version. Clients should compare contracts first: different
+contracts require a warning naming the client and server versions. A differing
+build with the same contract is informational.
+
+The server makes no automatic release request by default. Opt in with
+`hoshi serve --update-check`. The check uses the same signature verification,
+ten-second timeout, daily cache and endpoint settings as interactive play.
+`--offline`, `HOSHI_OFFLINE=1`, `HOSHI_SKIP_VERSION_CHECK=1` and
+`update_check = false` suppress it. A verified newer release appears under
+`latest`; otherwise that field is null. Each WebSocket connection receives one
+`server_update_available` notification per known newer version, outside the game
+history cursor. See [installation](install.md#update-checks-and-release-log) for
+the request contents and opt-outs.

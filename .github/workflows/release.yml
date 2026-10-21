@@ -10,6 +10,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  HOSHI_RELEASE_PUBLIC_KEY: ${{ vars.HOSHI_RELEASE_PUBLIC_KEY }}
 
 jobs:
   verify-tag:
@@ -155,10 +156,19 @@ jobs:
           cat dist/RELEASE_NOTES.md
       - name: Homebrew formula
         run: bash scripts/homebrew-formula.sh "${GITHUB_REF_NAME}" dist
+      - name: Sign release metadata and checksums
+        env:
+          HOSHI_RELEASE_SIGNING_KEY: ${{ secrets.HOSHI_RELEASE_SIGNING_KEY }}
+          HOSHI_RELEASE_NOTE: ${{ vars.HOSHI_RELEASE_NOTE }}
+        run: python3 scripts/sign-release-metadata.py --dist dist --version "${GITHUB_REF_NAME#v}" --channel stable --note "${HOSHI_RELEASE_NOTE}" --version-output "hoshi ${GITHUB_REF_NAME#v}"
       - name: GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" dist/* --title "hoshi ${GITHUB_REF_NAME}" --notes-file dist/RELEASE_NOTES.md
+        run: bash scripts/publish-release.sh "${GITHUB_REF_NAME}" "hoshi ${GITHUB_REF_NAME}" dist/RELEASE_NOTES.md stable
+      - name: Publish latest metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/publish-release-metadata.py dist/latest.json
       - name: Homebrew tap
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

@@ -264,6 +264,7 @@ impl Drop for Inflight {
 /// In-memory save for the process. Catch-up stays here; disk writes are throttled.
 #[derive(Clone)]
 struct Live {
+    updates: Option<crate::update::CheckSession>,
     state: GameState,
     last_save_tick: u64,
     saved_next_id: u64,
@@ -294,6 +295,7 @@ impl Server {
                 exit: crate::cli::EXIT_INTERNAL,
             })?;
         let live = Live {
+            updates: None,
             last_save_tick: state.last_tick_unix,
             saved_next_id: state.history.next_id,
             state,
@@ -315,6 +317,11 @@ impl Server {
                 crate::oidc::Settings::default(),
             ))),
         })
+    }
+
+    pub fn with_updates(self, updates: crate::update::CheckSession) -> Self {
+        lock_poison(&self.live).updates = Some(updates);
+        self
     }
 
     pub fn with_auth(mut self, auth: Auth) -> Self {
@@ -436,10 +443,9 @@ fn serve_balance() -> Result<BalanceConfig, ServeError> {
 
 /// JSON body for `GET /healthz`.
 pub fn healthz_body() -> Value {
-    json!({
-        "ok": true,
-        "contract_versions": CONTRACT_VERSIONS,
-    })
+    let mut body = crate::update::version_body(None);
+    body["ok"] = json!(true);
+    body
 }
 
 pub fn parse_bind(raw: &str) -> Result<SocketAddr, ServeError> {
@@ -482,6 +488,10 @@ pub fn first_positional(args: &[String]) -> Option<&str> {
             continue;
         }
         if a.starts_with("--save=") || a.starts_with("--bind=") || a.starts_with("--config=") {
+            i += 1;
+            continue;
+        }
+        if matches!(a, "--update-check" | "--offline") {
             i += 1;
             continue;
         }
@@ -542,6 +552,10 @@ pub fn parse_serve_args(args: &[String]) -> Result<ServeArgs, ServeError> {
             })?;
             config_dir = Some(PathBuf::from(value));
             i += 2;
+            continue;
+        }
+        if matches!(a, "--update-check" | "--offline") {
+            i += 1;
             continue;
         }
         if a.starts_with('-') {
@@ -951,7 +965,15 @@ fn serve_one(
                 "",
             );
         }
-        return write_http(&mut stream, 200, &healthz_body(), "");
+        let mut body = healthz_body();
+        body["latest"] = crate::update::version_body(
+            lock_poison(live)
+                .updates
+                .as_ref()
+                .and_then(crate::update::CheckSession::release),
+        )["latest"]
+            .clone();
+        return write_http(&mut stream, 200, &body, "");
     }
     if route == "/v1/oidc/start" || route == "/v1/oidc/callback" {
         return serve_oidc(save, &mut stream, method, path, auth, oidc, bind);
@@ -993,6 +1015,21 @@ fn serve_one(
             _ => String::new(),
         };
         return write_http(&mut stream, status, &value, &extra);
+    }
+    if route == "/v1/version" {
+        if method != "GET" {
+            return write_http(
+                &mut stream,
+                405,
+                &error_body("invalid", "method not allowed"),
+                "",
+            );
+        }
+        let latest = lock_poison(live)
+            .updates
+            .as_ref()
+            .and_then(crate::update::CheckSession::release);
+        return write_http(&mut stream, 200, &crate::update::version_body(latest), "");
     }
     let parts = match parse_v1(method, path, &body) {
         Ok(parts) => parts,
@@ -1139,6 +1176,7 @@ fn serve_events(
     };
     ws::write_opening(stream, &key)?;
     let mut cursor = cursor;
+    let mut announced_update = None;
     if pump_events(save, stream, live, push, &mut cursor, now).is_err() {
         return Ok(());
     }
@@ -1160,6 +1198,21 @@ fn serve_events(
             }
             Ok(Some(ws::Frame::Pong | ws::Frame::Other) | None) => {}
             Err(_) => return Ok(()),
+        }
+        let latest = lock_poison(live)
+            .updates
+            .as_ref()
+            .and_then(crate::update::CheckSession::release);
+        if let Some(release) = latest.filter(|release| {
+            release.channel == crate::update::channel()
+                && crate::update::newer(&release.version, crate::update::running_version())
+        }) && announced_update.as_deref() != Some(release.version.as_str())
+        {
+            let event = json!({ "kind": "server_update_available", "version": release.version, "channel": release.channel });
+            if ws::write_text(stream, event.to_string().as_bytes()).is_err() {
+                return Ok(());
+            }
+            announced_update = Some(release.version);
         }
         let now = SystemClock.now_unix();
         if pump_events(save, stream, live, push, &mut cursor, now).is_err() {
@@ -1227,10 +1280,21 @@ pub fn run(args: &[String]) -> Result<(), ServeError> {
         cfg.serve_rate_limit,
         cfg.serve_rate_window_secs,
     );
-    let server = Server::open(ServeOptions { bind, save })?
+    let mut server = Server::open(ServeOptions { bind, save })?
         .with_auth(auth)
         .with_push(crate::push::Settings::from_config(&cfg))
         .with_oidc(crate::oidc::Settings::from_config(&cfg));
+    if args.iter().any(|arg| arg == "--update-check") {
+        let settings = crate::update::settings(&cfg, args);
+        if let Ok(key) = crate::update::public_key() {
+            server = server.with_updates(crate::update::CheckSession::start(
+                dir,
+                settings,
+                key,
+                SystemClock.now_unix(),
+            ));
+        }
+    }
     let addr = server.local_addr()?;
     println!(
         "{}",
@@ -1518,17 +1582,19 @@ mod tests {
         assert_ne!(addr.port(), 8787);
         let thread = std::thread::spawn(move || {
             let auth = Mutex::new(server.auth);
-            let (stream, _) = server.listener.accept().unwrap();
-            serve_one(
-                &server.save,
-                stream,
-                &auth,
-                server.live.as_ref(),
-                server.push.as_ref(),
-                server.oidc.as_ref(),
-                addr,
-            )
-            .unwrap();
+            for _ in 0..3 {
+                let (stream, _) = server.listener.accept().unwrap();
+                serve_one(
+                    &server.save,
+                    stream,
+                    &auth,
+                    server.live.as_ref(),
+                    server.push.as_ref(),
+                    server.oidc.as_ref(),
+                    addr,
+                )
+                .unwrap();
+            }
         });
         let (status, body) = get_path(addr, "/healthz").unwrap();
         assert_eq!(status, 200, "{body}");
@@ -1538,6 +1604,16 @@ mod tests {
             value["contract_versions"],
             json!(CONTRACT_VERSIONS.to_vec())
         );
+        assert_eq!(value["version"], crate::update::running_version());
+        assert_eq!(value["save_schema"], hoshi_core::SCHEMA_VERSION);
+        assert_eq!(value["latest"], Value::Null);
+        assert_eq!(get_path(addr, "/v1/version").unwrap().0, 401);
+        let (status, body) =
+            get_path_auth(addr, "/v1/version", Some(&format!("Bearer {TEST_TOKEN}"))).unwrap();
+        assert_eq!(status, 200, "{body}");
+        let version: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(version["version"], value["version"]);
+        assert_eq!(version["schema_version"], crate::cli::SCHEMA_VERSION);
         thread.join().unwrap();
         let _ = std::fs::remove_file(&save);
         let _ = std::fs::remove_file(save_lock_path(&save));
@@ -1607,6 +1683,14 @@ mod tests {
 
     #[test]
     fn first_positional_skips_flags() {
+        let flags = vec![
+            "hoshi".into(),
+            "serve".into(),
+            "--update-check".into(),
+            "--offline".into(),
+        ];
+        assert!(parse_serve_args(&flags).is_ok());
+
         let args = vec![
             "hoshi".into(),
             "--save".into(),
@@ -2290,6 +2374,7 @@ mod tests {
             store.load(BalanceConfig::default()).unwrap()
         };
         let mut live = Live {
+            updates: None,
             last_save_tick: state.last_tick_unix,
             saved_next_id: state.history.next_id,
             state,

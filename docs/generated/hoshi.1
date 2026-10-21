@@ -278,20 +278,20 @@ hoshi cancel research
 .PP
 Environment: HOSHI_SAVE, HOSHI_BALANCE
 .SS changelog
-Read bundled release notes (planned).
+Read bundled release notes without a network request.
 .PP
-Planned command. This build does not execute it.
+Available in supported release builds. Installation settings do not alter game rules or save contents.
 .PP
 .nf
-hoshi changelog (planned)
+hoshi changelog
 .fi
 .PP
 Example:
 .nf
-hoshi help changelog
+hoshi changelog
 .fi
 .PP
-Environment: HOSHI_VERSION, HOSHI_CHANNEL, HOSHI_OFFLINE (planned), HOSHI_SKIP_VERSION_CHECK (planned)
+Environment: HOSHI_VERSION, HOSHI_CHANNEL, HOSHI_OFFLINE, HOSHI_SKIP_VERSION_CHECK
 .SS classify
 Set a classification marking on an object.
 .PP
@@ -1180,10 +1180,10 @@ Environment: HOSHI_SAVE, HOSHI_BALANCE
 .SS serve
 Serve a versioned HTTP and WebSocket API for one save.
 .PP
-Wraps one locked local save. Loopback binding is the default; authenticated remote actions use the same core rules. No automatic update request is made.
+Wraps one locked local save. Loopback binding is the default; authenticated remote actions use the same core rules. Update requests require \-\-update\-check; \-\-offline suppresses them.
 .PP
 .nf
-hoshi serve [\-\-save PATH] [\-\-bind ADDRESS:PORT] [\-\-config DIR]
+hoshi serve [\-\-save PATH] [\-\-bind ADDRESS:PORT] [\-\-config DIR] [\-\-update\-check] [\-\-offline]
 .fi
 .PP
 Example:
@@ -1463,20 +1463,20 @@ hoshi tutorial skip
 .PP
 Environment: HOSHI_SAVE, HOSHI_BALANCE
 .SS update
-Update the installed game (planned).
+Verify and install an explicitly confirmed update.
 .PP
-Planned command. This build does not execute it.
+Available in supported release builds. Installation settings do not alter game rules or save contents.
 .PP
 .nf
-hoshi update (planned)
+hoshi update [\-\-yes] [\-\-force] [\-\-version VERSION] [\-\-channel stable|nightly] [\-\-rollback] [\-\-install\-dir DIR] [\-\-save\-dir DIR] [\-\-endpoint URL]
 .fi
 .PP
 Example:
 .nf
-hoshi help update
+hoshi update
 .fi
 .PP
-Environment: HOSHI_VERSION, HOSHI_CHANNEL, HOSHI_OFFLINE (planned), HOSHI_SKIP_VERSION_CHECK (planned)
+Environment: HOSHI_VERSION, HOSHI_CHANNEL, HOSHI_OFFLINE, HOSHI_SKIP_VERSION_CHECK
 .SS vehicle dissolve
 Return a registered vehicle to parked ships.
 .PP
@@ -1539,10 +1539,16 @@ hoshi \-\-version
 Environment: None required. See the global environment reference below.
 .SH FLAGS
 .TP
-.B \-\-help 
+.B \-\-offline
+Disable automatic network requests.
+.TP
+.B \-\-update\-check
+Opt in to background release checks for serve.
+.TP
+.B \-\-help
 Human help (\-h also works).
 .TP
-.B \-\-version 
+.B \-\-version
 Build version (\-V also works).
 .TP
 .B \-\-save PATH
@@ -1554,28 +1560,28 @@ Override balance configuration.
 .B \-\-seed SEED
 Initialize a deterministic harness or new\-game seed.
 .TP
-.B \-\-continue 
+.B \-\-continue
 Continue the current interactive slot.
 .TP
-.B \-\-no\-portraits 
+.B \-\-no\-portraits
 Use ASCII portraits.
 .TP
-.B \-\-commentary 
+.B \-\-commentary
 Enable replay commentary.
 .TP
-.B \-\-advisor 
+.B \-\-advisor
 Enable optional local advice.
 .TP
-.B \-\-json 
+.B \-\-json
 Explicit JSON CLI mode.
 .TP
-.B \-\-arena 
+.B \-\-arena
 Opt in to the bot arena.
 .TP
-.B \-\-self\-play 
+.B \-\-self\-play
 Opt in to balance self\-play.
 .TP
-.B \-\-demo 
+.B \-\-demo
 Opt in to the governance demonstration.
 .TP
 .B \-\-bind ADDRESS:PORT
@@ -1640,9 +1646,9 @@ Install script version selection.
 Install script channel selection.
 .TP
 .B HOSHI_OFFLINE
-Planned update\-check opt\-out; automatic update requests are not implemented in this build.
+Suppress automatic network requests.
 .TP
 .B HOSHI_SKIP_VERSION_CHECK
-Planned update\-check opt\-out; automatic update requests are not implemented in this build.
+Suppress automatic network requests.
 .SH EXIT STATUS
 0 success; 2 invalid input; 3 action refused; 4 save locked; 5 internal or save error.

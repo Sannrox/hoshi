@@ -53,7 +53,7 @@ impl Topic {
                     "Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair-play restrictions."
                 }
                 "serve" => {
-                    "Wraps one locked local save. Loopback binding is the default; authenticated remote actions use the same core rules. No automatic update request is made."
+                    "Wraps one locked local save. Loopback binding is the default; authenticated remote actions use the same core rules. Update requests require --update-check; --offline suppresses them."
                 }
                 "install" => {
                     "Available in supported release builds. Installation settings do not alter game rules or save contents."
@@ -70,9 +70,7 @@ impl Topic {
             "serve" => {
                 "HOSHI_SAVE, HOSHI_BALANCE, HOSHI_SERVE_TOKEN, HOSHI_SERVE_TOKEN_FILE, HOSHI_SERVE_PUSH, HOSHI_SERVE_PUSH_ENDPOINT, HOSHI_SERVE_VAPID_PRIVATE, HOSHI_SERVE_VAPID_SUBJECT, HOSHI_SERVE_OIDC, HOSHI_SERVE_OIDC_ISSUER, HOSHI_SERVE_OIDC_CLIENT_ID, HOSHI_SERVE_OIDC_AUTHORIZATION, HOSHI_SERVE_OIDC_TOKEN"
             }
-            "install" => {
-                "HOSHI_VERSION, HOSHI_CHANNEL, HOSHI_OFFLINE (planned), HOSHI_SKIP_VERSION_CHECK (planned)"
-            }
+            "install" => "HOSHI_VERSION, HOSHI_CHANNEL, HOSHI_OFFLINE, HOSHI_SKIP_VERSION_CHECK",
             "tui" => "HOSHI_SAVE, HOSHI_BALANCE, HOSHI_PORTRAIT_PROTOCOL, NO_COLOR",
             "cli" => "HOSHI_SAVE, HOSHI_BALANCE",
             _ => "None required. See the global environment reference below.",
@@ -147,7 +145,7 @@ const EXTRA: &[Topic] = &[
     Topic {
         name: "serve",
         summary: "Serve a versioned HTTP and WebSocket API for one save.",
-        usage: "serve [--save PATH] [--bind ADDRESS:PORT] [--config DIR]",
+        usage: "serve [--save PATH] [--bind ADDRESS:PORT] [--config DIR] [--update-check] [--offline]",
         example: "serve --save game.sqlite",
         area: "serve",
         planned: false,
@@ -155,20 +153,20 @@ const EXTRA: &[Topic] = &[
     },
     Topic {
         name: "update",
-        summary: "Update the installed game (planned).",
-        usage: "update (planned)",
-        example: "help update",
+        summary: "Verify and install an explicitly confirmed update.",
+        usage: "update [--yes] [--force] [--version VERSION] [--channel stable|nightly] [--rollback] [--install-dir DIR] [--save-dir DIR] [--endpoint URL]",
+        example: "update",
         area: "install",
-        planned: true,
+        planned: false,
         command_prefix: true,
     },
     Topic {
         name: "changelog",
-        summary: "Read bundled release notes (planned).",
-        usage: "changelog (planned)",
-        example: "help changelog",
+        summary: "Read bundled release notes without a network request.",
+        usage: "changelog",
+        example: "changelog",
         area: "install",
-        planned: true,
+        planned: false,
         command_prefix: true,
     },
     Topic {
@@ -198,6 +196,16 @@ pub(crate) struct Flag {
 }
 
 const FLAGS: &[Flag] = &[
+    Flag {
+        name: "--offline",
+        value: "",
+        summary: "Disable automatic network requests.",
+    },
+    Flag {
+        name: "--update-check",
+        value: "",
+        summary: "Opt in to background release checks for serve.",
+    },
     Flag {
         name: "--help",
         value: "",
@@ -312,13 +320,10 @@ const ENV: &[(&str, &str)] = &[
     ("HOSHI_SERVE_OIDC_TOKEN", "Identity token endpoint."),
     ("HOSHI_VERSION", "Install script version selection."),
     ("HOSHI_CHANNEL", "Install script channel selection."),
-    (
-        "HOSHI_OFFLINE",
-        "Planned update-check opt-out; automatic update requests are not implemented in this build.",
-    ),
+    ("HOSHI_OFFLINE", "Suppress automatic network requests."),
     (
         "HOSHI_SKIP_VERSION_CHECK",
-        "Planned update-check opt-out; automatic update requests are not implemented in this build.",
+        "Suppress automatic network requests.",
     ),
 ];
 
@@ -516,9 +521,13 @@ pub(crate) fn man() -> String {
     out.push_str(".SH FLAGS\n");
     for f in FLAGS {
         out.push_str(&format!(
-            ".TP\n.B {} {}\n{}\n",
+            ".TP\n.B {}{}\n{}\n",
             roff(f.name),
-            roff(f.value),
+            if f.value.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", roff(f.value))
+            },
             roff(f.summary)
         ));
     }

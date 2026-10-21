@@ -7,6 +7,10 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct UserConfig {
+    pub update_check: bool,
+    pub update_endpoint: String,
+    pub collapse_changelog: bool,
+    pub unknown_lines: Vec<String>,
     pub reduced_motion: bool,
     pub no_animation: bool,
     pub high_contrast: bool,
@@ -77,6 +81,10 @@ pub struct UserConfig {
 impl Default for UserConfig {
     fn default() -> Self {
         Self {
+            update_check: true,
+            update_endpoint: String::new(),
+            collapse_changelog: false,
+            unknown_lines: Vec::new(),
             reduced_motion: false,
             no_animation: false,
             high_contrast: false,
@@ -142,17 +150,44 @@ impl UserConfig {
         };
         let mut cfg = Self::default();
         let mut key_overrides: Vec<(String, String)> = Vec::new();
+        let mut extension_table = false;
         for raw in text.lines() {
             let line = raw.trim();
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
+            if line.starts_with('[') {
+                extension_table = true;
+            }
+            if extension_table {
+                cfg.unknown_lines.push(raw.to_owned());
+                continue;
+            }
             let Some((key, value)) = line.split_once('=') else {
+                cfg.unknown_lines.push(raw.to_owned());
                 continue;
             };
             let key = key.trim();
             let value = value.trim().trim_matches('"');
             match key {
+                "update_check" => {
+                    cfg.update_check = value
+                        .split('#')
+                        .next()
+                        .unwrap_or("")
+                        .trim()
+                        .parse::<bool>()
+                        .unwrap_or(false)
+                }
+                "update_endpoint" => {
+                    cfg.update_endpoint = serde_json::from_str(
+                        raw.split_once('=')
+                            .map(|(_, value)| value.trim())
+                            .unwrap_or(""),
+                    )
+                    .unwrap_or_else(|_| value.to_owned())
+                }
+                "collapse_changelog" => cfg.collapse_changelog = value == "true",
                 "reduced_motion" => cfg.reduced_motion = value == "true",
                 "no_animation" => cfg.no_animation = value == "true",
                 "high_contrast" => cfg.high_contrast = value == "true",
@@ -247,7 +282,7 @@ impl UserConfig {
                 key if key.starts_with("keys.") => {
                     key_overrides.push((key[5..].to_string(), value.to_string()));
                 }
-                _ => {}
+                _ => cfg.unknown_lines.push(raw.to_owned()),
             }
         }
         if !key_overrides.is_empty() {
@@ -264,6 +299,14 @@ impl UserConfig {
 
     pub fn save(&self, dir: &Path) -> std::io::Result<()> {
         std::fs::create_dir_all(dir)?;
+        use fs2::FileExt;
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(dir.join("config.lock"))?;
+        lock.lock_exclusive()?;
         let last = self.last_slot.as_deref().unwrap_or("");
         let quiet = match (self.notify_quiet_start, self.notify_quiet_end) {
             (Some(start), Some(end)) => {
@@ -321,7 +364,36 @@ impl UserConfig {
             self.serve_oidc_token.replace('"', ""),
             self.keys.to_config_lines().trim_end(),
         );
-        std::fs::write(Self::path(dir), text)
+        let mut text = format!(
+            "update_check = {}\nupdate_endpoint = {}\ncollapse_changelog = {}\n{text}",
+            self.update_check,
+            serde_json::to_string(&self.update_endpoint)?,
+            self.collapse_changelog
+        );
+        // Re-read extensions so a concurrently installed newer build keeps its keys.
+        let current = Self::load(dir);
+        let unknown = if Self::path(dir).exists() {
+            &current.unknown_lines
+        } else {
+            &self.unknown_lines
+        };
+        for line in unknown {
+            text.push_str(line);
+            text.push('\n');
+        }
+        atomicwrites::AtomicFile::new(
+            Self::path(dir),
+            atomicwrites::OverwriteBehavior::AllowOverwrite,
+        )
+        .write(|file| {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+            }
+            std::io::Write::write_all(file, text.as_bytes())
+        })
+        .map_err(|error| std::io::Error::other(error.to_string()))
     }
 
     pub fn notify_prefs(&self) -> notify::Prefs {
@@ -352,7 +424,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!("hoshi-cfg-{}-{nanos}", std::process::id()));
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let suffix = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("hoshi-cfg-{}-{nanos}-{suffix}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -382,6 +457,13 @@ mod tests {
         assert!(loaded.detail_panel);
         assert!(loaded.portraits);
         assert_eq!(loaded.portrait_protocol, ProtocolChoice::Auto);
+        std::fs::write(
+            UserConfig::path(&dir),
+            "future_setting = 7\n[future]\nbridge = true\n",
+        )
+        .unwrap();
+        let loaded = UserConfig::load(&dir);
+        assert!(!loaded.bridge);
         let mut cfg = loaded;
         cfg.reduced_motion = true;
         cfg.portraits = false;
@@ -405,6 +487,20 @@ mod tests {
         cfg.serve_bind = "127.0.0.1:0".into();
         cfg.serve_save = "slot.sqlite".into();
         cfg.save(&dir).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(UserConfig::path(&dir))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+        let saved = std::fs::read_to_string(UserConfig::path(&dir)).unwrap();
+        assert!(saved.contains("future_setting = 7\n[future]\nbridge = true\n"));
         let again = UserConfig::load(&dir);
         assert!(again.reduced_motion);
         assert_eq!(again.last_slot.as_deref(), Some("alpha"));
@@ -513,6 +609,21 @@ mod tests {
         let rejected = UserConfig::load(&dir);
         assert_eq!(rejected.keys, Keymap::defaults());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn update_opt_out_with_inline_comment_survives_save() {
+        let dir = unique_dir();
+        std::fs::write(
+            UserConfig::path(&dir),
+            "update_check = false # disable release requests\n",
+        )
+        .unwrap();
+        let cfg = UserConfig::load(&dir);
+        assert!(!cfg.update_check);
+        cfg.save(&dir).unwrap();
+        assert!(!UserConfig::load(&dir).update_check);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

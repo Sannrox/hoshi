@@ -13,6 +13,26 @@ fail() {
   exit 1
 }
 
+managed_install() {
+  set -- hoshi update --install-dir "${HOSHI_MANAGED_DIR}" --channel "${HOSHI_CHANNEL:-stable}"
+  case "${HOSHI_VERSION:-}" in
+    "") ;;
+    nightly) set -- hoshi update --install-dir "${HOSHI_MANAGED_DIR}" --channel nightly ;;
+    *) version="$(printf '%s' "${HOSHI_VERSION}" | sed 's/~nightly/-nightly/')"; set -- "$@" --version "${version}" ;;
+  esac
+  if ( : < /dev/tty ) 2>/dev/null; then
+    "$@" < /dev/tty
+  else
+    fail "managed install needs a controlling terminal; run hoshi update --install-dir DIR manually"
+  fi
+}
+
+# A trusted existing binary can bootstrap a managed installation on any target.
+if [ -n "${HOSHI_MANAGED_DIR:-}" ] && command -v hoshi > /dev/null 2>&1; then
+  managed_install
+  exit 0
+fi
+
 command -v dpkg > /dev/null 2>&1 || fail "needs dpkg (Ubuntu or Debian)"
 command -v curl > /dev/null 2>&1 || fail "needs curl"
 
@@ -55,3 +75,6 @@ SUDO=""
 ${SUDO} apt-get install -y --allow-downgrades "${TMP}/${DEB}"
 
 hoshi --version
+if [ -n "${HOSHI_MANAGED_DIR:-}" ]; then
+  managed_install
+fi

@@ -11,6 +11,7 @@ mod detail_panel;
 mod help;
 mod hubs;
 mod keymap;
+mod managed_update;
 mod notify;
 mod oidc;
 mod portraits;
@@ -18,6 +19,9 @@ mod push;
 mod serve;
 mod title;
 mod ui;
+mod update;
+mod update_command;
+mod update_ui;
 mod ws;
 
 use app::{Action, App};
@@ -51,6 +55,11 @@ fn write_notify(bytes: Vec<u8>) {
 }
 
 fn main() {
+    #[cfg(unix)]
+    if let Err(error) = update_command::launch_managed_if_needed() {
+        eprintln!("hoshi: {error}");
+        std::process::exit(2);
+    }
     let args: Vec<String> = std::env::args().collect();
     if let Some((output, exit)) = help::invocation(&args) {
         let mut stdout = std::io::stdout();
@@ -63,10 +72,21 @@ fn main() {
         }
         std::process::exit(exit);
     }
+    if args.get(1).map(String::as_str) == Some("update") {
+        if let Err(error) = update_command::run(&args[2..]) {
+            eprintln!("hoshi: {error}");
+            std::process::exit(2);
+        }
+        return;
+    }
+    if args.get(1).map(String::as_str) == Some("changelog") {
+        print!("{}", update::CHANGELOG);
+        return;
+    }
     if args.iter().any(|a| a == "--version" || a == "-V") {
         match option_env!("HOSHI_BUILD") {
-            Some(build) => println!("hoshi {} ({build})", env!("CARGO_PKG_VERSION")),
-            None => println!("hoshi {}", env!("CARGO_PKG_VERSION")),
+            Some(build) => println!("hoshi {} ({build})", update::running_version()),
+            None => println!("hoshi {}", update::running_version()),
         }
         return;
     }
@@ -700,6 +720,12 @@ fn title_then_play(
         title.config.ai_advisor = true;
     }
     title.set_balance(balance.clone());
+    title.updates = Some(update_ui::UpdateUi::start(
+        title.update_dir(),
+        &title.config,
+        &std::env::args().collect::<Vec<_>>(),
+        clock.now_unix(),
+    ));
     let mut terminal = ratatui::init();
     let result = loop {
         title.set_now(clock.now_unix());
@@ -709,6 +735,9 @@ fn title_then_play(
                 message: e.to_string(),
                 exit: 1,
             });
+        }
+        if let Some(updates) = &mut title.updates {
+            updates.did_draw();
         }
         match event::poll(Duration::from_secs(1)) {
             Ok(true) => match event::read() {
@@ -865,6 +894,12 @@ fn play_path(
     }
     let mut user = user.clone();
     let mut app = App::with_keymap(state, user.keys.clone());
+    app.updates = Some(update_ui::UpdateUi::start(
+        config_dir_for_save(path),
+        &user,
+        &std::env::args().collect::<Vec<_>>(),
+        now,
+    ));
     app.apply_cockpit(&user);
     app.portraits = portraits;
     app.reduced_motion = user.reduced_motion;
@@ -877,6 +912,10 @@ fn play_path(
     app.advisor_model_name = user.advisor_model_name.clone();
     app.advisor_allow_lan = user.advisor_allow_lan;
     app.governance = user.governance;
+    if update::offline(&std::env::args().collect::<Vec<_>>()) {
+        app.commentary_model_url.clear();
+        app.ai_advisor = false;
+    }
     app.set_notify(user.notify_prefs());
     #[cfg(feature = "bridge")]
     app.set_bridge_ui(user.bridge);
@@ -889,12 +928,14 @@ fn play_path(
     #[cfg(feature = "bridge")]
     let mut bridge = if open_bridge {
         let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let mut bridge_config = hoshi_bridge::config_for_state_dir(dir);
+        if update::offline(&std::env::args().collect::<Vec<_>>()) {
+            bridge_config.github_repos.clear();
+        }
         Some(
-            hoshi_bridge::Bridge::open(hoshi_bridge::config_for_state_dir(dir)).map_err(|e| {
-                LaunchError {
-                    message: e.to_string(),
-                    exit: 1,
-                }
+            hoshi_bridge::Bridge::open(bridge_config).map_err(|e| LaunchError {
+                message: e.to_string(),
+                exit: 1,
             })?,
         )
     } else {
@@ -925,6 +966,9 @@ fn play_path(
         }
         if let Err(e) = terminal.draw(|f| app.draw(f)) {
             break Err(e);
+        }
+        if let Some(updates) = &mut app.updates {
+            updates.did_draw();
         }
         let size = match terminal.size() {
             Ok(size) => size,
