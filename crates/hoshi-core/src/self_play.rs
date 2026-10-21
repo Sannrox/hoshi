@@ -41,6 +41,7 @@ pub struct SelfPlayCell {
 /// Aggregated matrix used by the CLI and CI.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelfPlayReport {
+    pub respec: Vec<crate::simulate::RespecRow>,
     pub seeds: Vec<u64>,
     pub cells: Vec<SelfPlayCell>,
     pub min_secs: u64,
@@ -150,6 +151,7 @@ impl SelfPlayReport {
     pub fn to_markdown(&self) -> String {
         let mut out = String::new();
         out.push_str("# Self-play report\n\n");
+        out.push_str(&crate::simulate::respec_markdown(&self.respec));
         out.push_str(&format!(
             "Seeds: {}\n",
             self.seeds
@@ -231,6 +233,7 @@ fn mark(ok: bool) -> &'static str {
 
 /// Run the scripted victory strategies for each species on `seeds`.
 pub fn run_self_play(config: BalanceConfig, seeds: &[u64]) -> SelfPlayReport {
+    let respec = crate::simulate::simulate_respec(config.clone());
     let catalog = SpeciesCatalog::default();
     let min_secs = config.victory.casual_min_secs;
     let max_secs = config.victory.casual_max_secs;
@@ -262,6 +265,7 @@ pub fn run_self_play(config: BalanceConfig, seeds: &[u64]) -> SelfPlayReport {
         }
     }
     SelfPlayReport {
+        respec,
         seeds,
         cells,
         min_secs,

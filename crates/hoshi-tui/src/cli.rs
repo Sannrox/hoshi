@@ -79,6 +79,8 @@ crate::help::catalog_commands! {
         building: BuildingKind,
         actor: Actor,
     },
+    #[help("dismantle", "Queue removal of one building level with partial salvage.", "dismantle PLANET BUILDING [--as ACTOR]", "dismantle home metal_mine")]
+    Dismantle { planet: Coord, building: BuildingKind, actor: Actor },
     #[help("research", "Start research through the ordinary rules path.", "research TECH", "research energy")]
     Research {
         tech: String,
@@ -1000,6 +1002,28 @@ fn apply(
                 state.catch_up(now);
             }
             Ok(incidents_value(state, *actor))
+        }
+        Command::Dismantle {
+            planet,
+            building,
+            actor,
+        } => {
+            state.catch_up(now);
+            let preview = state
+                .dismantle_preview(*planet, *building)
+                .map_err(|error| CliError::Refused(error.to_string()))?;
+            governed(
+                state,
+                Intent::Dismantle {
+                    planet: *planet,
+                    building: *building,
+                    actor: *actor,
+                },
+                now,
+            )?;
+            let mut value = ok_state(state, "queued dismantle");
+            value["dismantle"] = json!({ "planet": planet.to_string(), "building": building.as_key(), "from_level": preview.from_level, "to_level": preview.from_level - 1, "work_secs": preview.duration_secs, "energy_draw": preview.energy_draw, "expected_salvage": resources_json(preview.salvage) });
+            Ok(value)
         }
         Command::Build {
             planet,
@@ -2352,6 +2376,8 @@ fn state_value(state: &GameState, actor: Actor) -> Value {
             json!({
                 "index": i,
                 "building": job.building.as_key(),
+                "kind": job.kind.as_key(),
+                "work_left": job.work_left,
                 "from_level": job.from_level,
                 "completes_at": job.completes_at,
             })
@@ -3077,16 +3103,17 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
         "arena" => parse_arena_command(args),
         "self-play" => parse_self_play_command(args),
         "demo" => parse_demo_command(args),
-        "build" => {
-            let planet = parse_coord(nth(args, 1, "build <planet> <building>")?)?;
-            let building = BuildingKind::from_key(nth(args, 2, "build <planet> <building>")?)
+        "build" | "dismantle" => {
+            let usage = format!("{} <planet> <building> [--as <actor>]", args[0]);
+            let planet = parse_coord(nth(args, 1, &usage)?)?;
+            let building = BuildingKind::from_key(nth(args, 2, &usage)?)
                 .ok_or_else(|| CliError::Invalid("unknown building".into()))?;
             let mut actor = Actor::Player;
             let mut i = 3;
             while i < args.len() {
                 let a = args[i].as_str();
                 if a == "--as" {
-                    let raw = nth(args, i + 1, "build --as <actor>")?;
+                    let raw = nth(args, i + 1, &usage)?;
                     actor = Actor::parse(raw)
                         .ok_or_else(|| CliError::Invalid(format!("invalid --as {raw}")))?;
                     i += 2;
@@ -3094,11 +3121,19 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
                 }
                 return Err(CliError::Invalid(format!("unexpected argument {a}")));
             }
-            Ok(Command::Build {
-                planet,
-                building,
-                actor,
-            })
+            if args[0] == "dismantle" {
+                Ok(Command::Dismantle {
+                    planet,
+                    building,
+                    actor,
+                })
+            } else {
+                Ok(Command::Build {
+                    planet,
+                    building,
+                    actor,
+                })
+            }
         }
         "staff" => parse_staff_command(args),
         "vehicle" => parse_vehicle_command(args),

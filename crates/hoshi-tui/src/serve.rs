@@ -685,7 +685,12 @@ fn require_str<'a>(body: &'a Value, key: &str) -> Result<&'a str, String> {
 fn v1_parts(method: &str, path: &str, body: &Value) -> Result<Vec<String>, (u16, Value)> {
     let known = matches!(
         path,
-        "/v1/state" | "/v1/build" | "/v1/research" | "/v1/cancel" | "/v1/fleet/send"
+        "/v1/state"
+            | "/v1/build"
+            | "/v1/dismantle"
+            | "/v1/research"
+            | "/v1/cancel"
+            | "/v1/fleet/send"
     );
     if path.starts_with("/v1/tick") || path == "/v1/tick" {
         return Err((404, error_body("invalid", "not found")));
@@ -702,8 +707,12 @@ fn v1_parts(method: &str, path: &str, body: &Value) -> Result<Vec<String>, (u16,
     }
     let parts = match path {
         "/v1/state" => vec!["state".into()],
-        "/v1/build" => vec![
-            "build".into(),
+        "/v1/build" | "/v1/dismantle" => vec![
+            if path == "/v1/dismantle" {
+                "dismantle".into()
+            } else {
+                "build".into()
+            },
             require_str(body, "planet")
                 .map_err(|m| (400, error_body("invalid", &m)))?
                 .into(),
@@ -1890,6 +1899,34 @@ mod tests {
         let _ = std::fs::remove_file(&save_http);
         let _ = std::fs::remove_file(save_lock_path(&save_cli));
         let _ = std::fs::remove_file(save_lock_path(&save_http));
+    }
+
+    #[test]
+    fn dismantle_cli_and_server_share_success_bad_input_and_refusal() {
+        let save_cli = unique_save();
+        let save_http = unique_save();
+        for path in [&save_cli, &save_http] {
+            seed_save(path);
+            let mut conn = hoshi_core::open_save(path).unwrap();
+            let mut state = hoshi_core::load_state(&conn, BalanceConfig::default()).unwrap();
+            state.next_raid_at = None;
+            hoshi_core::save_state(&mut conn, &state).unwrap();
+        }
+        for (building, expected_exit) in [("metal_mine", 0), ("unknown", 2), ("fission_reactor", 3)]
+        {
+            let (_, exit) = cli_on(&save_cli, &["dismantle", "home", building]);
+            let body = serde_json::to_vec(&json!({"planet":"home", "building":building})).unwrap();
+            let (status, http) = handle_v1(&save_http, "POST", "/v1/dismantle", &body);
+            assert_eq!(exit, expected_exit, "{building}");
+            assert_eq!(status, http_status(exit), "{http}");
+        }
+        let (cli, _) = cli_on(&save_cli, &["state"]);
+        let (_, http) = handle_v1(&save_http, "GET", "/v1/state", &[]);
+        assert_eq!(cli, http);
+        for path in [&save_cli, &save_http] {
+            let _ = std::fs::remove_file(path);
+            let _ = std::fs::remove_file(save_lock_path(path));
+        }
     }
 
     #[test]

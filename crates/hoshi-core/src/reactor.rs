@@ -301,7 +301,7 @@ impl crate::GameState {
     }
 
     fn reactor_factor_at_power(&self, coord: crate::Coord, hours: f64, delivered: f64) -> f64 {
-        let Some(buildings) = self.buildings_at(coord).copied() else {
+        let Some(buildings) = self.operational_buildings_at(coord) else {
             return 0.0;
         };
         let Some(planet) = self.planet_kind(coord) else {
@@ -314,7 +314,7 @@ impl crate::GameState {
         let demand = if coord == self.home {
             self.energy_consumed()
         } else {
-            self.config.energy_draw(&buildings)
+            self.energy_consumed_at(coord)
         };
         let energy_factor = |power: f64| {
             if coord == self.home {
@@ -378,7 +378,7 @@ impl crate::GameState {
         {
             return 0.0;
         }
-        let Some(buildings) = self.buildings_at(coord).copied() else {
+        let Some(buildings) = self.operational_buildings_at(coord) else {
             return 0.0;
         };
         let Some(planet) = self.planet_kind(coord) else {

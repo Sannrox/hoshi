@@ -12,3 +12,4 @@
 | [0008](0008-human-help-catalog.md) | Human help from the command catalog | Accepted |
 | [0009](0009-fission-lifecycle.md) | Fuelled fission lifecycle in core | Accepted |
 | [0010](0010-signed-managed-updates.md) | Signed metadata and managed updates | Accepted |
+| [0011](0011-dismantling-in-the-build-queue.md) | Powered dismantling in the build queue | Accepted |

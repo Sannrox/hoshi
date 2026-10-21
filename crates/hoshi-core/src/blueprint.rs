@@ -150,8 +150,7 @@ impl GameState {
                 mismatches.push(BlueprintMismatch { building, reason });
                 continue;
             }
-            let have = buildings.get(building)
-                + queue.iter().filter(|job| job.building == building).count() as u32;
+            let have = crate::state::projected_on(&buildings, queue, building, queue.len());
             let mut from = have;
             while from < want {
                 steps.push(BlueprintStep {
@@ -416,6 +415,26 @@ mod tests {
         let queued: Vec<_> = state.build_queue.iter().map(|j| j.building).collect();
         assert_eq!(queued.first(), Some(&BuildingKind::SolarPlant));
         assert!(queued.contains(&BuildingKind::MetalMine), "{queued:?}");
+    }
+
+    #[test]
+    fn blueprint_restores_target_after_pending_dismantle() {
+        let mut state = GameState::with_config(0, quiet());
+        state.buildings.metal_mine = 3;
+        state.resources = crate::Resources::from_parts(50_000.0, 50_000.0, 50_000.0);
+        state
+            .enqueue_dismantle_as(state.home, BuildingKind::MetalMine, 0, crate::Actor::Player)
+            .unwrap();
+        let blueprint = Blueprint {
+            name: "restore".into(),
+            planet_type: None,
+            buildings: vec![(BuildingKind::MetalMine, 3)],
+        };
+        let preview = state.preview_blueprint(state.home, &blueprint).unwrap();
+        assert_eq!(preview.steps.len(), 1);
+        assert_eq!(preview.steps[0].from_level, 2);
+        state.apply_blueprint(state.home, &blueprint, 0).unwrap();
+        assert_eq!(state.build_queue.len(), 2);
     }
 
     #[test]

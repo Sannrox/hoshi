@@ -1174,6 +1174,8 @@ mod tests {
         let paid = Resources::from_parts(400.0, 0.0, 0.0);
         assert!(state.value_resources(paid) > 0.0);
         state.build_queue.push(crate::BuildJob {
+            kind: crate::buildings::BuildJobKind::Build,
+            work_left: 0.0,
             building: BuildingKind::MetalMine,
             from_level: 1,
             paid,

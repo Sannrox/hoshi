@@ -323,6 +323,7 @@ impl std::error::Error for BalanceError {}
 /// hard-code production or cap numbers.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BalanceConfig {
+    pub dismantle: crate::DismantleConfig,
     pub metal_mine: ProducerSpec,
     pub crystal_mine: ProducerSpec,
     pub deuterium_synthesizer: ProducerSpec,
@@ -431,6 +432,8 @@ struct File {
     solar_plant: FileEnergy,
     #[serde(default)]
     fission_reactor: crate::ReactorConfig,
+    #[serde(default)]
+    dismantle: crate::DismantleConfig,
     metal_storage: FileStorage,
     crystal_storage: FileStorage,
     deuterium_storage: FileStorage,
@@ -1436,6 +1439,7 @@ impl File {
                 radiator: self.buildings.radiator.into_spec()?,
                 scrubber: self.buildings.scrubber.into_spec()?,
             },
+            dismantle: self.dismantle,
             max_build_queue: self.queues.max_build_queue,
             robotics_speed_per_level: self.queues.robotics_speed_per_level,
             techs: crate::TechTree::default(),
@@ -1819,6 +1823,7 @@ impl FileChannel {
 
 impl BalanceConfig {
     fn validate(&self) -> Result<(), BalanceError> {
+        self.dismantle.validate().map_err(BalanceError::Invalid)?;
         if self.pacing.first_upgrade_secs == 0 {
             return Err(BalanceError::Invalid(
                 "pacing.first_upgrade_secs must be > 0".into(),

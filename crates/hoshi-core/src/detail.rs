@@ -110,15 +110,28 @@ impl GameState {
     fn describe_building(&self, kind: BuildingKind, planet: Coord) -> Option<Detail> {
         let buildings = *self.buildings_at(planet)?;
         let queue = self.queue_at(planet).unwrap_or(&[]);
-        let level =
-            buildings.get(kind) + queue.iter().filter(|job| job.building == kind).count() as u32;
+        let level = crate::state::projected_on(&buildings, queue, kind, queue.len());
         let spec = self.config.buildings.get(kind);
         let cost = self.build_cost_on(planet, kind);
         let duration = self.build_time_secs_on(planet, kind);
-        let queued: Vec<BuildingKind> = queue.iter().map(|job| job.building).collect();
+        let mut future_buildings = buildings;
+        for building in BuildingKind::ALL {
+            future_buildings.set(
+                building,
+                crate::state::projected_on(&buildings, queue, building, queue.len()),
+            );
+        }
         let mut projected = self.clone();
-        for queued_kind in queued {
-            apply_building_at(&mut projected, planet, queued_kind);
+        if planet == projected.home {
+            projected.buildings = future_buildings;
+            projected.build_queue.clear();
+        } else if let Some(colony) = projected
+            .colonies
+            .iter_mut()
+            .find(|colony| colony.coord == planet)
+        {
+            colony.buildings = future_buildings;
+            colony.build_queue.clear();
         }
         let mut next_state = projected.clone();
         apply_building_at(&mut next_state, planet, kind);
@@ -847,6 +860,8 @@ mod tests {
         let mut state = GameState::with_config(0, quiet());
         state.buildings.metal_mine = 1;
         state.build_queue.push(crate::BuildJob {
+            kind: crate::buildings::BuildJobKind::Build,
+            work_left: 0.0,
             building: BuildingKind::MetalMine,
             from_level: 1,
             paid: Resources::ZERO,

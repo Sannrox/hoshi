@@ -343,6 +343,22 @@ Environment: HOSHI_SAVE, HOSHI_BALANCE
 
 Area: cli.
 
+## dismantle
+
+Queue removal of one building level with partial salvage.
+
+```text
+hoshi dismantle PLANET BUILDING [--as ACTOR]
+```
+
+Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair-play restrictions.
+
+Example: `hoshi dismantle home metal_mine`
+
+Environment: HOSHI_SAVE, HOSHI_BALANCE
+
+Area: cli.
+
 ## feedback
 
 Record a playtest note.

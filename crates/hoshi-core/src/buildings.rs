@@ -156,9 +156,27 @@ impl Buildings {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildJobKind {
+    Build,
+    Dismantle,
+}
+
+impl BuildJobKind {
+    pub fn as_key(self) -> &'static str {
+        match self {
+            Self::Build => "build",
+            Self::Dismantle => "dismantle",
+        }
+    }
+}
+
 /// One queue slot. Waiting entries have no `completes_at` until they become head.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BuildJob {
+    pub kind: BuildJobKind,
+    /// Powered seconds still required by a dismantle job. Zero for upgrades.
+    pub work_left: f64,
     pub building: BuildingKind,
     /// Level this job upgrades from (already counts earlier queue entries).
     pub from_level: u32,
@@ -194,6 +212,9 @@ pub enum BuildError {
     EmptySlot {
         index: usize,
         len: usize,
+    },
+    DismantleBlocked {
+        reasons: Vec<String>,
     },
     UnknownPlanet,
     NeedLogistics,
@@ -233,6 +254,9 @@ impl fmt::Display for BuildError {
             } => write!(f, "requires {id} level {required} (have {actual})"),
             BuildError::EmptySlot { index, len } => {
                 write!(f, "no build job at index {index} (queue length {len})")
+            }
+            BuildError::DismantleBlocked { reasons } => {
+                write!(f, "cannot dismantle: {}", reasons.join("; "))
             }
             BuildError::UnknownPlanet => write!(f, "unknown planet"),
             BuildError::NeedLogistics => {

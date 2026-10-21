@@ -640,7 +640,16 @@ fn upcoming_lines(state: &GameState, width: usize, t: &Theme) -> Vec<Line<'stati
         {
             items.push((
                 at.saturating_sub(now),
-                format!("{} lv{} {coord}", job.building, job.from_level + 1),
+                format!(
+                    "[{}] {} lv{} {coord}",
+                    job.kind.as_key(),
+                    job.building,
+                    if job.kind == hoshi_core::BuildJobKind::Dismantle {
+                        job.from_level.saturating_sub(1)
+                    } else {
+                        job.from_level.saturating_add(1)
+                    }
+                ),
                 Intent::Success,
             ));
         }

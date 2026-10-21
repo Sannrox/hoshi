@@ -322,6 +322,21 @@ hoshi \-\-demo demo governance \-\-seed 1
 .fi
 .PP
 Environment: HOSHI_SAVE, HOSHI_BALANCE
+.SS dismantle
+Queue removal of one building level with partial salvage.
+.PP
+Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair\-play restrictions.
+.PP
+.nf
+hoshi dismantle PLANET BUILDING [\-\-as ACTOR]
+.fi
+.PP
+Example:
+.nf
+hoshi dismantle home metal_mine
+.fi
+.PP
+Environment: HOSHI_SAVE, HOSHI_BALANCE
 .SS feedback
 Record a playtest note.
 .PP

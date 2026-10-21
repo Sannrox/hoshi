@@ -828,3 +828,9 @@ base_seconds = 600.0
 time_growth = 1.8
 prerequisites = [{ building = "research_lab", level = 2 }]
 tech_prerequisites = [{ id = "fission", level = 1 }]
+
+[dismantle]
+time_share = 0.5
+energy_share = 0.25
+salvage_share = 0.35
+condition_floor = 0.0

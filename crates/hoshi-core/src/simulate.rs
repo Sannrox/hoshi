@@ -56,6 +56,7 @@ pub struct DaySnapshot {
 /// Pacing report for a greedy N-day run.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SimReport {
+    pub respec: Vec<RespecRow>,
     pub days: u32,
     pub first_reactor_secs: Option<u64>,
     pub first_upgrade_secs: Option<u64>,
@@ -162,6 +163,7 @@ impl SimReport {
         };
         let mut out = String::new();
         out.push_str("# Pacing report\n\n");
+        out.push_str(&respec_markdown(&self.respec));
         out.push_str(&format!("Simulated days: {}\n", self.days));
         let reactor = self
             .first_reactor_secs
@@ -409,6 +411,7 @@ pub fn simulate_greedy(config: BalanceConfig, days: u32) -> SimReport {
     } else {
         None
     };
+    let respec = simulate_respec(config.clone());
     let first_reactor_secs = simulate_first_reactor(config.clone());
     let prestige_runs = vec![
         prestige_row(&quiet, 1, 0),
@@ -421,6 +424,7 @@ pub fn simulate_greedy(config: BalanceConfig, days: u32) -> SimReport {
         f64::INFINITY
     };
     SimReport {
+        respec,
         days,
         first_reactor_secs,
         first_upgrade_secs: quiet.first_upgrade_secs,
@@ -446,6 +450,103 @@ pub fn simulate_greedy(config: BalanceConfig, days: u32) -> SimReport {
         ladder_tiers,
         frontier_unlock_secs,
     }
+}
+
+/// Compare shedding one oversized mine level with adding one solar level.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RespecRow {
+    pub strategy: &'static str,
+    pub elapsed_secs: Option<u64>,
+    pub net_iron: f64,
+    pub net_silicon: f64,
+    pub energy_balance: f64,
+}
+
+pub fn simulate_respec(mut config: BalanceConfig) -> Vec<RespecRow> {
+    config.raid.enabled = false;
+    config.chains = crate::ChainConfig::default();
+    config.story = crate::StoryCatalog::empty();
+    let mut initial = GameState::with_seed(100, config, 7);
+    initial.buildings = Buildings::default();
+    initial.buildings.solar_plant = 1;
+    initial.buildings.metal_mine = 10;
+    initial.resources = crate::Resources::from_parts(1_000.0, 1_000.0, 0.0);
+    let before = initial.resources;
+    [("dismantle", true), ("build supply", false)]
+        .into_iter()
+        .map(|(strategy, dismantle)| {
+            let mut state = initial.clone();
+            let queued = if dismantle {
+                state.enqueue_dismantle_as(
+                    state.home,
+                    BuildingKind::MetalMine,
+                    100,
+                    crate::Actor::Player,
+                )
+            } else {
+                state.enqueue_build(BuildingKind::SolarPlant, 100)
+            };
+            let mut elapsed_secs = None;
+            if queued.is_ok() {
+                // Follow power-limited work through the same core clock as live play.
+                while state.last_tick_unix < 86_500 {
+                    let next = state
+                        .build_queue
+                        .first()
+                        .and_then(|job| job.completes_at)
+                        .unwrap_or(state.last_tick_unix.saturating_add(60))
+                        .min(state.last_tick_unix.saturating_add(60))
+                        .min(86_500)
+                        .max(state.last_tick_unix.saturating_add(1));
+                    state.catch_up(next);
+                    if state.build_queue.is_empty() {
+                        elapsed_secs = Some(state.last_tick_unix - 100);
+                        break;
+                    }
+                }
+            }
+            RespecRow {
+                strategy,
+                elapsed_secs,
+                net_iron: state.resources.iron - before.iron,
+                net_silicon: state.resources.silicon - before.silicon,
+                energy_balance: state.energy_balance(),
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod respec_tests {
+    #[test]
+    fn both_respec_paths_finish_with_power_and_report_net_resources() {
+        let rows = super::simulate_respec(crate::BalanceConfig::default());
+        for row in &rows {
+            assert!(row.elapsed_secs.is_some(), "{row:?}");
+            assert!(row.energy_balance >= 0.0, "{row:?}");
+            assert!(row.net_iron.is_finite() && row.net_silicon.is_finite());
+        }
+        assert!(rows[0].net_silicon > 0.0);
+        assert!(rows[1].net_silicon < 0.0);
+    }
+}
+
+pub(crate) fn respec_markdown(rows: &[RespecRow]) -> String {
+    let mut out = String::from(
+        "## Re-spec: oversized mine\n\n| Strategy | Time (s) | Net Fe | Net Si | Final power |\n| --- | ---: | ---: | ---: | ---: |\n",
+    );
+    for row in rows {
+        let time = row
+            .elapsed_secs
+            .map(|secs| secs.to_string())
+            .unwrap_or_else(|| "unfinished after 1 day".into());
+        out.push_str(&format!(
+            "| {} | {} | {:.3} | {:.3} | {:.3} |\n",
+            row.strategy, time, row.net_iron, row.net_silicon, row.energy_balance
+        ));
+    }
+    out.push('\n');
+    out
 }
 
 /// True when no formation+stance pair wins every seeded sample.
@@ -968,7 +1069,8 @@ fn fill_frontier_queue(state: &mut GameState) {
                 | Err(BuildError::UnknownPlanet)
                 | Err(BuildError::NeedLogistics)
                 | Err(BuildError::PermissionDenied(_))
-                | Err(BuildError::NeedsApproval { .. }) => {}
+                | Err(BuildError::NeedsApproval { .. })
+                | Err(BuildError::DismantleBlocked { .. }) => {}
             }
         }
         if !enqueued {
@@ -1272,7 +1374,8 @@ fn fill_queue(state: &mut GameState) {
                 | Err(BuildError::UnknownPlanet)
                 | Err(BuildError::NeedLogistics)
                 | Err(BuildError::PermissionDenied(_))
-                | Err(BuildError::NeedsApproval { .. }) => {}
+                | Err(BuildError::NeedsApproval { .. })
+                | Err(BuildError::DismantleBlocked { .. }) => {}
             }
         }
         if !enqueued {

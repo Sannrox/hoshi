@@ -133,6 +133,7 @@ Game routes call the same hoshi-core actions as the CLI. Responses carry
 | --- | --- | --- |
 | `GET` | `/v1/state` | `hoshi state` |
 | `POST` | `/v1/build` | `hoshi build <planet> <building>` |
+| `POST` | `/v1/dismantle` | `hoshi dismantle <planet> <building>` |
 | `POST` | `/v1/research` | `hoshi research <tech>` |
 | `POST` | `/v1/cancel` | `hoshi cancel <queue-item>` |
 | `POST` | `/v1/fleet/send` | `hoshi fleet send <from> <to> <mission> <ships...>` |

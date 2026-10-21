@@ -592,13 +592,32 @@ impl GameState {
             return;
         }
         loop {
+            if self.build_queue.first().is_some_and(|job| {
+                job.kind == crate::BuildJobKind::Dismantle && job.started_at.is_none()
+            }) {
+                self.start_head(self.last_tick_unix);
+            }
+            for i in 0..self.colonies.len() {
+                if self.colonies[i].build_queue.first().is_some_and(|job| {
+                    job.kind == crate::BuildJobKind::Dismantle && job.started_at.is_none()
+                }) {
+                    self.start_colony_head(i, self.last_tick_unix);
+                }
+            }
+            self.refresh_dismantle_deadlines(now_unix);
             let home_build_at = self.build_queue.first().and_then(|job| job.completes_at);
             let colony_build_at = self
                 .colonies
                 .iter()
                 .filter_map(|c| c.build_queue.first().and_then(|job| job.completes_at))
                 .min();
-            let build_at = min_time(home_build_at, colony_build_at);
+            let dismantle_sample = self
+                .owned_coords()
+                .into_iter()
+                .any(|coord| self.dismantling(coord).is_some())
+                .then_some(self.maintenance.next_at)
+                .filter(|at| *at > self.last_tick_unix);
+            let build_at = min_time(min_time(home_build_at, colony_build_at), dismantle_sample);
             let research_at = self.research.as_ref().map(|job| job.completes_at);
             let ship_at = self.ship_queue.first().and_then(|job| job.completes_at);
             let mission_at = self.missions.iter().map(|m| m.phase_ends_at).min();
@@ -755,15 +774,20 @@ impl GameState {
             self.tick_staff(done_at);
             if home_build_at == Some(done_at) {
                 let job = self.build_queue.remove(0);
-                self.buildings.increment(job.building);
-                self.start_head(done_at);
-                self.note_completed(
-                    done_at,
-                    format!("{} lv {}", job.building, job.from_level.saturating_add(1)),
-                );
-                self.history_complete_build(self.home, job.building, done_at);
-                if mine_kind(job.building) {
-                    self.note_daily(DailyAction::MineUpgrade, done_at);
+                if job.kind == crate::BuildJobKind::Dismantle {
+                    self.complete_dismantle(self.home, job, done_at);
+                    self.start_head(done_at);
+                } else {
+                    self.buildings.increment(job.building);
+                    self.start_head(done_at);
+                    self.note_completed(
+                        done_at,
+                        format!("{} lv {}", job.building, job.from_level.saturating_add(1)),
+                    );
+                    self.history_complete_build(self.home, job.building, done_at);
+                    if mine_kind(job.building) {
+                        self.note_daily(DailyAction::MineUpgrade, done_at);
+                    }
                 }
             }
             let colony_done: Vec<usize> = self
@@ -777,16 +801,21 @@ impl GameState {
                 .collect();
             for i in colony_done {
                 let job = self.colonies[i].build_queue.remove(0);
-                self.colonies[i].buildings.increment(job.building);
-                self.start_colony_head(i, done_at);
-                self.note_completed(
-                    done_at,
-                    format!("{} lv {}", job.building, job.from_level.saturating_add(1)),
-                );
-                let coord = self.colonies[i].coord;
-                self.history_complete_build(coord, job.building, done_at);
-                if mine_kind(job.building) {
-                    self.note_daily(DailyAction::MineUpgrade, done_at);
+                if job.kind == crate::BuildJobKind::Dismantle {
+                    self.complete_dismantle(self.colonies[i].coord, job, done_at);
+                    self.start_colony_head(i, done_at);
+                } else {
+                    self.colonies[i].buildings.increment(job.building);
+                    self.start_colony_head(i, done_at);
+                    self.note_completed(
+                        done_at,
+                        format!("{} lv {}", job.building, job.from_level.saturating_add(1)),
+                    );
+                    let coord = self.colonies[i].coord;
+                    self.history_complete_build(coord, job.building, done_at);
+                    if mine_kind(job.building) {
+                        self.note_daily(DailyAction::MineUpgrade, done_at);
+                    }
                 }
             }
             if research_at == Some(done_at)
@@ -1060,7 +1089,7 @@ impl GameState {
         self.tick_classification_leaks(now);
     }
 
-    fn authorize(
+    pub(crate) fn authorize(
         &mut self,
         actor: crate::Actor,
         permission: crate::Permission,
@@ -1567,6 +1596,8 @@ impl GameState {
         let cost = config.buildings.get(kind).cost(from_level);
         *target.resources = target.resources.saturating_sub(cost);
         target.queue.push(BuildJob {
+            kind: crate::buildings::BuildJobKind::Build,
+            work_left: 0.0,
             building: kind,
             from_level,
             paid: cost,
@@ -1818,7 +1849,7 @@ impl GameState {
             return Err(ShipError::ZeroCount);
         }
         let spec = self.config.ships.get(kind);
-        let yard = self.buildings.shipyard;
+        let yard = self.available_building_level(BuildingKind::Shipyard);
         if yard < spec.shipyard {
             return Err(ShipError::NeedShipyard {
                 required: spec.shipyard,
@@ -1895,7 +1926,7 @@ impl GameState {
             return Err(ShipError::ZeroCount);
         }
         let spec = self.config.defences.get(kind);
-        let yard = self.buildings.shipyard;
+        let yard = self.available_building_level(BuildingKind::Shipyard);
         if yard < spec.shipyard {
             return Err(ShipError::NeedShipyard {
                 required: spec.shipyard,
@@ -2848,18 +2879,18 @@ impl GameState {
     }
 
     fn colony_production_per_hour(&self, colony: &Colony, kind: ResourceKind) -> f64 {
+        let buildings = self
+            .operational_buildings_at(colony.coord)
+            .unwrap_or(colony.buildings);
         let bonus = self.config.planet_types.get(colony.kind);
         let rare = self.rare_bonus_for(colony);
         let frontier = self.frontier_production_bonus(colony.coord);
         let energy_t = self.tech_modifier(ModifierKind::EnergyOutput);
-        let produced = self
-            .config
-            .solar_plant
-            .energy_output(colony.buildings.solar_plant)
+        let produced = self.config.solar_plant.energy_output(buildings.solar_plant)
             * self.config.orbits.solar_flux(colony.coord)
             * (1.0 + energy_t + bonus.energy + rare.energy).max(0.0)
             + self.reactor_output_at(colony.coord);
-        let consumed = self.config.energy_draw(&colony.buildings);
+        let consumed = self.energy_consumed_at(colony.coord);
         let energy = if consumed <= 0.0 {
             1.0
         } else {
@@ -2871,7 +2902,7 @@ impl GameState {
         if self.config.chains.enabled() {
             return self.chain_net_per_hour(
                 ChainSite {
-                    buildings: colony.buildings,
+                    buildings,
                     planet: colony.kind,
                     coord: colony.coord,
                     extra_iron: rare.iron + frontier,
@@ -2889,21 +2920,21 @@ impl GameState {
             ResourceKind::Iron | ResourceKind::RareEarths => (
                 self.config
                     .metal_mine
-                    .production_per_hour(colony.buildings.metal_mine),
+                    .production_per_hour(buildings.metal_mine),
                 ModifierKind::MetalOutput,
                 bonus.iron + rare.iron + frontier,
             ),
             ResourceKind::Silicon => (
                 self.config
                     .crystal_mine
-                    .production_per_hour(colony.buildings.crystal_mine),
+                    .production_per_hour(buildings.crystal_mine),
                 ModifierKind::CrystalOutput,
                 bonus.silicon + rare.silicon + frontier,
             ),
             ResourceKind::Deuterium | ResourceKind::WaterIce | ResourceKind::Helium3 => (
                 self.config
                     .deuterium_synthesizer
-                    .production_per_hour(colony.buildings.deuterium_synthesizer),
+                    .production_per_hour(buildings.deuterium_synthesizer),
                 ModifierKind::DeuteriumOutput,
                 bonus.deuterium + rare.deuterium + frontier,
             ),
@@ -3429,7 +3460,7 @@ impl GameState {
     fn research_prereq_gaps(&self, spec: &crate::TechSpec) -> Vec<PrereqGap> {
         let mut gaps = Vec::new();
         for pre in &spec.prereq_buildings {
-            let actual = self.buildings.get(pre.building);
+            let actual = self.available_building_level(pre.building);
             if actual < pre.level {
                 gaps.push(PrereqGap::Building {
                     building: pre.building,
@@ -3462,16 +3493,22 @@ impl GameState {
         self.duration_secs(kind, self.projected_level(kind))
     }
 
+    fn available_building_level(&self, kind: BuildingKind) -> u32 {
+        if self.dismantling(self.home) == Some(kind) {
+            return 0;
+        }
+        (0..=self.build_queue.len())
+            .map(|index| self.projected_level_before(kind, index))
+            .min()
+            .unwrap_or(self.buildings.get(kind))
+    }
+
     fn projected_level(&self, kind: BuildingKind) -> u32 {
         self.projected_level_before(kind, self.build_queue.len())
     }
 
     fn projected_level_before(&self, kind: BuildingKind, index: usize) -> u32 {
-        self.buildings.get(kind)
-            + self.build_queue[..index]
-                .iter()
-                .filter(|job| job.building == kind)
-                .count() as u32
+        projected_on(&self.buildings, &self.build_queue, kind, index)
     }
 
     fn prereqs_ok_at(&self, index: usize) -> bool {
@@ -3488,6 +3525,23 @@ impl GameState {
         let centers = crate::finance::build_centers(self.home);
         let mut i = 0;
         while i < self.build_queue.len() {
+            if self.build_queue[i].kind == crate::BuildJobKind::Dismantle {
+                let kind = self.build_queue[i].building;
+                let level = self.projected_level_before(kind, i);
+                if level == 0 {
+                    self.build_queue.remove(i);
+                    continue;
+                }
+                self.build_queue[i].from_level = level;
+                if self.build_queue[i].started_at.is_none() {
+                    self.build_queue[i].work_left = (self.duration_secs(kind, level - 1) as f64
+                        * self.config.dismantle.time_share)
+                        .ceil()
+                        .max(1.0);
+                }
+                i += 1;
+                continue;
+            }
             if !self.prereqs_ok_at(i) {
                 let job = self.build_queue.remove(i);
                 self.resources = self.resources.saturating_add(job.paid);
@@ -3529,7 +3583,27 @@ impl GameState {
         ((base as f64) * mult).ceil().max(1.0) as u64
     }
 
-    fn start_head(&mut self, now_unix: u64) {
+    pub(crate) fn start_head(&mut self, now_unix: u64) {
+        if let Some(job) = self.build_queue.first()
+            && job.kind == crate::BuildJobKind::Dismantle
+            && job.started_at.is_none()
+            && !self
+                .dismantle_blockers(self.home, job.building, job.from_level, 0)
+                .is_empty()
+        {
+            return;
+        }
+
+        if self.build_queue.first().is_some_and(|job| {
+            job.kind == crate::BuildJobKind::Dismantle
+                && job.building == BuildingKind::FissionReactor
+                && job.started_at.is_none()
+        }) {
+            self.note_reactor_shutdown(self.home, now_unix);
+        }
+        let starting_dismantle = self.build_queue.first().is_some_and(|job| {
+            job.kind == crate::BuildJobKind::Dismantle && job.started_at.is_none()
+        });
         let robotics = self.buildings.robotics_factory;
         let construction = self
             .species
@@ -3543,9 +3617,32 @@ impl GameState {
             now_unix.max(self.last_tick_unix),
             construction,
         );
+        if starting_dismantle {
+            self.record_dismantle_start(self.home, now_unix);
+        }
     }
 
-    fn start_colony_head(&mut self, index: usize, now_unix: u64) {
+    pub(crate) fn start_colony_head(&mut self, index: usize, now_unix: u64) {
+        if let Some(job) = self.colonies[index].build_queue.first()
+            && job.kind == crate::BuildJobKind::Dismantle
+            && job.started_at.is_none()
+            && !self
+                .dismantle_blockers(self.colonies[index].coord, job.building, job.from_level, 0)
+                .is_empty()
+        {
+            return;
+        }
+
+        if self.colonies[index].build_queue.first().is_some_and(|job| {
+            job.kind == crate::BuildJobKind::Dismantle
+                && job.building == BuildingKind::FissionReactor
+                && job.started_at.is_none()
+        }) {
+            self.note_reactor_shutdown(self.colonies[index].coord, now_unix);
+        }
+        let starting_dismantle = self.colonies[index].build_queue.first().is_some_and(|job| {
+            job.kind == crate::BuildJobKind::Dismantle && job.started_at.is_none()
+        });
         let robotics = self.colonies[index].buildings.robotics_factory;
         let construction = self
             .species
@@ -3559,11 +3656,47 @@ impl GameState {
             now_unix.max(self.last_tick_unix),
             construction,
         );
+        if starting_dismantle {
+            self.record_dismantle_start(self.colonies[index].coord, now_unix);
+        }
     }
 
     fn reprice_colony_queue(&mut self, index: usize) {
         let mut i = 0;
         while i < self.colonies[index].build_queue.len() {
+            if self.colonies[index].build_queue[i].kind == crate::BuildJobKind::Dismantle {
+                let kind = self.colonies[index].build_queue[i].building;
+                let level = projected_on(
+                    &self.colonies[index].buildings,
+                    &self.colonies[index].build_queue,
+                    kind,
+                    i,
+                );
+                if level == 0 {
+                    self.colonies[index].build_queue.remove(i);
+                    continue;
+                }
+                self.colonies[index].build_queue[i].from_level = level;
+                if self.colonies[index].build_queue[i].started_at.is_none() {
+                    let construction = self
+                        .species
+                        .as_ref()
+                        .map(|run| run.construction)
+                        .unwrap_or(1.0);
+                    self.colonies[index].build_queue[i].work_left = (duration_with_robotics(
+                        kind,
+                        level - 1,
+                        self.colonies[index].buildings.robotics_factory,
+                        &self.config,
+                    ) as f64
+                        * self.config.dismantle.time_share
+                        * construction)
+                        .ceil()
+                        .max(1.0);
+                }
+                i += 1;
+                continue;
+            }
             let kind = self.colonies[index].build_queue[i].building;
             let prereqs = self.config.buildings.get(kind).prerequisites.clone();
             let ok = prereqs.iter().all(|&(req, required)| {
@@ -4775,12 +4908,12 @@ impl GameState {
                 .iter()
                 .find(|c| c.coord == coord)
                 .map(|colony| {
+                    let buildings = self
+                        .operational_buildings_at(coord)
+                        .unwrap_or(colony.buildings);
                     let bonus = self.config.planet_types.get(colony.kind);
                     let rare = self.rare_bonus_for(colony);
-                    let produced = self
-                        .config
-                        .solar_plant
-                        .energy_output(colony.buildings.solar_plant)
+                    let produced = self.config.solar_plant.energy_output(buildings.solar_plant)
                         * self.config.orbits.solar_flux(colony.coord)
                         * (1.0
                             + self.tech_modifier(ModifierKind::EnergyOutput)
@@ -4788,7 +4921,7 @@ impl GameState {
                             + rare.energy)
                             .max(0.0)
                         + self.reactor_output_at(colony.coord);
-                    let consumed = self.config.energy_draw(&colony.buildings);
+                    let consumed = self.energy_consumed_at(coord);
                     if consumed <= 0.0 {
                         1.0
                     } else {
@@ -5495,6 +5628,7 @@ impl GameState {
             return;
         }
         let from = self.last_tick_unix;
+        let dismantle_progress = self.dismantle_progress(now_unix - from);
         let hours = (now_unix - from) as f64 / 3600.0;
         let before = self.resources;
         let colony_before: Vec<Resources> = self.colonies.iter().map(|c| c.resources).collect();
@@ -5622,6 +5756,7 @@ impl GameState {
         self.collect_law_tax(hours, from, now_unix);
         self.accrue_production_income(hours, produced);
         self.tick_flagship(now_unix);
+        self.apply_dismantle_progress(dismantle_progress);
         self.last_tick_unix = now_unix;
         for (coord, power) in reactor_power {
             if power <= 0.0 {
@@ -5660,7 +5795,9 @@ impl GameState {
     fn produce_chains(&mut self, hours: f64, home_factor: f64, boost: f64, from: u64, to: u64) {
         let chains = self.config.chains.clone();
         let home_deposits = self.chain_deposits(self.home_kind, self.galaxy_seed, self.home);
-        let home_buildings = self.buildings;
+        let home_buildings = self
+            .operational_buildings_at(self.home)
+            .unwrap_or(self.buildings);
         let home_kind = self.home_kind;
         let metal_cap = self.storage_cap(ResourceKind::Iron);
         let crystal_cap = self.storage_cap(ResourceKind::Silicon);
@@ -5737,7 +5874,8 @@ impl GameState {
                 (
                     colony.coord,
                     colony.kind,
-                    colony.buildings,
+                    self.operational_buildings_at(colony.coord)
+                        .unwrap_or(colony.buildings),
                     rare.iron + self.frontier_production_bonus(colony.coord),
                     rare.silicon + self.frontier_production_bonus(colony.coord),
                     rare.deuterium + self.frontier_production_bonus(colony.coord),
@@ -5901,9 +6039,10 @@ impl GameState {
     }
 
     pub fn energy_produced(&self) -> f64 {
-        self.config
-            .solar_plant
-            .energy_output(self.buildings.solar_plant)
+        let buildings = self
+            .operational_buildings_at(self.home)
+            .unwrap_or(self.buildings);
+        self.config.solar_plant.energy_output(buildings.solar_plant)
             * self.config.orbits.solar_flux(self.home)
             * (1.0 + self.modifier(ModifierKind::EnergyOutput)).max(0.0)
             + self.reactor_output_at(self.home)
@@ -5915,7 +6054,7 @@ impl GameState {
     }
 
     pub fn energy_consumed(&self) -> f64 {
-        self.config.energy_draw(&self.buildings) + self.automation_control_energy()
+        self.energy_consumed_at(self.home)
     }
 
     pub fn waste_home(&self) -> crate::WasteReport {
@@ -5937,10 +6076,15 @@ impl GameState {
     }
 
     pub(crate) fn base_waste_at(&self, coord: Coord) -> Option<crate::WasteReport> {
-        Some(self.waste_for(*self.buildings_at(coord)?, self.planet_kind(coord)?))
+        let mut report = self.waste_for(
+            self.operational_buildings_at(coord)?,
+            self.planet_kind(coord)?,
+        );
+        report.heat_load += self.dismantle_energy_at(coord) * self.config.waste.heat_per_energy;
+        Some(report)
     }
 
-    fn waste_for(&self, buildings: Buildings, planet: PlanetType) -> crate::WasteReport {
+    pub(crate) fn waste_for(&self, buildings: Buildings, planet: PlanetType) -> crate::WasteReport {
         crate::waste::report(
             &self.config.waste,
             &self.config.chains.recipes,
@@ -6230,7 +6374,9 @@ impl GameState {
         if self.config.chains.enabled() {
             self.chain_net_per_hour(
                 ChainSite {
-                    buildings: self.buildings,
+                    buildings: self
+                        .operational_buildings_at(self.home)
+                        .unwrap_or(self.buildings),
                     planet: self.home_kind,
                     coord: self.home,
                     extra_iron: 0.0,
@@ -6430,6 +6576,14 @@ impl GameState {
     }
 
     fn base_production_range(&self, kind: ResourceKind, from: u64, to: u64) -> f64 {
+        let producer = match kind {
+            ResourceKind::Iron | ResourceKind::RareEarths => BuildingKind::MetalMine,
+            ResourceKind::Silicon => BuildingKind::CrystalMine,
+            _ => BuildingKind::DeuteriumSynthesizer,
+        };
+        if self.dismantling(self.home) == Some(producer) {
+            return 0.0;
+        }
         let raw = match kind {
             ResourceKind::Iron | ResourceKind::RareEarths => self
                 .config
@@ -6597,20 +6751,25 @@ fn min_time(a: Option<u64>, b: Option<u64>) -> Option<u64> {
 
 /// Integrate a constant rate for `hours`, stopping exactly at `cap`.
 /// Never lowers `current` (over-cap stockpiles and zero/negative rates stay put).
-fn projected_on(
+pub(crate) fn projected_on(
     buildings: &Buildings,
     queue: &[BuildJob],
     kind: BuildingKind,
     index: usize,
 ) -> u32 {
-    buildings.get(kind)
-        + queue[..index]
-            .iter()
-            .filter(|job| job.building == kind)
-            .count() as u32
+    queue[..index]
+        .iter()
+        .filter(|job| job.building == kind)
+        .fold(buildings.get(kind), |level, job| {
+            if job.kind == crate::BuildJobKind::Dismantle {
+                level.saturating_sub(1)
+            } else {
+                level.saturating_add(1)
+            }
+        })
 }
 
-fn duration_with_robotics(
+pub(crate) fn duration_with_robotics(
     kind: BuildingKind,
     from_level: u32,
     robotics: u32,
@@ -6633,6 +6792,23 @@ fn start_queue_head(
         return;
     };
     if job.completes_at.is_some() {
+        return;
+    }
+    if job.kind == crate::BuildJobKind::Dismantle {
+        let job = &mut queue[0];
+        if job.started_at.is_none() {
+            job.work_left = (duration_with_robotics(
+                job.building,
+                job.from_level.saturating_sub(1),
+                robotics,
+                config,
+            ) as f64
+                * construction.max(0.05)
+                * config.dismantle.time_share)
+                .ceil()
+                .max(1.0);
+            job.started_at = Some(now);
+        }
         return;
     }
     let base = duration_with_robotics(job.building, job.from_level, robotics, config);
@@ -6724,6 +6900,7 @@ mod tests {
                 growth: 1.0,
             },
             fission_reactor: crate::ReactorConfig::default(),
+            dismantle: crate::DismantleConfig::default(),
             metal_storage: crate::StorageSpec {
                 base: 1_000.0,
                 growth: 2.0,

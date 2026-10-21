@@ -1299,6 +1299,12 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             add_column(conn, "spy_reports", column, sql)
         conn.execute("UPDATE spy_reports SET observed_at = created_at WHERE observed_at = 0")
         conn.execute("UPDATE spy_reports SET arrives_at = created_at WHERE arrives_at = 0")
+    elif version == 46:
+        conn.execute("""CREATE TABLE IF NOT EXISTS reactor_shutdowns (
+            galaxy INTEGER NOT NULL, system INTEGER NOT NULL, position INTEGER NOT NULL,
+            at INTEGER NOT NULL CHECK (at >= 0),
+            thermal_power REAL NOT NULL CHECK (thermal_power >= 0),
+            PRIMARY KEY (galaxy, system, position))""")
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"

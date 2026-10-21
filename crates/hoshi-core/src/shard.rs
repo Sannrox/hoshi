@@ -554,6 +554,31 @@ mod tests {
     }
 
     #[test]
+    fn dismantle_matches_direct_intent_and_retries_once() {
+        let mut state = test_state(1_000);
+        let mut direct = state.clone();
+        let intent = Intent::Dismantle {
+            planet: Coord::HOME,
+            building: BuildingKind::MetalMine,
+            actor: Actor::Player,
+        };
+        let proposal = crate::propose(&direct, &intent, 1_000).unwrap();
+        crate::apply(&mut direct, &proposal, 1_000).unwrap();
+        let mut shard = session(1_000);
+        let command = ShardCommand {
+            identity: "tenant-a".into(),
+            idempotency_id: "remove-level".into(),
+            intent,
+            client_now_unix: None,
+        };
+        shard.submit(&mut state, command.clone()).unwrap();
+        shard.submit(&mut state, command).unwrap();
+        assert_eq!(state.build_queue, direct.build_queue);
+        assert_eq!(state.resources, direct.resources);
+        assert_eq!(state.buildings, direct.buildings);
+    }
+
+    #[test]
     fn duplicate_idempotency_id_does_not_apply_twice() {
         let mut shard = session(1_000);
         let mut state = test_state(1_000);
