@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct UserConfig {
+    pub bug_report_target: String,
     pub log_level: String,
     pub serve_support_report: bool,
     pub serve_admin_token: String,
@@ -85,6 +86,7 @@ pub struct UserConfig {
 impl Default for UserConfig {
     fn default() -> Self {
         Self {
+            bug_report_target: "public".into(),
             log_level: "info".into(),
             serve_support_report: true,
             serve_admin_token: String::new(),
@@ -157,9 +159,34 @@ impl UserConfig {
             return Self::default();
         };
         let mut cfg = Self::default();
+        let parsed = toml::from_str::<toml::Table>(&text);
+        cfg.bug_report_target = match parsed.as_ref() {
+            Ok(value) => value
+                .get("bug_report_target")
+                .map(|value| value.as_str().unwrap_or("off").to_owned())
+                .unwrap_or_else(|| "public".into()),
+            Err(_) => "off".into(),
+        };
+        #[derive(serde::Deserialize)]
+        struct Destination {
+            bug_report_target: Option<toml::Spanned<String>>,
+        }
+        let destination_span = toml::from_str::<Destination>(&text)
+            .ok()
+            .and_then(|destination| destination.bug_report_target.map(|value| value.span()));
+        let mut offset = 0;
         let mut key_overrides: Vec<(String, String)> = Vec::new();
         let mut extension_table = false;
-        for raw in text.lines() {
+        for raw in text.split_inclusive('\n') {
+            let start = offset;
+            offset += raw.len();
+            if destination_span
+                .as_ref()
+                .is_some_and(|span| start < span.end && offset > span.start)
+            {
+                continue;
+            }
+            let raw = raw.trim_end_matches('\n');
             let line = raw.trim();
             if line.is_empty() || line.starts_with('#') {
                 continue;
@@ -192,6 +219,7 @@ impl UserConfig {
                         .parse::<bool>()
                         .unwrap_or(false)
                 }
+                "bug_report_target" => {}
                 "serve_admin_token" => {
                     cfg.serve_admin_token = line
                         .split_once('=')
@@ -417,6 +445,10 @@ impl UserConfig {
             text.push_str(line);
             text.push('\n');
         }
+        let text = format!(
+            "bug_report_target = {}\n{text}",
+            toml::Value::String(self.bug_report_target.clone())
+        );
         atomicwrites::AtomicFile::new(
             Self::path(dir),
             atomicwrites::OverwriteBehavior::AllowOverwrite,
@@ -467,6 +499,40 @@ mod tests {
             std::env::temp_dir().join(format!("hoshi-cfg-{}-{nanos}-{suffix}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn bug_target_accepts_toml_strings_and_comments() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("hoshi-bug-config-{}-{nonce}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        for (raw, expected) in [
+            ("\"public\" # public tracker", "public"),
+            ("'off'", "off"),
+            (
+                "\"\"\"https://tracker.invalid\\\n  /new?body={body}\"\"\"",
+                "https://tracker.invalid/new?body={body}",
+            ),
+            (
+                "'https://tracker.invalid/new?title={title}' # custom",
+                "https://tracker.invalid/new?title={title}",
+            ),
+        ] {
+            std::fs::write(
+                UserConfig::path(&dir),
+                format!("bug_report_target = {raw}\n"),
+            )
+            .unwrap();
+            let config = UserConfig::load(&dir);
+            assert_eq!(config.bug_report_target, expected);
+            config.save(&dir).unwrap();
+            assert_eq!(UserConfig::load(&dir).bug_report_target, expected);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

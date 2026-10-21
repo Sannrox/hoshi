@@ -55,7 +55,7 @@ impl Redactor {
                 secrets.push(value);
             }
         }
-        if let Ok(config) = config.parse::<toml::Value>() {
+        if let Ok(config) = toml::from_str::<toml::Value>(&config) {
             collect_secrets(&config, false, &mut secrets);
         }
         for (key, value) in std::env::vars_os() {
@@ -115,7 +115,7 @@ impl Redactor {
         if input.trim().is_empty() {
             return self.redact(input);
         }
-        let Ok(mut config) = input.parse::<toml::Value>() else {
+        let Ok(mut config) = toml::from_str::<toml::Value>(input) else {
             return self.redact("Config unavailable: invalid TOML; values excluded.");
         };
         let count = redact_values(&mut config);

@@ -263,6 +263,22 @@ Environment: HOSHI_SAVE, HOSHI_BALANCE
 
 Area: cli.
 
+## bug
+
+Preview a redacted bug report and prefilled issue page.
+
+```text
+hoshi bug [--title TEXT] [--happened TEXT] [--expected TEXT] [--steps TEXT] [--offline] [--print-url] [--yes]
+```
+
+Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair-play restrictions.
+
+Example: `hoshi bug --title Failure --happened Stopped --expected Continue --offline --yes`
+
+Environment: HOSHI_SAVE, HOSHI_BALANCE
+
+Area: cli.
+
 ## build
 
 Queue a building upgrade on an owned planet.

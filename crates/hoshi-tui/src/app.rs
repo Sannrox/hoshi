@@ -95,6 +95,7 @@ const TRADE_PAIRS: [(ResourceKind, ResourceKind); 6] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     SupportReport,
+    ReportBug,
     None,
     Quit,
 }
@@ -104,6 +105,7 @@ pub struct App {
     dismantle_confirm: Option<(Coord, BuildingKind)>,
     pub support: Option<crate::support_ui::SupportUi>,
     cheat_prompt: Option<String>,
+    bug: Option<crate::bug_ui::BugUi>,
     pub state: GameState,
     pub portraits: PortraitView,
     keymap: Keymap,
@@ -178,6 +180,7 @@ impl App {
         Self {
             support: None,
             cheat_prompt: None,
+            bug: None,
             state,
             portraits: PortraitView::default(),
             keymap,
@@ -483,7 +486,21 @@ impl App {
         }
     }
 
+    pub fn open_bug(&mut self, save: &std::path::Path) {
+        self.bug = Some(crate::bug_ui::BugUi::open(
+            save,
+            save.parent().unwrap_or(std::path::Path::new(".")),
+            false,
+        ));
+    }
+
     pub fn handle_key(&mut self, code: KeyCode, now_unix: u64) -> Action {
+        if let Some(bug) = &mut self.bug {
+            if bug.handle_key(code) {
+                self.bug = None;
+            }
+            return Action::None;
+        }
         let now_unix = self.state.effective_time(now_unix);
         if let Some(prompt) = &mut self.cheat_prompt {
             match code {
@@ -534,6 +551,9 @@ impl App {
             return self.handle_dismantle_confirm(code, now_unix);
         }
 
+        if self.help_open && code == KeyCode::Char('b') {
+            return Action::ReportBug;
+        }
         if self.help_open && code == KeyCode::Char('r') {
             return Action::SupportReport;
         }
@@ -1557,6 +1577,9 @@ impl App {
                 ],
                 &[],
             );
+        }
+        if let Some(bug) = &self.bug {
+            bug.draw(frame);
         }
     }
 
@@ -2721,6 +2744,7 @@ impl App {
                 self.keymap.display(Binding::CheatConsole)
             ));
         }
+        lines.push("  b  Report a bug".into());
         if self.bridge_ui {
             lines.insert(
                 2,

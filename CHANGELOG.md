@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Add default-off local cheats through the console and CLI, with permanent modified-save provenance, durable audits and fair-play exclusions. Schema 48 preserves cheat state across restart and prestige.
+- Preview and save redacted bug reports from the CLI, title menu, Help or crash offer. Open a prefilled issue page only after consent; offline reports retain the URL. Servers support configurable report destinations without sending reports.
 
 - Add signed background release checks, a plain release log, explicit managed updates and rollback, save backups, and server build metadata.
 - Dismantle one building level through the build queue, CLI, server or the remappable `D` action. Work consumes power, stops the building's output and returns condition-scaled salvage to normal stock. Prerequisites, maintenance, raid warnings and spent-fuel capacity can block removal.
