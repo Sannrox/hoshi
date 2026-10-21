@@ -317,7 +317,11 @@ impl GameState {
             &self.config.outposts,
             self.generator_version,
         );
-        self.frontier.revealed = cfg.revealed_count(&self.frontier);
+        self.frontier.revealed = if self.cheats.reveal_map {
+            cfg.sectors
+        } else {
+            cfg.revealed_count(&self.frontier)
+        };
     }
 
     pub fn frontier_glance(&self) -> FrontierGlance {

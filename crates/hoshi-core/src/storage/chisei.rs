@@ -349,6 +349,9 @@ impl ChiseiStorage {
     }
 
     pub fn put_tenant(&mut self, tenant: &str, state: &GameState) -> Result<(), SaveError> {
+        state
+            .require_fair_play()
+            .map_err(|e| SaveError::Backend(e.to_string()))?;
         valid_tenant(tenant)?;
         std::fs::create_dir_all(self.dir.join("tenants"))?;
         persist_sqlite(&self.tenant_path(tenant)?, state)?;
@@ -396,6 +399,12 @@ impl Storage for ChiseiStorage {
     }
 
     fn save(&mut self, state: &GameState) -> Result<(), SaveError> {
+        if self.committed > 0 {
+            let previous = self.load(state.config.clone())?;
+            if !state.cheats.preserves(&previous.cheats) {
+                return Err(SaveError::Corrupt("stale cheat provenance"));
+            }
+        }
         let next = self.committed.saturating_add(1);
         persist_sqlite(&self.state_file(next), state)?;
         self.project_home(state);
@@ -1014,6 +1023,28 @@ mod tests {
         assert!(matches!(err, SaveError::Backend(_)));
         assert!(store.is_empty().unwrap());
         drop(store);
+        cleanup_dir(&path);
+    }
+
+    #[test]
+    fn snapshot_rejects_stale_clean_provenance() {
+        let path = unique_chisei("cheat-provenance");
+        let mut store = ChiseiStorage::open(&path).unwrap();
+        let mut state = GameState::new(100);
+        store.save(&state).unwrap();
+        let stale = state.clone();
+        state.set_cheats_enabled(true, crate::Actor::Player, 100);
+        let intent = crate::Intent::Cheat {
+            code: "grant iron 100".into(),
+            actor: crate::Actor::Player,
+        };
+        let proposal = crate::propose(&state, &intent, 100).unwrap();
+        crate::apply(&mut state, &proposal, 100).unwrap();
+        store.save(&state).unwrap();
+        assert!(store.save(&stale).is_err());
+        let loaded = store.load(BalanceConfig::default()).unwrap();
+        assert!(loaded.is_modified());
+        assert_eq!(loaded.cheat_audit(), state.cheat_audit());
         cleanup_dir(&path);
     }
 

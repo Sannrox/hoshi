@@ -571,6 +571,36 @@ fn rebuild_lost(before: DefenceGrid, after: &mut DefenceGrid, chance: f64, rng: 
 /// Space combat always includes the parked fleet plus stations and hangar fighters.
 #[allow(clippy::too_many_arguments)]
 pub fn resolve_planet_battle(
+    attacker: Fleet,
+    fleet: Fleet,
+    defences: DefenceGrid,
+    atk_stats: &[ShipStats; crate::SHIP_KINDS],
+    def_stats: &[ShipStats; crate::SHIP_KINDS],
+    hangar_stats: ShipStats,
+    cfg: &DefenceConfig,
+    troop_strength: u32,
+    max_rounds: u8,
+    rapid_fire: &[[u32; crate::SHIP_KINDS]; crate::SHIP_KINDS],
+    rng: &mut u64,
+) -> PlanetBattle {
+    resolve_planet_battle_protected(
+        attacker,
+        fleet,
+        defences,
+        atk_stats,
+        def_stats,
+        hangar_stats,
+        cfg,
+        troop_strength,
+        max_rounds,
+        rapid_fire,
+        rng,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn resolve_planet_battle_protected(
     mut attacker: Fleet,
     fleet: Fleet,
     mut defences: DefenceGrid,
@@ -582,6 +612,7 @@ pub fn resolve_planet_battle(
     max_rounds: u8,
     rapid_fire: &[[u32; crate::SHIP_KINDS]; crate::SHIP_KINDS],
     rng: &mut u64,
+    protected: bool,
 ) -> PlanetBattle {
     let original = defences;
     let interceptors = defences.get(DefenceKind::Interceptor);
@@ -705,7 +736,7 @@ pub fn resolve_planet_battle(
 
     attacker = compress_fleet(&atk);
     let mut ground = None;
-    if punched_dome && batteries_after == 0 && !attacker.is_empty() {
+    if !protected && punched_dome && batteries_after == 0 && !attacker.is_empty() {
         let garrison = defences.get(DefenceKind::Garrison);
         if garrison > 0 {
             let atk_str = ((f64::from(attacker.get(ShipKind::TroopTransport).max(attacker.total()))
@@ -725,7 +756,9 @@ pub fn resolve_planet_battle(
     }
 
     let (defences, rebuilt) = apply_rebuild(original, defences, cfg.rebuild_chance, rng);
-    let winner = if attacker.is_empty() {
+    let winner = if protected && !attacker.is_empty() {
+        CombatWinner::Draw
+    } else if attacker.is_empty() {
         CombatWinner::Defender
     } else if orbit_held {
         CombatWinner::Draw

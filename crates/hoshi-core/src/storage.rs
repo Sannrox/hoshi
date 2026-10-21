@@ -170,6 +170,7 @@ pub(crate) fn inspect_backend_save(path: &Path) -> Result<crate::SaveGlance, Sav
         schema: crate::SCHEMA_VERSION,
         last_tick_unix: state.last_tick_unix,
         deterministic: state.deterministic,
+        modified: state.is_modified(),
         planets: u32::try_from(1 + state.colonies.len()).unwrap_or(u32::MAX),
         fleet_strength: state.fleet.total(),
         galaxy_seed: Some(state.galaxy_seed),
@@ -192,6 +193,11 @@ pub(crate) fn inspect_backend_career(path: &Path) -> Result<crate::CareerGlance,
         return Err(SaveError::Locked);
     }
     let state = load_backend_state(path)?;
+    if state.is_modified() {
+        return Err(SaveError::Corrupt(
+            "modified save is ineligible for shared career",
+        ));
+    }
     let prestige = state.prestige.clone();
     let mut playtime_secs = state
         .last_tick_unix

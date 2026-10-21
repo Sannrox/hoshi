@@ -421,6 +421,9 @@ impl Title {
         let mut best_currency = 0u32;
         let mut source_prestige: Option<Prestige> = None;
         for slot in &self.slots {
+            if inspect_save(&slot.path).is_ok_and(|glance| glance.modified) {
+                continue;
+            }
             if let Ok(glance) = inspect_career(&slot.path) {
                 let ready = glance.reset_available(&self.prestige_cfg)
                     && (!glance.seasonal || glance.shares_prestige);
@@ -1515,7 +1518,7 @@ impl Title {
     }
 
     fn handle_settings(&mut self, code: KeyCode) -> TitleAction {
-        let items = 11;
+        let items = 12;
         match self.config.keys.lookup(HelpContext::TitleSettings, code) {
             Some(Binding::Cancel) => {
                 self.page = Page::Menu;
@@ -1558,6 +1561,7 @@ impl Title {
                         self.status.clear();
                         return TitleAction::None;
                     }
+                    11 => self.config.cheats = !self.config.cheats,
                     10 => {
                         self.help_open = true;
                         self.help_commands = false;
@@ -1852,7 +1856,9 @@ impl Title {
                                 format!("{} ago", crate::ui::spans::duration(ago)),
                                 t.muted(),
                             ),
-                            if matches!(slot.status, SlotStatus::Harness(_)) {
+                            if g.modified {
+                                chip("MODIFIED", Intent::Warning)
+                            } else if matches!(slot.status, SlotStatus::Harness(_)) {
                                 chip("CLI ONLY", Intent::Neutral)
                             } else if g.seasonal {
                                 chip("SEASON", Intent::Primary)
@@ -2180,6 +2186,11 @@ impl Title {
                 lines.push(menu_line("keybindings", self.selected == 8));
                 lines.push(menu_line("advisor model", self.selected == 9));
                 lines.push(menu_line("Help", self.selected == 10));
+                lines.push(toggle_line(
+                    "cheats (permanently modifies used saves)",
+                    self.config.cheats,
+                    self.selected == 11,
+                ));
             }
             Page::Advisor => {
                 let endpoint = if self.advisor_editing && self.advisor_selected == 1 {

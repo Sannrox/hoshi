@@ -12,6 +12,10 @@ use std::fmt;
 /// One governed move. Names match the ontology action list.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Intent {
+    Cheat {
+        code: String,
+        actor: Actor,
+    },
     Dismantle {
         planet: Coord,
         building: BuildingKind,
@@ -115,6 +119,7 @@ pub enum Intent {
 impl Intent {
     pub fn as_key(&self) -> &'static str {
         match self {
+            Intent::Cheat { .. } => "cheat",
             Intent::Build { .. } => "build",
             Intent::Dismantle { .. } => "dismantle",
             Intent::Research { .. } => "research",
@@ -149,6 +154,7 @@ pub struct Proposal {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum IntentError {
+    Cheat(crate::CheatError),
     Build(BuildError),
     Research(ResearchError),
     Fleet(FleetError),
@@ -163,6 +169,7 @@ pub enum IntentError {
 impl fmt::Display for IntentError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            IntentError::Cheat(e) => write!(f, "{e}"),
             IntentError::Build(e) => write!(f, "{e}"),
             IntentError::Research(e) => write!(f, "{e}"),
             IntentError::Fleet(e) => write!(f, "{e}"),
@@ -190,6 +197,9 @@ pub fn propose(state: &GameState, intent: &Intent, now_unix: u64) -> Result<Prop
 
 fn proposal_id(intent: &Intent, now_unix: u64, tick: u64) -> String {
     match intent {
+        Intent::Cheat { code, actor } => {
+            format!("cheat:{now_unix}:{tick}:{}:{code}", actor.as_key())
+        }
         Intent::Dismantle {
             planet,
             building,
@@ -339,6 +349,9 @@ pub fn apply(state: &mut GameState, proposal: &Proposal, now_unix: u64) -> Resul
 
 fn apply_inner(state: &mut GameState, intent: &Intent, now_unix: u64) -> Result<(), IntentError> {
     match intent {
+        Intent::Cheat { code, actor } => state
+            .apply_cheat(code, *actor, now_unix)
+            .map_err(IntentError::Cheat),
         Intent::Dismantle {
             planet,
             building,

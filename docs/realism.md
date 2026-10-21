@@ -177,6 +177,7 @@ silent extra departure; they extend this list.
 
 | Simplification | Gameplay reason |
 | --- | --- |
+| Explicit local cheats in permanently modified saves | Testing and experimentation can grant material or suppress damage; these saves are excluded from fair play. |
 | Compressed clocks (upgrades in minutes, not months) | The game is meant to run in a spare terminal while other work happens. |
 | Player commands apply as soon as they are legal | The injected clock is the authority for own actions; remote facts still wait for light-time. |
 | Light delay uses the absolute difference of heliocentric radii | Same radius table as PlanMission; no 3D chord or occlusion. |

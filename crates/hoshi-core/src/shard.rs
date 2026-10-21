@@ -165,6 +165,14 @@ impl<C: Clock> ShardSession<C> {
     /// `cmd.client_now_unix` is accepted so a caller can send a wall clock
     /// and is never read.
     pub fn submit(&mut self, state: &mut GameState, cmd: ShardCommand) -> Result<(), ShardError> {
+        state
+            .require_fair_play()
+            .map_err(|e| ShardError::Intent(crate::IntentError::Cheat(e)))?;
+        if matches!(cmd.intent, crate::Intent::Cheat { .. }) {
+            return Err(ShardError::Intent(crate::IntentError::Cheat(
+                crate::CheatError::Forbidden,
+            )));
+        }
         if cmd.identity.is_empty() {
             return Err(ShardError::EmptyIdentity);
         }
@@ -192,6 +200,9 @@ impl<C: Clock> ShardSession<C> {
         identity: &str,
         event: &SignedBridgeEvent,
     ) -> Result<ActivityApply, ShardError> {
+        state
+            .require_fair_play()
+            .map_err(|e| ShardError::Intent(crate::IntentError::Cheat(e)))?;
         if identity.is_empty() {
             return Err(ShardError::EmptyIdentity);
         }
@@ -210,6 +221,10 @@ impl<C: Clock> ShardSession<C> {
         defender: &mut GameState,
         cmd: ShardRaid,
     ) -> Result<ShardRaidResult, ShardError> {
+        attacker
+            .require_fair_play()
+            .and_then(|()| defender.require_fair_play())
+            .map_err(|e| ShardError::Intent(crate::IntentError::Cheat(e)))?;
         if cmd.attacker_id.is_empty() || cmd.defender_id.is_empty() {
             return Err(ShardError::EmptyIdentity);
         }
@@ -419,6 +434,35 @@ mod tests {
             },
             client_now_unix: client_now,
         }
+    }
+
+    #[test]
+    fn modified_save_and_cheat_intent_are_refused_before_shared_mutation() {
+        let mut session = session(100);
+        let mut state = test_state(100);
+        let mut command = build_cmd("player", "cheat", None);
+        command.intent = crate::Intent::Cheat {
+            code: "grant iron 100".into(),
+            actor: crate::Actor::Player,
+        };
+        let before = state.clone();
+        assert!(session.submit(&mut state, command).is_err());
+        assert_eq!(state, before);
+        state.set_cheats_enabled(true, crate::Actor::Player, 100);
+        let intent = crate::Intent::Cheat {
+            code: "grant iron 100".into(),
+            actor: crate::Actor::Player,
+        };
+        let proposal = crate::propose(&state, &intent, 100).unwrap();
+        crate::apply(&mut state, &proposal, 100).unwrap();
+        state.set_cheats_enabled(false, crate::Actor::Player, 100);
+        let before = state.clone();
+        assert!(
+            session
+                .submit(&mut state, build_cmd("player", "build", None))
+                .is_err()
+        );
+        assert_eq!(state, before);
     }
 
     #[test]

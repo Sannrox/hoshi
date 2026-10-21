@@ -66,6 +66,12 @@ impl Storage for MikuraStorage {
 
     fn save(&mut self, state: &GameState) -> Result<(), SaveError> {
         let previous = self.snapshot()?;
+        if previous.is_some() {
+            let committed = self.load(state.config.clone())?;
+            if !state.cheats.preserves(&committed.cheats) {
+                return Err(SaveError::Corrupt("stale cheat provenance"));
+            }
+        }
         let sidecar_id = previous
             .as_ref()
             .and_then(|record| sidecar_gen(record).ok())

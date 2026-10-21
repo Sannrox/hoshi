@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 47;
+pub const SCHEMA_VERSION: u32 = 48;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -159,6 +159,7 @@ pub fn open_save(path: &Path) -> Result<Connection, SaveError> {
 
 pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveError> {
     let tx = conn.transaction()?;
+    save_cheats(&tx, state)?;
     tx.execute_batch(
         "DELETE FROM meta;
          DELETE FROM resources;
@@ -2250,6 +2251,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     }
     load_rivals(conn, &mut state)?;
     load_ladder(conn, &mut state)?;
+    state.cheats = load_cheats(conn)?;
     load_frontier(conn, &mut state)?;
 
     Ok(state)
@@ -2416,6 +2418,7 @@ pub struct SaveGlance {
     pub schema: u32,
     pub last_tick_unix: u64,
     pub deterministic: bool,
+    pub modified: bool,
     pub planets: u32,
     pub fleet_strength: u32,
     /// `None` when the save predates schema v5 and never stored a galaxy seed.
@@ -2662,6 +2665,11 @@ fn inspect_sqlite_glance(conn: &Connection) -> Result<SaveGlance, SaveError> {
         schema,
         last_tick_unix: unix_ts(last_tick)?,
         deterministic,
+        modified: if table_exists(conn, "cheat_state") {
+            load_cheats(conn)?.modified
+        } else {
+            false
+        },
         planets: 1 + colonies,
         fleet_strength: u32::try_from(fleet).unwrap_or(0),
         galaxy_seed,
@@ -2789,6 +2797,11 @@ pub fn inspect_career(path: &Path) -> Result<CareerGlance, SaveError> {
             found: schema,
             current: SCHEMA_VERSION,
         });
+    }
+    if table_exists(&conn, "cheat_state") && load_cheats(&conn)?.modified {
+        return Err(SaveError::Corrupt(
+            "modified save is ineligible for shared career",
+        ));
     }
     let last_tick: i64 = conn
         .query_row("SELECT last_tick_unix FROM meta WHERE id = 1", [], |row| {
@@ -3430,6 +3443,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 47 {
         migrate_v47(conn)?;
+    }
+    if found < 48 {
+        migrate_v48(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -4524,6 +4540,47 @@ fn migrate_v41(conn: &Connection) -> Result<(), SaveError> {
             credits REAL NOT NULL
         );
         ",
+    )?;
+    Ok(())
+}
+
+fn migrate_v48(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS cheat_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            data TEXT NOT NULL
+        );",
+    )?;
+    Ok(())
+}
+
+fn load_cheats(conn: &Connection) -> Result<crate::cheats::CheatState, SaveError> {
+    let data: Option<String> = conn
+        .query_row("SELECT data FROM cheat_state WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .optional()?;
+    match data {
+        Some(data) => {
+            serde_json::from_str(&data).map_err(|_| SaveError::Corrupt("invalid cheat state"))
+        }
+        None => Ok(crate::cheats::CheatState::default()),
+    }
+}
+
+fn save_cheats(conn: &Connection, state: &GameState) -> Result<(), SaveError> {
+    let previous = load_cheats(conn)?;
+    if !state.cheats.preserves(&previous) {
+        return Err(SaveError::Corrupt(
+            "stale cheat state would erase audit history",
+        ));
+    }
+    let data = serde_json::to_string(&state.cheats)
+        .map_err(|_| SaveError::Corrupt("invalid cheat state"))?;
+    conn.execute(
+        "INSERT INTO cheat_state (id, data) VALUES (1, ?1)
+         ON CONFLICT(id) DO UPDATE SET data = excluded.data",
+        [&data],
     )?;
     Ok(())
 }
@@ -10286,6 +10343,22 @@ mod tests {
         assert!(!loaded.maintenance.orders.is_empty() || !loaded.maintenance.readings.is_empty());
         assert_eq!(count_rows(&conn, "maintenance_meta").unwrap(), 1);
         assert!(count_rows(&conn, "maintenance_assets").unwrap() >= 1);
+    }
+
+    #[test]
+    fn migrate_v48_preserves_unmodified_legacy_save_and_restarts() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let original = GameState::new(100);
+        save_state(&mut conn, &original).unwrap();
+        conn.execute_batch("DROP TABLE cheat_state; PRAGMA user_version = 47;")
+            .unwrap();
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert!(!loaded.is_modified());
+        assert!(!loaded.cheats_enabled());
+        assert_eq!(loaded.resources, original.resources);
+        assert_eq!(loaded.last_tick_unix, 100);
     }
 
     #[test]

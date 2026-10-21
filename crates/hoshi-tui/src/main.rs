@@ -919,8 +919,13 @@ fn play_path(
         message: e.to_string(),
         exit: cli::EXIT_INTERNAL,
     })?;
+    state.set_cheats_enabled(
+        user.cheats || std::env::args().any(|arg| arg == "--cheats"),
+        hoshi_core::Actor::Player,
+        state.effective_time(now),
+    );
     let before = snapshot_away(&state);
-    state.catch_up(now);
+    state.catch_up(state.effective_time(now));
     if user.reset_tutorial {
         state.reset_hints();
         store.save(&state)?;
@@ -1056,6 +1061,7 @@ fn play_path(
 
 #[cfg(feature = "bridge")]
 fn apply_bridge_events(app: &mut App, batch: hoshi_bridge::ReadBatch, now_unix: u64) {
+    let now_unix = app.state.effective_time(now_unix);
     let mut events = batch.events;
     events.sort_by_key(|e| e.ts);
     for event in events {

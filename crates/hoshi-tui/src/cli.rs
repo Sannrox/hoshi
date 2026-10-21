@@ -40,6 +40,8 @@ enum AutomationActionSpec {
 }
 
 crate::help::catalog_commands! {
+    #[help("cheat", "Run a local cheat; permanently marks the save modified.", "cheat CODE [ARGS]", "--cheats cheat grant iron 100")]
+    Cheat { code: String },
     #[help("state", "Read player-visible state.", "state [--as ACTOR]", "state")]
     State {
         actor: Actor,
@@ -459,6 +461,7 @@ enum MissionKind {
 struct CliOpts {
     save: Option<PathBuf>,
     seed: Option<u64>,
+    cheats: bool,
     balance: Option<PathBuf>,
     arena: bool,
     self_play: bool,
@@ -517,6 +520,7 @@ pub fn is_cli_invocation(args: &[String]) -> bool {
             || a.starts_with("--balance=")
             || a == "--continue"
             || a == "new"
+            || a == "--cheats"
             || a == "--commentary"
             || a == "--advisor"
             || a == "--no-portraits"
@@ -558,7 +562,8 @@ fn serve_command(rest: &[String]) -> Result<Command, CliError> {
     let command = parse_command(rest)?;
     if matches!(
         command,
-        Command::Report { .. }
+        Command::Cheat { .. }
+            | Command::Report { .. }
             | Command::Feedback { .. }
             | Command::ArenaRun { .. }
             | Command::ArenaBoard { .. }
@@ -581,6 +586,9 @@ fn apply_unlocked_inner(
     save: &Path,
     rest: &[String],
 ) -> Result<Value, CliError> {
+    state
+        .require_fair_play()
+        .map_err(|e| CliError::Refused(e.to_string()))?;
     let command = serve_command(rest)?;
     let now = now_for(state);
     apply(state, now, &command, save)
@@ -678,7 +686,10 @@ fn run_cli_with_lock(args: &[String], take_lock: bool) -> Result<Value, CliError
         store.load_or_new(SystemClock.now_unix(), config)
     }
     .map_err(|e| CliError::Internal(e.to_string()))?;
+    let user = crate::config::UserConfig::load(save.parent().unwrap_or(Path::new(".")));
+    let enabled = opts.cheats || user.cheats || state.deterministic;
     let now = now_for(&state);
+    state.set_cheats_enabled(enabled, Actor::Player, now);
     let persist = command_writes_save(&opts.command);
     let value = apply(&mut state, now, &opts.command, &save)?;
     if persist {
@@ -775,7 +786,7 @@ fn now_for(state: &GameState) -> u64 {
     if state.deterministic {
         state.last_tick_unix
     } else {
-        SystemClock.now_unix()
+        state.effective_time(SystemClock.now_unix())
     }
 }
 
@@ -956,6 +967,17 @@ fn apply(
     save: &Path,
 ) -> Result<Value, CliError> {
     match command {
+        Command::Cheat { code } => {
+            governed(
+                state,
+                Intent::Cheat {
+                    code: code.clone(),
+                    actor: Actor::Player,
+                },
+                now,
+            )?;
+            Ok(ok_state(state, "cheat applied; save permanently modified"))
+        }
         Command::State { actor } => {
             if !state.deterministic {
                 state.catch_up(now);
@@ -2644,6 +2666,9 @@ fn state_value(state: &GameState, actor: Actor) -> Value {
         }),
         None => Value::Null,
     };
+    value["modified"] = json!(state.is_modified());
+    value["cheats_enabled"] = json!(state.cheats_enabled());
+    value["cheat_audit"] = json!(state.cheat_audit());
     value["rivals"] = json!({
         "enabled": state.rivals.enabled,
         "empires": state.rival_intel().into_iter().map(|row| json!({
@@ -2861,6 +2886,7 @@ fn parse_blueprint_command(args: &[String]) -> Result<Command, CliError> {
 fn parse_cli(args: &[String]) -> Result<CliOpts, CliError> {
     let mut save = None;
     let mut seed = None;
+    let mut cheats = false;
     let mut balance = None;
     let mut arena = false;
     let mut self_play = false;
@@ -2899,6 +2925,11 @@ fn parse_cli(args: &[String]) -> Result<CliOpts, CliError> {
             i += 2;
             continue;
         }
+        if a == "--cheats" {
+            cheats = true;
+            i += 1;
+            continue;
+        }
         if a == "--json"
             || a == "--arena"
             || a == "--self-play"
@@ -2924,6 +2955,7 @@ fn parse_cli(args: &[String]) -> Result<CliOpts, CliError> {
     Ok(CliOpts {
         save,
         seed,
+        cheats,
         balance,
         arena,
         self_play,
@@ -3095,6 +3127,9 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
         return Err(CliError::Invalid("missing command".into()));
     };
     match name {
+        "cheat" => Ok(Command::Cheat {
+            code: args[1..].join(" "),
+        }),
         "state" => parse_actor_command(args, |actor| Command::State { actor }),
         "intel" => parse_intel_command(args),
         "classify" => parse_classify_command(args),
@@ -4036,6 +4071,11 @@ fn apply_log(
             .history
             .export_jsonl(&mut buf)
             .map_err(|e| CliError::Internal(e.to_string()))?;
+        for entry in state.cheat_audit() {
+            serde_json::to_writer(&mut buf, &json!({"type": "cheat_audit", "entry": entry}))
+                .map_err(|e| CliError::Internal(e.to_string()))?;
+            buf.push(b'\n');
+        }
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
         {
@@ -4047,6 +4087,7 @@ fn apply_log(
         "schema_version": SCHEMA_VERSION,
         "ok": true,
         "message": "log",
+        "cheat_audit": state.cheat_audit(),
         "now": state.last_tick_unix,
         "events": events,
         "snapshot": snapshot,
@@ -5130,6 +5171,68 @@ mod tests {
         let out = run_cli(&argv);
         let value: Value = serde_json::from_str(&out.json).unwrap();
         (value, out.exit)
+    }
+
+    #[test]
+    fn cheats_enable_from_flag_config_or_deterministic_harness() {
+        for mode in ["disabled", "flag", "config", "harness"] {
+            let directory = unique_save(mode).with_extension("dir");
+            std::fs::create_dir(&directory).unwrap();
+            let save = directory.join("save.sqlite");
+            if mode == "config" {
+                let config = crate::config::UserConfig {
+                    cheats: true,
+                    ..Default::default()
+                };
+                config.save(&directory).unwrap();
+                assert!(crate::config::UserConfig::load(&directory).cheats);
+            }
+            let mut command = vec!["cheat", "grant", "iron", "123"];
+            if mode == "flag" {
+                command.insert(0, "--cheats");
+            }
+            if mode == "harness" {
+                command.insert(0, "--seed=19");
+            }
+            let (result, exit) = run_on(&save, &command);
+            if mode == "disabled" {
+                assert_eq!(exit, EXIT_REFUSED, "{result}");
+                assert!(result.to_string().contains("cheats are disabled"));
+            } else {
+                assert_eq!(exit, EXIT_OK, "{result}");
+                assert_eq!(result["modified"], true);
+                let conn = open_save(&save).unwrap();
+                let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+                assert!(loaded.is_modified());
+                assert_eq!(
+                    loaded.cheat_audit().last().unwrap().arguments,
+                    "grant iron 123"
+                );
+            }
+            std::fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn cheat_cli_and_console_apply_the_same_governed_action() {
+        let mut cli = GameState::new(100);
+        cli.set_cheats_enabled(true, Actor::Player, 100);
+        let mut app = crate::app::App::new(cli.clone());
+        let code = "grant iron 123";
+        let before = cli.resources.iron;
+        let command =
+            parse_command(&["cheat".into(), "grant".into(), "iron".into(), "123".into()]).unwrap();
+        apply(&mut cli, 100, &command, Path::new("unused")).unwrap();
+        app.handle_key(ratatui::crossterm::event::KeyCode::Char('`'), 100);
+        for ch in code.chars() {
+            app.handle_key(ratatui::crossterm::event::KeyCode::Char(ch), 100);
+        }
+        app.handle_key(ratatui::crossterm::event::KeyCode::Enter, 100);
+        assert_eq!(cli.resources.iron, before + 123.0);
+        assert_eq!(app.state.resources, cli.resources);
+        assert_eq!(app.state.cheat_audit(), cli.cheat_audit());
+        assert!(app.state.is_modified());
+        assert!(apply_unlocked_inner(&mut cli, Path::new("unused"), &["state".into()]).is_err());
     }
 
     #[test]
@@ -6309,7 +6412,7 @@ mod tests {
         );
         assert_eq!(exit, EXIT_OK);
         let mut conn = open_save(&stale).unwrap();
-        let mut emptied = GameState::with_seed(0, BalanceConfig::default(), 1);
+        let mut emptied = load_state(&conn, BalanceConfig::default()).unwrap();
         emptied.resources = hoshi_core::Resources::ZERO;
         save_state(&mut conn, &emptied).unwrap();
         drop(conn);
