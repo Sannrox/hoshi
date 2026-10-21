@@ -297,19 +297,19 @@ Area: cli.
 
 ## changelog
 
-Read bundled release notes (planned).
+Read bundled release notes without a network request.
 
 ```text
-hoshi changelog (planned)
+hoshi changelog
 ```
 
-Planned command. This build does not execute it.
+Available in supported release builds. Installation settings do not alter game rules or save contents.
 
-Example: `hoshi help changelog`
+Example: `hoshi changelog`
 
-Environment: HOSHI_VERSION, HOSHI_CHANNEL, HOSHI_OFFLINE (planned), HOSHI_SKIP_VERSION_CHECK (planned)
+Environment: HOSHI_VERSION, HOSHI_CHANNEL, HOSHI_OFFLINE, HOSHI_SKIP_VERSION_CHECK
 
-Area: install. Planned.
+Area: install.
 
 ## classify
 
@@ -1260,10 +1260,10 @@ Area: cli.
 Serve a versioned HTTP and WebSocket API for one save.
 
 ```text
-hoshi serve [--save PATH] [--bind ADDRESS:PORT] [--config DIR]
+hoshi serve [--save PATH] [--bind ADDRESS:PORT] [--config DIR] [--update-check] [--offline]
 ```
 
-Wraps one locked local save. Loopback binding is the default; authenticated remote actions use the same core rules. No automatic update request is made.
+Wraps one locked local save. Loopback binding is the default; authenticated remote actions use the same core rules. Update requests require --update-check; --offline suppresses them.
 
 Example: `hoshi serve --save game.sqlite`
 
@@ -1561,19 +1561,19 @@ Area: cli.
 
 ## update
 
-Update the installed game (planned).
+Verify and install an explicitly confirmed update.
 
 ```text
-hoshi update (planned)
+hoshi update [--yes] [--force] [--version VERSION] [--channel stable|nightly] [--rollback] [--install-dir DIR] [--save-dir DIR] [--endpoint URL]
 ```
 
-Planned command. This build does not execute it.
+Available in supported release builds. Installation settings do not alter game rules or save contents.
 
-Example: `hoshi help update`
+Example: `hoshi update`
 
-Environment: HOSHI_VERSION, HOSHI_CHANNEL, HOSHI_OFFLINE (planned), HOSHI_SKIP_VERSION_CHECK (planned)
+Environment: HOSHI_VERSION, HOSHI_CHANNEL, HOSHI_OFFLINE, HOSHI_SKIP_VERSION_CHECK
 
-Area: install. Planned.
+Area: install.
 
 ## vehicle dissolve
 
@@ -1641,6 +1641,8 @@ Area: help.
 
 ## Flags
 
+- `--offline `: Disable automatic network requests.
+- `--update-check `: Opt in to background release checks for serve.
 - `--help `: Human help (-h also works).
 - `--version `: Build version (-V also works).
 - `--save PATH`: Select a save.
@@ -1677,8 +1679,8 @@ Area: help.
 - `HOSHI_SERVE_OIDC_TOKEN`: Identity token endpoint.
 - `HOSHI_VERSION`: Install script version selection.
 - `HOSHI_CHANNEL`: Install script channel selection.
-- `HOSHI_OFFLINE`: Planned update-check opt-out; automatic update requests are not implemented in this build.
-- `HOSHI_SKIP_VERSION_CHECK`: Planned update-check opt-out; automatic update requests are not implemented in this build.
+- `HOSHI_OFFLINE`: Suppress automatic network requests.
+- `HOSHI_SKIP_VERSION_CHECK`: Suppress automatic network requests.
 
 ## Exit codes
 

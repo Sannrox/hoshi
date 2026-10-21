@@ -21,6 +21,8 @@ function __hoshi_context
   test "$current" = "$argv[1]"
 end
 complete -c hoshi -f
+complete -c hoshi -l offline -d 'Disable automatic network requests.'
+complete -c hoshi -l update-check -d 'Opt in to background release checks for serve.'
 complete -c hoshi -l help -d 'Human help (-h also works).'
 complete -c hoshi -l version -d 'Build version (-V also works).'
 complete -c hoshi -l save -r -F -d 'Select a save.'
@@ -36,7 +38,7 @@ complete -c hoshi -l self-play -d 'Opt in to balance self-play.'
 complete -c hoshi -l demo -d 'Opt in to the governance demonstration.'
 complete -c hoshi -l bind -r -d 'Server listen address (serve only).'
 complete -c hoshi -l config -r -F -d 'Server configuration directory (serve only).'
-complete -c hoshi -n '__hoshi_context ""' -a 'advise arena automation blueprint brew build cancel classify demo feedback finance flagship fleet frontier goals help incidents intel kpis law log maintenance market mission moon new post prestige research rivals scenario season self-play serve share simulate species staff state tactics tick transmute tutorial vehicle'
+complete -c hoshi -n '__hoshi_context ""' -a 'advise arena automation blueprint brew build cancel changelog classify demo feedback finance flagship fleet frontier goals help incidents intel kpis law log maintenance market mission moon new post prestige research rivals scenario season self-play serve share simulate species staff state tactics tick transmute tutorial update vehicle'
 complete -c hoshi -n '__hoshi_context "arena"' -a 'board run'
 complete -c hoshi -n '__hoshi_context "automation"' -a 'add dry-run remove toggle'
 complete -c hoshi -n '__hoshi_context "blueprint"' -a 'apply capture export import list show'

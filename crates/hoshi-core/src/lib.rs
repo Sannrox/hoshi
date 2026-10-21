@@ -214,10 +214,10 @@ pub use rivals::{
     RivalBoard, RivalCatalog, RivalEmpire, RivalError, RivalIntel, RivalPersonality, RivalSettings,
 };
 pub use save::{
-    CareerGlance, SCHEMA_VERSION, SaveError, SaveGlance, SaveLock, default_save_dir,
+    CareerGlance, SCHEMA_VERSION, SaveError, SaveGlance, SaveLock, backup_save, default_save_dir,
     default_save_path, inspect_career, inspect_save, load_or_new, load_or_new_with_seed,
-    load_state, lock_save, open_save, resolve_save_path, save_is_locked, save_lock_path,
-    save_state,
+    load_state, lock_save, lock_save_migrations, open_save, resolve_save_path, save_is_locked,
+    save_lock_path, save_schema, save_state,
 };
 pub use scenario::{Baseline, Outcome, PlannedAction, Scenario, ScenarioError};
 pub use season::{

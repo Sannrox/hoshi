@@ -176,6 +176,7 @@ pub struct AwaySummary {
 }
 
 pub struct Title {
+    pub updates: Option<crate::update_ui::UpdateUi>,
     dir: PathBuf,
     pub config: UserConfig,
     page: Page,
@@ -234,6 +235,7 @@ impl Title {
         std::fs::create_dir_all(&dir).ok();
         let config = UserConfig::load(&dir);
         let mut title = Self {
+            updates: None,
             dir,
             config,
             page: Page::Menu,
@@ -288,6 +290,10 @@ impl Title {
             .collect();
         title.refresh_slots();
         title
+    }
+
+    pub fn update_dir(&self) -> PathBuf {
+        self.dir.clone()
     }
 
     pub fn take_play_path(&mut self) -> Option<PathBuf> {
@@ -435,6 +441,19 @@ impl Title {
     }
 
     pub fn handle_key(&mut self, code: KeyCode) -> TitleAction {
+        if let Some(updates) = &mut self.updates {
+            if self.help_open && code == KeyCode::Char('u') {
+                updates.dismiss_available();
+                return TitleAction::None;
+            }
+            if self.help_open && code == KeyCode::Char('c') {
+                updates.open_changelog();
+                return TitleAction::None;
+            }
+            if updates.handle_key(code) {
+                return TitleAction::None;
+            }
+        }
         if self.help_open {
             if matches!(code, KeyCode::Tab | KeyCode::BackTab) {
                 self.help_commands = !self.help_commands;
@@ -2348,6 +2367,7 @@ impl Title {
                 lines.insert(0, "[Keys]   Commands".into());
                 lines
             };
+            help_lines.push("c Changelog   u dismiss update".into());
             help_lines.push("tab page   ? close   esc close".into());
             let help = help_lines
                 .into_iter()
@@ -2382,6 +2402,9 @@ impl Title {
                     height: help_inner.height.saturating_sub(1),
                 },
             );
+        }
+        if let Some(updates) = &self.updates {
+            updates.draw(frame);
         }
     }
 

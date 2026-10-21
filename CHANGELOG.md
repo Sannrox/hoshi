@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add signed background release checks, a plain release log, explicit managed updates and rollback, save backups, and server build metadata.
+
 - Human CLI help, man pages, shell completions, TUI command examples, and generated command documentation share one catalog.
 - Add fuelled fission reactors with research gating, cooling limits, spent-fuel pools, and persistent protective-shutdown heat.
 

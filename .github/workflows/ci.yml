@@ -69,6 +69,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: bash scripts/validate-workflow-skills.sh
+      - run: python3 scripts/test-release-metadata.py
 
   self-play:
     name: Self-play

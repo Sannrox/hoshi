@@ -516,6 +516,7 @@ pub fn is_cli_invocation(args: &[String]) -> bool {
             || a == "--commentary"
             || a == "--advisor"
             || a == "--no-portraits"
+            || a == "--offline"
             || a == "--arena"
             || a == "--self-play"
             || a == "--demo"
@@ -2866,7 +2867,12 @@ fn parse_cli(args: &[String]) -> Result<CliOpts, CliError> {
             i += 2;
             continue;
         }
-        if a == "--json" || a == "--arena" || a == "--self-play" || a == "--demo" {
+        if a == "--json"
+            || a == "--arena"
+            || a == "--self-play"
+            || a == "--demo"
+            || a == "--offline"
+        {
             if a == "--arena" {
                 arena = true;
             }
@@ -5367,6 +5373,7 @@ mod tests {
         assert!(!is_cli_invocation(&args(&["new"])));
         assert!(!is_cli_invocation(&args(&["--commentary"])));
         assert!(!is_cli_invocation(&args(&["--advisor"])));
+        assert!(!is_cli_invocation(&args(&["--offline"])));
         assert!(!is_cli_invocation(&args(&["--no-portraits"])));
         assert!(!is_cli_invocation(&args(&["--arena"])));
         assert!(!is_cli_invocation(&args(&["--demo"])));

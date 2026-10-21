@@ -63,7 +63,7 @@ curl -fsSL https://raw.githubusercontent.com/Sannrox/hoshi/main/scripts/install.
 ```
 
 Rerun the same command to update. `hoshi --version` prints the build, for
-example `hoshi 0.1.0 (nightly 202610160317 7cee3a2)`; include it in bug
+example `hoshi 0.1.0-nightly.202610160317.7cee3a2 (nightly 202610160317 7cee3a2)`; include it in bug
 reports. The package version is `X.Y.Z~nightly.STAMP.SHA`, which sorts before
 the `X.Y.Z` release, so a later stable install replaces it. A nightly can
 migrate a save to a schema that an older stable release refuses to open; back
@@ -122,3 +122,99 @@ Contributors run `scripts/generate-help.sh` after editing the catalog.
 CI tests parser-valid examples, catalog coverage, golden help text, and drift
 in `docs/commands.md`, the man page, and completion scripts. Update and changelog
 entries are explicitly marked planned until their commands ship.
+
+## Update checks and release log
+
+Interactive play checks for a signed release in the background. The title screen
+renders immediately. One GET has a ten-second timeout, no retry, and a
+`User-Agent: hoshi/<version> (<os>; <arch>)`. It sends no save, identifier or
+usage data. Results and attempts are cached for 24 hours beside `config.toml`.
+The JSON harness and scripts never start this check. Servers require opt-in.
+
+Disable automatic requests with `--offline` or `HOSHI_OFFLINE=1`. Disable just
+release checks with `HOSHI_SKIP_VERSION_CHECK=1` or this config:
+
+```toml
+update_check = false
+update_endpoint = ""
+collapse_changelog = false
+```
+
+`update_endpoint` can be an HTTP(S) mirror or `file:///path/latest.json`.
+Mirrors must retain the signed envelope unchanged. Cached verified notices work
+offline. The first interactive start discloses the request policy once. Press
+`?`, then `u` to dismiss an available version. Press `?`, then `c` for the bundled
+Changelog, or run `hoshi changelog` without accessing a save or the network.
+After upgrading, the release log shows sections newer than the last seen build.
+`collapse_changelog = true` reduces it to an update line.
+
+## Explicit updates and rollback
+
+Nothing installs automatically:
+
+```sh
+hoshi update
+hoshi update --yes
+hoshi update --version vX.Y.Z
+hoshi update --channel nightly
+hoshi update --force
+hoshi update --rollback
+```
+
+The command verifies metadata, displays the version and maintainer note, and
+asks before installing. A manual metadata request allows two retries. Homebrew
+and cargo installs invoke their package manager after confirmation. Ubuntu
+packages print the administrator command. Unknown installs print their path
+and refuse to replace it.
+
+The install script accepts `HOSHI_MANAGED_DIR` to hand off to the managed
+updater after installing a trusted binary. You can also create a managed
+standalone install directly from a trusted release binary:
+
+```sh
+hoshi update --install-dir "$XDG_DATA_HOME/hoshi"
+```
+
+Choose a concrete writable data directory if `XDG_DATA_HOME` is unset. Put its
+`bin/` directory on `PATH`. The launcher follows the atomic `current` pointer.
+The updater locks the install, downloads to `staging/`, checks the signed asset
+hash, and runs `--version` before publishing a new immutable release directory.
+It keeps the active and previous generations. Interrupted staging leaves the
+old pointer usable. A second updater fails immediately. `--rollback` verifies
+the previous metadata and reverses the pointer. An open session reports that a
+restart is needed when another terminal updates the installation.
+
+Use `--save-dir DIR` when saves live outside the default directory. SQLite saves
+are checked before installation; an older target schema is refused. Backups use
+SQLite snapshots, including committed WAL data, under `update-backups/`; the
+last three completed backups are retained. To downgrade after migration, close
+play and restore a matching backup first. Optional backend saves require manual
+backup and compatibility checks. Unknown config keys and sections survive
+saves; interactive play warns once when it sees them.
+
+## Release signing
+
+Release builds compile `HOSHI_RELEASE_PUBLIC_KEY` as 64 hexadecimal characters.
+Source builds must supply that public value at build time to enable trusted
+release checks and updates. A build without a key cannot accept metadata.
+`HOSHI_RELEASE_SIGNING_KEY` is an Ed25519 PEM stored only as a CI secret.
+Release jobs sign exact JSON payload bytes and `SHA256SUMS`, and refuse to
+publish when the private and compiled public keys do not match.
+
+The optional manual key-provisioning workflow generates the private key only
+in CI and stores it directly in the repository secret. It requires an operator
+credential with repository secrets and variables write permission in the
+`release-signing` environment; remove that credential after provisioning. It
+reuses the existing private key when retrying an interrupted setup and refuses
+to rotate an existing identity. Key rotation needs a reviewed trust
+transition and must keep existing installations able to verify releases.
+
+Signed metadata is attached to each release and published atomically on the
+`update-metadata` branch. Stable and nightly have separate latest files. Each
+version also has an immutable metadata file. Nightly keeps versioned assets in
+addition to its moving prerelease, so a pin never resolves to another build.
+
+During explicit installation or rollback, a directory lock fences new SQLite
+save creation and migration while compatibility and backups are checked again.
+Already-open sessions continue. Linked save entries require manual compatibility
+checks and backups; automatic updating refuses them rather than skipping them.

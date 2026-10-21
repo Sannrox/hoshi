@@ -107,6 +107,24 @@ fn user_data_dir() -> PathBuf {
     std::env::temp_dir()
 }
 
+fn migration_gate_file(dir: &Path) -> Result<std::fs::File, SaveError> {
+    std::fs::create_dir_all(dir)?;
+    Ok(OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join(".save-migrations.lock"))?)
+}
+
+/// Fence save creation and migration while an installation checks compatibility.
+/// Existing sessions continue using their already-open databases.
+pub fn lock_save_migrations(dir: &Path) -> Result<std::fs::File, SaveError> {
+    let file = migration_gate_file(dir)?;
+    file.try_lock().map_err(|_| SaveError::Locked)?;
+    Ok(file)
+}
+
 /// Open (or create) the save at `path`, enable WAL, and run migrations.
 pub fn open_save(path: &Path) -> Result<Connection, SaveError> {
     if path != Path::new(":memory:")
@@ -115,6 +133,19 @@ pub fn open_save(path: &Path) -> Result<Connection, SaveError> {
     {
         std::fs::create_dir_all(parent)?;
     }
+    let _migration_guard = if path == Path::new(":memory:")
+        || save_schema(path).is_ok_and(|schema| schema == SCHEMA_VERSION)
+    {
+        None
+    } else {
+        let parent = path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let file = migration_gate_file(parent)?;
+        file.try_lock_shared().map_err(|_| SaveError::Locked)?;
+        Some(file)
+    };
     let conn = Connection::open(path)?;
     // `:memory:` does not support WAL; file saves need it so a crash mid-write
     // keeps the last committed snapshot.
@@ -2392,6 +2423,32 @@ pub struct SaveGlance {
     pub rival_personalities: Vec<String>,
     pub seasonal: bool,
     pub season_id: Option<String>,
+}
+
+/// Read the on-disk SQLite schema without migrating it, including saves newer
+/// than this binary. Updaters use this before choosing an older executable.
+pub fn save_schema(path: &Path) -> Result<u32, SaveError> {
+    if crate::storage::BackendKind::from_path(path) != crate::storage::BackendKind::Sqlite {
+        return Err(SaveError::Backend(
+            "automatic update backup supports SQLite saves only".into(),
+        ));
+    }
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    Ok(conn.query_row("PRAGMA user_version", [], |row| row.get(0))?)
+}
+
+/// Snapshot SQLite through its engine so a running writer and WAL are safe.
+/// Destination must not exist. A partial backup is never promoted by callers.
+pub fn backup_save(path: &Path, destination: &Path) -> Result<(), SaveError> {
+    save_schema(path)?;
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    let destination_text = destination
+        .to_str()
+        .ok_or(SaveError::Corrupt("backup destination is not UTF-8"))?;
+    conn.execute("VACUUM INTO ?1", [destination_text])?;
+    std::fs::File::open(destination)?.sync_all()?;
+    Ok(())
 }
 
 pub fn inspect_save(path: &Path) -> Result<SaveGlance, SaveError> {
@@ -8621,6 +8678,29 @@ mod tests {
             std::process::id(),
             nanos
         ))
+    }
+
+    #[test]
+    fn update_backup_snapshots_a_live_wal_without_migrating() {
+        let source = unique_path("update-backup-source");
+        let destination = unique_path("update-backup-destination");
+        let conn = Connection::open(&source).unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA user_version=999; CREATE TABLE proof(value TEXT); INSERT INTO proof VALUES ('committed');").unwrap();
+        assert_eq!(save_schema(&source).unwrap(), 999);
+        backup_save(&source, &destination).unwrap();
+        let copied = Connection::open(&destination).unwrap();
+        assert_eq!(save_schema(&destination).unwrap(), 999);
+        assert_eq!(
+            copied
+                .query_row("SELECT value FROM proof", [], |row| row.get::<_, String>(0))
+                .unwrap(),
+            "committed"
+        );
+        assert!(backup_save(&source, &destination).is_err());
+        drop(copied);
+        drop(conn);
+        std::fs::remove_file(source).unwrap();
+        std::fs::remove_file(destination).unwrap();
     }
 
     fn sample_state() -> GameState {
