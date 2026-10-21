@@ -56,3 +56,40 @@ address and requesting peer must be loopback.
 
 Set `serve_support_report = false` to disable this endpoint (404). Responses
 use `Cache-Control: no-store`. They never include a save attachment.
+
+## Report a bug
+
+Run `hoshi bug`, or choose **Report a bug** in the title menu or Help (`b`).
+Fill in a short title, what happened, what you expected, and optional steps.
+Review the redacted report before confirming. After confirmation the game saves
+one Markdown file in the save's `reports/` directory and opens a prefilled issue
+page. Review that page and attach the file yourself. Nothing is submitted by the
+game, and no GitHub token is required.
+
+```sh
+hoshi bug --title "Research stopped" --happened "The queue disappeared" \
+  --expected "Research continues" --steps "Start research, quit, reopen" \
+  --print-url --yes
+```
+
+`--print-url` saves the confirmed report and prints the URL without opening a
+browser. `--offline` or `HOSHI_OFFLINE=1` saves the report with its URL for later.
+`--yes` supplies consent for scripts; without it noninteractive calls refuse to
+save. Browser failure leaves the saved URL available.
+
+The crash offer preselects a crash title and includes the stable signature.
+Search existing issues for that signature before filing; the report includes a
+search link. Long URL fields are shortened on character boundaries, while the
+local report retains the redacted full text. Save files are not attached.
+
+Server operators can set `bug_report_target = "off"` to hide the action and
+return 404, or use an HTTPS tracker URL with `{title}` and `{body}` placeholders.
+The default is `"public"`. Credentials and fragment URLs are rejected.
+
+Authenticated clients can `GET /v1/bug` for the configured target, then
+`POST /v1/bug` with `{"fields":{"title":"...","happened":"...","expected":"...","steps":"..."}}`
+to preview the URL. Adding `"confirm":true` saves the local report and returns
+its report id. Responses contain the prefilled URL and signature search link;
+they do not return server diagnostics. The server never opens a browser or sends
+the report. Diagnostic attachments remain local and retain the admin-only access
+boundary described above.

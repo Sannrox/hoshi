@@ -178,6 +178,7 @@ pub struct AwaySummary {
 pub struct Title {
     pub updates: Option<crate::update_ui::UpdateUi>,
     support: Option<crate::support_ui::SupportUi>,
+    bug: Option<crate::bug_ui::BugUi>,
     crash_notice: Option<String>,
     dir: PathBuf,
     pub config: UserConfig,
@@ -239,6 +240,7 @@ impl Title {
         let mut title = Self {
             updates: None,
             support: None,
+            bug: None,
             crash_notice: crate::diagnostics::unseen_crash(&dir),
             dir,
             config,
@@ -341,6 +343,9 @@ impl Title {
         items.extend(["Load game", "Settings", "Achievements"]);
         if self.prestige_visible() {
             items.push("Prestige");
+        }
+        if self.config.bug_report_target != "off" {
+            items.push("Report a bug");
         }
         items.push("Support report");
         items.push("Credits");
@@ -449,6 +454,12 @@ impl Title {
     }
 
     pub fn handle_key(&mut self, code: KeyCode) -> TitleAction {
+        if let Some(bug) = &mut self.bug {
+            if bug.handle_key(code) {
+                self.bug = None;
+            }
+            return TitleAction::None;
+        }
         if let Some(report) = &mut self.support {
             if report.handle_key(code) {
                 self.support = None;
@@ -476,8 +487,12 @@ impl Title {
                 self.status = error.to_string();
             }
             if code == KeyCode::Char('r') {
-                self.open_support();
+                self.open_bug(true);
             }
+            return TitleAction::None;
+        }
+        if self.help_open && code == KeyCode::Char('b') {
+            self.open_bug(false);
             return TitleAction::None;
         }
         if self.help_open && code == KeyCode::Char('r') {
@@ -605,6 +620,10 @@ impl Title {
                         self.open_prestige();
                         TitleAction::None
                     }
+                    "Report a bug" => {
+                        self.open_bug(false);
+                        TitleAction::None
+                    }
                     "Support report" => {
                         self.open_support();
                         TitleAction::None
@@ -617,6 +636,15 @@ impl Title {
                 }
             }
             _ => TitleAction::None,
+        }
+    }
+
+    fn open_bug(&mut self, crash: bool) {
+        if self.config.bug_report_target != "off" {
+            let path = continue_slot(&self.slots, self.config.last_slot.as_deref())
+                .map(|slot| slot.path.clone())
+                .unwrap_or_else(|| self.dir.join("save.sqlite"));
+            self.bug = Some(crate::bug_ui::BugUi::open(&path, &self.dir, crash));
         }
     }
 
@@ -2422,6 +2450,9 @@ impl Title {
             };
             help_lines.push("c Changelog   u dismiss update".into());
             help_lines.push("r Support report".into());
+            if self.config.bug_report_target != "off" {
+                help_lines.push("b Report a bug".into());
+            }
             help_lines.push("tab page   ? close   esc close".into());
             let help = help_lines
                 .into_iter()
@@ -2463,17 +2494,19 @@ impl Title {
         if self.crash_notice.is_some() && self.support.is_none() {
             let area = frame.area();
             frame.render_widget(
-                Paragraph::new("Previous session crashed.  r preview support report   Esc later")
-                    .style(
-                        ratatui::style::Style::default()
-                            .fg(ratatui::style::Color::White)
-                            .bg(ratatui::style::Color::Black),
-                    ),
+                Paragraph::new("Previous session crashed.  r Report this crash   Esc later").style(
+                    ratatui::style::Style::default()
+                        .fg(ratatui::style::Color::White)
+                        .bg(ratatui::style::Color::Black),
+                ),
                 Rect::new(area.x, area.y.saturating_add(1), area.width, 1),
             );
         }
         if let Some(report) = &self.support {
             report.draw(frame);
+        }
+        if let Some(bug) = &self.bug {
+            bug.draw(frame);
         }
     }
 

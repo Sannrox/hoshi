@@ -1,0 +1,48 @@
+name: Bug report
+description: Report an unexpected game behavior.
+title: "[Bug] "
+labels: ["type:bug", "status:triage"]
+body:
+  - type: markdown
+    attributes:
+      value: "Review every field before submitting. Do not paste tokens, home paths or save files. Report security vulnerabilities through the security link."
+  - type: input
+    id: title
+    attributes:
+      label: Short title
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+  - type: input
+    id: version
+    attributes:
+      label: Version and channel
+  - type: input
+    id: platform
+    attributes:
+      label: OS and architecture
+  - type: input
+    id: signature
+    attributes:
+      label: Crash signature
+      description: Search existing issues for this signature first.
+  - type: textarea
+    id: report
+    attributes:
+      label: Reviewed local report
+      description: Attach the report file from hoshi bug or hoshi report. Review it first; leave save files out.

@@ -42,6 +42,8 @@ enum AutomationActionSpec {
 crate::help::catalog_commands! {
     #[help("cheat", "Run a local cheat; permanently marks the save modified.", "cheat CODE [ARGS]", "--cheats cheat grant iron 100")]
     Cheat { code: String },
+    #[help("bug", "Preview a redacted bug report and prefilled issue page.", "bug [--title TEXT] [--happened TEXT] [--expected TEXT] [--steps TEXT] [--offline] [--print-url] [--yes]", "bug --title Failure --happened Stopped --expected Continue --offline --yes")]
+    Bug,
     #[help("state", "Read player-visible state.", "state [--as ACTOR]", "state")]
     State {
         actor: Actor,
@@ -563,6 +565,7 @@ fn serve_command(rest: &[String]) -> Result<Command, CliError> {
     if matches!(
         command,
         Command::Cheat { .. }
+            | Command::Bug
             | Command::Report { .. }
             | Command::Feedback { .. }
             | Command::ArenaRun { .. }
@@ -978,6 +981,7 @@ fn apply(
             )?;
             Ok(ok_state(state, "cheat applied; save permanently modified"))
         }
+        Command::Bug => Err(CliError::Invalid("use hoshi bug directly".into())),
         Command::State { actor } => {
             if !state.deterministic {
                 state.catch_up(now);
@@ -3130,6 +3134,7 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
         "cheat" => Ok(Command::Cheat {
             code: args[1..].join(" "),
         }),
+        "bug" => Ok(Command::Bug),
         "state" => parse_actor_command(args, |actor| Command::State { actor }),
         "intel" => parse_intel_command(args),
         "classify" => parse_classify_command(args),

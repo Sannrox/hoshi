@@ -15,3 +15,4 @@
 | [0011](0011-dismantling-in-the-build-queue.md) | Powered dismantling in the build queue | Accepted |
 | [0012](0012-local-support-diagnostics.md) | Local support diagnostics | Accepted |
 | [0013](0013-local-cheats-and-modified-saves.md) | Local cheats and modified saves | Accepted |
+| [0014](0014-consented-bug-reports.md) | Consented bug reports | Accepted |

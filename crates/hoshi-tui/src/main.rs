@@ -1,5 +1,7 @@
 //! hoshi: an idle space-strategy game for the terminal.
 
+mod bug;
+mod bug_ui;
 mod diagnostics;
 mod redact;
 mod support;
@@ -79,6 +81,13 @@ fn main() {
     }
     if args.get(1).map(String::as_str) == Some("update") {
         if let Err(error) = update_command::run(&args[2..]) {
+            eprintln!("hoshi: {error}");
+            std::process::exit(2);
+        }
+        return;
+    }
+    if serve::first_positional(&args) == Some("bug") {
+        if let Err(error) = bug::run(&args) {
             eprintln!("hoshi: {error}");
             std::process::exit(2);
         }
@@ -1031,6 +1040,7 @@ fn play_path(
                     match app.handle_key(k.code, clock.now_unix()) {
                         Action::Quit => break Ok(()),
                         Action::SupportReport => app.open_support(path),
+                        Action::ReportBug => app.open_bug(path),
                         Action::None => {}
                     }
                     if let Some(layout) = app.take_cockpit_layout() {

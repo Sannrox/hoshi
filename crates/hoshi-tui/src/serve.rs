@@ -1041,6 +1041,11 @@ fn serve_one(
     let authorization = header_value(&headers, "authorization");
     let now = SystemClock.now_unix();
     let route = path.split('?').next().unwrap_or(path);
+    if route == "/v1/bug"
+        && crate::config::UserConfig::load(&lock_poison(live).config_dir).bug_report_target == "off"
+    {
+        return write_http(&mut stream, 404, &error_body("invalid", "not found"), "");
+    }
     if route == "/healthz" {
         if method != "GET" {
             return write_http(
@@ -1122,6 +1127,73 @@ fn serve_one(
             _ => String::new(),
         };
         return write_http(&mut stream, status, &value, &extra);
+    }
+    if route == "/v1/bug" {
+        let config_dir = lock_poison(live).config_dir.clone();
+        let target = crate::config::UserConfig::load(&config_dir).bug_report_target;
+        if method == "GET" {
+            return write_http(&mut stream, 200, &json!({"ok": true, "target": target}), "");
+        }
+        if method != "POST" {
+            return write_http(
+                &mut stream,
+                405,
+                &error_body("invalid", "method not allowed"),
+                "",
+            );
+        }
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Request {
+            fields: crate::bug::Fields,
+            #[serde(default)]
+            confirm: bool,
+        }
+        let request: Request = match serde_json::from_slice(&body) {
+            Ok(request) => request,
+            Err(_) => {
+                return write_http(
+                    &mut stream,
+                    400,
+                    &error_body("invalid", "invalid bug-report fields"),
+                    "",
+                );
+            }
+        };
+        let prepared = match crate::bug::prepare(save, &config_dir, &request.fields, &target) {
+            Ok(prepared) => prepared,
+            Err(_) => {
+                return write_http(
+                    &mut stream,
+                    400,
+                    &error_body("invalid", "bug report could not be prepared"),
+                    "",
+                );
+            }
+        };
+        let report_id = if request.confirm {
+            match crate::bug::save(&prepared, save) {
+                Ok(path) => path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned()),
+                Err(_) => {
+                    return write_http(
+                        &mut stream,
+                        500,
+                        &error_body("internal", "report could not be saved"),
+                        "",
+                    );
+                }
+            }
+        } else {
+            None
+        };
+        return write_http(
+            &mut stream,
+            200,
+            &json!({"ok": true, "url": prepared.url, "search_url": prepared.search_url, "report_id": report_id, "submitted": false}),
+            "",
+        );
     }
     if route == "/v1/version" {
         if method != "GET" {
@@ -1814,6 +1886,69 @@ mod tests {
         thread.join().unwrap();
         let _ = std::fs::remove_file(&save);
         let _ = std::fs::remove_file(save_lock_path(&save));
+    }
+
+    #[test]
+    fn bug_flow_authenticates_honors_target_and_saves_only_after_consent() {
+        for target in [
+            "public",
+            "https://tracker.invalid/new?title={title}&body={body}",
+            "off",
+        ] {
+            let dir = unique_save().with_extension("dir");
+            std::fs::create_dir(&dir).unwrap();
+            let save = dir.join("save.sqlite");
+            std::fs::write(
+                dir.join("config.toml"),
+                format!("bug_report_target = {target:?}\n"),
+            )
+            .unwrap();
+            let server = ephemeral(save.clone());
+            let addr = server.local_addr().unwrap();
+            let thread = std::thread::spawn(move || {
+                let auth = Mutex::new(server.auth);
+                for _ in 0..3 {
+                    let (stream, _) = server.listener.accept().unwrap();
+                    serve_one(
+                        &server.save,
+                        stream,
+                        &auth,
+                        server.live.as_ref(),
+                        server.push.as_ref(),
+                        server.oidc.as_ref(),
+                        addr,
+                    )
+                    .unwrap();
+                }
+            });
+            let (status, _) = get_path(addr, "/v1/bug").unwrap();
+            assert_eq!(status, if target == "off" { 404 } else { 401 });
+            let request =
+                r#"{"fields":{"title":"Failure","happened":"Stopped","expected":"Continue"}}"#;
+            let (status, body) = post_json(addr, "/v1/bug", request);
+            assert_eq!(status, if target == "off" { 404 } else { 200 }, "{body}");
+            assert!(!dir.join("reports").exists());
+            let request = r#"{"confirm":true,"fields":{"title":"Failure","happened":"Stopped","expected":"Continue"}}"#;
+            let (status, body) = post_json(addr, "/v1/bug", request);
+            assert_eq!(status, if target == "off" { 404 } else { 200 }, "{body}");
+            if target != "off" {
+                let value: Value = serde_json::from_str(&body).unwrap();
+                let url = value["url"].as_str().unwrap();
+                assert!(url.starts_with(if target == "public" {
+                    "https://github.com/Sannrox/hoshi/issues/new"
+                } else {
+                    "https://tracker.invalid/"
+                }));
+                assert!(
+                    dir.join("reports")
+                        .join(value["report_id"].as_str().unwrap())
+                        .exists()
+                );
+                assert_eq!(value["submitted"], false);
+            }
+            thread.join().unwrap();
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     #[test]

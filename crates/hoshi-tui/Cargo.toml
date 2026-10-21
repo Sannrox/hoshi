@@ -39,6 +39,7 @@ tar = "0.4"
 
 [dev-dependencies]
 hoshi-core = { workspace = true }
+serde_yaml = "0.9"
 
 [[bin]]
 name = "hoshi"

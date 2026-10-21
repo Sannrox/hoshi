@@ -247,6 +247,21 @@ hoshi brew
 .fi
 .PP
 Environment: HOSHI_SAVE, HOSHI_BALANCE
+.SS bug
+Preview a redacted bug report and prefilled issue page.
+.PP
+Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair\-play restrictions.
+.PP
+.nf
+hoshi bug [\-\-title TEXT] [\-\-happened TEXT] [\-\-expected TEXT] [\-\-steps TEXT] [\-\-offline] [\-\-print\-url] [\-\-yes]
+.fi
+.PP
+Example:
+.nf
+hoshi bug \-\-title Failure \-\-happened Stopped \-\-expected Continue \-\-offline \-\-yes
+.fi
+.PP
+Environment: HOSHI_SAVE, HOSHI_BALANCE
 .SS build
 Queue a building upgrade on an owned planet.
 .PP
