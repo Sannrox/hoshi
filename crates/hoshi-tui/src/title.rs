@@ -177,6 +177,8 @@ pub struct AwaySummary {
 
 pub struct Title {
     pub updates: Option<crate::update_ui::UpdateUi>,
+    support: Option<crate::support_ui::SupportUi>,
+    crash_notice: Option<String>,
     dir: PathBuf,
     pub config: UserConfig,
     page: Page,
@@ -236,6 +238,8 @@ impl Title {
         let config = UserConfig::load(&dir);
         let mut title = Self {
             updates: None,
+            support: None,
+            crash_notice: crate::diagnostics::unseen_crash(&dir),
             dir,
             config,
             page: Page::Menu,
@@ -338,6 +342,7 @@ impl Title {
         if self.prestige_visible() {
             items.push("Prestige");
         }
+        items.push("Support report");
         items.push("Credits");
         items.push("Quit");
         items
@@ -441,6 +446,12 @@ impl Title {
     }
 
     pub fn handle_key(&mut self, code: KeyCode) -> TitleAction {
+        if let Some(report) = &mut self.support {
+            if report.handle_key(code) {
+                self.support = None;
+            }
+            return TitleAction::None;
+        }
         if let Some(updates) = &mut self.updates {
             if self.help_open && code == KeyCode::Char('u') {
                 updates.dismiss_available();
@@ -454,6 +465,23 @@ impl Title {
                 return TitleAction::None;
             }
         }
+
+        if self.crash_notice.is_some() && matches!(code, KeyCode::Char('r') | KeyCode::Esc) {
+            if let Some(crash) = self.crash_notice.take()
+                && let Err(error) = crate::diagnostics::acknowledge_crash(&self.dir, &crash)
+            {
+                self.status = error.to_string();
+            }
+            if code == KeyCode::Char('r') {
+                self.open_support();
+            }
+            return TitleAction::None;
+        }
+        if self.help_open && code == KeyCode::Char('r') {
+            self.open_support();
+            return TitleAction::None;
+        }
+
         if self.help_open {
             if matches!(code, KeyCode::Tab | KeyCode::BackTab) {
                 self.help_commands = !self.help_commands;
@@ -574,6 +602,10 @@ impl Title {
                         self.open_prestige();
                         TitleAction::None
                     }
+                    "Support report" => {
+                        self.open_support();
+                        TitleAction::None
+                    }
                     "Credits" => {
                         self.page = Page::Credits;
                         TitleAction::None
@@ -582,6 +614,16 @@ impl Title {
                 }
             }
             _ => TitleAction::None,
+        }
+    }
+
+    fn open_support(&mut self) {
+        let path = continue_slot(&self.slots, self.config.last_slot.as_deref())
+            .map(|slot| slot.path.clone())
+            .unwrap_or_else(|| self.dir.join("save.sqlite"));
+        match crate::support_ui::SupportUi::open(&path) {
+            Ok(report) => self.support = Some(report),
+            Err(error) => self.status = error,
         }
     }
 
@@ -2368,6 +2410,7 @@ impl Title {
                 lines
             };
             help_lines.push("c Changelog   u dismiss update".into());
+            help_lines.push("r Support report".into());
             help_lines.push("tab page   ? close   esc close".into());
             let help = help_lines
                 .into_iter()
@@ -2405,6 +2448,21 @@ impl Title {
         }
         if let Some(updates) = &self.updates {
             updates.draw(frame);
+        }
+        if self.crash_notice.is_some() && self.support.is_none() {
+            let area = frame.area();
+            frame.render_widget(
+                Paragraph::new("Previous session crashed.  r preview support report   Esc later")
+                    .style(
+                        ratatui::style::Style::default()
+                            .fg(ratatui::style::Color::White)
+                            .bg(ratatui::style::Color::Black),
+                    ),
+                Rect::new(area.x, area.y.saturating_add(1), area.width, 1),
+            );
+        }
+        if let Some(report) = &self.support {
+            report.draw(frame);
         }
     }
 

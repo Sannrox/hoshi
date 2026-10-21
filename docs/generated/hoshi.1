@@ -1057,6 +1057,21 @@ hoshi prestige reset
 .fi
 .PP
 Environment: HOSHI_SAVE, HOSHI_BALANCE
+.SS report
+Preview and write a redacted local support report.
+.PP
+Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair\-play restrictions.
+.PP
+.nf
+hoshi report [\-\-format markdown|archive] [\-\-out PATH] [\-\-include\-save] [\-\-log\-lines N] [\-\-yes] [\-\-open\-issue]
+.fi
+.PP
+Example:
+.nf
+hoshi report \-\-yes
+.fi
+.PP
+Environment: HOSHI_SAVE, HOSHI_BALANCE
 .SS research
 Start research through the ordinary rules path.
 .PP
@@ -1605,6 +1620,12 @@ Server listen address (serve only).
 .B \-\-config DIR
 Server configuration directory (serve only).
 .SH ENVIRONMENT
+.TP
+.B HOSHI_LOG
+Diagnostic log level: error, warn, info or debug.
+.TP
+.B HOSHI_SERVE_ADMIN_TOKEN
+Save\-scoped admin secret for local support reports.
 .TP
 .B HOSHI_SAVE
 Save path when \-\-save is absent.

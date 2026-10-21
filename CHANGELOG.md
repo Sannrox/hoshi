@@ -5,6 +5,7 @@
 - Add signed background release checks, a plain release log, explicit managed updates and rollback, save backups, and server build metadata.
 - Dismantle one building level through the build queue, CLI, server or the remappable `D` action. Work consumes power, stops the building's output and returns condition-scaled salvage to normal stock. Prerequisites, maintenance, raid warnings and spent-fuel capacity can block removal.
 - Saves: schema 47 stores build/dismantle operations and remaining powered work. Older saves migrate with existing jobs preserved as builds; older binaries cannot open the new schema.
+- Add local support-report previews, explicit save archives, redacted rotating logs and crash capture, and an admin-only server report.
 
 - Human CLI help, man pages, shell completions, TUI command examples, and generated command documentation share one catalog.
 - Add fuelled fission reactors with research gating, cooling limits, spent-fuel pools, and persistent protective-shutdown heat.

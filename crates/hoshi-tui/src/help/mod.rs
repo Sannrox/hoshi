@@ -284,6 +284,14 @@ const FLAGS: &[Flag] = &[
 ];
 
 const ENV: &[(&str, &str)] = &[
+    (
+        "HOSHI_LOG",
+        "Diagnostic log level: error, warn, info or debug.",
+    ),
+    (
+        "HOSHI_SERVE_ADMIN_TOKEN",
+        "Save-scoped admin secret for local support reports.",
+    ),
     ("HOSHI_SAVE", "Save path when --save is absent."),
     (
         "HOSHI_BALANCE",
