@@ -311,6 +311,22 @@ Environment: HOSHI_VERSION, HOSHI_CHANNEL, HOSHI_OFFLINE, HOSHI_SKIP_VERSION_CHE
 
 Area: install.
 
+## cheat
+
+Run a local cheat; permanently marks the save modified.
+
+```text
+hoshi cheat CODE [ARGS]
+```
+
+Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair-play restrictions.
+
+Example: `hoshi --cheats cheat grant iron 100`
+
+Environment: HOSHI_SAVE, HOSHI_BALANCE
+
+Area: cli.
+
 ## classify
 
 Set a classification marking on an object.

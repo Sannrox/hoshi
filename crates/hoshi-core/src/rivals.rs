@@ -584,14 +584,19 @@ impl GameState {
         self.rivals.empires[index]
             .fleet
             .saturating_sub(ShipKind::LightFighter, n);
-        let atk = stats_from_catalog(&self.config.ships);
+        let mut atk = stats_from_catalog(&self.config.ships);
+        if self.cheats.god_mode {
+            for stats in &mut atk {
+                stats.attack = 0.0;
+            }
+        }
         let def = self.player_combat_stats();
         let rf = rapid_fire_table(&self.config.ships);
         let mut rng = self
             .galaxy_seed
             .wrapping_add(self.rivals.empires[index].id.len() as u64)
             .wrapping_add(at);
-        let report = resolve_combat(
+        let mut report = resolve_combat(
             wave,
             self.fleet,
             &atk,
@@ -600,6 +605,9 @@ impl GameState {
             &rf,
             &mut rng,
         );
+        if self.cheats.god_mode && report.winner == crate::CombatWinner::Attacker {
+            report.winner = crate::CombatWinner::Draw;
+        }
         self.rivals.empires[index].fleet.add(
             ShipKind::LightFighter,
             report.attacker_after.get(ShipKind::LightFighter),

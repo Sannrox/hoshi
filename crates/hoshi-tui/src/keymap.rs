@@ -4,6 +4,7 @@ use ratatui::crossterm::event::KeyCode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Binding {
+    CheatConsole,
     Dismantle,
     Quit,
     Help,
@@ -117,11 +118,13 @@ impl Binding {
         Binding::Advisor,
         Binding::Cockpit,
         Binding::Detail,
+        Binding::CheatConsole,
         Binding::Dismantle,
     ];
 
     pub fn config_key(self) -> &'static str {
         match self {
+            Binding::CheatConsole => "cheat_console",
             Binding::Dismantle => "dismantle",
             Binding::Quit => "quit",
             Binding::Help => "help",
@@ -160,6 +163,7 @@ impl Binding {
 
     fn default_keys(self) -> Vec<KeyCode> {
         match self {
+            Binding::CheatConsole => vec![KeyCode::Char('`')],
             Binding::Dismantle => vec![KeyCode::Char('D')],
             Binding::Quit => vec![KeyCode::Char('q')],
             Binding::Help => vec![KeyCode::Char('?')],
@@ -242,6 +246,7 @@ impl HelpContext {
     pub fn bindings(self) -> &'static [Binding] {
         match self {
             HelpContext::Overview => &[
+                Binding::CheatConsole,
                 Binding::Help,
                 Binding::Quit,
                 Binding::NextScreen,
@@ -622,6 +627,7 @@ impl HelpContext {
             Binding::Activity => "activity log",
             Binding::Advisor => "advisor",
             Binding::Cockpit => "bridge dashboard",
+            Binding::CheatConsole => "local cheat console",
             Binding::Dismantle => "dismantle one level",
             Binding::Detail => "toggle detail panel",
         }
@@ -721,6 +727,7 @@ impl Keymap {
             .bindings()
             .iter()
             .copied()
+            .filter(|b| *b != Binding::CheatConsole)
             .map(|b| (self.display(b), HelpContext::label(b).to_string()))
             .collect();
         if ctx == HelpContext::Story {

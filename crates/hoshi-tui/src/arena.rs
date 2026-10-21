@@ -207,7 +207,7 @@ fn collect_cmds(
 
 fn sanitize_cmd(cmd: Vec<String>) -> Option<Vec<String>> {
     let name = cmd.first()?.as_str();
-    if matches!(name, "tick" | "arena") {
+    if matches!(name, "tick" | "arena" | "cheat") {
         return None;
     }
     if cmd.iter().any(|a| {
@@ -218,6 +218,7 @@ fn sanitize_cmd(cmd: Vec<String>) -> Option<Vec<String>> {
             || a == "--balance"
             || a.starts_with("--balance=")
             || a == "--arena"
+            || a == "--cheats"
     }) {
         return None;
     }
@@ -276,6 +277,13 @@ fn score_state(
     status: &str,
     error: Option<String>,
 ) -> BotResult {
+    if state["modified"].as_bool() != Some(false) {
+        return failed(
+            name,
+            "refused",
+            "modified or unverifiable save is ineligible".into(),
+        );
+    }
     let prestige = state["prestige"]["score"].as_f64().unwrap_or(0.0);
     let metal_mine = state["buildings"]["metal_mine"].as_u64().unwrap_or(0) as u32;
     let crystal_mine = state["buildings"]["crystal_mine"].as_u64().unwrap_or(0) as u32;
@@ -516,6 +524,21 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn modified_save_never_enters_scoring() {
+        let result = score_state(
+            "bot",
+            &serde_json::json!({"modified": true, "prestige": {"score": 999999}}),
+            1,
+            1,
+            "ok",
+            None,
+        );
+        assert_eq!(result.status, "refused");
+        assert_eq!(result.score, 0.0);
+        assert_eq!(result.victory, 0.0);
+    }
 
     #[test]
     fn dir_or_dot_uses_cwd_when_the_board_has_no_parent() {

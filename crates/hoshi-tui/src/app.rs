@@ -103,6 +103,7 @@ pub struct App {
     pub updates: Option<crate::update_ui::UpdateUi>,
     dismantle_confirm: Option<(Coord, BuildingKind)>,
     pub support: Option<crate::support_ui::SupportUi>,
+    cheat_prompt: Option<String>,
     pub state: GameState,
     pub portraits: PortraitView,
     keymap: Keymap,
@@ -176,6 +177,7 @@ impl App {
         let watch = NotifyWatch::from_state(&state);
         Self {
             support: None,
+            cheat_prompt: None,
             state,
             portraits: PortraitView::default(),
             keymap,
@@ -469,7 +471,7 @@ impl App {
 
     pub fn catch_up_now(&mut self, now_unix: u64) {
         self.state.interactive_tactics = true;
-        self.state.catch_up(now_unix);
+        self.state.catch_up(self.state.effective_time(now_unix));
         self.record_production_sample();
         crate::cockpit::record_gauge(&mut self.gauge_history, self.state.resources);
     }
@@ -482,6 +484,33 @@ impl App {
     }
 
     pub fn handle_key(&mut self, code: KeyCode, now_unix: u64) -> Action {
+        let now_unix = self.state.effective_time(now_unix);
+        if let Some(prompt) = &mut self.cheat_prompt {
+            match code {
+                KeyCode::Esc => self.cheat_prompt = None,
+                KeyCode::Enter => {
+                    let code = self.cheat_prompt.take().unwrap_or_default();
+                    let intent = hoshi_core::Intent::Cheat {
+                        code,
+                        actor: Actor::Player,
+                    };
+                    self.status = match hoshi_core::propose(&self.state, &intent, now_unix)
+                        .and_then(|proposal| {
+                            hoshi_core::apply(&mut self.state, &proposal, now_unix)
+                        }) {
+                        Ok(()) => "cheat applied; save permanently modified".into(),
+                        Err(error) => error.to_string(),
+                    };
+                }
+                KeyCode::Backspace => {
+                    prompt.pop();
+                }
+                KeyCode::Char(ch) if prompt.len() < 256 => prompt.push(ch),
+                _ => {}
+            }
+            return Action::None;
+        }
+
         if let Some(report) = &mut self.support {
             if report.handle_key(code) {
                 self.support = None;
@@ -509,6 +538,14 @@ impl App {
             return Action::SupportReport;
         }
 
+        if self.screen == Screen::Overview && self.keymap.matches(Binding::CheatConsole, code) {
+            if self.state.cheats_enabled() {
+                self.cheat_prompt = Some(String::new());
+            } else {
+                self.status = "cheats are disabled".into();
+            }
+            return Action::None;
+        }
         self.state.interactive_tactics = true;
         self.state.catch_up(now_unix);
         self.clamp_planet();
@@ -1507,6 +1544,19 @@ impl App {
         }
         if let Some(report) = &self.support {
             report.draw(frame);
+        }
+        if let Some(prompt) = &self.cheat_prompt {
+            self.dialog(
+                frame,
+                "Cheat console",
+                "Use permanently modifies this save".into(),
+                vec![
+                    Line::from(format!("> {prompt}")),
+                    Line::from("Enter run  Esc close"),
+                    Line::from(self.status.clone()),
+                ],
+                &[],
+            );
         }
     }
 
@@ -2665,6 +2715,12 @@ impl App {
 
     fn draw_help(&self, frame: &mut Frame<'_>) {
         let mut lines = self.keymap.help_lines(self.help_context());
+        if self.state.cheats_enabled() && self.help_context() == HelpContext::Overview {
+            lines.push(format!(
+                "  {}  local cheat console",
+                self.keymap.display(Binding::CheatConsole)
+            ));
+        }
         if self.bridge_ui {
             lines.insert(
                 2,
@@ -5261,6 +5317,21 @@ mod tests {
         assert_eq!(app.state.pending_hint().unwrap().id, "opening");
         app.handle_key(KeyCode::Char('x'), 1_000);
         assert!(app.state.pending_hint().is_none_or(|h| h.id != "opening"));
+    }
+
+    #[test]
+    fn cheat_console_is_hidden_when_disabled_and_fits_small_terminal() {
+        let mut app = App::new(GameState::new(100));
+        app.handle_key(KeyCode::Char('`'), 100);
+        assert!(app.cheat_prompt.is_none());
+        app.state.set_cheats_enabled(true, Actor::Player, 100);
+        app.handle_key(KeyCode::Char('`'), 100);
+        let text = render_text(&app, 80, 24);
+        assert!(text.contains("Cheat console"), "{text}");
+        assert!(text.contains("permanently"), "{text}");
+        app.handle_key(KeyCode::Esc, 100);
+        assert!(app.cheat_prompt.is_none());
+        assert!(!app.state.is_modified());
     }
 
     #[test]

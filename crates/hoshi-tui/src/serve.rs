@@ -357,6 +357,10 @@ impl Server {
                 message: e.to_string(),
                 exit: crate::cli::EXIT_INTERNAL,
             })?;
+        state.require_fair_play().map_err(|e| ServeError {
+            message: e.to_string(),
+            exit: crate::cli::EXIT_REFUSED,
+        })?;
         let live = Live {
             updates: None,
             config_dir: opts.save.parent().unwrap_or(Path::new(".")).to_path_buf(),

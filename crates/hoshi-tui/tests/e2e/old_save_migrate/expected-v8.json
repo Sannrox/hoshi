@@ -16,6 +16,8 @@
     "shipyard": 0,
     "solar_plant": 0
   },
+  "cheat_audit": [],
+  "cheats_enabled": false,
   "daily": {
     "day_index": 47482,
     "resets_in_secs": 86400,
@@ -143,6 +145,7 @@
     "readings": 0
   },
   "missions": [],
+  "modified": false,
   "moons": [],
   "now": 4102444800,
   "ok": true,
@@ -264,7 +267,7 @@
     "empires": [],
     "enabled": false
   },
-  "save_schema": 47,
+  "save_schema": 48,
   "schema_version": 2,
   "season": null,
   "species": null,

@@ -11,7 +11,7 @@ use crate::combat::{
     resolve_ground, stats_from_catalog,
 };
 use crate::daily::{DailyAction, DailyBoard, mine_kind};
-use crate::defences::{DefenceKind, PlanetBattle, resolve_planet_battle};
+use crate::defences::{DefenceKind, PlanetBattle};
 use crate::espionage::{SpyReport, resolve_spy, reveals};
 use crate::expedition::{ExpeditionResult, roll_expedition};
 use crate::fleets::{
@@ -346,6 +346,7 @@ pub struct GameState {
     pub generator_version: u32,
     /// When true, `tick --advance` may move the clock. Wall-clock saves stay false.
     pub deterministic: bool,
+    pub(crate) cheats: crate::cheats::CheatState,
     pub wonder: Option<WonderJob>,
     pub completed_wonders: Vec<String>,
     pub outposts: Vec<Outpost>,
@@ -474,6 +475,7 @@ impl GameState {
             galaxy_seed,
             generator_version: crate::GALAXY_GENERATOR_VERSION,
             deterministic: false,
+            cheats: crate::cheats::CheatState::default(),
             wonder: None,
             completed_wonders: Vec::new(),
             outposts,
@@ -3290,6 +3292,7 @@ impl GameState {
         next.prestige = prestige;
         next.achievements = achievements;
         next.deterministic = deterministic;
+        next.cheats = self.cheats.clone();
         next.galaxy_seed = next_seed;
         next.rng_seed = next_seed;
         next.generator_version = crate::GALAXY_GENERATOR_VERSION;
@@ -3907,6 +3910,13 @@ impl GameState {
                 self.missions[index].phase_ends_at = done_at.saturating_add(ret);
                 false
             }
+            ExpeditionResult::Loss if self.cheats.god_mode => {
+                let ret = self.missions[index].outbound_secs;
+                self.missions[index].phase = MissionPhase::Return;
+                self.missions[index].phase_ends_at = done_at.saturating_add(ret);
+                self.push_event(done_at, "expedition: god mode protected fleet".into());
+                false
+            }
             ExpeditionResult::Loss => {
                 self.push_event(done_at, "expedition: fleet lost".into());
                 self.missions.remove(index);
@@ -3998,7 +4008,10 @@ impl GameState {
         let dest = self.missions[index].dest;
         let probes = self.missions[index].ships.get(ShipKind::EspionageProbe);
         let own = self.modifier(ModifierKind::Espionage);
-        let outcome = resolve_spy(probes, own, &mut self.rng_seed, &self.config.espionage);
+        let mut outcome = resolve_spy(probes, own, &mut self.rng_seed, &self.config.espionage);
+        if self.cheats.god_mode {
+            outcome.probes_lost = 0;
+        }
         let show_resources = reveals(&outcome.tier, "resources", &self.config.espionage);
         let show_fleet = reveals(&outcome.tier, "fleet", &self.config.espionage);
         let show_defences = reveals(&outcome.tier, "defences", &self.config.espionage);
@@ -4087,9 +4100,11 @@ impl GameState {
             confidence,
             deceived,
         });
-        self.missions[index]
-            .ships
-            .saturating_sub(ShipKind::EspionageProbe, outcome.probes_lost);
+        if !self.cheats.god_mode {
+            self.missions[index]
+                .ships
+                .saturating_sub(ShipKind::EspionageProbe, outcome.probes_lost);
+        }
         if self.missions[index].ships.is_empty() {
             self.missions.remove(index);
             return true;
@@ -4174,9 +4189,11 @@ impl GameState {
             layered: false,
         };
         let landed = self.missions[index].ships.get(ShipKind::TroopTransport);
-        self.missions[index]
-            .ships
-            .saturating_sub(ShipKind::TroopTransport, landed);
+        if !self.cheats.god_mode {
+            self.missions[index]
+                .ships
+                .saturating_sub(ShipKind::TroopTransport, landed);
+        }
         report.attacker_after = self.missions[index].ships;
         report = report.with_seed_and_endpoints(seed);
         self.push_combat_log(done_at, report.clone());
@@ -4422,7 +4439,12 @@ impl GameState {
         rng: &mut u64,
     ) -> CombatReport {
         let atk_stats = self.player_combat_stats();
-        let def_stats = stats_from_catalog(&self.config.ships);
+        let mut def_stats = stats_from_catalog(&self.config.ships);
+        if self.cheats.god_mode {
+            for stats in &mut def_stats {
+                stats.attack = 0.0;
+            }
+        }
         let rf = rapid_fire_table(&self.config.ships);
         crate::resolve_tactical(
             attacker,
@@ -4443,7 +4465,12 @@ impl GameState {
     }
 
     fn peek_tactical(&self, pending: &crate::PendingTactical) -> CombatReport {
-        let atk_stats = stats_from_catalog(&self.config.ships);
+        let mut atk_stats = stats_from_catalog(&self.config.ships);
+        if self.cheats.god_mode {
+            for stats in &mut atk_stats {
+                stats.attack = 0.0;
+            }
+        }
         let def_stats = self.player_combat_stats();
         let rf = rapid_fire_table(&self.config.ships);
         let mut rng = pending.seed;
@@ -4467,7 +4494,12 @@ impl GameState {
 
     fn resolve_raid_now(&mut self, done_at: u64) -> CombatReport {
         let pirates = self.pirate_fleet();
-        let atk_stats = stats_from_catalog(&self.config.ships);
+        let mut atk_stats = stats_from_catalog(&self.config.ships);
+        if self.cheats.god_mode {
+            for stats in &mut atk_stats {
+                stats.attack = 0.0;
+            }
+        }
         let def_stats = self.player_combat_stats();
         let rf = rapid_fire_table(&self.config.ships);
         if self.defences.is_empty() {
@@ -4494,18 +4526,23 @@ impl GameState {
             let parked = self.fleet;
             let hangar = def_stats[ShipKind::LightFighter.index()];
             let seed = self.rng_seed;
-            let battle = resolve_planet_battle(
+            let mut defence_config = self.config.defences.clone();
+            if self.cheats.god_mode {
+                defence_config.missile_damage = 0.0;
+            }
+            let battle = crate::defences::resolve_planet_battle_protected(
                 pirates,
                 parked,
                 self.defences,
                 &atk_stats,
                 &def_stats,
                 hangar,
-                &self.config.defences,
+                &defence_config,
                 self.config.outposts.troop_strength,
                 self.config.raid.max_rounds,
                 &rf,
                 &mut self.rng_seed,
+                self.cheats.god_mode,
             );
             self.fleet = battle.fleet_after;
             self.defences = battle.defences_after;
@@ -4535,7 +4572,10 @@ impl GameState {
         }
     }
 
-    fn finish_home_raid(&mut self, done_at: u64, report: CombatReport) -> CombatReport {
+    fn finish_home_raid(&mut self, done_at: u64, mut report: CombatReport) -> CombatReport {
+        if self.cheats.god_mode && report.winner == CombatWinner::Attacker {
+            report.winner = CombatWinner::Draw;
+        }
         if let Some(pending) = self.pending_tactical.take() {
             let mut rng = pending.seed;
             let _ = crate::resolve_tactical(
@@ -10045,6 +10085,30 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         );
         assert!(report_a.text.contains("rolls"), "{}", report_a.text);
         assert!(report_a.text.contains("winner"), "{}", report_a.text);
+    }
+
+    #[test]
+    fn god_mode_preserves_transports_after_a_failed_ground_invasion() {
+        let mut state = GameState::with_config(0, outpost_config());
+        state.resources.deuterium = 10_000.0;
+        state.tech_levels.insert("colonization".into(), 1);
+        let dest = state.outposts[0].coord;
+        state.outposts[0].defences = Fleet::default();
+        state.outposts[0].garrison = 1_000_000;
+        state.fleet.add(ShipKind::TroopTransport, 1);
+        state.set_cheats_enabled(true, crate::Actor::Player, 0);
+        let intent = crate::Intent::Cheat {
+            code: "god on".into(),
+            actor: crate::Actor::Player,
+        };
+        let proposal = crate::propose(&state, &intent, 0).unwrap();
+        crate::apply(&mut state, &proposal, 0).unwrap();
+        state.launch_invasion(troops(1), dest, 100, 0).unwrap();
+        fly_home(&mut state);
+        assert!(state.colonies.is_empty());
+        assert_eq!(state.fleet.get(ShipKind::TroopTransport), 1);
+        let report = &state.combat_logs.last().unwrap().report;
+        assert_eq!(report.attacker_after, report.attacker_before);
     }
 
     #[test]

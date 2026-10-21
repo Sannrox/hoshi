@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add default-off local cheats through the console and CLI, with permanent modified-save provenance, durable audits and fair-play exclusions. Schema 48 preserves cheat state across restart and prestige.
+
 - Add signed background release checks, a plain release log, explicit managed updates and rollback, save backups, and server build metadata.
 - Dismantle one building level through the build queue, CLI, server or the remappable `D` action. Work consumes power, stops the building's output and returns condition-scaled salvage to normal stock. Prerequisites, maintenance, raid warnings and spent-fuel capacity can block removal.
 - Saves: schema 47 stores build/dismantle operations and remaining powered work. Older saves migrate with existing jobs preserved as builds; older binaries cannot open the new schema.

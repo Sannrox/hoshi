@@ -1305,6 +1305,9 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             at INTEGER NOT NULL CHECK (at >= 0),
             thermal_power REAL NOT NULL CHECK (thermal_power >= 0),
             PRIMARY KEY (galaxy, system, position))""")
+    elif version == 47:
+        add_column(conn, "build_queue", "operation", "ALTER TABLE build_queue ADD COLUMN operation TEXT NOT NULL DEFAULT 'build'")
+        add_column(conn, "build_queue", "work_left", "ALTER TABLE build_queue ADD COLUMN work_left REAL NOT NULL DEFAULT 0 CHECK (work_left >= 0)")
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"

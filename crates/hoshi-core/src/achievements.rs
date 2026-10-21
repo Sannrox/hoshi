@@ -410,6 +410,9 @@ impl File {
 impl GameState {
     /// Award every unmet achievement whose condition now holds. Each id is stored once.
     pub fn evaluate_achievements(&mut self, now: u64) {
+        if self.is_modified() {
+            return;
+        }
         let due: Vec<String> = self
             .config
             .achievements

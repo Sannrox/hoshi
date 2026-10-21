@@ -25,6 +25,15 @@
     "shipyard": 0,
     "solar_plant": 1
   },
+  "cheat_audit": [
+    {
+      "action": "enable",
+      "actor": "player",
+      "arguments": "true",
+      "at": 0
+    }
+  ],
+  "cheats_enabled": true,
   "daily": {
     "day_index": 0,
     "resets_in_secs": 86400,
@@ -171,6 +180,7 @@
     "readings": 0
   },
   "missions": [],
+  "modified": false,
   "moons": [],
   "now": 0,
   "ok": true,
@@ -292,7 +302,7 @@
     "empires": [],
     "enabled": false
   },
-  "save_schema": 47,
+  "save_schema": 48,
   "schema_version": 2,
   "season": null,
   "species": null,

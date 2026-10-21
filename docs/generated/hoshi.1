@@ -292,6 +292,21 @@ hoshi changelog
 .fi
 .PP
 Environment: HOSHI_VERSION, HOSHI_CHANNEL, HOSHI_OFFLINE, HOSHI_SKIP_VERSION_CHECK
+.SS cheat
+Run a local cheat; permanently marks the save modified.
+.PP
+Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair\-play restrictions.
+.PP
+.nf
+hoshi cheat CODE [ARGS]
+.fi
+.PP
+Example:
+.nf
+hoshi \-\-cheats cheat grant iron 100
+.fi
+.PP
+Environment: HOSHI_SAVE, HOSHI_BALANCE
 .SS classify
 Set a classification marking on an object.
 .PP

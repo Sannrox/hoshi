@@ -100,4 +100,6 @@ work: [docs/realism.md](docs/realism.md). Portrait art and licenses:
 
 Apache-2.0. See [LICENSE](LICENSE).
 
+For optional local experimentation, see [Cheats](docs/cheats.md).
+
 For local diagnostic reports and crash files, see [Support reports](docs/support.md).
