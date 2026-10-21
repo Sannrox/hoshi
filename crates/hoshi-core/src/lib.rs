@@ -16,6 +16,7 @@ mod daily;
 mod defences;
 mod detail;
 mod diplomacy;
+mod dismantle;
 mod espionage;
 mod expedition;
 mod finance;
@@ -83,7 +84,7 @@ pub use blueprint::{
     APPLY_ORDER, Blueprint, BlueprintApply, BlueprintCatalog, BlueprintError, BlueprintMismatch,
     BlueprintPreview, BlueprintStep, blueprint_dir,
 };
-pub use buildings::{BuildError, BuildJob, BuildingKind, Buildings};
+pub use buildings::{BuildError, BuildJob, BuildJobKind, BuildingKind, Buildings};
 pub use chains::{ChainConfig, GoodKind, GoodSpec, Recipe, component_kind};
 pub use classification::{
     COMPARTMENT_FLEET, COMPARTMENT_INTEL, COMPARTMENT_PLANET, COMPARTMENT_POLICY, Classification,
@@ -113,6 +114,7 @@ pub use detail::{
 pub use diplomacy::{
     DiplomacyConfig, DiplomacyError, DiplomacyState, FactionSpec, FactionTier, StandingChange,
 };
+pub use dismantle::{DismantleConfig, DismantlePreview};
 pub use espionage::{
     EspionageConfig, EspionageTier, SpyOutcome, SpyReport, detection_chance, resolve_spy, reveals,
     spy_score, spy_tier,

@@ -12,6 +12,11 @@ use std::fmt;
 /// One governed move. Names match the ontology action list.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Intent {
+    Dismantle {
+        planet: Coord,
+        building: BuildingKind,
+        actor: Actor,
+    },
     Build {
         planet: Coord,
         building: BuildingKind,
@@ -111,6 +116,7 @@ impl Intent {
     pub fn as_key(&self) -> &'static str {
         match self {
             Intent::Build { .. } => "build",
+            Intent::Dismantle { .. } => "dismantle",
             Intent::Research { .. } => "research",
             Intent::Launch { .. } => "launch",
             Intent::Colonize { .. } => "colonize",
@@ -184,6 +190,15 @@ pub fn propose(state: &GameState, intent: &Intent, now_unix: u64) -> Result<Prop
 
 fn proposal_id(intent: &Intent, now_unix: u64, tick: u64) -> String {
     match intent {
+        Intent::Dismantle {
+            planet,
+            building,
+            actor,
+        } => format!(
+            "dismantle:{now_unix}:{tick}:{planet}:{}:{}",
+            building.as_key(),
+            actor.as_key()
+        ),
         Intent::Build {
             planet,
             building,
@@ -324,6 +339,13 @@ pub fn apply(state: &mut GameState, proposal: &Proposal, now_unix: u64) -> Resul
 
 fn apply_inner(state: &mut GameState, intent: &Intent, now_unix: u64) -> Result<(), IntentError> {
     match intent {
+        Intent::Dismantle {
+            planet,
+            building,
+            actor,
+        } => state
+            .enqueue_dismantle_as(*planet, *building, now_unix, *actor)
+            .map_err(IntentError::Build),
         Intent::Build {
             planet,
             building,

@@ -200,3 +200,14 @@ mines at levels 6/4/8, level-3 lab, energy level 3, then fission and constructio
 the default seed, tolerates half power while saving for research, and stops after
 30 days; its hours are separate from the greedy mining targets. The default seed
 reaches the first reactor in 317.85 hours (13.24 days) with this strategy.
+
+## Dismantling
+
+`[dismantle]` in `balance.toml` sets `time_share = 0.5`,
+`energy_share = 0.25`, `salvage_share = 0.35` and `condition_floor = 0.0`.
+Each job removes one level. Time uses that level's build time and robotics;
+power draw uses its full installed draw. Work scales with available power.
+Zero-draw buildings need time but no energy. Salvage uses construction cost
+and condition at completion, excludes deuterium and helium-3, and obeys normal
+storage caps. Cancelling any dismantle job preserves the level with no salvage.
+See [ADR 0011](decisions/0011-dismantling-in-the-build-queue.md).

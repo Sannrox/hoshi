@@ -4,6 +4,7 @@ use ratatui::crossterm::event::KeyCode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Binding {
+    Dismantle,
     Quit,
     Help,
     NextScreen,
@@ -116,10 +117,12 @@ impl Binding {
         Binding::Advisor,
         Binding::Cockpit,
         Binding::Detail,
+        Binding::Dismantle,
     ];
 
     pub fn config_key(self) -> &'static str {
         match self {
+            Binding::Dismantle => "dismantle",
             Binding::Quit => "quit",
             Binding::Help => "help",
             Binding::NextScreen => "next_screen",
@@ -157,6 +160,7 @@ impl Binding {
 
     fn default_keys(self) -> Vec<KeyCode> {
         match self {
+            Binding::Dismantle => vec![KeyCode::Char('D')],
             Binding::Quit => vec![KeyCode::Char('q')],
             Binding::Help => vec![KeyCode::Char('?')],
             Binding::NextScreen => vec![KeyCode::Tab],
@@ -255,7 +259,22 @@ impl HelpContext {
                 Binding::CursorLeft,
                 Binding::CursorRight,
             ],
-            HelpContext::Planet | HelpContext::Shipyard | HelpContext::Wonder => &[
+            HelpContext::Planet => &[
+                Binding::Dismantle,
+                Binding::Help,
+                Binding::Quit,
+                Binding::NextScreen,
+                Binding::Cockpit,
+                Binding::Detail,
+                Binding::PrevPlanet,
+                Binding::NextPlanet,
+                Binding::SelectNext,
+                Binding::SelectPrev,
+                Binding::Confirm,
+                Binding::Cancel,
+                Binding::CopySeed,
+            ],
+            HelpContext::Shipyard | HelpContext::Wonder => &[
                 Binding::Help,
                 Binding::Quit,
                 Binding::NextScreen,
@@ -603,6 +622,7 @@ impl HelpContext {
             Binding::Activity => "activity log",
             Binding::Advisor => "advisor",
             Binding::Cockpit => "bridge dashboard",
+            Binding::Dismantle => "dismantle one level",
             Binding::Detail => "toggle detail panel",
         }
     }
@@ -898,6 +918,7 @@ impl Keymap {
 
 fn normalize_code(code: KeyCode) -> KeyCode {
     match code {
+        KeyCode::Char('D') => KeyCode::Char('D'),
         KeyCode::Char(c) => KeyCode::Char(c.to_ascii_lowercase()),
         other => other,
     }
@@ -916,6 +937,9 @@ fn parse_key_list(value: &str) -> Result<Vec<KeyCode>, String> {
 }
 
 fn parse_key(token: &str) -> Result<KeyCode, String> {
+    if token == "D" {
+        return Ok(KeyCode::Char('D'));
+    }
     let lower = token.to_ascii_lowercase();
     match lower.as_str() {
         "tab" => Ok(KeyCode::Tab),

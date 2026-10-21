@@ -109,14 +109,14 @@ impl GameState {
         let mut heat_load = 0.0;
         let mut heat_sink = 0.0;
         for coord in self.owned_coords() {
-            let Some(buildings) = self.buildings_at(coord).copied() else {
+            let Some(buildings) = self.operational_buildings_at(coord) else {
                 continue;
             };
             let Some(kind) = self.planet_kind(coord) else {
                 continue;
             };
             energy_supply += self.site_energy_produced(coord, buildings, kind);
-            energy_demand += self.config.energy_draw(&buildings);
+            energy_demand += self.energy_consumed_at(coord);
             if let Some(waste) = self.waste_at(coord) {
                 heat_load += waste.heat_load;
                 heat_sink += waste.heat_sink;
@@ -144,7 +144,7 @@ impl GameState {
     }
 
     pub(crate) fn flows_at(&self, coord: Coord) -> Vec<RecipeFlow> {
-        let Some(buildings) = self.buildings_at(coord).copied() else {
+        let Some(buildings) = self.operational_buildings_at(coord) else {
             return Vec::new();
         };
         let Some(kind) = self.planet_kind(coord) else {
@@ -258,6 +258,9 @@ impl GameState {
         buildings: crate::Buildings,
         planet: crate::PlanetType,
     ) -> f64 {
+        if self.dismantling(coord) == Some(crate::BuildingKind::SolarPlant) {
+            return 0.0;
+        }
         if coord == self.home {
             return self.config.solar_plant.energy_output(buildings.solar_plant)
                 * self.config.orbits.solar_flux(coord)
@@ -285,7 +288,7 @@ impl GameState {
         planet: crate::PlanetType,
     ) -> f64 {
         let produced = self.site_energy_produced(coord, buildings, planet);
-        let consumed = self.config.energy_draw(&buildings);
+        let consumed = self.energy_consumed_at(coord);
         if consumed <= 0.0 {
             1.0
         } else {

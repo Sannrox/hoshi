@@ -1,6 +1,8 @@
 //! Overview, planet, shipyard, wonder, prestige, achievements, daily, goals, production, market, diplomacy, laws, reports, ops and map screens.
 //! Core owns the rules; this module only renders and turns keys into core commands.
 
+mod dismantle;
+
 use crate::clip::copy_to_clipboard;
 use crate::detail_panel::{self, DOCK_MIN_WIDTH};
 use crate::hubs::{self, Hub};
@@ -98,6 +100,7 @@ pub enum Action {
 
 pub struct App {
     pub updates: Option<crate::update_ui::UpdateUi>,
+    dismantle_confirm: Option<(Coord, BuildingKind)>,
     pub state: GameState,
     pub portraits: PortraitView,
     keymap: Keymap,
@@ -174,6 +177,7 @@ impl App {
             portraits: PortraitView::default(),
             keymap,
             updates: None,
+            dismantle_confirm: None,
             help_open: false,
             help_commands: false,
             screen: Screen::Cockpit,
@@ -481,6 +485,9 @@ impl App {
                 return Action::None;
             }
         }
+        if self.dismantle_confirm.is_some() {
+            return self.handle_dismantle_confirm(code, now_unix);
+        }
         self.state.interactive_tactics = true;
         self.state.catch_up(now_unix);
         self.clamp_planet();
@@ -726,6 +733,11 @@ impl App {
             }
             Some(Binding::SendProbe) if self.screen == Screen::Reports && !self.opened_report => {
                 self.send_probe(now_unix);
+            }
+            Some(Binding::Dismantle) if self.screen == Screen::Planet => {
+                if let Some(kind) = BuildingKind::ALL.get(self.selected).copied() {
+                    self.dismantle_confirm = Some((self.selected_coord(), kind));
+                }
             }
             Some(Binding::Detail) => self.toggle_detail(),
             Some(Binding::Confirm) => self.activate(now_unix),
@@ -1469,6 +1481,9 @@ impl App {
         if let Some(updates) = &self.updates {
             updates.draw(frame);
         }
+        if self.dismantle_confirm.is_some() {
+            self.draw_dismantle_confirm(frame);
+        }
     }
 
     fn current_portrait_slot(&self) -> Slot {
@@ -1499,6 +1514,7 @@ impl App {
                 .updates
                 .as_ref()
                 .is_some_and(crate::update_ui::UpdateUi::overlay_open)
+            || self.dismantle_confirm.is_some()
             || self.shows_detail_overlay()
             || self.activity_open
             || self.advisor_open
@@ -2853,10 +2869,15 @@ impl App {
                 None => "wait".to_string(),
             };
             rows.push(Line::from(format!(
-                "  {}. {} → lv{}  {timer}",
+                "  {}. [{}] {} → lv{}  {timer}",
                 i + 1,
+                job.kind.as_key(),
                 job.building,
-                job.from_level + 1
+                if job.kind == hoshi_core::BuildJobKind::Dismantle {
+                    job.from_level.saturating_sub(1)
+                } else {
+                    job.from_level.saturating_add(1)
+                }
             )));
         }
         rows
@@ -5649,6 +5670,52 @@ mod tests {
         let text = render_text(&app, 120, 40);
         assert!(text.contains("Bridge / Dashboard"), "{text}");
         assert!(text.contains("ALERTS") || text.contains("alerts"), "{text}");
+    }
+
+    #[test]
+    fn dismantle_dialog_shows_costs_and_blockers_and_honors_remapping() {
+        let mut app = App::new(GameState::new(1_000));
+        app.state.config.raid = hoshi_core::RaidConfig::inactive();
+        app.screen = Screen::Planet;
+        app.selected = BuildingKind::ALL
+            .iter()
+            .position(|kind| *kind == BuildingKind::MetalMine)
+            .unwrap();
+        app.handle_key(KeyCode::Char('D'), 1_000);
+        assert!(app.dismantle_confirm.is_some());
+        app.handle_key(KeyCode::Esc, 1_000);
+        app.keymap = app
+            .keymap
+            .rebind(Binding::Dismantle, KeyCode::Char(';'))
+            .unwrap();
+        app.handle_key(KeyCode::Char('D'), 1_000);
+        assert!(app.dismantle_confirm.is_none());
+        app.handle_key(KeyCode::Char(';'), 1_000);
+        let text = render_text(&app, 80, 24);
+        for label in [
+            "Dismantle one level?",
+            "Time",
+            "Power during work",
+            "Power freed",
+            "Heat freed",
+            "Salvage",
+        ] {
+            assert!(text.contains(label), "missing {label}:\n{text}");
+        }
+        app.handle_key(KeyCode::Esc, 1_000);
+        assert!(app.state.build_queue.is_empty());
+        app.state.buildings.robotics_factory = 1;
+        app.state.buildings.shipyard = 1;
+        app.selected = BuildingKind::ALL
+            .iter()
+            .position(|kind| *kind == BuildingKind::RoboticsFactory)
+            .unwrap();
+        app.handle_key(KeyCode::Char(';'), 1_000);
+        let text = render_text(&app, 80, 24);
+        assert!(text.contains("Cannot dismantle"), "{text}");
+        assert!(text.contains("shipyard"), "{text}");
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.state.build_queue.is_empty());
     }
 
     #[test]

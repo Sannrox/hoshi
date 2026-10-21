@@ -69,7 +69,10 @@ pub struct MaintenanceConfig {
 
 impl MaintenanceConfig {
     pub fn bundled() -> Self {
-        Self::parse(DEFAULT).expect("bundled maintenance.toml")
+        static BUNDLED: std::sync::OnceLock<MaintenanceConfig> = std::sync::OnceLock::new();
+        BUNDLED
+            .get_or_init(|| Self::parse(DEFAULT).expect("bundled maintenance.toml"))
+            .clone()
     }
 
     pub fn parse(raw: &str) -> Result<Self, MaintenanceError> {
@@ -347,6 +350,9 @@ impl GameState {
     }
 
     pub fn building_health(&self, coord: Coord, kind: BuildingKind) -> f64 {
+        if self.dismantling(coord) == Some(kind) {
+            return 0.0;
+        }
         let key = format!("building:{}:{}", coord, kind.as_key());
         let Some(asset) = self.maintenance.assets.iter().find(|a| a.key == key) else {
             return 1.0;
@@ -575,6 +581,12 @@ impl GameState {
         {
             return Err(MaintenanceError::Busy);
         }
+        let asset = &self.maintenance.assets[idx];
+        if self.dismantling(asset.coord).is_some_and(|building| {
+            asset.key == format!("building:{}:{}", asset.coord, building.as_key())
+        }) {
+            return Err(MaintenanceError::Busy);
+        }
         let cost = Resources::from_parts(cfg.iron_cost, cfg.silicon_cost, 0.0);
         if !self.resources.can_afford(cost) {
             return Err(MaintenanceError::Unaffordable);
@@ -738,6 +750,12 @@ impl GameState {
         let Some(idx) = self.maintenance.assets.iter().position(|a| a.id == id) else {
             return;
         };
+        let asset = &self.maintenance.assets[idx];
+        if self.dismantling(asset.coord).is_some_and(|building| {
+            asset.key == format!("building:{}:{}", asset.coord, building.as_key())
+        }) {
+            return;
+        }
         let coord = self.maintenance.assets[idx].coord;
         let heat = self.waste_at(coord);
         let overflow = heat.as_ref().is_some_and(|h| h.overflowing());

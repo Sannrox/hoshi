@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 46;
+pub const SCHEMA_VERSION: u32 = 47;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -1310,6 +1310,8 @@ fn load_rivals(conn: &Connection, state: &mut GameState) -> Result<(), SaveError
                     let building = BuildingKind::from_key(&kind)
                         .ok_or(SaveError::Corrupt("unknown building"))?;
                     build_queue.push(BuildJob {
+                        kind: crate::buildings::BuildJobKind::Build,
+                        work_left: 0.0,
                         building,
                         from_level,
                         paid: Resources::from_parts(metal, crystal, deuterium),
@@ -1463,8 +1465,8 @@ fn insert_build_queue(
             "INSERT INTO build_queue (
                 planet_id, position, kind, from_level,
                 paid_metal, paid_crystal, paid_deuterium,
-                started_at, completes_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                started_at, completes_at, operation, work_left
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 planet_id,
                 i as i64,
@@ -1475,6 +1477,8 @@ fn insert_build_queue(
                 job.paid.deuterium,
                 job.started_at.map(|t| t as i64),
                 job.completes_at.map(|t| t as i64),
+                job.kind.as_key(),
+                job.work_left,
             ],
         )?;
     }
@@ -3350,6 +3354,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     if found < 46 {
         migrate_v46(conn)?;
     }
+    if found < 47 {
+        migrate_v47(conn)?;
+    }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
 }
@@ -4444,6 +4451,18 @@ fn migrate_v41(conn: &Connection) -> Result<(), SaveError> {
         );
         ",
     )?;
+    Ok(())
+}
+
+fn migrate_v47(conn: &Connection) -> Result<(), SaveError> {
+    if !table_has_column(conn, "build_queue", "operation")? {
+        conn.execute_batch(
+            "ALTER TABLE build_queue ADD COLUMN operation TEXT NOT NULL DEFAULT 'build';",
+        )?;
+    }
+    if !table_has_column(conn, "build_queue", "work_left")? {
+        conn.execute_batch("ALTER TABLE build_queue ADD COLUMN work_left REAL NOT NULL DEFAULT 0 CHECK (work_left >= 0);")?;
+    }
     Ok(())
 }
 
@@ -7373,7 +7392,7 @@ fn colonies_has_column(conn: &Connection, column: &str) -> Result<bool, SaveErro
 
 fn read_build_queue(conn: &Connection, planet_id: i64) -> Result<Vec<BuildJob>, SaveError> {
     let mut stmt = conn.prepare(
-        "SELECT kind, from_level, paid_metal, paid_crystal, paid_deuterium, started_at, completes_at
+        "SELECT kind, from_level, paid_metal, paid_crystal, paid_deuterium, started_at, completes_at, operation, work_left
          FROM build_queue WHERE planet_id = ?1 ORDER BY position",
     )?;
     let jobs = stmt.query_map(params![planet_id], |row| {
@@ -7385,14 +7404,39 @@ fn read_build_queue(conn: &Connection, planet_id: i64) -> Result<Vec<BuildJob>, 
             row.get::<_, f64>(4)?,
             row.get::<_, Option<i64>>(5)?,
             row.get::<_, Option<i64>>(6)?,
+            row.get::<_, String>(7)?,
+            row.get::<_, f64>(8)?,
         ))
     })?;
     let mut queue = Vec::new();
     for job in jobs {
-        let (kind, from_level, metal, crystal, deuterium, started_at, completes_at) = job?;
+        let (
+            kind,
+            from_level,
+            metal,
+            crystal,
+            deuterium,
+            started_at,
+            completes_at,
+            operation,
+            work_left,
+        ) = job?;
+        let operation = match operation.as_str() {
+            "build" => crate::BuildJobKind::Build,
+            "dismantle" => crate::BuildJobKind::Dismantle,
+            _ => return Err(SaveError::Corrupt("unknown build operation")),
+        };
+        if !work_left.is_finite()
+            || work_left < 0.0
+            || (operation == crate::BuildJobKind::Dismantle && from_level == 0)
+        {
+            return Err(SaveError::Corrupt("invalid dismantle work"));
+        }
         let building =
             BuildingKind::from_key(&kind).ok_or(SaveError::Corrupt("unknown building kind"))?;
         queue.push(BuildJob {
+            kind: operation,
+            work_left,
             building,
             from_level,
             paid: Resources::from_parts(metal, crystal, deuterium),
@@ -8746,6 +8790,8 @@ mod tests {
             rare: None,
             goods: BTreeMap::new(),
             build_queue: vec![BuildJob {
+                kind: crate::buildings::BuildJobKind::Build,
+                work_left: 0.0,
                 building: BuildingKind::SolarPlant,
                 from_level: 0,
                 paid: Resources::from_parts(1.0, 1.0, 0.0),
@@ -10123,6 +10169,27 @@ mod tests {
         assert!(!loaded.maintenance.orders.is_empty() || !loaded.maintenance.readings.is_empty());
         assert_eq!(count_rows(&conn, "maintenance_meta").unwrap(), 1);
         assert!(count_rows(&conn, "maintenance_assets").unwrap() >= 1);
+    }
+
+    #[test]
+    fn migrate_v47_preserves_legacy_build_jobs_and_is_restartable() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let mut state = GameState::new(100);
+        state.resources = Resources::from_parts(1_000_000.0, 1_000_000.0, 1_000_000.0);
+        state
+            .enqueue_build(crate::BuildingKind::MetalMine, 100)
+            .unwrap();
+        save_state(&mut conn, &state).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE build_queue DROP COLUMN operation;
+            ALTER TABLE build_queue DROP COLUMN work_left; PRAGMA user_version = 46;",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap();
+        let loaded = load_state(&conn, state.config.clone()).unwrap();
+        assert_eq!(loaded.build_queue, state.build_queue);
+        assert_eq!(loaded.resources, state.resources);
     }
 
     #[test]
