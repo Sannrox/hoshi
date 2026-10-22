@@ -11,14 +11,14 @@
     builds 1  research 0  fleets returned 0  expeditions 0  raids 1
 
     EVENTS
- ▌  story 5                                                                   C
-    story 4                                                                   C
+ ▌  story 5                                                                   1
+    story 4                                                                   1
     story 3
-    story 2                                                                   C
-    1-4 of 6, newest first (space for more)                                   C
-                                                                              C
-    enter  dismiss   r  replay   w  reopen on overview                        C
+    story 2                                                                   1
+    1-4 of 6, newest first (space for more)                                   1
+                                                                              3
+    enter  dismiss   r  replay   w  reopen on overview                        1
   TIER 3
-    Adaptive routes                     800  1.2k   400   6m 40s   NEED RESEARC
+    Adaptive routes              800  1.2k   400   6m 40s   NEED RESEARCH LAB 3
                                                                     ⏎ research
       [/]  planet   h/l  branch   j/k  select          0000-0000-0000-00 gen 1

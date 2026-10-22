@@ -170,7 +170,7 @@ impl GameState {
         let mut deltas = Vec::new();
         for kind_res in ResourceKind::ALL {
             deltas.push(DeltaLine {
-                label: format!("{} /h", kind_res.as_key()),
+                label: format!("{} /h", kind_res.label()),
                 from: format!("{:.1}", projected.production_at(planet, kind_res)),
                 to: format!("{:.1}", next_state.production_at(planet, kind_res)),
             });
@@ -210,7 +210,7 @@ impl GameState {
                     .map(|prerequisite| RequirementLine {
                         text: format!(
                             "{} {} (have {})",
-                            prerequisite.id,
+                            self.display_name(&prerequisite.id),
                             prerequisite.level,
                             self.tech_level(&prerequisite.id)
                         ),
@@ -266,7 +266,11 @@ impl GameState {
             .chain(spec.prereq_techs.iter().map(|pre| {
                 let actual = self.tech_level(&pre.id);
                 RequirementLine {
-                    text: format!("{} {} (have {actual})", pre.id, pre.level),
+                    text: format!(
+                        "{} {} (have {actual})",
+                        self.display_name(&pre.id),
+                        pre.level
+                    ),
                     met: actual >= pre.level,
                 }
             }))
@@ -308,13 +312,13 @@ impl GameState {
             .missing_ship_prereqs(kind)
             .into_iter()
             .map(|gap| RequirementLine {
-                text: gap.to_string(),
+                text: self.prereq_text(&gap),
                 met: false,
             })
             .collect();
         Detail {
             name: spec.name.clone(),
-            description: format!("drive {}", spec.drive),
+            description: format!("drive {}", self.display_name(&spec.drive)),
             level: 0,
             costs: material_lines(self, cost),
             energy_draw: None,
@@ -378,7 +382,11 @@ impl GameState {
             .map(|pre| {
                 let actual = self.tech_level(&pre.id);
                 RequirementLine {
-                    text: format!("{} {} (have {actual})", pre.id, pre.level),
+                    text: format!(
+                        "{} {} (have {actual})",
+                        self.display_name(&pre.id),
+                        pre.level
+                    ),
                     met: actual >= pre.level,
                 }
             })
@@ -422,7 +430,7 @@ impl GameState {
         let effects: Vec<String> = spec
             .effects
             .iter()
-            .map(|e| format!("{:?}", e.kind))
+            .map(|e| camel_words(&format!("{:?}", e.kind)))
             .collect();
         Some(Detail {
             name: spec.title.clone(),
@@ -439,6 +447,29 @@ impl GameState {
             exclusive_warning: None,
             ship: None,
         })
+    }
+
+    /// Player-facing name for an id from the data files: a tech's name, a
+    /// resource's label (`helium_3` → `helium-3`), otherwise the id in words
+    /// (`iron_ore` → `iron ore`). Ids never reach the screen as snake_case.
+    pub fn display_name(&self, id: &str) -> String {
+        if let Some(tech) = self.config.techs.get(id) {
+            return tech.name.clone();
+        }
+        ResourceKind::from_key(id)
+            .map_or_else(|| id.replace('_', " "), |kind| kind.label().to_string())
+    }
+
+    /// A prerequisite gap with the tech's display name.
+    pub fn prereq_text(&self, gap: &crate::PrereqGap) -> String {
+        match gap {
+            crate::PrereqGap::Tech {
+                id,
+                required,
+                actual,
+            } => format!("{} level {required} (have {actual})", self.display_name(id)),
+            other => other.to_string(),
+        }
     }
 
     fn describe_trade(&self, pay: ResourceKind, recv: ResourceKind, amount: f64) -> Detail {
@@ -509,21 +540,24 @@ impl GameState {
             .outputs_per_hour
             .iter()
             .map(|(good, rate)| DeltaLine {
-                label: format!("{good} /h"),
+                label: format!("{} /h", self.display_name(good)),
                 from: format!("{rate:.1}"),
                 to: format!("{rate:.1}"),
             })
             .collect();
         for (good, rate) in &step.inputs_per_hour {
             deltas.push(DeltaLine {
-                label: format!("{good} in /h"),
+                label: format!("{} in /h", self.display_name(good)),
                 from: format!("{rate:.1}"),
                 to: format!("{rate:.1}"),
             });
         }
         Some(Detail {
-            name: step.id,
-            description: format!("{} at {planet}", step.limited_by.as_key()),
+            name: self.display_name(&step.id),
+            description: match step.limited_by.as_key() {
+                "none" => format!("full rate at {planet}"),
+                limit => format!("limited by {} at {planet}", limit.replace('_', " ")),
+            },
             level: 0,
             costs: Vec::new(),
             energy_draw: None,
@@ -678,6 +712,18 @@ fn afford_from(
     AffordEta::In(wait.ceil().max(1.0) as u64)
 }
 
+/// `PollutionCap` → `pollution cap`, for enum names shown to the player.
+fn camel_words(name: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in name.chars().enumerate() {
+        if c.is_ascii_uppercase() && i > 0 {
+            out.push(' ');
+        }
+        out.push(c.to_ascii_lowercase());
+    }
+    out
+}
+
 fn exclusive_warning(state: &GameState, spec: &crate::TechSpec) -> Option<String> {
     let group = spec.exclusive_group.as_deref()?;
     let others: Vec<String> = state
@@ -690,7 +736,11 @@ fn exclusive_warning(state: &GameState, spec: &crate::TechSpec) -> Option<String
     if others.is_empty() {
         return None;
     }
-    Some(format!("locks {}: {}", group, others.join(", ")))
+    Some(format!(
+        "locks {}: {}",
+        group.replace('_', " "),
+        others.join(", ")
+    ))
 }
 
 fn unlocks_from_tech(state: &GameState, id: &str) -> Vec<String> {

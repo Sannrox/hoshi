@@ -3163,12 +3163,14 @@ impl App {
             rows.push(Line::from(format!("Debris {amount:.0}")));
         }
         let deposits = self.state.deposits_at(coord);
-        if !deposits.is_empty() {
-            let parts: Vec<String> = deposits
-                .iter()
-                .map(|(id, richness)| format!("{id} {richness:.2}"))
-                .collect();
-            rows.push(Line::from(format!("Deposits  {}", parts.join("  "))));
+        let parts: Vec<String> = deposits
+            .iter()
+            .map(|(id, richness)| format!("{} {richness:.2}", self.state.display_name(id)))
+            .collect();
+        // Three per line so water ice, the deuterium input, is never cut off.
+        for (i, chunk) in parts.chunks(3).enumerate() {
+            let label = if i == 0 { "Deposits" } else { "" };
+            rows.push(Line::from(format!("{label:<10}{}", chunk.join("  "))));
         }
         for (i, job) in queue.iter().enumerate() {
             let left = job
@@ -3206,7 +3208,11 @@ impl App {
         for pre in &spec.prereq_techs {
             let actual = self.state.tech_level(&pre.id);
             if actual < pre.level {
-                return Some(format!("need {} {}", pre.id, pre.level));
+                return Some(format!(
+                    "need {} {}",
+                    self.state.display_name(&pre.id),
+                    pre.level
+                ));
             }
         }
         None
@@ -3223,13 +3229,25 @@ impl App {
         None
     }
 
+    /// Short status-chip form of a prerequisite: `need research lab 1`.
+    fn need_label(&self, gap: &hoshi_core::PrereqGap) -> String {
+        match gap {
+            hoshi_core::PrereqGap::Building {
+                building, required, ..
+            } => format!("need {building} {required}"),
+            hoshi_core::PrereqGap::Tech { id, required, .. } => {
+                format!("need {} {required}", self.state.display_name(id))
+            }
+        }
+    }
+
     fn ship_block_reason(&self, kind: ShipKind, cost: Resources) -> Option<String> {
         let spec = self.state.config.ships.get(kind);
         if self.state.buildings.shipyard < spec.shipyard {
             return Some(format!("need shipyard {}", spec.shipyard));
         }
         if let Some(gap) = self.state.missing_ship_prereqs(kind).first() {
-            return Some(format!("need {gap}"));
+            return Some(self.need_label(gap));
         }
         if !self.state.resources.can_afford(cost) {
             return Some(missing_label(self.state.resources.missing(cost)));
@@ -3277,7 +3295,7 @@ impl App {
         if let Ok(gaps) = self.state.missing_research_prereqs(id)
             && let Some(gap) = gaps.first()
         {
-            return Some(format!("need {gap}"));
+            return Some(self.need_label(gap));
         }
         if !self.state.resources.can_afford(cost) {
             return Some(missing_label(self.state.resources.missing(cost)));
@@ -3648,13 +3666,14 @@ impl App {
             HistoryPane::List => {}
             HistoryPane::Lineage => {
                 let mut lines = vec![Line::from(format!("lineage of #{}", event.id))];
+                let now = self.state.last_tick_unix;
                 for row in self.state.history.lineage(event.id) {
                     lines.push(Line::from(format!(
-                        "#{} t{} {} {} → {}",
+                        "#{} {} ago {} {} → {}",
                         row.id,
-                        row.at,
+                        ui::spans::duration(now.saturating_sub(row.at)),
                         row.kind.as_key(),
-                        row.action,
+                        row.action.replace('_', " "),
                         row.outcome
                     )));
                 }
@@ -3667,7 +3686,10 @@ impl App {
             }
             HistoryPane::AsOf => {
                 let snap = self.state.history.as_of(event.at);
-                let mut lines = vec![Line::from(format!("empire at t{}", event.at))];
+                let mut lines = vec![Line::from(format!(
+                    "empire {} ago",
+                    ui::spans::duration(self.state.last_tick_unix.saturating_sub(event.at))
+                ))];
                 match snap {
                     Some(snap) => {
                         lines.push(Line::from(format!(
@@ -3898,12 +3920,13 @@ fn missing_label(missing: Resources) -> String {
         .iter()
         .copied()
         .filter(|&kind| missing.get(kind) > 0.5)
-        .map(|kind| format!("{}{:.0}", kind.abbr(), missing.get(kind)))
+        .map(|kind| format!("{} {}", kind.abbr(), ui::spans::compact(missing.get(kind))))
         .collect();
+    // "short", not "need": the number is what is missing, not the price.
     if parts.is_empty() {
-        "need resources".to_string()
+        "short of resources".to_string()
     } else {
-        format!("need {}", parts.join(" "))
+        format!("short {}", parts.join(" "))
     }
 }
 
@@ -4167,6 +4190,95 @@ mod tests {
         );
     }
 
+    /// A lived-in four-day game for whole-screen text checks.
+    fn played_state() -> GameState {
+        let mut state = GameState::new_live_galaxy(1_000, BalanceConfig::default(), 7);
+        state.skip_tutorial();
+        state.buildings.metal_mine = 8;
+        state.buildings.crystal_mine = 6;
+        state.buildings.deuterium_synthesizer = 2;
+        state.buildings.solar_plant = 9;
+        state.buildings.research_lab = 1;
+        state.catch_up(1_000 + 4 * 86_400);
+        state.story_pending = None;
+        state
+    }
+
+    /// Words a player should never read: snake_case ids, raw unix times and
+    /// second counts of a minute or more.
+    fn raw_words(text: &str) -> std::collections::BTreeSet<String> {
+        text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .filter(|word| {
+                let digits = |w: &str| !w.is_empty() && w.chars().all(|c| c.is_ascii_digit());
+                let snake = word.contains('_') && word.chars().any(|c| c.is_ascii_lowercase());
+                let unix = digits(word.trim_start_matches('t'))
+                    && word.trim_start_matches('t').len() == 10;
+                let secs = word.len() > 3
+                    && word.ends_with('s')
+                    && digits(&word[..word.len() - 1])
+                    && word[..word.len() - 1].parse::<u64>().is_ok_and(|n| n >= 60);
+                snake || unix || secs
+            })
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn hub_screens_show_no_raw_ids_or_timestamps() {
+        let state = played_state();
+        let mut found = Vec::new();
+        for screen in [
+            Screen::Cockpit,
+            Screen::Overview,
+            Screen::Planet,
+            Screen::Production,
+            Screen::Maintenance,
+            Screen::Shipyard,
+            Screen::Map,
+            Screen::Ops,
+            Screen::Market,
+            Screen::Finance,
+            Screen::Kpis,
+            Screen::Diplomacy,
+            Screen::Laws,
+            Screen::Staff,
+            Screen::Incidents,
+            Screen::Reports,
+            Screen::History,
+        ] {
+            let mut app = App::new(state.clone());
+            app.open(screen);
+            let panes: &[HistoryPane] = if screen == Screen::History {
+                &[HistoryPane::List, HistoryPane::Lineage, HistoryPane::AsOf]
+            } else {
+                &[HistoryPane::List]
+            };
+            for &pane in panes {
+                app.history_pane = pane;
+                for selected in 0..6 {
+                    app.selected = selected;
+                    let bad = raw_words(&render_text(&app, 140, 45));
+                    if !bad.is_empty() {
+                        found.push(format!("{screen:?} {pane:?} row {selected}: {bad:?}"));
+                    }
+                }
+            }
+        }
+        assert!(found.is_empty(), "{}", found.join("\n"));
+    }
+
+    #[test]
+    fn an_energy_shortfall_is_a_bridge_alert() {
+        let mut state = GameState::new(1_000);
+        state.buildings.metal_mine = 10;
+        state.buildings.solar_plant = 0;
+        assert!(state.energy_balance() < 0.0);
+        let mut app = App::new(state);
+        app.screen = Screen::Cockpit;
+        let text = render_text(&app, 140, 45);
+        assert!(text.contains("Energy short"), "{text}");
+    }
+
     #[test]
     fn a_lost_raid_reads_as_a_report_from_the_bridge_and_history() {
         let mut state = GameState::new(1_000);
@@ -4427,9 +4539,11 @@ mod tests {
         assert!(text.contains(" industry "), "{text}");
         assert!(text.contains("military"), "{text}");
         assert!(text.contains("society"), "{text}");
-        assert!(text.contains("Energy Technology 1"), "{text}");
         assert!(text.contains("EXCLUDED"), "{text}");
         assert!(text.contains("★ Dyson ring"), "{text}");
+        // Full names next to the wider status column at the target size.
+        let wide = render_text(&app, 140, 45);
+        assert!(wide.contains("Energy Technology 1"), "{wide}");
         assert!(!text.contains("ancient"), "{text}");
         app.handle_key(KeyCode::Char('l'), 1_000);
         assert_eq!(app.tree_branch, TechBranch::Military);
@@ -4692,7 +4806,7 @@ mod tests {
         terminal.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(terminal.backend());
         assert!(
-            text.contains("NEED D") || text.contains("NEED FE"),
+            text.contains("SHORT D") || text.contains("SHORT FE"),
             "planet should show missing resources: {text}"
         );
         assert!(
@@ -4772,7 +4886,7 @@ mod tests {
         terminal.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(terminal.backend());
         assert!(
-            text.contains("NEED FE") || text.contains("NEED SI"),
+            text.contains("SHORT FE") || text.contains("SHORT SI"),
             "unaffordable ships should show missing amounts: {text}"
         );
         assert!(
@@ -4949,7 +5063,7 @@ mod tests {
         assert_eq!(app.screen, Screen::Planet);
         let text = render_text(&app, 100, 32);
         assert!(text.contains("Deposits"), "{text}");
-        assert!(text.contains("iron_ore"), "{text}");
+        assert!(text.contains("iron ore"), "{text}");
         assert!(text.contains("Heat"), "{text}");
         assert!(text.contains("Pollution"), "{text}");
     }
@@ -5002,7 +5116,7 @@ mod tests {
         assert!(text.contains("Colony / Wonder"), "{text}");
         assert!(text.contains("Dyson ring"), "{text}");
         assert!(
-            text.contains(&format!("need Fe{:.0}", remaining.iron)),
+            text.contains(&format!("short Fe {}", ui::spans::compact(remaining.iron))),
             "{text}"
         );
         assert!(
@@ -6322,6 +6436,8 @@ mod tests {
         cfg.starting_resources.iron = 0.0;
         cfg.starting_resources.silicon = 0.0;
         cfg.starting_resources.deuterium = 0.0;
+        // The lab meets energy's only requirement, so the ETA is what shows.
+        cfg.starting_buildings.research_lab = 1;
         let mut app = App::new(GameState::with_config(0, cfg));
         app.portraits.enabled = false;
         app.show_tutorial = false;

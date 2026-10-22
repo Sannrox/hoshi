@@ -34,12 +34,12 @@ pub fn lines(detail: &Detail) -> Vec<String> {
         rows.push(format!("heat {heat:.0}"));
     }
     if let Some(secs) = detail.duration_secs {
-        rows.push(format!("time {secs}s"));
+        rows.push(format!("time {}", duration(secs)));
     }
     if let Some(eta) = detail.afford {
         rows.push(match eta {
             AffordEta::Now => "affordable now".into(),
-            AffordEta::In(secs) => format!("affordable in {secs}s"),
+            AffordEta::In(secs) => format!("affordable in {}", duration(secs)),
             AffordEta::Never => "never at current income".into(),
         });
     }
@@ -102,7 +102,7 @@ pub fn inspector(
     ];
     let mut props = extra;
     if let Some(secs) = detail.duration_secs {
-        props.push(("Build time".into(), Line::styled(duration(secs), t.text())));
+        props.push(("Time".into(), Line::styled(duration(secs), t.text())));
     }
     if let Some(draw) = detail.energy_draw {
         props.push((
@@ -113,7 +113,14 @@ pub fn inspector(
     if let Some(heat) = detail.heat {
         props.push(("Heat".into(), Line::styled(format!("{heat:.0}"), t.text())));
     }
-    if let Some(eta) = detail.afford {
+    // An unmet requirement blocks it whatever the stock, so it outranks the ETA.
+    let blocked = detail.requirements.iter().any(|r| !r.met);
+    if blocked {
+        props.push((
+            "Status".into(),
+            Line::from(tag(t, "BLOCKED", Intent::Danger, true)),
+        ));
+    } else if let Some(eta) = detail.afford {
         let chip = match eta {
             AffordEta::Now => tag(t, "READY", Intent::Success, false),
             AffordEta::In(secs) => tag(
@@ -166,7 +173,13 @@ pub fn inspector(
                 Intent::Primary
             };
             let mut spans = vec![Span::styled(format!("{:<w$}  ", name(row.id)), t.muted())];
-            spans.extend(bar(t, row.cost / row.stock.max(1.0), 10, intent));
+            // Fills toward affording it: full means the stock covers the cost.
+            let covered = if row.cost > 0.0 {
+                (row.stock / row.cost).min(1.0)
+            } else {
+                1.0
+            };
+            spans.extend(bar(t, covered, 10, intent));
             spans.push(Span::styled(
                 format!("  {}", compact(row.cost)),
                 if short {
@@ -278,4 +291,67 @@ pub fn inspector(
         out.extend(PropertyList { theme: t, rows }.lines());
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hoshi_core::{AffordEta, MaterialLine, RequirementLine};
+
+    fn detail(stock: f64, requirement_met: bool) -> Detail {
+        Detail {
+            name: "Robotics factory".into(),
+            description: String::new(),
+            level: 0,
+            costs: vec![MaterialLine {
+                id: "deuterium",
+                stock,
+                cost: 600.0,
+                missing: (600.0 - stock).max(0.0),
+            }],
+            energy_draw: None,
+            heat: None,
+            duration_secs: None,
+            afford: Some(AffordEta::In(7_200)),
+            deltas: Vec::new(),
+            requirements: vec![RequirementLine {
+                text: "shipyard 2 (have 0)".into(),
+                met: requirement_met,
+            }],
+            unlocks: Vec::new(),
+            exclusive_warning: None,
+            ship: None,
+        }
+    }
+
+    fn text(detail: &Detail) -> String {
+        inspector(detail, "building", false, Vec::new(), &Theme::default())
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn cost_bar_fills_toward_affording_it() {
+        let broke = text(&detail(0.0, true));
+        let rich = text(&detail(900.0, true));
+        let bar_of = |text: &str| {
+            text.lines()
+                .find(|line| line.contains("600 /"))
+                .unwrap()
+                .chars()
+                .filter(|c| *c == '█')
+                .count()
+        };
+        assert_eq!(bar_of(&broke), 0, "{broke}");
+        assert_eq!(bar_of(&rich), 10, "{rich}");
+    }
+
+    #[test]
+    fn an_unmet_requirement_outranks_the_affordability_eta() {
+        assert!(text(&detail(0.0, false)).contains("BLOCKED"));
+        let waiting = text(&detail(0.0, true));
+        assert!(waiting.contains("IN 2H 00M"), "{waiting}");
+    }
 }
