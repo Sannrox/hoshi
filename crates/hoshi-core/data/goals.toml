@@ -34,7 +34,7 @@ reward_deuterium = 0.0
 [[tier]]
 id = "helium3_fusion"
 name = "Helium-3 fusion economy"
-blurb = "Extract helium-3 and refine fusion fuel."
+blurb = "Extract helium-3 and refine fuel for a fusion plant."
 goods = { helium_3 = 0.05, fuel = 0.02 }
 reward_metal = 280.0
 reward_crystal = 100.0

@@ -758,6 +758,7 @@ fn v1_parts(method: &str, path: &str, body: &Value) -> Result<Vec<String>, (u16,
         "/v1/state"
             | "/v1/build"
             | "/v1/dismantle"
+            | "/v1/fusion/mode"
             | "/v1/research"
             | "/v1/cancel"
             | "/v1/fleet/send"
@@ -787,6 +788,16 @@ fn v1_parts(method: &str, path: &str, body: &Value) -> Result<Vec<String>, (u16,
                 .map_err(|m| (400, error_body("invalid", &m)))?
                 .into(),
             require_str(body, "building")
+                .map_err(|m| (400, error_body("invalid", &m)))?
+                .into(),
+        ],
+        "/v1/fusion/mode" => vec![
+            "fusion".into(),
+            "mode".into(),
+            require_str(body, "planet")
+                .map_err(|m| (400, error_body("invalid", &m)))?
+                .into(),
+            require_str(body, "mode")
                 .map_err(|m| (400, error_body("invalid", &m)))?
                 .into(),
         ],
@@ -2314,6 +2325,26 @@ mod tests {
         let (cli, _) = cli_on(&save_cli, &["state"]);
         let (_, http) = handle_v1(&save_http, "GET", "/v1/state", &[]);
         assert_eq!(cli, http);
+        for path in [&save_cli, &save_http] {
+            let _ = std::fs::remove_file(path);
+            let _ = std::fs::remove_file(save_lock_path(path));
+        }
+    }
+
+    #[test]
+    fn fusion_mode_cli_and_server_share_bad_input_and_refusal() {
+        let save_cli = unique_save();
+        let save_http = unique_save();
+        for path in [&save_cli, &save_http] {
+            seed_save(path);
+        }
+        for (mode, expected_exit) in [("warp", 2), ("off", 3)] {
+            let (_, exit) = cli_on(&save_cli, &["fusion", "mode", "home", mode]);
+            let body = serde_json::to_vec(&json!({"planet":"home", "mode":mode})).unwrap();
+            let (status, http) = handle_v1(&save_http, "POST", "/v1/fusion/mode", &body);
+            assert_eq!(exit, expected_exit, "{mode}");
+            assert_eq!(status, http_status(exit), "{http}");
+        }
         for path in [&save_cli, &save_http] {
             let _ = std::fs::remove_file(path);
             let _ = std::fs::remove_file(save_lock_path(path));

@@ -314,6 +314,8 @@ pub struct GameState {
     /// Intermediate goods on the home planet. Construction parts stay in `resources`.
     pub goods: BTreeMap<String, f64>,
     pub reactor_shutdowns: BTreeMap<Coord, crate::reactor::ReactorShutdown>,
+    /// Fusion plant state per planet. A built plant without a row is fresh.
+    pub fusion_plants: BTreeMap<Coord, crate::FusionPlant>,
     pub buildings: Buildings,
     pub build_queue: Vec<BuildJob>,
     pub tech_levels: BTreeMap<String, u32>,
@@ -444,6 +446,7 @@ impl GameState {
             resources: config.starting_resources,
             goods: BTreeMap::new(),
             reactor_shutdowns: BTreeMap::new(),
+            fusion_plants: BTreeMap::new(),
             buildings: config.starting_buildings,
             build_queue: Vec::new(),
             tech_levels: BTreeMap::new(),
@@ -2891,7 +2894,8 @@ impl GameState {
         let produced = self.config.solar_plant.energy_output(buildings.solar_plant)
             * self.config.orbits.solar_flux(colony.coord)
             * (1.0 + energy_t + bonus.energy + rare.energy).max(0.0)
-            + self.reactor_output_at(colony.coord);
+            + self.reactor_output_at(colony.coord)
+            + self.fusion_output_at(colony.coord);
         let consumed = self.energy_consumed_at(colony.coord);
         let energy = if consumed <= 0.0 {
             1.0
@@ -4829,6 +4833,9 @@ impl GameState {
             if let Some(secs) = self.next_reactor_event_secs(coord) {
                 push(&mut soonest, secs);
             }
+            if let Some(secs) = self.next_fusion_event_secs(coord) {
+                push(&mut soonest, secs);
+            }
             for secs in self.chain_input_empty_secs(coord) {
                 push(&mut soonest, secs);
             }
@@ -4960,7 +4967,8 @@ impl GameState {
                             + bonus.energy
                             + rare.energy)
                             .max(0.0)
-                        + self.reactor_output_at(colony.coord);
+                        + self.reactor_output_at(colony.coord)
+                        + self.fusion_output_at(colony.coord);
                     let consumed = self.energy_consumed_at(coord);
                     if consumed <= 0.0 {
                         1.0
@@ -5677,6 +5685,8 @@ impl GameState {
             .into_iter()
             .map(|coord| (coord, self.reactor_output_for_hours(coord, hours)))
             .collect();
+        let mut fusion = self.fusion_segment(now_unix - from);
+        self.make_room_for_fusion_fuel(&mut fusion, hours);
         let factor = self.reactor_production_factor(self.home, hours)
             * self.emission_factor_range(self.home, from, now_unix);
         let boost = self.prod_boost_mult();
@@ -5827,6 +5837,7 @@ impl GameState {
                 self.note_reactor_shutdown(coord, now_unix);
             }
         }
+        self.advance_fusion(&fusion, from, now_unix);
         self.last_tick_unix = now_unix;
         self.trim_event_log();
         self.sync_daily(now_unix);
@@ -6086,6 +6097,7 @@ impl GameState {
             * self.config.orbits.solar_flux(self.home)
             * (1.0 + self.modifier(ModifierKind::EnergyOutput)).max(0.0)
             + self.reactor_output_at(self.home)
+            + self.fusion_output_at(self.home)
     }
 
     /// Current total electrical output for an owned planet, including orbit and local modifiers.
@@ -6115,7 +6127,16 @@ impl GameState {
         Some(report)
     }
 
+    /// Waste before fission: buildings, dismantling and fusion heat. Fusion
+    /// claims cooling first, so fission load-follows on top of it.
     pub(crate) fn base_waste_at(&self, coord: Coord) -> Option<crate::WasteReport> {
+        let mut report = self.site_waste_at(coord)?;
+        report.heat_load += self.fusion_heat_at(coord);
+        Some(report)
+    }
+
+    /// Waste from the planet's buildings and dismantling alone.
+    pub(crate) fn site_waste_at(&self, coord: Coord) -> Option<crate::WasteReport> {
         let mut report = self.waste_for(
             self.operational_buildings_at(coord)?,
             self.planet_kind(coord)?,
@@ -6940,6 +6961,7 @@ mod tests {
                 growth: 1.0,
             },
             fission_reactor: crate::ReactorConfig::default(),
+            fusion_plant: crate::FusionConfig::default(),
             dismantle: crate::DismantleConfig::default(),
             metal_storage: crate::StorageSpec {
                 base: 1_000.0,
@@ -6968,6 +6990,7 @@ mod tests {
                 radiator: 0,
                 scrubber: 0,
                 fission_reactor: 0,
+                fusion_plant: 0,
             },
             buildings: crate::BuildingCatalog::default(),
             max_build_queue: 5,
@@ -10391,6 +10414,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
                     radiator: 0,
                     scrubber: 0,
                     fission_reactor: 0,
+                    fusion_plant: 0,
                 },
                 fleet: Fleet::default(),
                 defences: crate::DefenceGrid::default(),

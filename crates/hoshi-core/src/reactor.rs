@@ -310,7 +310,8 @@ impl crate::GameState {
         let Some(base) = self.base_waste_at(coord) else {
             return 0.0;
         };
-        let solar = self.site_solar_produced(coord, buildings, planet);
+        let solar =
+            self.site_solar_produced(coord, buildings, planet) + self.fusion_output_at(coord);
         let demand = if coord == self.home {
             self.energy_consumed()
         } else {

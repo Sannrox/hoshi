@@ -23,6 +23,7 @@ mod expedition;
 mod finance;
 mod fleets;
 mod frontier;
+mod fusion;
 mod galaxy;
 mod governance;
 mod history;
@@ -267,4 +268,5 @@ pub use victory::{
 pub use waste::{WasteConfig, WasteReport, report as waste_report};
 pub use wonders::{WonderError, WonderJob, WonderModifier, WonderSpec, WonderStage};
 
+pub use fusion::{FusionConfig, FusionError, FusionMode, FusionPlant, FusionStatus, Reaction};
 pub use reactor::{ReactorConfig, ReactorShutdown};

@@ -249,7 +249,9 @@ impl GameState {
         buildings: crate::Buildings,
         planet: crate::PlanetType,
     ) -> f64 {
-        self.site_solar_produced(coord, buildings, planet) + self.reactor_output_at(coord)
+        self.site_solar_produced(coord, buildings, planet)
+            + self.reactor_output_at(coord)
+            + self.fusion_output_at(coord)
     }
 
     pub(crate) fn site_solar_produced(

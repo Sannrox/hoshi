@@ -68,7 +68,7 @@ Sources, with tradeoffs:
 | --- | --- | --- |
 | Solar | Flux falls as `1/r²`. At 1 AU, ~1.36 kW/m² before atmosphere and angle. | Cheap at inner orbits; poor on ice worlds and gas giants. |
 | Fission | Dense, independent of sunlight. | Fuel and waste; finite stock unless bred. |
-| Fusion | High output; deuterium is common in ice, helium-3 is not. | Hard to light; helium-3 wants giant-planet or regolith infrastructure. |
+| Fusion | High output at any orbit; D-D first, D-He3 later. | Hard to light; D-D wears the plant with neutrons; helium-3 wants giant-planet or regolith infrastructure. |
 
 Solar follows the inverse-square orbital flux. Fission rejects twice its
 electrical output as heat and throttles to available cooling. Uranium enrichment
@@ -76,6 +76,19 @@ loses most ore mass from the usable fuel stream; burned fuel becomes equal mass
 of spent fuel in an on-site pool. Protective shutdowns leave declining decay
 heat, initially 7% of rated thermal power and about 1% after a day. These are
 compressed engineering approximations, with no explosions or area damage.
+
+Fusion burns deuterium alone first, then deuterium with helium-3. Both release
+about the same energy per kilogram of fuel, so fuel burns in proportion to
+delivered energy; D-He3 splits it about 2:3 by mass. D-D runs a thermal cycle
+and rejects 1.5 units of heat per unit of electricity; D-He3 converts its
+charged particles directly and rejects 0.7. Plasma must be heated before it
+burns, so a plant draws heavy grid power for a while and produces nothing. A disruption is a shutdown: the plasma holds little energy, so there
+is no runaway. Half of D-D reactions release a neutron, which wears and
+activates the structure; D-He3 adds about a tenth of that wear.
+
+Simplifications: leftover heat after a fusion shutdown is a flat step for a few
+hours (about 1% of rated thermal power for D-D, near zero for D-He3) rather
+than a decay curve. Fusion claims cooling before fission on a shared planet.
 
 ## Propulsion and travel time
 

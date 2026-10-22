@@ -16,3 +16,4 @@
 | [0012](0012-local-support-diagnostics.md) | Local support diagnostics | Accepted |
 | [0013](0013-local-cheats-and-modified-saves.md) | Local cheats and modified saves | Accepted |
 | [0014](0014-consented-bug-reports.md) | Consented bug reports | Accepted |
+| [0015](0015-fusion-lifecycle.md) | Fusion lifecycle in core | Accepted |

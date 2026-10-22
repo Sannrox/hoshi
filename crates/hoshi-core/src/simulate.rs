@@ -907,41 +907,102 @@ fn requires_tech(state: &GameState, from: &str, want: &str) -> bool {
     false
 }
 
-/// Research-focused baseline: grow mines to 6/4/8, then save for the
-/// lab, energy research, fission research, and the first reactor.
-fn simulate_first_reactor(mut config: BalanceConfig) -> Option<u64> {
+/// A research-focused path to a first power building: research `techs` in
+/// order, grow `builds` in order, and queue `target` once its technology is in.
+struct PowerPath {
+    target: BuildingKind,
+    techs: &'static [(&'static str, u32)],
+    builds: &'static [(BuildingKind, u32)],
+    days: u64,
+}
+
+/// Grow mines to 6/4/8, then save for the lab, energy and fission research.
+const FIRST_REACTOR: PowerPath = PowerPath {
+    target: BuildingKind::FissionReactor,
+    techs: &[("energy", 3), ("fission", 1)],
+    builds: &[
+        (BuildingKind::MetalMine, 6),
+        (BuildingKind::CrystalMine, 4),
+        (BuildingKind::DeuteriumSynthesizer, 8),
+        (BuildingKind::ResearchLab, 3),
+    ],
+    days: 30,
+};
+
+/// Fission first, then the plasma physics chain to a D-D plant.
+#[cfg(test)]
+const FIRST_FUSION: PowerPath = PowerPath {
+    target: BuildingKind::FusionPlant,
+    techs: &[
+        ("energy", 3),
+        ("fission", 3),
+        ("laser", 6),
+        ("energy", 8),
+        ("plasma_physics", 2),
+        ("fusion_dd", 1),
+    ],
+    builds: &[
+        (BuildingKind::MetalMine, 12),
+        (BuildingKind::CrystalMine, 12),
+        (BuildingKind::DeuteriumSynthesizer, 12),
+        (BuildingKind::ResearchLab, 6),
+        (BuildingKind::FissionReactor, 1),
+    ],
+    days: 180,
+};
+
+fn tech_ready(state: &GameState, kind: BuildingKind) -> bool {
+    state
+        .config
+        .buildings
+        .get(kind)
+        .tech_prerequisites
+        .iter()
+        .all(|pre| state.tech_level(&pre.id) >= pre.level)
+}
+
+fn simulate_first_reactor(config: BalanceConfig) -> Option<u64> {
+    simulate_first_plant(config, &FIRST_REACTOR)
+}
+
+#[cfg(test)]
+fn simulate_first_fusion(config: BalanceConfig) -> Option<u64> {
+    simulate_first_plant(config, &FIRST_FUSION)
+}
+
+fn simulate_first_plant(mut config: BalanceConfig, path: &PowerPath) -> Option<u64> {
     config.raid = crate::RaidConfig::inactive();
     config.market.enabled = false;
     let mut state = GameState::with_config(0, config);
-    let end = 30 * 86_400;
+    let end = path.days * 86_400;
     for _ in 0..10_000 {
-        if state.buildings.fission_reactor > 0 {
+        if state.buildings.get(path.target) > 0 {
             return Some(state.last_tick_unix);
         }
         if state.last_tick_unix >= end {
             break;
         }
-        let research_id = if state.tech_level("energy") < 3 {
-            "energy"
-        } else {
-            "fission"
-        };
-        if state.research.is_none() && state.tech_level("fission") == 0 {
-            let _ = state.start_research(research_id, state.last_tick_unix);
+        let research_id = path
+            .techs
+            .iter()
+            .find(|(id, level)| state.tech_level(id) < *level)
+            .map(|(id, _)| *id);
+        if state.research.is_none()
+            && let Some(id) = research_id
+        {
+            let _ = state.start_research(id, state.last_tick_unix);
         }
         let mut wanted = None;
         if state.build_queue.is_empty() {
-            wanted = [
-                (BuildingKind::MetalMine, 6),
-                (BuildingKind::CrystalMine, 4),
-                (BuildingKind::DeuteriumSynthesizer, 8),
-                (BuildingKind::ResearchLab, 3),
-            ]
-            .into_iter()
-            .find(|(kind, level)| state.buildings.get(*kind) < *level)
-            .map(|(kind, _)| kind);
-            if state.tech_level("fission") > 0 {
-                wanted = Some(BuildingKind::FissionReactor);
+            wanted = path
+                .builds
+                .iter()
+                .find(|(kind, level)| {
+                    state.buildings.get(*kind) < *level && tech_ready(&state, *kind)
+                })
+                .map(|(kind, _)| *kind);
+            if tech_ready(&state, path.target) {
+                wanted = Some(path.target);
             }
             if state.energy_factor() < 0.5 {
                 wanted = Some(BuildingKind::SolarPlant);
@@ -950,8 +1011,8 @@ fn simulate_first_reactor(mut config: BalanceConfig) -> Option<u64> {
             } else if !pollution_ok_after(&state, BuildingKind::MetalMine) {
                 wanted = Some(BuildingKind::Scrubber);
             }
-            if let Some(spec) = state.config.techs.get(research_id) {
-                let cost = spec.cost(state.tech_level(research_id));
+            if let Some(spec) = research_id.and_then(|id| state.config.techs.get(id)) {
+                let cost = spec.cost(state.tech_level(&spec.id));
                 for (resource, storage) in [
                     (ResourceKind::Iron, BuildingKind::MetalStorage),
                     (ResourceKind::Silicon, BuildingKind::CrystalStorage),
@@ -989,11 +1050,9 @@ fn simulate_first_reactor(mut config: BalanceConfig) -> Option<u64> {
             .map(|job| job.completes_at)
             .unwrap_or(end);
         let build_afford = wanted.and_then(|kind| secs_until_afford(&state, kind));
-        let research_afford = state
-            .config
-            .techs
-            .get(research_id)
-            .and_then(|spec| secs_until_cost(&state, spec.cost(state.tech_level(research_id))));
+        let research_afford = research_id
+            .and_then(|id| state.config.techs.get(id))
+            .and_then(|spec| secs_until_cost(&state, spec.cost(state.tech_level(&spec.id))));
         let afford = build_afford
             .into_iter()
             .chain(research_afford)
@@ -1001,10 +1060,13 @@ fn simulate_first_reactor(mut config: BalanceConfig) -> Option<u64> {
             .min()
             .map(|wait| state.last_tick_unix.saturating_add(wait))
             .unwrap_or(end);
+        // Re-plan at least daily: a cost that no current rate can reach
+        // (a drained input) must not skip straight to the end.
         let next = completion
             .min(research)
             .min(afford)
             .min(end)
+            .min(state.last_tick_unix + 86_400)
             .max(state.last_tick_unix + 1);
         state.catch_up(next);
     }
@@ -1766,6 +1828,18 @@ fn finish_conquest(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "slow: simulates months of research; run for balance changes"]
+    fn first_fusion_plant_is_reachable_without_grants() {
+        let seconds =
+            simulate_first_fusion(BalanceConfig::default()).expect("reachable first fusion plant");
+        eprintln!(
+            "first fusion plant, default seed: {:.2} hours",
+            seconds as f64 / 3600.0
+        );
+        assert!(seconds < FIRST_FUSION.days * 86_400);
+    }
 
     #[test]
     fn first_reactor_is_reachable_without_grants() {

@@ -519,6 +519,38 @@ Environment: HOSHI_SAVE, HOSHI_BALANCE
 
 Area: cli.
 
+## fusion mode
+
+Switch a fusion plant to D-D, D-He3, or off; a new reaction needs a plasma start-up.
+
+```text
+hoshi fusion mode PLANET dd|dhe3|off [--as ACTOR]
+```
+
+Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair-play restrictions.
+
+Example: `hoshi fusion mode home off`
+
+Environment: HOSHI_SAVE, HOSHI_BALANCE
+
+Area: cli.
+
+## fusion status
+
+Show fusion output, mode, fuel burn, start-up progress, and cooling cap.
+
+```text
+hoshi fusion status [PLANET]
+```
+
+Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair-play restrictions.
+
+Example: `hoshi fusion status home`
+
+Environment: HOSHI_SAVE, HOSHI_BALANCE
+
+Area: cli.
+
 ## goals
 
 Show victory goals and progress.
