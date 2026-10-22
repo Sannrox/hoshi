@@ -886,7 +886,9 @@ fn play_path(
                 exit: cli::EXIT_INVALID,
             })?
         } else {
-            let seed = spec.seed.unwrap_or(now.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            let seed = spec
+                .seed
+                .unwrap_or_else(|| hoshi_core::new_galaxy_seed(now));
             let catalog = SpeciesCatalog::default();
             GameState::new_with_species(
                 now,

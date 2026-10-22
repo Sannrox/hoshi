@@ -19,6 +19,12 @@ pub fn supports_galaxy_generator(version: u32) -> bool {
 
 const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
+/// Seed for a new galaxy when the player chose none: the creation time,
+/// spread over all 64 bits. New game and a new save opened by path share it.
+pub fn new_galaxy_seed(now_unix: u64) -> u64 {
+    now_unix.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+}
+
 /// Grouped 14-character code for `seed`, including a checksum symbol.
 pub fn encode_galaxy_seed(seed: u64) -> String {
     let mut syms = [0u8; 14];

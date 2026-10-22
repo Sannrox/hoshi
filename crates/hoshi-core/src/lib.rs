@@ -140,8 +140,8 @@ pub use frontier::{
     generate_frontier,
 };
 pub use galaxy::{
-    GALAXY_GENERATOR_VERSION, GalaxyPreview, encode_galaxy_seed, parse_galaxy_seed, preview_galaxy,
-    supports_galaxy_generator,
+    GALAXY_GENERATOR_VERSION, GalaxyPreview, encode_galaxy_seed, new_galaxy_seed,
+    parse_galaxy_seed, preview_galaxy, supports_galaxy_generator,
 };
 pub use governance::{
     AuditEntry, GovernanceConfig, GovernanceLedger, InvasionApproval, ModelTier, ModelUse,
