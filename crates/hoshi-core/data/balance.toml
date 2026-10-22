@@ -6,6 +6,7 @@
 version = 1
 
 [pacing]
+energy_recovery_secs = 7200
 # First building upgrade must complete within this many seconds.
 first_upgrade_secs = 300
 # Metal mine levels gained per simulated day (greedy strategy).
@@ -83,7 +84,9 @@ energy_growth = 1.1
 
 [solar_plant]
 base_energy = 22.0
-growth = 1.1
+growth = 1.15
+max_level_base = 8
+max_level_per_size = 0.05
 
 # Three tanks: iron+rare earths, silicon, water ice+helium-3+deuterium.
 [metal_storage]
@@ -129,9 +132,9 @@ prerequisites = []
 frames = 75.0
 electronics = 30.0
 fuel = 0.0
-cost_growth = 1.5
+cost_growth = 1.15
 base_seconds = 120.0
-time_growth = 1.5
+time_growth = 1.15
 prerequisites = []
 
 [buildings.metal_storage]

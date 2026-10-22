@@ -56,6 +56,7 @@ pub struct DaySnapshot {
 /// Pacing report for a greedy N-day run.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SimReport {
+    pub energy_recovery: Vec<EnergyRecoveryRow>,
     pub respec: Vec<RespecRow>,
     pub days: u32,
     pub first_reactor_secs: Option<u64>,
@@ -81,6 +82,135 @@ pub struct SimReport {
     pub victory_max_secs: u64,
     pub ladder_tiers: Vec<LadderSimRow>,
     pub frontier_unlock_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnergyRecoveryRow {
+    pub planet: PlanetType,
+    pub slot: u16,
+    pub elapsed_secs: Option<u64>,
+    pub solar_level: u32,
+    pub cap: u32,
+    pub cap_binds: bool,
+    pub spending: f64,
+}
+
+fn energy_recovery_matrix(config: &BalanceConfig) -> Vec<EnergyRecoveryRow> {
+    [PlanetType::Rocky, PlanetType::Ice, PlanetType::GasGiant]
+        .into_iter()
+        .flat_map(|planet| {
+            [1, 8, 15]
+                .into_iter()
+                .map(move |slot| energy_recovery(config.clone(), planet, slot))
+        })
+        .collect()
+}
+
+pub fn energy_recovery(
+    mut config: BalanceConfig,
+    planet: PlanetType,
+    slot: u16,
+) -> EnergyRecoveryRow {
+    config.raid = crate::RaidConfig::inactive();
+    config.market.enabled = false;
+    let mut state = GameState::with_seed(0, config, 1);
+    let coord = crate::Coord {
+        galaxy: 1,
+        system: 1,
+        position: slot,
+    };
+    let size = match planet {
+        PlanetType::Rocky => 160,
+        PlanetType::Ice => 100,
+        PlanetType::GasGiant => 25,
+    };
+    if slot == 1 {
+        state.home_kind = planet;
+        state.home_size = size;
+    } else {
+        state.colonies.push(Colony {
+            coord,
+            kind: planet,
+            size,
+            resources: state.config.starting_resources,
+            buildings: state.config.starting_buildings,
+            fleet: Fleet::default(),
+            defences: crate::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            rare: None,
+            goods: BTreeMap::new(),
+        });
+    }
+    let cap = state.max_solar_level(coord).unwrap_or(0);
+    let mut spending = 0.0;
+    let mut cap_binds = false;
+    let mut elapsed_secs = None;
+    for _ in 0..10_000 {
+        let buildings = if slot == 1 {
+            state.buildings
+        } else {
+            state.colonies[0].buildings
+        };
+        let queue = if slot == 1 {
+            &state.build_queue
+        } else {
+            &state.colonies[0].build_queue
+        };
+        if let Some(at) = queue.first().and_then(|job| job.completes_at) {
+            state.catch_up(at);
+            continue;
+        }
+        if buildings.deuterium_synthesizer > 0
+            && state.energy_balance_at(coord).unwrap_or(-1.0) >= -1e-9
+        {
+            elapsed_secs = Some(state.last_tick_unix);
+            break;
+        }
+        let building = if buildings.deuterium_synthesizer == 0 {
+            BuildingKind::DeuteriumSynthesizer
+        } else {
+            BuildingKind::SolarPlant
+        };
+        let cost = state.build_cost_on(coord, building);
+        match state.enqueue_build_on(coord, building, state.last_tick_unix) {
+            Ok(()) => spending += cost.iron + cost.silicon + cost.deuterium,
+            Err(BuildError::SolarCap { .. }) => {
+                cap_binds = true;
+                break;
+            }
+            Err(BuildError::InsufficientResources { missing, .. }) => {
+                let mut wait = 1.0_f64;
+                for resource in ResourceKind::ALL {
+                    if missing.get(resource) <= 1e-9 {
+                        continue;
+                    }
+                    let rate = state.production_at(coord, resource);
+                    if rate <= 1e-9 || cost.get(resource) > state.storage_cap_at(coord, resource) {
+                        wait = f64::INFINITY;
+                        break;
+                    }
+                    wait = wait.max(missing.get(resource) / rate * 3600.0);
+                }
+                if !wait.is_finite() || wait > 365.0 * 86400.0 {
+                    break;
+                }
+                state.catch_up(state.last_tick_unix.saturating_add(wait.ceil() as u64));
+            }
+            Err(_) => break,
+        }
+    }
+    EnergyRecoveryRow {
+        planet,
+        slot,
+        elapsed_secs,
+        solar_level: state
+            .buildings_at(coord)
+            .map(|buildings| buildings.solar_plant)
+            .unwrap_or(0),
+        cap,
+        cap_binds,
+        spending,
+    }
 }
 
 /// One casual-play victory path and when it landed.
@@ -130,7 +260,11 @@ impl SimReport {
     }
 
     pub fn passed(&self) -> bool {
-        self.first_upgrade_ok()
+        self.energy_recovery
+            .first()
+            .and_then(|row| row.elapsed_secs)
+            .is_some_and(|secs| secs <= self.pacing.energy_recovery_secs)
+            && self.first_upgrade_ok()
             && self.mine_goal_ok()
             && self.bridge_ok()
             && self.keystones_ok()
@@ -163,6 +297,26 @@ impl SimReport {
         };
         let mut out = String::new();
         out.push_str("# Pacing report\n\n");
+        out.push_str("## Energy recovery\n\n| Planet | Slot | Hours | Solar | Cap | Cap binds | Spending |\n| --- | --- | --- | --- | --- | --- | --- |\n");
+        for row in &self.energy_recovery {
+            let hours = row
+                .elapsed_secs
+                .map(|secs| format!("{:.2}", secs as f64 / 3600.0))
+                .unwrap_or_else(|| "unreachable".into());
+            out.push_str(&format!(
+                "| {} | {} | {hours} | {} | {} | {} | {:.0} |\n",
+                row.planet.as_key(),
+                row.slot,
+                row.solar_level,
+                row.cap,
+                row.cap_binds,
+                row.spending
+            ));
+        }
+        out.push_str(&format!(
+            "\nHome energy_recovery target: {}s\n\n",
+            self.pacing.energy_recovery_secs
+        ));
         out.push_str(&respec_markdown(&self.respec));
         out.push_str(&format!("Simulated days: {}\n", self.days));
         let reactor = self
@@ -392,6 +546,7 @@ fn mark(ok: bool) -> &'static str {
 /// Run the greedy strategy for `days` with and without maxed PR-merge pulses.
 pub fn simulate_greedy(config: BalanceConfig, days: u32) -> SimReport {
     let days = days.max(1);
+    let energy_recovery = energy_recovery_matrix(&config);
     let pacing = config.pacing.clone();
     let quiet = run_once(config.clone(), days, false, 0);
     let busy = run_once(config.clone(), days, true, 0);
@@ -424,6 +579,7 @@ pub fn simulate_greedy(config: BalanceConfig, days: u32) -> SimReport {
         f64::INFINITY
     };
     SimReport {
+        energy_recovery,
         respec,
         days,
         first_reactor_secs,
@@ -514,6 +670,342 @@ pub fn simulate_respec(mut config: BalanceConfig) -> Vec<RespecRow> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod energy_tests {
+    use super::*;
+    #[test]
+    fn solar_energy_recovery_meets_home_target_and_reports_caps() {
+        let config = BalanceConfig::default();
+        let rows = energy_recovery_matrix(&config);
+        for row in &rows {
+            println!("{row:?}");
+        }
+        assert_eq!(rows.len(), 9);
+        assert!(
+            rows[0]
+                .elapsed_secs
+                .is_some_and(|secs| secs <= config.pacing.energy_recovery_secs),
+            "{:?}",
+            rows[0]
+        );
+        for row in rows.iter().filter(|row| row.slot == 1) {
+            assert!(!row.cap_binds, "{row:?}");
+            assert!(row.elapsed_secs.is_some(), "{row:?}");
+        }
+    }
+
+    #[test]
+    fn energy_projection_counts_research_reactor_and_automation() {
+        let mut state = GameState::new(0);
+        state.config.techs =
+            crate::TechTree::parse(&include_str!("../data/research.toml").replacen(
+                "kind = \"heat_sink\"",
+                "kind = \"energy_output\"",
+                1,
+            ))
+            .unwrap();
+        state.buildings.fission_reactor = 1;
+        state.buildings.radiator = 3;
+        state.goods.insert("reactor_fuel".into(), 100.0);
+        state.tech_levels.insert("energy".into(), 5);
+        state.tech_levels.insert("fission".into(), 1);
+        state.tech_levels.insert("logistics".into(), 1);
+        assert!(state.automation_control_energy() > 0.0);
+        assert!(state.modifier(crate::ModifierKind::EnergyOutput) > 0.0);
+        assert!(state.reactor_output_at(state.home) > 0.0);
+        for level in 0..20 {
+            state.buildings.solar_plant = level;
+            for building in [
+                BuildingKind::MetalMine,
+                BuildingKind::CrystalMine,
+                BuildingKind::DeuteriumSynthesizer,
+            ] {
+                let mut actual = state.clone();
+                actual.buildings.increment(building);
+                assert_eq!(
+                    energy_ok_after(&state, building),
+                    actual.energy_balance() >= -1e-9
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn energy_projection_counts_fusion_startup_and_cooling() {
+        let mut state = GameState::new(0);
+        state.buildings.fusion_plant = 1;
+        state.buildings.fission_reactor = 0;
+        state.buildings.radiator = 3;
+        state.resources.deuterium = 100.0;
+        for startup_left in [0.0, 600.0] {
+            state.fusion_plants.insert(
+                state.home,
+                crate::FusionPlant {
+                    mode: crate::FusionMode::Dd,
+                    startup_left,
+                    activated: false,
+                    stopped_at: None,
+                    residual_heat: 0.0,
+                },
+            );
+            for solar in 0..35 {
+                state.buildings.solar_plant = solar;
+                for building in [
+                    BuildingKind::MetalMine,
+                    BuildingKind::CrystalMine,
+                    BuildingKind::DeuteriumSynthesizer,
+                ] {
+                    let mut actual = state.clone();
+                    actual.buildings.increment(building);
+                    assert_eq!(
+                        energy_ok_after(&state, building),
+                        actual.energy_balance() >= -1e-9,
+                        "startup {startup_left}, solar {solar}, building {building}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mines_first_home_and_outer_colonies_have_a_power_path() {
+        let mut home = GameState::new(0);
+        home.config.raid = crate::RaidConfig::inactive();
+        home.buildings.metal_mine = 10;
+        home.buildings.crystal_mine = 9;
+        home.buildings.deuterium_synthesizer = 4;
+        home.resources.iron = home.storage_cap(ResourceKind::Iron);
+        home.resources.silicon = home.storage_cap(ResourceKind::Silicon);
+        while home.energy_balance() < 0.0 {
+            home.enqueue_build(BuildingKind::SolarPlant, home.last_tick_unix)
+                .unwrap();
+            let at = home.build_queue[0].completes_at.unwrap();
+            home.catch_up(at);
+        }
+        assert!(home.energy_balance() >= 0.0);
+        assert!(home.buildings.solar_plant <= home.max_solar_level(home.home).unwrap());
+        for slot in [8, 15] {
+            let coord = crate::Coord {
+                galaxy: 1,
+                system: 1,
+                position: slot,
+            };
+            let mut colony = Colony {
+                coord,
+                kind: PlanetType::Rocky,
+                size: 160,
+                resources: home.config.starting_resources,
+                buildings: Buildings {
+                    metal_mine: 5,
+                    crystal_mine: 5,
+                    deuterium_synthesizer: 2,
+                    solar_plant: 1,
+                    ..Buildings::default()
+                },
+                fleet: Fleet::default(),
+                defences: crate::DefenceGrid::default(),
+                build_queue: Vec::new(),
+                rare: None,
+                goods: BTreeMap::new(),
+            };
+            if slot == 15 {
+                colony.buildings.fission_reactor = 1;
+                colony.buildings.radiator = 3;
+                colony.goods.insert("reactor_fuel".into(), 100.0);
+                home.tech_levels.insert("fission".into(), 1);
+            }
+            home.colonies.push(colony);
+            let cap = home.max_solar_level(coord).unwrap();
+            let index = home.colonies.len() - 1;
+            while home.energy_balance_at(coord).unwrap() < 0.0
+                && home.colonies[index].buildings.solar_plant < cap
+            {
+                home.colonies[index].buildings.solar_plant += 1;
+            }
+            assert!(
+                home.energy_balance_at(coord).unwrap() >= 0.0,
+                "slot {slot}: {:?}",
+                home.energy_balance_at(coord)
+            );
+        }
+        let report = home.production_report();
+        let demand = home.energy_consumed()
+            + home
+                .colonies
+                .iter()
+                .map(|colony| home.energy_consumed_at(colony.coord))
+                .sum::<f64>();
+        assert!((report.energy_demand - demand).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cancelling_solar_dismantle_refunds_the_now_invalid_upgrade() {
+        for colony in [false, true] {
+            let mut state = GameState::new(100);
+            state.config.max_build_queue = 5;
+            state.config.raid = crate::RaidConfig::inactive();
+            state.next_raid_at = None;
+            let coord = if colony {
+                crate::Coord {
+                    galaxy: 1,
+                    system: 1,
+                    position: 8,
+                }
+            } else {
+                state.home
+            };
+            if colony {
+                state.colonies.push(Colony {
+                    coord,
+                    kind: PlanetType::Rocky,
+                    size: 160,
+                    resources: crate::Resources::from_parts(1e8, 1e8, 1e8),
+                    buildings: Buildings::default(),
+                    fleet: Fleet::default(),
+                    defences: crate::DefenceGrid::default(),
+                    build_queue: Vec::new(),
+                    rare: None,
+                    goods: BTreeMap::new(),
+                });
+            }
+            let cap = state.max_solar_level(coord).unwrap();
+            if colony {
+                state.colonies[0].buildings.solar_plant = cap;
+            } else {
+                state.buildings.solar_plant = cap;
+                state.resources = crate::Resources::from_parts(1e8, 1e8, 1e8);
+            }
+            let before = *state.resources_at(coord).unwrap();
+            state
+                .enqueue_dismantle_as(coord, BuildingKind::SolarPlant, 100, crate::Actor::Player)
+                .unwrap();
+            state
+                .enqueue_build_on(coord, BuildingKind::SolarPlant, 100)
+                .unwrap();
+            state.cancel_build_on(coord, 0, 100).unwrap();
+            assert!(state.queue_at(coord).unwrap().is_empty());
+            assert_eq!(*state.resources_at(coord).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn projected_mine_accounts_for_reduced_reactor_cooling() {
+        let mut state = GameState::new(0);
+        state.buildings.fission_reactor = 1;
+        state.goods.insert("reactor_fuel".into(), 100.0);
+        for level in 1..30 {
+            state.buildings.metal_mine = level;
+            let mut future = state.clone();
+            future.buildings.increment(BuildingKind::MetalMine);
+            let before = state.reactor_output_at(state.home);
+            let after = future.reactor_output_at(future.home);
+            if before > after + 1e-6 && after > 0.0 {
+                let solar = future.energy_consumed() - (before + after) / 2.0;
+                if solar <= 0.0 {
+                    continue;
+                }
+                state.config.solar_plant.base_energy = solar;
+                future.config.solar_plant.base_energy = solar;
+                assert!(future.energy_balance() < 0.0);
+                assert!(!energy_ok_after(&state, BuildingKind::MetalMine));
+                return;
+            }
+        }
+        panic!("fixture must exercise cooling-limited power");
+    }
+
+    #[test]
+    fn restored_solar_upgrades_cannot_exceed_a_reduced_cap() {
+        for with_dismantle in [false, true] {
+            let config = BalanceConfig::default();
+            let mut state = GameState::with_config(0, config.clone());
+            state.config.raid = crate::RaidConfig::inactive();
+            state.next_raid_at = None;
+            state.buildings = crate::Buildings::default();
+            let cap = state.max_solar_level(state.home).unwrap();
+            state.buildings.solar_plant = cap;
+            state.resources = crate::Resources::from_parts(10_000.0, 10_000.0, 0.0);
+            let before = state.resources;
+            state.config.solar_plant.max_level_base = 100;
+            state.enqueue_build(BuildingKind::SolarPlant, 0).unwrap();
+            let at = state.build_queue[0].completes_at.unwrap();
+            if with_dismantle {
+                state.enqueue_build(BuildingKind::SolarPlant, 0).unwrap();
+                state
+                    .enqueue_dismantle_as(
+                        state.home,
+                        BuildingKind::SolarPlant,
+                        0,
+                        crate::Actor::Player,
+                    )
+                    .unwrap();
+            }
+            let coord = crate::Coord {
+                position: 8,
+                ..state.home
+            };
+            state.colonies.push(Colony {
+                coord,
+                kind: state.home_kind,
+                size: state.home_size,
+                resources: state.resources,
+                buildings: state.buildings,
+                fleet: Fleet::default(),
+                defences: crate::DefenceGrid::default(),
+                build_queue: state.build_queue.clone(),
+                rare: None,
+                goods: BTreeMap::new(),
+            });
+            let mut conn = crate::open_save(std::path::Path::new(":memory:")).unwrap();
+            crate::save_state(&mut conn, &state).unwrap();
+            let mut loaded = crate::load_state(&conn, config).unwrap();
+            loaded.config.raid = crate::RaidConfig::inactive();
+            loaded.next_raid_at = None;
+            loaded.catch_up(at);
+            assert_eq!(loaded.buildings.solar_plant, cap);
+            assert_eq!(loaded.colonies[0].buildings.solar_plant, cap);
+            if with_dismantle {
+                assert_eq!(loaded.build_queue.len(), 1);
+                assert_eq!(loaded.colonies[0].build_queue.len(), 1);
+                assert_eq!(loaded.build_queue[0].from_level, cap);
+                assert_eq!(loaded.colonies[0].build_queue[0].from_level, cap);
+            } else {
+                assert!(loaded.build_queue.is_empty());
+                assert!(loaded.colonies[0].build_queue.is_empty());
+            }
+            assert_eq!(loaded.resources.iron, before.iron);
+            assert_eq!(loaded.resources.silicon, before.silicon);
+            assert_eq!(loaded.colonies[0].resources.iron, before.iron);
+            assert_eq!(loaded.colonies[0].resources.silicon, before.silicon);
+            if with_dismantle {
+                loaded.catch_up(at + 86_400);
+                assert_eq!(loaded.buildings.solar_plant, cap - 1);
+                assert_eq!(loaded.colonies[0].buildings.solar_plant, cap - 1);
+            }
+        }
+    }
+
+    #[test]
+    fn solar_cap_checks_queued_levels_and_preserves_existing_levels_on_load() {
+        let mut state = GameState::new(0);
+        let cap = state.max_solar_level(state.home).unwrap();
+        state.buildings.solar_plant = cap - 1;
+        state.resources.iron = 1e9;
+        state.resources.silicon = 1e9;
+        state.enqueue_build(BuildingKind::SolarPlant, 0).unwrap();
+        assert_eq!(
+            state.enqueue_build(BuildingKind::SolarPlant, 0),
+            Err(BuildError::SolarCap { cap })
+        );
+        state.buildings.solar_plant = cap + 2;
+        state.build_queue.clear();
+        let mut conn = crate::open_save(std::path::Path::new(":memory:")).unwrap();
+        crate::save_state(&mut conn, &state).unwrap();
+        let loaded = crate::load_state(&conn, state.config.clone()).unwrap();
+        assert_eq!(loaded.buildings.solar_plant, cap + 2);
+    }
 }
 
 #[cfg(test)]
@@ -1132,7 +1624,8 @@ fn fill_frontier_queue(state: &mut GameState) {
                 | Err(BuildError::NeedLogistics)
                 | Err(BuildError::PermissionDenied(_))
                 | Err(BuildError::NeedsApproval { .. })
-                | Err(BuildError::DismantleBlocked { .. }) => {}
+                | Err(BuildError::DismantleBlocked { .. })
+                | Err(BuildError::SolarCap { .. }) => {}
             }
         }
         if !enqueued {
@@ -1437,7 +1930,8 @@ fn fill_queue(state: &mut GameState) {
                 | Err(BuildError::NeedLogistics)
                 | Err(BuildError::PermissionDenied(_))
                 | Err(BuildError::NeedsApproval { .. })
-                | Err(BuildError::DismantleBlocked { .. }) => {}
+                | Err(BuildError::DismantleBlocked { .. })
+                | Err(BuildError::SolarCap { .. }) => {}
             }
         }
         if !enqueued {
@@ -1448,7 +1942,14 @@ fn fill_queue(state: &mut GameState) {
 
 fn candidate_order(state: &GameState) -> Vec<BuildingKind> {
     let mut order = Vec::new();
-    if !energy_ok_after(state, BuildingKind::MetalMine) {
+    if [
+        BuildingKind::MetalMine,
+        BuildingKind::CrystalMine,
+        BuildingKind::DeuteriumSynthesizer,
+    ]
+    .iter()
+    .any(|kind| !energy_ok_after(state, *kind))
+    {
         order.push(BuildingKind::SolarPlant);
     }
     if !heat_ok_after(state, BuildingKind::MetalMine) {
@@ -1457,13 +1958,16 @@ fn candidate_order(state: &GameState) -> Vec<BuildingKind> {
     if !pollution_ok_after(state, BuildingKind::MetalMine) {
         order.push(BuildingKind::Scrubber);
     }
-    order.extend([
+    for kind in [
         BuildingKind::MetalMine,
         BuildingKind::CrystalMine,
         BuildingKind::DeuteriumSynthesizer,
-        BuildingKind::RoboticsFactory,
-        BuildingKind::MetalStorage,
-    ]);
+    ] {
+        if energy_ok_after(state, kind) {
+            order.push(kind);
+        }
+    }
+    order.extend([BuildingKind::RoboticsFactory, BuildingKind::MetalStorage]);
     if energy_ok_after(state, BuildingKind::MetalMine) {
         order.push(BuildingKind::SolarPlant);
     }
@@ -1473,7 +1977,11 @@ fn candidate_order(state: &GameState) -> Vec<BuildingKind> {
 fn projected_buildings(state: &GameState) -> Buildings {
     let mut buildings = state.buildings;
     for job in &state.build_queue {
-        buildings.increment(job.building);
+        if job.kind == crate::BuildJobKind::Dismantle {
+            buildings.set(job.building, buildings.get(job.building).saturating_sub(1));
+        } else {
+            buildings.increment(job.building);
+        }
     }
     buildings
 }
@@ -1481,12 +1989,24 @@ fn projected_buildings(state: &GameState) -> Buildings {
 fn energy_ok_after(state: &GameState, extra: BuildingKind) -> bool {
     let mut buildings = projected_buildings(state);
     buildings.increment(extra);
-    let produced = state
-        .config
-        .solar_plant
-        .energy_output(buildings.solar_plant)
-        * state.config.orbits.solar_flux(state.home);
-    let consumed = state.config.energy_draw(&buildings);
+    if state.buildings.fission_reactor > 0
+        || buildings.fission_reactor > 0
+        || state.buildings.fusion_plant > 0
+        || buildings.fusion_plant > 0
+        || state
+            .build_queue
+            .iter()
+            .any(|job| job.kind == crate::BuildJobKind::Dismantle)
+    {
+        let mut projected = state.clone();
+        projected.buildings = buildings;
+        projected.build_queue.clear();
+        return projected.energy_balance() >= -1e-9;
+    }
+    let produced = state.site_energy_produced(state.home, buildings, state.home_kind);
+    let consumed = state.config.energy_draw(&buildings)
+        + state.automation_control_energy()
+        + state.dismantle_energy_at(state.home);
     consumed <= 0.0 || produced + 1e-9 >= consumed
 }
 
@@ -1526,6 +2046,9 @@ fn next_afford_at(state: &GameState) -> Option<u64> {
 
 fn secs_until_afford(state: &GameState, kind: BuildingKind) -> Option<u64> {
     let from_level = projected_buildings(state).get(kind);
+    if kind == BuildingKind::SolarPlant && from_level >= state.max_solar_level(state.home)? {
+        return None;
+    }
     let cost = state.config.buildings.get(kind).cost(from_level);
     let have = state.resources;
     if have.can_afford(cost) {
@@ -1883,20 +2406,25 @@ mod tests {
 
     #[test]
     fn bridge_pulses_add_metal_without_runaway() {
-        let report = simulate_greedy(BalanceConfig::default(), 1);
+        // Hold investment constant so spending cannot masquerade as lost production.
+        let config = BalanceConfig::default();
+        let mut quiet = GameState::with_config(0, config.clone());
+        let mut busy = quiet.clone();
+        quiet.config.activity.enabled = false;
+        busy.config.activity.enabled = true;
+        let interval = config.activity.pr_merged.cooldown_secs.max(1);
+        let mut at = 0;
+        while at < 86_400 {
+            let _ = busy.apply_activity(ActivityPulse::PrMerged { ts: at }, at);
+            at = at.saturating_add(interval).min(86_400);
+            quiet.catch_up(at);
+            busy.catch_up(at);
+        }
+        assert!(busy.resources.iron >= quiet.resources.iron);
+        let ratio = busy.resources.iron / quiet.resources.iron;
         assert!(
-            report.metal_with_bridge + 1e-9 >= report.metal_without_bridge,
-            "bridge should not shrink the stockpile"
-        );
-        assert!(
-            report.bridge_metal_ratio >= 1.0,
-            "ratio {}",
-            report.bridge_metal_ratio
-        );
-        assert!(
-            report.bridge_metal_ratio <= report.pacing.max_bridge_metal_ratio,
-            "ratio {}",
-            report.bridge_metal_ratio
+            (1.0..=config.pacing.max_bridge_metal_ratio).contains(&ratio),
+            "ratio {ratio}"
         );
     }
 

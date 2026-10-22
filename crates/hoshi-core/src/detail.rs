@@ -190,7 +190,7 @@ impl GameState {
                 to: format!("{:.0}", waste_next.heat_load),
             });
         }
-        let requirements = spec
+        let mut requirements: Vec<RequirementLine> = spec
             .prerequisites
             .iter()
             .map(|&(building, required)| {
@@ -219,6 +219,13 @@ impl GameState {
             && let Some(status) = self.fusion_status_at(planet)
         {
             description.push_str(&fusion_summary(&status));
+        }
+        if kind == BuildingKind::SolarPlant {
+            let cap = self.max_solar_level(planet)?;
+            requirements.push(RequirementLine {
+                text: format!("solar cap {cap}; add fission or fusion for more power"),
+                met: level < cap,
+            });
         }
         Some(Detail {
             name: kind.to_string(),

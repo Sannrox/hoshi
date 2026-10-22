@@ -199,7 +199,7 @@ The pacing report also runs a research-focused baseline for the first reactor:
 mines at levels 6/4/8, level-3 lab, energy level 3, then fission and construction. It uses
 the default seed, tolerates half power while saving for research, and stops after
 30 days; its hours are separate from the greedy mining targets. The default seed
-reaches the first reactor in 317.85 hours (13.24 days) with this strategy.
+reaches the first reactor in 307.23 hours (12.80 days) with this strategy.
 
 ## Fusion
 
@@ -245,3 +245,36 @@ Zero-draw buildings need time but no energy. Salvage uses construction cost
 and condition at completion, excludes deuterium and helium-3, and obeys normal
 storage caps. Cancelling any dismantle job preserves the level with no salvage.
 See [ADR 0011](decisions/0011-dismantling-in-the-build-queue.md).
+
+## Solar growth and surface limits
+
+Solar output, upgrade cost and build time all grow by 1.15 per level. Level 1
+still supplies 22 energy at 1 AU and costs 75 frames plus 30 electronics, with a
+120-second base build time. Mine draw and inverse-square orbital flux are
+unchanged. Larger farms therefore retain the same resource cost per unit of
+rated power.
+
+`[solar_plant] max_level_base = 8` and `max_level_per_size = 0.05` give a cap of
+`8 + floor(size / 20)`. The generated ranges are rocky 14–17, ice 12–14, and gas
+8–9. Existing levels above the cap remain intact; new upgrades, including queued
+upgrades, cannot raise them. The inspector, build refusal and advisor explain
+when the next power source must be a reactor.
+
+`hoshi simulate` includes an `energy_recovery` scenario: build the first
+synthesizer, then only solar until supply covers demand. It uses ordinary
+construction, spending and catch-up with raids off. The home target defaults to
+`[pacing] energy_recovery_secs = 7200`; missing it fails the pacing report.
+
+The default-seed rocky home reaches positive energy at solar 6 after 1,112
+seconds, spending 1,114 construction resources including the synthesizer.
+The matrix also reports rocky, ice and gas worlds at slots 1, 8 and 15, with
+representative sizes 160, 100 and 25. Every home type recovers before its cap.
+Several outer worlds hit the cap or run out of a production input before solar
+alone can recover. Those rows remain visibly unreachable rather than receiving
+free resources; use a fuelled reactor with sufficient cooling there.
+
+Empire energy demand includes automation control at home and dismantling draw
+on each planet. The simulator checks every candidate mine against the same
+supply calculation, including technology, orbital flux and existing reactor
+output. The HUD's `Σ` figure is empire supply/draw; the shortage count names how
+many colonies have a negative balance.

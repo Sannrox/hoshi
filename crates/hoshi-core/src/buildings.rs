@@ -200,6 +200,9 @@ pub struct BuildJob {
 /// Why a build command was refused.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BuildError {
+    SolarCap {
+        cap: u32,
+    },
     QueueFull {
         cap: usize,
     },
@@ -235,6 +238,10 @@ pub enum BuildError {
 impl fmt::Display for BuildError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            BuildError::SolarCap { cap } => write!(
+                f,
+                "solar is at this planet's cap of {cap}; add fission or fusion for more power"
+            ),
             BuildError::QueueFull { cap } => {
                 write!(f, "build queue is full ({cap}/{cap})")
             }

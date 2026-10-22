@@ -326,7 +326,7 @@ impl GameState {
         self.config.energy_draw(&building) * self.config.dismantle.energy_share
     }
 
-    pub(crate) fn energy_consumed_at(&self, coord: Coord) -> f64 {
+    pub fn energy_consumed_at(&self, coord: Coord) -> f64 {
         self.operational_buildings_at(coord)
             .map(|buildings| self.config.energy_draw(&buildings))
             .unwrap_or(0.0)

@@ -1325,17 +1325,24 @@ impl App {
             0.0
         };
         if wide {
+            let energy = s.production_report();
             out.push(Metric {
                 label: "ENERGY".into(),
                 value: Line::from(vec![
                     Span::styled(format!("{balance:+.0}"), energy_style),
-                    Span::styled(" balance", t.label()),
+                    Span::styled(" home", t.label()),
                 ]),
                 foot: Line::styled(
                     format!(
-                        "{:.0} in {:.0} out",
-                        s.energy_produced(),
-                        s.energy_consumed()
+                        "{} short · Σ{:.0}/{:.0}",
+                        s.colonies
+                            .iter()
+                            .filter(|colony| s
+                                .energy_balance_at(colony.coord)
+                                .is_some_and(|balance| balance < -1e-9))
+                            .count(),
+                        energy.energy_supply,
+                        energy.energy_demand
                     ),
                     t.label(),
                 ),
@@ -2895,8 +2902,11 @@ impl App {
         )));
         if let Some(output) = self.state.energy_produced_at(coord) {
             rows.push(Line::from(format!(
-                "Solar {output:.1}  flux {:.0}%",
-                self.state.config.orbits.solar_flux(coord) * 100.0
+                "Energy {output:.1}/{:.1}  balance {:+.1}  solar flux {:.0}%  cap {}",
+                self.state.energy_consumed_at(coord),
+                self.state.energy_balance_at(coord).unwrap_or(0.0),
+                self.state.config.orbits.solar_flux(coord) * 100.0,
+                self.state.max_solar_level(coord).unwrap_or(0)
             )));
         }
         if let Some(rare) = self.state.rare_bonus_at(coord) {
@@ -5341,6 +5351,35 @@ mod tests {
         assert_eq!(app.state.pending_hint().unwrap().id, "opening");
         app.handle_key(KeyCode::Char('x'), 1_000);
         assert!(app.state.pending_hint().is_none_or(|h| h.id != "opening"));
+    }
+
+    #[test]
+    fn energy_metric_exposes_colony_deficits() {
+        let mut state = GameState::new(100);
+        state.colonies.push(hoshi_core::Colony {
+            coord: Coord {
+                galaxy: 1,
+                system: 1,
+                position: 8,
+            },
+            kind: hoshi_core::PlanetType::Rocky,
+            size: 160,
+            resources: Resources::ZERO,
+            buildings: hoshi_core::Buildings {
+                metal_mine: 5,
+                crystal_mine: 5,
+                ..hoshi_core::Buildings::default()
+            },
+            fleet: Fleet::default(),
+            defences: hoshi_core::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            rare: None,
+            goods: std::collections::BTreeMap::new(),
+        });
+        let app = App::new(state);
+        let text = render_text(&app, 160, 40);
+        assert!(text.contains("1 short"), "{text}");
+        assert!(text.contains("Σ22/49"), "{text}");
     }
 
     #[test]
