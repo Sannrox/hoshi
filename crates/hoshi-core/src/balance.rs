@@ -267,6 +267,10 @@ pub struct RaidConfig {
     /// Fraction of stored resources taken on a lost raid, then clamped by `plunder_cap`.
     pub plunder_share: f64,
     pub plunder_cap: Resources,
+    /// Share of each storage capacity that raiders cannot reach. Plunder only
+    /// takes from stock above it, so an undefended home can still save up for
+    /// the shipyard that makes defence possible.
+    pub protected_share: f64,
 }
 
 impl RaidConfig {
@@ -282,6 +286,7 @@ impl RaidConfig {
             max_rounds: 6,
             plunder_share: 0.5,
             plunder_cap: Resources::from_parts(10_000.0, 10_000.0, 5_000.0),
+            protected_share: DEFAULT_PROTECTED_SHARE,
         }
     }
 
@@ -312,6 +317,9 @@ pub struct PacingTargets {
     pub max_bridge_metal_ratio: f64,
     /// Each branch keystone should complete within this many seconds.
     pub keystone_secs: u64,
+    /// With raids on, the greedy strategy must finish shipyard 1 (and with it
+    /// the first defence) within this many seconds.
+    pub raided_shipyard_secs: u64,
 }
 
 impl Default for PacingTargets {
@@ -322,6 +330,7 @@ impl Default for PacingTargets {
             min_metal_mine_per_day: 1,
             max_bridge_metal_ratio: 8.0,
             keystone_secs: 14 * 86_400,
+            raided_shipyard_secs: default_raided_shipyard_secs(),
         }
     }
 }
@@ -1149,6 +1158,12 @@ struct FilePacing {
     max_bridge_metal_ratio: f64,
     #[serde(default = "default_keystone_secs")]
     keystone_secs: u64,
+    #[serde(default = "default_raided_shipyard_secs")]
+    raided_shipyard_secs: u64,
+}
+
+fn default_raided_shipyard_secs() -> u64 {
+    7 * 86_400
 }
 
 fn default_energy_recovery_secs() -> u64 {
@@ -1341,6 +1356,14 @@ struct FileRaid {
     max_rounds: u8,
     plunder_share: f64,
     plunder_cap: FileResources,
+    #[serde(default = "default_protected_share")]
+    protected_share: f64,
+}
+
+const DEFAULT_PROTECTED_SHARE: f64 = 0.05;
+
+fn default_protected_share() -> f64 {
+    DEFAULT_PROTECTED_SHARE
 }
 
 #[derive(Deserialize)]
@@ -1527,6 +1550,7 @@ impl File {
                 max_rounds: self.raid.max_rounds,
                 plunder_share: self.raid.plunder_share,
                 plunder_cap: self.raid.plunder_cap.into_resources(),
+                protected_share: self.raid.protected_share,
             },
             planet_types: PlanetTypeCatalog {
                 rocky: self.planet_types.rocky.into_bonus(),
@@ -1599,6 +1623,7 @@ impl File {
                 min_metal_mine_per_day: self.pacing.min_metal_mine_per_day,
                 max_bridge_metal_ratio: self.pacing.max_bridge_metal_ratio,
                 keystone_secs: self.pacing.keystone_secs,
+                raided_shipyard_secs: self.pacing.raided_shipyard_secs,
             },
             outposts: {
                 let rare = if self.outposts.rare.is_empty() {
@@ -1889,6 +1914,11 @@ impl FileChannel {
 impl BalanceConfig {
     fn validate(&self) -> Result<(), BalanceError> {
         self.dismantle.validate().map_err(BalanceError::Invalid)?;
+        if !(0.0..=1.0).contains(&self.raid.protected_share) {
+            return Err(BalanceError::Invalid(
+                "raid.protected_share must be in [0, 1]".into(),
+            ));
+        }
         if self.pacing.first_upgrade_secs == 0 {
             return Err(BalanceError::Invalid(
                 "pacing.first_upgrade_secs must be > 0".into(),
@@ -2395,6 +2425,8 @@ mod tests {
         assert_eq!(cfg.flight, crate::FlightConfig::default());
         assert_eq!(cfg.planet_types, crate::PlanetTypeCatalog::default());
         assert_eq!(cfg.pacing.first_upgrade_secs, 300);
+        assert_eq!(cfg.raid.protected_share, 0.05);
+        assert_eq!(cfg.pacing.raided_shipyard_secs, 7 * 86_400);
         assert_eq!(
             cfg.buildings.shipyard.prerequisites,
             vec![(BuildingKind::RoboticsFactory, 1)]
@@ -2440,6 +2472,13 @@ mod tests {
         let text = DEFAULT_BALANCE.replace("dominance_max = 0.25", "dominance_max = 1.5");
         let err = BalanceConfig::parse(&text).unwrap_err();
         assert!(err.to_string().contains("self_play.dominance_max"), "{err}");
+    }
+
+    #[test]
+    fn rejects_a_protected_share_outside_zero_to_one() {
+        let text = DEFAULT_BALANCE.replace("protected_share = 0.05", "protected_share = 1.5");
+        let err = BalanceConfig::parse(&text).unwrap_err();
+        assert!(err.to_string().contains("raid.protected_share"), "{err}");
     }
 
     #[test]

@@ -615,7 +615,7 @@ impl GameState {
         self.fleet = report.defender_after;
         if report.winner == crate::CombatWinner::Attacker {
             let loot = plunder_from(
-                self.resources,
+                self.plunderable(),
                 self.config.raid.plunder_share,
                 self.config.raid.plunder_cap,
             );

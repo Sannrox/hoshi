@@ -4739,7 +4739,7 @@ impl GameState {
             return Resources::ZERO;
         }
         let taken = plunder_from(
-            self.resources,
+            self.plunderable(),
             self.config.raid.plunder_share,
             self.config.raid.plunder_cap,
         );
@@ -4749,6 +4749,17 @@ impl GameState {
             ledger.plunder(home, taken);
         }
         taken
+    }
+
+    /// Home stock above the protected share of storage, the most a raid can
+    /// reach. See [`crate::RaidConfig::protected_share`].
+    pub(crate) fn plunderable(&self) -> Resources {
+        let mut out = Resources::ZERO;
+        for kind in ResourceKind::ALL {
+            let protected = self.storage_cap(kind) * self.config.raid.protected_share;
+            out.set(kind, (self.resources.get(kind) - protected).max(0.0));
+        }
+        out
     }
 
     fn note_raid_outcome(&mut self, winner: CombatWinner) {
@@ -8844,12 +8855,48 @@ modifiers = []
     }
 
     #[test]
+    fn plunder_spares_the_protected_share_of_storage() {
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.first_delay_secs = 10;
+        cfg.raid.min_warning_secs = 10;
+        let mut state = GameState::with_config(0, cfg);
+        state.resources = Resources::from_parts(2_000.0, 300.0, 400.0);
+        let protected = state.storage_cap(ResourceKind::Iron) * state.config.raid.protected_share;
+        state.trigger_raid(0);
+        close(state.resources.iron, 2_000.0 - 0.5 * (2_000.0 - protected));
+        close(state.resources.silicon, 300.0);
+        close(state.resources.deuterium, 400.0);
+    }
+
+    /// The playthrough in #245: synthesizer 1, no defence. Raids
+    /// used to hold deuterium near 15; it now climbs past the 300 D the
+    /// robotics factory and shipyard need.
+    #[test]
+    fn a_raided_home_still_saves_deuterium_for_the_shipyard() {
+        let run = |protected_share: f64| {
+            let mut cfg = BalanceConfig::default();
+            cfg.raid.protected_share = protected_share;
+            let mut state = GameState::with_config(0, cfg);
+            state.buildings.solar_plant = 3;
+            state.buildings.deuterium_synthesizer = 1;
+            state.catch_up(12 * 86_400);
+            (state.combat_logs.len(), state.resources.deuterium)
+        };
+        let (raids, guarded) = run(0.05);
+        let (_, unguarded) = run(0.0);
+        assert!(raids >= 5, "{raids}");
+        assert!(guarded >= 300.0, "{guarded}");
+        assert!(unguarded < 100.0, "{unguarded}");
+    }
+
+    #[test]
     fn plunder_cap_is_applied_on_a_lost_raid() {
         let mut cfg = BalanceConfig::default();
         cfg.raid.first_delay_secs = 10;
         cfg.raid.min_warning_secs = 10;
         cfg.raid.plunder_share = 1.0;
         cfg.raid.plunder_cap = Resources::from_parts(40.0, 30.0, 5.0);
+        cfg.raid.protected_share = 0.0;
         cfg.starting_resources = Resources::from_parts(500.0, 500.0, 100.0);
         cfg.starting_buildings.metal_mine = 0;
         cfg.starting_buildings.crystal_mine = 0;
@@ -9442,6 +9489,7 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
     fn catch_up_ledger_accounts_for_every_resource_on_every_planet() {
         let mut cfg = logistics_config();
         cfg.raid = crate::RaidConfig::default();
+        cfg.raid.protected_share = 0.0;
         cfg.raid.first_delay_secs = 1800;
         cfg.raid.min_warning_secs = 600;
         cfg.crystal_storage.base = 2_000.0;
