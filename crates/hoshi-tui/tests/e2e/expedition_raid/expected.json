@@ -149,7 +149,7 @@
     "sink": 80.0
   },
   "incident_board": {
-    "open": 2,
+    "open": 0,
     "reviews": 0,
     "risks": 3
   },
@@ -331,7 +331,7 @@
     "empires": [],
     "enabled": false
   },
-  "save_schema": 49,
+  "save_schema": 50,
   "schema_version": 2,
   "season": null,
   "species": null,

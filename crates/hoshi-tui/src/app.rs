@@ -455,8 +455,14 @@ impl App {
     }
 
     fn open_latest_replay(&mut self) {
-        let Some(log) = self.state.combat_logs.last().cloned() else {
-            self.status = "no combat log".into();
+        match self.state.combat_logs.len().checked_sub(1) {
+            Some(index) => self.open_replay(index),
+            None => self.status = "no combat log".into(),
+        }
+    }
+
+    fn open_replay(&mut self, index: usize) {
+        let Some(log) = self.state.combat_logs.get(index).cloned() else {
             return;
         };
         let last = log.report.frames.len().saturating_sub(1);
@@ -914,6 +920,16 @@ impl App {
             Some(Binding::Quit) => return Action::Quit,
             Some(Binding::NextScreen) => self.cycle_screen(true),
             Some(Binding::Toggle) => self.cockpit.cycle_layout(),
+            // The bridge alert describes the latest raid, so `r` opens that one.
+            Some(Binding::Replay) => match self
+                .state
+                .combat_logs
+                .iter()
+                .rposition(|log| log.raid_plunder.is_some())
+            {
+                Some(index) => self.open_replay(index),
+                None => self.open_latest_replay(),
+            },
             Some(Binding::CursorLeft) if map => self.nudge_map_position(-1),
             Some(Binding::CursorRight) if map => self.nudge_map_position(1),
             Some(Binding::SelectNext) if map => self.nudge_map_system(1),
@@ -1311,13 +1327,14 @@ impl App {
     fn navbar_right(&self) -> Vec<Span<'static>> {
         let t = &self.theme;
         let mut spans = Vec::new();
-        if let Some(secs) = self.state.raid_countdown_secs() {
-            spans.push(ui::spans::tag(
-                t,
-                &format!("RAID {}", ui::spans::countdown(secs)),
-                Intent::Danger,
-                false,
-            ));
+        // The next raid shows as soon as it is scheduled; inside the warning
+        // window it turns into a ticking countdown.
+        if let Some(secs) = self.state.next_raid_in_secs() {
+            let (text, intent) = match self.state.raid_countdown_secs() {
+                Some(_) => (ui::spans::countdown(secs), Intent::Danger),
+                None => (ui::spans::duration(secs), Intent::Warning),
+            };
+            spans.push(ui::spans::tag(t, &format!("RAID {text}"), intent, false));
             spans.push(Span::raw("  "));
         }
         if self.state.is_modified() {
@@ -1831,10 +1848,40 @@ impl App {
         if let Some(line) = replay.commentary.get(idx).and_then(|s| s.as_deref()) {
             lines.push(Line::from(line.to_string()));
         }
+        // The report: who fought, what each side lost and what was taken.
+        lines.push(Line::default());
+        for (name, before, after) in [
+            ("pirates", report.attacker_before, report.attacker_after),
+            ("you", report.defender_before, report.defender_after),
+        ] {
+            lines.push(Line::from(vec![
+                Span::styled(format!("{name:<8}"), t.label()),
+                Span::styled(
+                    format!(
+                        "{} · lost {}",
+                        before.label(),
+                        before.losses_to(after).label()
+                    ),
+                    t.text(),
+                ),
+            ]));
+        }
+        let plunder = resource_list(replay.log.raid_plunder.unwrap_or(Resources::ZERO));
+        if !plunder.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled(format!("{:<8}", "plunder"), t.label()),
+                Span::styled(plunder, t.intent(Intent::Danger)),
+            ]));
+        }
+        let age = self.state.last_tick_unix.saturating_sub(replay.log.at);
         self.dialog(
             frame,
-            "Combat replay",
-            String::new(),
+            "Combat report",
+            format!(
+                "{} ago · {} rounds",
+                ui::spans::duration(age),
+                report.rounds
+            ),
             lines,
             &[
                 (self.keymap.primary(Binding::Toggle), "pause"),
@@ -2239,7 +2286,7 @@ impl App {
             Screen::Market => self.activate_market(now_unix),
             Screen::Diplomacy => self.activate_diplomacy(now_unix),
             Screen::Laws => self.activate_law(now_unix),
-            Screen::History => self.toggle_history_lineage(),
+            Screen::History => self.activate_history(),
             Screen::Staff => self.activate_staff(now_unix),
             Screen::Map => self.activate_map(now_unix),
             Screen::Cockpit => self.cockpit_confirm(),
@@ -3342,6 +3389,25 @@ impl App {
         };
     }
 
+    /// Enter on a fight opens its combat report; other rows toggle lineage.
+    fn activate_history(&mut self) {
+        let fight =
+            self.selected_history()
+                .filter(|row| row.kind == HistoryKind::Combat)
+                .and_then(|row| {
+                    // History records each fight with its winner; two fights can
+                    // share a tick, so match both.
+                    let winner = row.objects.first().map(String::as_str);
+                    self.state.combat_logs.iter().rposition(|log| {
+                        log.at == row.at && winner == Some(log.report.winner.as_key())
+                    })
+                });
+        match fight {
+            Some(index) if self.history_pane == HistoryPane::List => self.open_replay(index),
+            _ => self.toggle_history_lineage(),
+        }
+    }
+
     fn toggle_history_lineage(&mut self) {
         self.history_pane = if self.history_pane == HistoryPane::Lineage {
             HistoryPane::List
@@ -4093,6 +4159,67 @@ mod tests {
     }
 
     #[test]
+    fn a_lost_raid_reads_as_a_report_from_the_bridge_and_history() {
+        let mut state = GameState::new(1_000);
+        state.resources = Resources::from_parts(2_000.0, 2_000.0, 0.0);
+        state.trigger_raid(1_000);
+        let plunder = state.combat_logs.last().unwrap().raid_plunder.unwrap();
+        assert!(plunder.iron > 0.0);
+        state.catch_up(1_000 + 7_200);
+        // A story choice would take the keys; this test is about the raid.
+        state.story_pending = None;
+        let mut app = App::new(state);
+        app.screen = Screen::Cockpit;
+        let bridge = render_text(&app, 140, 45);
+        assert!(bridge.contains("Raid lost"), "{bridge}");
+        assert!(bridge.contains("Home undefended"), "{bridge}");
+        app.handle_key(KeyCode::Char('r'), 1_000 + 7_200);
+        let report = render_text(&app, 140, 45);
+        assert!(report.contains("Combat report"), "{report}");
+        assert!(report.contains("2h 00m ago"), "{report}");
+        let iron = format!("Fe {}", ui::spans::compact(plunder.iron));
+        assert!(report.contains(&iron), "{iron}\n{report}");
+        app.replay = None;
+        app.screen = Screen::History;
+        app.selected = app
+            .history_rows()
+            .iter()
+            .position(|row| row.kind == HistoryKind::Combat)
+            .unwrap();
+        app.handle_key(KeyCode::Enter, 1_000 + 7_200);
+        assert!(app.replay_active(), "Enter on a fight opens its report");
+    }
+
+    #[test]
+    fn a_raid_lost_with_nothing_to_take_still_alerts() {
+        let mut state = GameState::new(1_000);
+        state.trigger_raid(1_000);
+        let log = state.combat_logs.last().unwrap();
+        assert_eq!(
+            log.raid_plunder,
+            Some(Resources::ZERO),
+            "stock sits under the floor"
+        );
+        state.story_pending = None;
+        let mut app = App::new(state);
+        app.screen = Screen::Cockpit;
+        let bridge = render_text(&app, 140, 45);
+        assert!(bridge.contains("Raid lost"), "{bridge}");
+    }
+
+    #[test]
+    fn the_header_shows_a_raid_hours_ahead_and_undefended_stays() {
+        let mut state = GameState::new(1_000);
+        state.next_raid_at = Some(1_000 + 7 * 3_600);
+        let mut app = App::new(state);
+        app.screen = Screen::Cockpit;
+        let text = render_text(&app, 140, 45);
+        assert!(text.contains("RAID 7h 00m"), "{text}");
+        assert!(text.contains("Home undefended"), "{text}");
+        assert!(!text.contains("Incoming raid"), "{text}");
+    }
+
+    #[test]
     fn away_overlay_dismisses_and_reopens_from_overview() {
         let mut app = App::new(GameState::new(1_000));
         app.set_away(crate::title::AwaySummary {
@@ -4386,7 +4513,7 @@ mod tests {
         app.handle_key(KeyCode::Char('r'), 1_000);
         assert!(app.replay_active());
         let text = render_text(&app, 80, 24);
-        assert!(text.contains("Combat replay"), "{text}");
+        assert!(text.contains("Combat report"), "{text}");
         assert!(text.contains("PIRATES"), "{text}");
         assert!(text.contains("YOU"), "{text}");
         app.handle_key(KeyCode::Char('n'), 1_000);
@@ -4443,7 +4570,7 @@ mod tests {
         };
         app.replay.as_mut().unwrap().frame = last;
         let text = render_text(&app, 80, 24);
-        assert!(text.contains("Combat replay"), "{text}");
+        assert!(text.contains("Combat report"), "{text}");
         assert!(text.contains(&line), "{text}");
     }
 

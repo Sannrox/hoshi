@@ -1312,6 +1312,15 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
         conn.execute("""CREATE TABLE IF NOT EXISTS cheat_state (
             id INTEGER PRIMARY KEY CHECK (id = 1),
             data TEXT NOT NULL)""")
+    elif version == 49:
+        conn.execute("""CREATE TABLE IF NOT EXISTS fusion_plants (
+            galaxy INTEGER NOT NULL, system INTEGER NOT NULL, position INTEGER NOT NULL,
+            mode TEXT NOT NULL CHECK (mode IN ('off', 'dd', 'dhe3')),
+            startup_left REAL NOT NULL CHECK (startup_left >= 0),
+            activated INTEGER NOT NULL CHECK (activated IN (0, 1)),
+            stopped_at INTEGER CHECK (stopped_at >= 0),
+            residual_heat REAL NOT NULL CHECK (residual_heat >= 0),
+            PRIMARY KEY (galaxy, system, position))""")
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"

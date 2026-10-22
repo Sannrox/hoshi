@@ -258,6 +258,31 @@ impl Fleet {
         self.total() == 0
     }
 
+    /// `3 light fighter, 1 small cargo`, or `none`.
+    pub fn label(self) -> String {
+        let parts: Vec<String> = ShipKind::ALL
+            .iter()
+            .filter_map(|&kind| {
+                let n = self.get(kind);
+                (n > 0).then(|| format!("{n} {kind}"))
+            })
+            .collect();
+        if parts.is_empty() {
+            "none".to_string()
+        } else {
+            parts.join(", ")
+        }
+    }
+
+    /// Ships in `self` that are missing from `after`.
+    pub fn losses_to(self, after: Fleet) -> Fleet {
+        let mut lost = Fleet::default();
+        for kind in ShipKind::ALL {
+            lost.add(kind, self.get(kind).saturating_sub(after.get(kind)));
+        }
+        lost
+    }
+
     pub fn total(self) -> u32 {
         self.counts.iter().copied().fold(0, u32::saturating_add)
     }

@@ -13,8 +13,9 @@ alone for hours.
    `hoshi --save PATH --seed N tick --advance 30m` on a harness save.
 3. **First research.** Build a research lab, start energy research from the
    overview. The lab should still be working after a restart.
-4. **A raid survived.** Wait for the overview countdown or advance a harness
-   save until pirates land. Open the combat report (`r` from the overview).
+4. **A raid survived.** Wait for the `RAID` countdown in the header or advance
+   a harness save until pirates land. Open the combat report (`r` on the
+   bridge, or Enter on the fight in Records › History).
    Three basic ships (light fighter, small cargo, colony ship) and the shipyard
    are enough to fight back.
 5. **Leave and come back after hours.** Quit. Reopen the same slot. Production
