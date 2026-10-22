@@ -1296,6 +1296,10 @@ impl App {
             ));
             spans.push(Span::raw("  "));
         }
+        if self.state.is_modified() {
+            spans.push(ui::spans::tag(t, "MODIFIED", Intent::Warning, false));
+            spans.push(Span::raw("  "));
+        }
         if let Some(run) = self.state.species.as_ref() {
             spans.push(Span::styled(run.name.clone(), t.muted()));
             spans.push(Span::raw("  "));
@@ -5683,6 +5687,31 @@ mod tests {
         app.handle_key(KeyCode::Esc, 100);
         assert!(app.cheat_prompt.is_none());
         assert!(!app.state.is_modified());
+    }
+
+    #[test]
+    fn modified_save_is_marked_and_its_feats_read_blocked() {
+        let mut state = GameState::new(100);
+        let clean = render_text(&App::new(state.clone()), 140, 45);
+        assert!(!clean.contains("MODIFIED"), "{clean}");
+        state.set_cheats_enabled(true, Actor::Player, 100);
+        let intent = hoshi_core::Intent::Cheat {
+            code: "grant iron 10".into(),
+            actor: Actor::Player,
+        };
+        let proposal = hoshi_core::propose(&state, &intent, 100).unwrap();
+        hoshi_core::apply(&mut state, &proposal, 100).unwrap();
+        let mut app = App::new(state);
+        let bridge = render_text(&app, 140, 45);
+        assert!(bridge.contains("MODIFIED"), "{bridge}");
+        app.screen = Screen::Achievements;
+        let feats = render_text(&app, 140, 45);
+        assert!(
+            feats.contains("Feats are off: cheats modified this save."),
+            "{feats}"
+        );
+        assert!(feats.contains("BLOCKED"), "{feats}");
+        assert!(!feats.contains("OPEN"), "{feats}");
     }
 
     #[test]

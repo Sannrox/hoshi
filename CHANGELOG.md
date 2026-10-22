@@ -9,6 +9,7 @@
 - Align solar output, cost and time growth at 1.15, cap solar levels by planet size, explain storage and power limits, and show empire energy with colony shortages. Pacing reports include the energy-recovery matrix and home recovery target. Existing solar levels remain intact.
 - The building inspector shows the deposits that building's recipes extract (iron ore for the metal mine, water ice and helium-3 for the synthesizer) instead of helium-3 for every building; buildings without an extractor show none.
 
+- A save modified by cheats shows a MODIFIED tag in the header, and Bridge › Feats says feats are off and marks unearned feats as blocked instead of open past their target.
 - Add default-off local cheats through the console and CLI, with permanent modified-save provenance, durable audits and fair-play exclusions. Schema 48 preserves cheat state across restart and prestige.
 - Preview and save redacted bug reports from the CLI, title menu, Help or crash offer. Open a prefilled issue page only after consent; offline reports retain the URL. Servers support configurable report destinations without sending reports.
 
