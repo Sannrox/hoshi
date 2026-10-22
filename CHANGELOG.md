@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Browsers can open `GET /v1/events` by sending the bearer token as a `hoshi.bearer.<base64url>` WebSocket subprotocol next to `hoshi.v1`; the server selects `hoshi.v1` and never echoes the token. The `Authorization` header keeps working.
 - A new save opened by path (`hoshi --save new.sqlite`, `HOSHI_SAVE`, the CLI and the server) gets its own galaxy seed from the creation time, like New game, instead of always seed 0.
 - Raids no longer take the last of a stockpile: plunder only reaches stock above `raid.protected_share` of storage (default 5%, 500 D at base storage), so an undefended home can save up for the robotics factory and shipyard. `hoshi simulate` now also checks that greedy play reaches shipyard 1 with raids on.
 - The first-run update-check notice closes on the next key instead of covering the bottom of every screen for the whole session, and the tutorial hint waits until it has closed.
