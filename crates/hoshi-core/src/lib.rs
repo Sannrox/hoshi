@@ -242,10 +242,10 @@ pub use ships::{
     ShipStats,
 };
 pub use simulate::{
-    DaySnapshot, HeavyIndustryReport, LadderSimRow, PrestigeSimRow, SimReport, VictorySimRow,
-    greedy_curve, heavy_industry_check, simulate_greedy, simulate_species_victory_paths,
-    simulate_victory_paths, simulate_victory_paths_for_seed, simulate_victory_paths_with_rivals,
-    tactics_no_combo_dominates,
+    DaySnapshot, EnergyRecoveryRow, HeavyIndustryReport, LadderSimRow, PrestigeSimRow, SimReport,
+    VictorySimRow, energy_recovery, greedy_curve, heavy_industry_check, simulate_greedy,
+    simulate_species_victory_paths, simulate_victory_paths, simulate_victory_paths_for_seed,
+    simulate_victory_paths_with_rivals, tactics_no_combo_dominates,
 };
 pub use species::{Flagship, SpeciesCatalog, SpeciesError, SpeciesRun, SpeciesSpec};
 pub use state::{GameEvent, GameState, LogisticsGlance, ResourceKind, Resources};

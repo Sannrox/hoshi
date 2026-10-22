@@ -782,6 +782,17 @@ impl GameState {
                 if job.kind == crate::BuildJobKind::Dismantle {
                     self.complete_dismantle(self.home, job, done_at);
                     self.start_head(done_at);
+                } else if job.building == BuildingKind::SolarPlant
+                    && self.buildings.solar_plant >= self.max_solar_level(self.home).unwrap_or(0)
+                {
+                    // Saved queues may predate the cap or use a higher custom limit.
+                    self.resources = self.resources.saturating_add(job.paid);
+                    self.refund_spend(
+                        &crate::finance::build_centers(self.home),
+                        self.refund_credits(job.credits, job.paid),
+                    );
+                    self.reprice_queue();
+                    self.start_head(done_at);
                 } else {
                     self.buildings.increment(job.building);
                     self.start_head(done_at);
@@ -808,6 +819,19 @@ impl GameState {
                 let job = self.colonies[i].build_queue.remove(0);
                 if job.kind == crate::BuildJobKind::Dismantle {
                     self.complete_dismantle(self.colonies[i].coord, job, done_at);
+                    self.start_colony_head(i, done_at);
+                } else if job.building == BuildingKind::SolarPlant
+                    && self.colonies[i].buildings.solar_plant
+                        >= self.max_solar_level(self.colonies[i].coord).unwrap_or(0)
+                {
+                    let coord = self.colonies[i].coord;
+                    self.colonies[i].resources =
+                        self.colonies[i].resources.saturating_add(job.paid);
+                    self.refund_spend(
+                        &crate::finance::build_centers(coord),
+                        self.refund_credits(job.credits, job.paid),
+                    );
+                    self.reprice_colony_queue(i);
                     self.start_colony_head(i, done_at);
                 } else {
                     self.colonies[i].buildings.increment(job.building);
@@ -1447,6 +1471,14 @@ impl GameState {
                 .ok_or(BuildError::UnknownPlanet)?
         };
         let from_level = projected_on(&buildings, &queue, kind, queue.len());
+        if kind == BuildingKind::SolarPlant {
+            let cap = self
+                .max_solar_level(coord)
+                .ok_or(BuildError::UnknownPlanet)?;
+            if from_level >= cap {
+                return Err(BuildError::SolarCap { cap });
+            }
+        }
         let cost = self.config.buildings.get(kind).cost(from_level);
         let spend = cost.iron + cost.silicon + cost.deuterium;
         self.authorize(actor, crate::Permission::QueueBuild, Some(coord), spend)
@@ -2715,6 +2747,11 @@ impl GameState {
         }
     }
 
+    pub fn max_solar_level(&self, coord: Coord) -> Option<u32> {
+        self.planet_size(coord)
+            .map(|size| self.config.solar_plant.max_level(size))
+    }
+
     pub fn planet_size(&self, coord: Coord) -> Option<u8> {
         if coord == self.home {
             Some(self.home_size)
@@ -3549,7 +3586,11 @@ impl GameState {
                 i += 1;
                 continue;
             }
-            if !self.prereqs_ok_at(i) {
+            let kind = self.build_queue[i].building;
+            let solar_at_cap = kind == BuildingKind::SolarPlant
+                && self.projected_level_before(kind, i)
+                    >= self.max_solar_level(self.home).unwrap_or(0);
+            if solar_at_cap || !self.prereqs_ok_at(i) {
                 let job = self.build_queue.remove(i);
                 self.resources = self.resources.saturating_add(job.paid);
                 self.refund_spend(&centers, self.refund_credits(job.credits, job.paid));
@@ -3714,7 +3755,16 @@ impl GameState {
                     i,
                 ) >= required
             });
-            if !ok {
+            let solar_at_cap = kind == BuildingKind::SolarPlant
+                && projected_on(
+                    &self.colonies[index].buildings,
+                    &self.colonies[index].build_queue,
+                    kind,
+                    i,
+                ) >= self
+                    .max_solar_level(self.colonies[index].coord)
+                    .unwrap_or(0);
+            if solar_at_cap || !ok {
                 let job = self.colonies[index].build_queue.remove(i);
                 self.colonies[index].resources =
                     self.colonies[index].resources.saturating_add(job.paid);
@@ -6101,6 +6151,10 @@ impl GameState {
     }
 
     /// Current total electrical output for an owned planet, including orbit and local modifiers.
+    pub fn energy_balance_at(&self, coord: Coord) -> Option<f64> {
+        Some(self.energy_produced_at(coord)? - self.energy_consumed_at(coord))
+    }
+
     pub fn energy_produced_at(&self, coord: Coord) -> Option<f64> {
         Some(self.site_energy_produced(coord, *self.buildings_at(coord)?, self.planet_kind(coord)?))
     }
@@ -6957,6 +7011,8 @@ mod tests {
                 energy_growth: 1.0,
             },
             solar_plant: crate::EnergyProducerSpec {
+                max_level_base: 8,
+                max_level_per_size: 0.05,
                 base_energy: 20.0,
                 growth: 1.0,
             },

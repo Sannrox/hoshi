@@ -14,6 +14,7 @@ pub struct Advice {
 /// Ranked suggestions from public stockpiles, energy, queues and raid timing.
 pub fn advise(state: &GameState) -> Vec<Advice> {
     let mut out = Vec::new();
+    push_storage_wall(state, &mut out);
     push_energy(state, &mut out);
     push_raid(state, &mut out);
     push_storage(state, &mut out);
@@ -92,13 +93,13 @@ fn push_energy(state: &GameState, out: &mut Vec<Advice>) {
         )
     {
         let produced = state.site_energy_produced(coord, buildings, kind);
-        let consumed = state.config.energy_draw(&buildings)
-            + if coord == state.home {
-                state.automation_control_energy()
-            } else {
-                0.0
-            };
+        let consumed = state.energy_consumed_at(coord);
         if produced + 1e-12 >= consumed {
+            continue;
+        }
+        let cap = state.max_solar_level(coord).unwrap_or(0);
+        if buildings.solar_plant >= cap {
+            out.push(Advice { id: "energy", text: format!("energy is short at {coord} ({produced:.0}/{consumed:.0}); solar is at this planet's cap of {cap}; add fission or fusion for more power") });
             continue;
         }
         out.push(Advice {
@@ -126,6 +127,49 @@ fn push_raid(state: &GameState, out: &mut Vec<Advice>) {
         id: "raid",
         text: format!("a raid in {wait}s; build 5 light fighters (you have {fighters})"),
     });
+}
+
+fn push_storage_wall(state: &GameState, out: &mut Vec<Advice>) {
+    for coord in std::iter::once(state.home).chain(state.colonies.iter().map(|colony| colony.coord))
+    {
+        let Some(buildings) = state.buildings_at(coord) else {
+            continue;
+        };
+        let mut candidates = vec![
+            BuildingKind::SolarPlant,
+            BuildingKind::MetalMine,
+            BuildingKind::CrystalMine,
+            BuildingKind::DeuteriumSynthesizer,
+        ];
+        for job in state.queue_at(coord).unwrap_or(&[]) {
+            if !candidates.contains(&job.building) {
+                candidates.push(job.building);
+            }
+        }
+        for building in candidates {
+            if building == BuildingKind::SolarPlant
+                && (state.energy_balance_at(coord).unwrap_or(0.0) >= 0.0
+                    || buildings.solar_plant >= state.max_solar_level(coord).unwrap_or(0))
+            {
+                continue;
+            }
+            if building != BuildingKind::SolarPlant && buildings.get(building) == 0 {
+                continue;
+            }
+            let cost = state.build_cost_on(coord, building);
+            let queue = state.queue_at(coord).unwrap_or(&[]);
+            let next = crate::state::projected_on(buildings, queue, building, queue.len())
+                .saturating_add(1);
+            for resource in ResourceKind::ALL {
+                let needed = cost.get(resource);
+                let cap = state.storage_cap_at(coord, resource);
+                if needed > cap + 1e-9 {
+                    out.push(Advice { id: "storage_wall", text: format!("{building} level {} at {coord} needs {needed:.0} {}, but storage holds {cap:.0}; build {} storage first", next, resource.label(), resource.label()) });
+                    break;
+                }
+            }
+        }
+    }
 }
 
 fn push_storage(state: &GameState, out: &mut Vec<Advice>) {
@@ -194,6 +238,34 @@ mod tests {
         let mut cfg = BalanceConfig::default();
         cfg.raid.enabled = false;
         GameState::with_config(0, cfg)
+    }
+
+    #[test]
+    fn next_level_storage_wall_and_solar_cap_explain_the_real_blocker() {
+        let mut state = GameState::new(0);
+        assert!(
+            !advise(&state)
+                .iter()
+                .any(|advice| advice.id == "storage_wall")
+        );
+        state.buildings.metal_mine = 14;
+        assert!(
+            state
+                .build_cost_on(state.home, BuildingKind::MetalMine)
+                .iron
+                > state.storage_cap(ResourceKind::Iron)
+        );
+        let advice = advise(&state);
+        assert!(advice.iter().any(
+            |advice| advice.id == "storage_wall" && advice.text.contains("iron storage first")
+        ));
+        state.buildings.solar_plant = state.max_solar_level(state.home).unwrap();
+        state.buildings.metal_mine = 30;
+        assert!(
+            advise(&state).iter().any(
+                |advice| advice.id == "energy" && advice.text.contains("add fission or fusion")
+            )
+        );
     }
 
     #[test]

@@ -519,18 +519,6 @@ impl GameState {
         }
     }
 
-    fn energy_balance_at(&self, coord: Coord) -> Option<f64> {
-        let buildings = self.buildings_at(coord)?;
-        let produced = self.site_energy_produced(coord, *buildings, self.planet_kind(coord)?);
-        let consumed = self.config.energy_draw(buildings)
-            + if coord == self.home {
-                self.automation_control_energy()
-            } else {
-                0.0
-            };
-        Some(produced - consumed)
-    }
-
     fn kpi_empire(&self, kpi: KpiId, now: u64) -> f64 {
         match kpi {
             KpiId::Output => self.empire_production_per_hour(ResourceKind::Iron),

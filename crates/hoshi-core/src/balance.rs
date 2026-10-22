@@ -55,6 +55,8 @@ impl ProducerSpec {
 /// An energy building (solar plant).
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnergyProducerSpec {
+    pub max_level_base: u32,
+    pub max_level_per_size: f64,
     /// Energy output at level 1.
     pub base_energy: f64,
     /// Multiplier applied once per level above 1.
@@ -62,6 +64,10 @@ pub struct EnergyProducerSpec {
 }
 
 impl EnergyProducerSpec {
+    pub fn max_level(&self, size: u8) -> u32 {
+        self.max_level_base
+            .saturating_add((f64::from(size) * self.max_level_per_size).floor() as u32)
+    }
     pub fn energy_output(&self, level: u32) -> f64 {
         if level == 0 {
             0.0
@@ -211,7 +217,7 @@ impl Default for BuildingCatalog {
             metal_mine: spec(60.0, 15.0, 0.0, 1.5, 120.0, 1.5, vec![]),
             crystal_mine: spec(48.0, 24.0, 0.0, 1.6, 120.0, 1.6, vec![]),
             deuterium_synthesizer: spec(225.0, 75.0, 0.0, 1.5, 180.0, 1.5, vec![]),
-            solar_plant: spec(75.0, 30.0, 0.0, 1.5, 120.0, 1.5, vec![]),
+            solar_plant: spec(75.0, 30.0, 0.0, 1.15, 120.0, 1.15, vec![]),
             fission_reactor,
             fusion_plant,
             metal_storage: spec(1_000.0, 0.0, 0.0, 2.0, 60.0, 2.0, vec![]),
@@ -297,6 +303,7 @@ impl Default for RaidConfig {
 /// Documented pacing gates the simulator checks.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PacingTargets {
+    pub energy_recovery_secs: u64,
     /// First building upgrade must complete within this many seconds.
     pub first_upgrade_secs: u64,
     /// Metal mine levels gained per simulated day under the greedy strategy.
@@ -310,6 +317,7 @@ pub struct PacingTargets {
 impl Default for PacingTargets {
     fn default() -> Self {
         Self {
+            energy_recovery_secs: 7200,
             first_upgrade_secs: 300,
             min_metal_mine_per_day: 1,
             max_bridge_metal_ratio: 8.0,
@@ -1134,11 +1142,17 @@ struct FileWonderModifier {
 
 #[derive(Deserialize)]
 struct FilePacing {
+    #[serde(default = "default_energy_recovery_secs")]
+    energy_recovery_secs: u64,
     first_upgrade_secs: u64,
     min_metal_mine_per_day: u32,
     max_bridge_metal_ratio: f64,
     #[serde(default = "default_keystone_secs")]
     keystone_secs: u64,
+}
+
+fn default_energy_recovery_secs() -> u64 {
+    7200
 }
 
 fn default_keystone_secs() -> u64 {
@@ -1195,8 +1209,19 @@ struct FileProducer {
     energy_growth: f64,
 }
 
+fn default_solar_cap_base() -> u32 {
+    8
+}
+fn default_solar_cap_per_size() -> f64 {
+    0.05
+}
+
 #[derive(Deserialize)]
 struct FileEnergy {
+    #[serde(default = "default_solar_cap_base")]
+    max_level_base: u32,
+    #[serde(default = "default_solar_cap_per_size")]
+    max_level_per_size: f64,
     base_energy: f64,
     growth: f64,
 }
@@ -1441,6 +1466,8 @@ impl File {
             crystal_mine: self.crystal_mine.into_spec(),
             deuterium_synthesizer: self.deuterium_synthesizer.into_spec(),
             solar_plant: EnergyProducerSpec {
+                max_level_base: self.solar_plant.max_level_base,
+                max_level_per_size: self.solar_plant.max_level_per_size,
                 base_energy: self.solar_plant.base_energy,
                 growth: self.solar_plant.growth,
             },
@@ -1567,6 +1594,7 @@ impl File {
                 scrubber: self.starting_buildings.scrubber,
             },
             pacing: PacingTargets {
+                energy_recovery_secs: self.pacing.energy_recovery_secs,
                 first_upgrade_secs: self.pacing.first_upgrade_secs,
                 min_metal_mine_per_day: self.pacing.min_metal_mine_per_day,
                 max_bridge_metal_ratio: self.pacing.max_bridge_metal_ratio,
@@ -2295,6 +2323,10 @@ fn check_producer(name: &str, spec: &ProducerSpec) -> Result<(), BalanceError> {
 fn check_energy(name: &str, spec: &EnergyProducerSpec) -> Result<(), BalanceError> {
     nonneg_finite(&format!("{name}.base_energy"), spec.base_energy)?;
     growth(&format!("{name}.growth"), spec.growth)?;
+    nonneg_finite(
+        &format!("{name}.max_level_per_size"),
+        spec.max_level_per_size,
+    )?;
     Ok(())
 }
 
