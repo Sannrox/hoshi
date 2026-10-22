@@ -18,9 +18,11 @@ pub enum DetailSubject {
     Defence(DefenceKind),
     Wonder(String),
     Law(String),
+    /// A spot trade of `amount` whole units of `pay`.
     Trade {
         pay: ResourceKind,
         recv: ResourceKind,
+        amount: u64,
     },
     Production {
         planet: Coord,
@@ -124,7 +126,9 @@ impl GameState {
             DetailSubject::Defence(kind) => Some(self.describe_defence(kind)),
             DetailSubject::Wonder(id) => self.describe_wonder(&id),
             DetailSubject::Law(id) => self.describe_law(&id),
-            DetailSubject::Trade { pay, recv } => Some(self.describe_trade(pay, recv)),
+            DetailSubject::Trade { pay, recv, amount } => {
+                Some(self.describe_trade(pay, recv, amount as f64))
+            }
             DetailSubject::Production { planet, id } => self.describe_production(planet, &id),
             DetailSubject::Faction(id) => self.describe_faction(&id),
             DetailSubject::Coord(coord) => Some(self.describe_coord(coord)),
@@ -437,20 +441,47 @@ impl GameState {
         })
     }
 
-    fn describe_trade(&self, pay: ResourceKind, recv: ResourceKind) -> Detail {
-        let quote = self.quote_market(pay, recv, 10.0).ok();
-        let mut deltas = vec![DeltaLine {
-            label: format!("{} stock", pay.as_key()),
-            from: format!("{:.0}", self.resources.get(pay)),
-            to: format!("{:.0}", self.resources.get(pay)),
-        }];
+    fn describe_trade(&self, pay: ResourceKind, recv: ResourceKind, amount: f64) -> Detail {
+        let quote = self.quote_market(pay, recv, amount).ok();
+        let paid = quote.as_ref().map_or(0.0, |q| q.pay_amount);
+        let got = quote.as_ref().map_or(0.0, |q| q.recv_amount);
+        let stock = |kind: ResourceKind| self.resources.get(kind);
+        let mut deltas = vec![
+            DeltaLine {
+                label: format!("{} stock", pay.label()),
+                from: format!("{:.0}", stock(pay)),
+                to: format!("{:.0}", (stock(pay) - paid).max(0.0)),
+            },
+            DeltaLine {
+                label: format!("{} stock", recv.label()),
+                from: format!("{:.0}", stock(recv)),
+                to: format!(
+                    "{:.0}",
+                    (stock(recv) + got)
+                        .min(self.storage_cap(recv))
+                        .max(stock(recv))
+                ),
+            },
+        ];
         if let Some(q) = &quote {
             deltas.push(DeltaLine {
                 label: "pay -> recv".into(),
-                from: format!("{:.0} {}", q.pay_amount, pay.as_key()),
-                to: format!("{:.0} {}", q.recv_amount, recv.as_key()),
+                from: format!("{:.0} {}", q.pay_amount, pay.label()),
+                to: format!("{:.0} {}", q.recv_amount, recv.label()),
             });
         }
+        let requirements = quote
+            .as_ref()
+            .and_then(|q| self.trade_blocker(q))
+            .map(|blocker| RequirementLine {
+                text: blocker
+                    .to_string()
+                    .trim_start_matches("market: ")
+                    .to_string(),
+                met: false,
+            })
+            .into_iter()
+            .collect();
         Detail {
             name: format!("{} -> {}", pay.as_key(), recv.as_key()),
             description: "spot trade".into(),
@@ -461,7 +492,7 @@ impl GameState {
             duration_secs: None,
             afford: None,
             deltas,
-            requirements: Vec::new(),
+            requirements,
             unlocks: Vec::new(),
             exclusive_warning: None,
             ship: None,

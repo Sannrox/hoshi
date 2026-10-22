@@ -935,6 +935,9 @@ impl App {
             keycap(t, "-"),
             Span::styled(format!(" {:.0} ", self.trade_amount), t.strong()),
             keycap(t, "+"),
+            Span::raw(" "),
+            keycap(t, &self.keymap.primary(Binding::Toggle)),
+            Span::styled(" max", t.muted()),
             Span::styled("   FEE ", t.label()),
             Span::styled(format!("{fee_pct:.0}%"), t.text()),
             Span::styled("   HUB ", t.label()),
@@ -975,10 +978,22 @@ impl App {
                             Line::styled(format!("{rate:.2}"), t.text()),
                             Line::from(sparkline(t, &ratios, 12, Intent::Primary)),
                             delta,
-                            Line::styled(
-                                format!("{:.1} {}", quote.recv_amount, recv.abbr()),
-                                t.strong(),
-                            ),
+                            match self.state.trade_blocker(&quote) {
+                                // Same check as the trade itself, so Enter cannot surprise.
+                                Some(blocker) => Line::styled(
+                                    format!(
+                                        "{:.1} {} · {}",
+                                        quote.recv_amount,
+                                        recv.abbr(),
+                                        blocker.to_string().trim_start_matches("market: ")
+                                    ),
+                                    t.intent(Intent::Warning),
+                                ),
+                                None => Line::styled(
+                                    format!("{:.1} {}", quote.recv_amount, recv.abbr()),
+                                    t.strong(),
+                                ),
+                            },
                         ]
                     }
                     Err(e) => vec![
@@ -1026,16 +1041,24 @@ impl App {
                 ),
             ]));
         }
-        for contract in self.state.board.contracts.values().take(3) {
+        let now = self.state.last_tick_unix;
+        let mut contracts: Vec<_> = self.state.board.contracts.values().collect();
+        // Contracts the player can still act on come before settled ones.
+        contracts.sort_by_key(|c| (c.status.is_terminal(), std::cmp::Reverse(c.id)));
+        for contract in contracts.into_iter().take(3) {
+            let status = contract.status.as_key();
+            let due = if contract.deadline > now {
+                format!("due in {}", ui::spans::duration(contract.deadline - now))
+            } else {
+                format!("due {} ago", ui::spans::duration(now - contract.deadline))
+            };
             foot.push(Line::styled(
                 format!(
-                    "contract #{} {} {:.0} {} {} due {}",
+                    "contract #{} {} {:.0} {} {status} {due}",
                     contract.id,
                     contract.kind.as_key(),
                     contract.remaining,
                     contract.good.label(),
-                    contract.status.as_key(),
-                    contract.deadline
                 ),
                 t.muted(),
             ));

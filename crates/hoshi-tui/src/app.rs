@@ -69,6 +69,16 @@ enum HistoryPane {
 /// cannot open the away summary on ordinary frames.
 pub const MIN_WAKE_SECS: u64 = 60;
 const AWAY_EVENTS_PER_PAGE: usize = 4;
+const MIN_TRADE_AMOUNT: f64 = 10.0;
+const MAX_TRADE_AMOUNT: f64 = 1_000_000.0;
+
+/// `+`/`-` step on the market amount: one digit below its size, at least 10,
+/// so 10 → 100 takes nine presses and 100 → 1000 nine more.
+fn trade_step(amount: f64) -> f64 {
+    10f64
+        .powf(amount.max(MIN_TRADE_AMOUNT).log10().floor())
+        .max(MIN_TRADE_AMOUNT)
+}
 const MAP_SYSTEM_MAX: u16 = 81;
 const MAP_SLOT_COUNT: u16 = 16;
 
@@ -204,7 +214,7 @@ impl App {
             planet_index: 0,
             status: String::new(),
             confirming_prestige: false,
-            trade_amount: 10.0,
+            trade_amount: MIN_TRADE_AMOUNT,
             away: None,
             away_hidden: false,
             away_event_page: 0,
@@ -343,9 +353,15 @@ impl App {
                         .map(|law| DetailSubject::Law(law.template_id.clone()))
                 }
             }
-            Screen::Market => TRADE_PAIRS
-                .get(self.selected)
-                .map(|&(pay, recv)| DetailSubject::Trade { pay, recv }),
+            Screen::Market => {
+                TRADE_PAIRS
+                    .get(self.selected)
+                    .map(|&(pay, recv)| DetailSubject::Trade {
+                        pay,
+                        recv,
+                        amount: self.trade_amount as u64,
+                    })
+            }
             Screen::Production => {
                 let steps: Vec<_> = self
                     .state
@@ -835,7 +851,14 @@ impl App {
                 self.recruit_selected_leader(now_unix);
             }
             Some(Binding::Increase) if self.screen == Screen::Market => {
-                self.trade_amount = (self.trade_amount + 10.0).min(1_000_000.0);
+                self.trade_amount =
+                    (self.trade_amount + trade_step(self.trade_amount)).min(MAX_TRADE_AMOUNT);
+            }
+            Some(Binding::Toggle) if self.screen == Screen::Market => {
+                if let Some(&(pay, _)) = TRADE_PAIRS.get(self.selected) {
+                    let max = self.state.max_trade_amount(pay).floor();
+                    self.trade_amount = max.clamp(MIN_TRADE_AMOUNT, MAX_TRADE_AMOUNT);
+                }
             }
             Some(Binding::Increase) if self.screen == Screen::Automation => {
                 self.add_default_automation_rule();
@@ -850,7 +873,8 @@ impl App {
                 self.scenario_advance();
             }
             Some(Binding::Decrease) if self.screen == Screen::Market => {
-                self.trade_amount = (self.trade_amount - 10.0).max(10.0);
+                self.trade_amount =
+                    (self.trade_amount - trade_step(self.trade_amount - 1.0)).max(MIN_TRADE_AMOUNT);
             }
             Some(Binding::SendProbe) if self.screen == Screen::Reports && !self.opened_report => {
                 self.send_probe(now_unix);
@@ -4024,6 +4048,48 @@ mod tests {
             "{synth:?}"
         );
         assert!(deposits_of(&mut app, BuildingKind::SolarPlant).is_empty());
+    }
+
+    #[test]
+    fn market_amount_steps_by_size_and_the_screen_shows_blockers_before_enter() {
+        let mut state = GameState::new(1_000);
+        state.config.market.cargo_free = 100.0;
+        state.resources.silicon = 4_596.0;
+        let mut app = App::new(state);
+        app.screen = Screen::Market;
+        app.selected = TRADE_PAIRS
+            .iter()
+            .position(|p| *p == (ResourceKind::Silicon, ResourceKind::Deuterium))
+            .unwrap();
+        for _ in 0..9 {
+            app.handle_key(KeyCode::Char('+'), 1_000);
+        }
+        assert_eq!(app.trade_amount, 100.0);
+        app.handle_key(KeyCode::Char('+'), 1_000);
+        assert_eq!(app.trade_amount, 200.0);
+        app.handle_key(KeyCode::Char('-'), 1_000);
+        assert_eq!(app.trade_amount, 100.0);
+        app.handle_key(KeyCode::Char(' '), 1_000);
+        assert_eq!(app.trade_amount, 100.0, "max is capped by cargo, not stock");
+        app.trade_amount = 800.0;
+        let text = render_text(&app, 140, 45);
+        assert!(text.contains("need 800 cargo, have 0"), "{text}");
+        let detail = app.current_detail().unwrap();
+        let silicon = detail
+            .deltas
+            .iter()
+            .find(|d| d.label == "silicon stock")
+            .unwrap();
+        assert_eq!(
+            (silicon.from.as_str(), silicon.to.as_str()),
+            ("4596", "3796")
+        );
+        assert!(
+            detail
+                .requirements
+                .iter()
+                .any(|r| !r.met && r.text.contains("cargo"))
+        );
     }
 
     #[test]
