@@ -158,17 +158,14 @@ impl SlotStatus {
     }
 }
 
+/// What happened over one gap: the core ledger plus the session lists that
+/// grew while it ran.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct AwaySummary {
     pub elapsed_secs: u64,
-    pub iron: f64,
-    pub silicon: f64,
-    pub deuterium: f64,
+    pub ledger: hoshi_core::CatchUpLedger,
     pub builds: u32,
     pub research: u32,
-    pub fleets_returned: u32,
-    pub expeditions: u32,
-    pub raids: u32,
     pub deliveries: Vec<String>,
     pub stalls: Vec<String>,
     pub completed: Vec<String>,
@@ -2785,12 +2782,8 @@ pub fn apply_difficulty(config: &mut hoshi_core::BalanceConfig, difficulty: &str
 
 pub struct AwaySnapshot {
     pub tick: u64,
-    pub iron: f64,
-    pub silicon: f64,
-    pub deuterium: f64,
     pub builds: u32,
     pub research: u32,
-    pub events: usize,
     pub deliveries: usize,
     pub stalls: usize,
     pub completed: usize,
@@ -2799,35 +2792,24 @@ pub struct AwaySnapshot {
 pub fn snapshot_away(state: &hoshi_core::GameState) -> AwaySnapshot {
     AwaySnapshot {
         tick: state.last_tick_unix,
-        iron: state.resources.iron,
-        silicon: state.resources.silicon,
-        deuterium: state.resources.deuterium,
         builds: building_levels(state),
         research: research_levels(state),
-        events: state.delivered_events().count(),
         deliveries: state.logistics.deliveries.len(),
         stalls: state.logistics.stalls.len(),
         completed: state.logistics.completed.len(),
     }
 }
 
-pub fn summarize_away(before: &AwaySnapshot, after: &hoshi_core::GameState) -> AwaySummary {
-    let new_events: Vec<String> = after
-        .delivered_events()
-        .skip(before.events)
-        .map(|e| e.text.clone())
-        .collect();
-    let fleets_returned = new_events.iter().filter(|t| t.contains("return")).count() as u32;
-    let expeditions = new_events
-        .iter()
-        .filter(|t| t.contains("expedition"))
-        .count() as u32;
-    let raids = new_events.iter().filter(|t| t.contains("raid")).count() as u32;
+/// Summarize a gap from the snapshot taken before
+/// [`hoshi_core::GameState::catch_up_ledger`] and the ledger it returned.
+pub fn summarize_away(
+    before: &AwaySnapshot,
+    ledger: hoshi_core::CatchUpLedger,
+    after: &hoshi_core::GameState,
+) -> AwaySummary {
     AwaySummary {
         elapsed_secs: after.last_tick_unix.saturating_sub(before.tick),
-        iron: after.resources.iron - before.iron,
-        silicon: after.resources.silicon - before.silicon,
-        deuterium: after.resources.deuterium - before.deuterium,
+        ledger,
         builds: after_building_levels(after).saturating_sub(before.builds),
         research: after
             .tech_levels
@@ -2835,9 +2817,6 @@ pub fn summarize_away(before: &AwaySnapshot, after: &hoshi_core::GameState) -> A
             .copied()
             .sum::<u32>()
             .saturating_sub(before.research),
-        fleets_returned,
-        expeditions,
-        raids,
         deliveries: after
             .logistics
             .deliveries
@@ -2859,7 +2838,13 @@ pub fn summarize_away(before: &AwaySnapshot, after: &hoshi_core::GameState) -> A
             .skip(before.completed)
             .cloned()
             .collect(),
-        events: new_events,
+        // The event log is capped, so new events are told apart by time, not
+        // by how many there were before.
+        events: after
+            .delivered_events()
+            .filter(|e| e.at > before.tick)
+            .map(|e| e.text.clone())
+            .collect(),
     }
 }
 
@@ -3063,14 +3048,61 @@ mod tests {
             text: "spy 1:2:3 activity detected=no lost=0/1".into(),
         });
         let before = snapshot_away(&state);
-        assert_eq!(before.events, 1);
         state.last_tick_unix = 100;
-        let summary = summarize_away(&before, &state);
+        let summary = summarize_away(&before, hoshi_core::CatchUpLedger::default(), &state);
         assert!(
             summary.events.iter().any(|text| text.contains("spy")),
             "{:?}",
             summary.events
         );
+    }
+
+    #[test]
+    fn away_summary_equals_the_saved_and_reloaded_delta() {
+        let mut state = GameState::with_config(0, BalanceConfig::default());
+        state.next_raid_at = Some(3_600);
+        let before = snapshot_away(&state);
+        let ledger = state.catch_up_ledger(10 * 3_600);
+        let summary = summarize_away(&before, ledger, &state);
+        assert_eq!(summary.ledger.raids() as usize, state.combat_logs.len());
+        assert!(summary.ledger.raids_lost >= 1);
+        let mut conn = open_save(std::path::Path::new(":memory:")).unwrap();
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        for planet in &summary.ledger.planets {
+            let saved = loaded.resources_at(planet.coord).unwrap();
+            for kind in hoshi_core::ResourceKind::ALL {
+                let delta = saved.get(kind) - planet.before.get(kind);
+                assert!(
+                    (planet.net(kind) - delta).abs() < 1e-9,
+                    "{kind:?}: summary {} saved {delta}",
+                    planet.net(kind)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn summarize_away_keeps_new_events_when_the_log_is_full() {
+        let mut state = GameState::new(0);
+        for at in 0..32 {
+            state.events.push(hoshi_core::GameEvent {
+                at,
+                text: format!("old {at}"),
+            });
+        }
+        state.last_tick_unix = 40;
+        let before = snapshot_away(&state);
+        state.events.drain(..2);
+        for at in [50, 60] {
+            state.events.push(hoshi_core::GameEvent {
+                at,
+                text: format!("new {at}"),
+            });
+        }
+        state.last_tick_unix = 60;
+        let summary = summarize_away(&before, hoshi_core::CatchUpLedger::default(), &state);
+        assert_eq!(summary.events, vec!["new 50", "new 60"]);
     }
 
     #[test]
@@ -3087,7 +3119,7 @@ mod tests {
             .push("stall: full storage (metal) at 1:1:1".into());
         state.logistics.completed.push("metal mine lv 2".into());
         state.last_tick_unix = 60;
-        let summary = summarize_away(&before, &state);
+        let summary = summarize_away(&before, hoshi_core::CatchUpLedger::default(), &state);
         assert_eq!(summary.elapsed_secs, 60);
         assert_eq!(summary.deliveries, vec!["delivered 10 metal to 1:1:2"]);
         assert_eq!(summary.stalls, vec!["stall: full storage (metal) at 1:1:1"]);

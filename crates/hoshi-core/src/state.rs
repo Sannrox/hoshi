@@ -21,6 +21,7 @@ use crate::intel::{
     intel_confidence, light_delay_secs, light_range_au, noisy_fleet, noisy_resources, sensor_error,
     signed_unit,
 };
+use crate::ledger::Term;
 use crate::outposts::{
     Outpost, RarePlanetBonus, generate_outposts, scaled_defence, scaled_garrison,
 };
@@ -390,6 +391,8 @@ pub struct GameState {
     /// Deliveries, stalls and completed items from catch-up in this session.
     /// Not persisted; the away overlay reads it after a gap.
     pub logistics: LogisticsGlance,
+    /// Set only inside [`GameState::catch_up_ledger`]. Not persisted.
+    ledger: Option<crate::CatchUpLedger>,
     /// Append-only structured history with snapshots for time travel.
     pub history: crate::HistoryLog,
     /// Parked named vehicles for orbital mission planning.
@@ -515,6 +518,7 @@ impl GameState {
             pending_tactical: None,
             interactive_tactics: false,
             logistics: LogisticsGlance::default(),
+            ledger: None,
             history: crate::HistoryLog::default(),
             vehicles: Vec::new(),
             next_vehicle_id: 0,
@@ -592,11 +596,37 @@ impl GameState {
         }
     }
 
+    /// [`GameState::catch_up`] that also reports where every planet's
+    /// stockpile went. The away summary reads it.
+    pub fn catch_up_ledger(&mut self, now_unix: u64) -> crate::CatchUpLedger {
+        self.ledger = Some(crate::CatchUpLedger::start(self.stockpiles()));
+        self.catch_up(now_unix);
+        self.settle_ledger(Term::Other);
+        self.ledger.take().unwrap_or_default()
+    }
+
+    fn stockpiles(&self) -> Vec<(Coord, Resources)> {
+        let mut out = vec![(self.home, self.resources)];
+        out.extend(self.colonies.iter().map(|c| (c.coord, c.resources)));
+        out
+    }
+
+    fn settle_ledger(&mut self, term: Term) {
+        if self.ledger.is_none() {
+            return;
+        }
+        let stock = self.stockpiles();
+        if let Some(ledger) = &mut self.ledger {
+            ledger.settle(stock, term);
+        }
+    }
+
     pub fn catch_up(&mut self, now_unix: u64) {
         if now_unix <= self.last_tick_unix {
             return;
         }
         loop {
+            self.settle_ledger(Term::Other);
             if self.build_queue.first().is_some_and(|job| {
                 job.kind == crate::BuildJobKind::Dismantle && job.started_at.is_none()
             }) {
@@ -734,6 +764,7 @@ impl GameState {
                 ),
             ) else {
                 self.produce_until(now_unix);
+                self.settle_ledger(Term::Production);
                 self.deliver_spy_reports_at(now_unix);
                 self.apply_laws_at(now_unix);
                 self.apply_automation_at(now_unix);
@@ -752,6 +783,7 @@ impl GameState {
             };
             if done_at > now_unix {
                 self.produce_until(now_unix);
+                self.settle_ledger(Term::Production);
                 self.deliver_spy_reports_at(now_unix);
                 self.apply_laws_at(now_unix);
                 self.apply_automation_at(now_unix);
@@ -769,6 +801,7 @@ impl GameState {
                 return;
             }
             self.produce_until(done_at);
+            self.settle_ledger(Term::Production);
             self.deliver_spy_reports_at(done_at);
             self.apply_laws_at(done_at);
             self.apply_automation_at(done_at);
@@ -870,6 +903,7 @@ impl GameState {
             if ship_at == Some(done_at) {
                 self.complete_one_ship(done_at);
             }
+            self.settle_ledger(Term::Other);
             if mission_at == Some(done_at) {
                 self.advance_missions_at(done_at);
             }
@@ -882,6 +916,7 @@ impl GameState {
             if route_at == Some(done_at) {
                 self.fire_routes_at(done_at);
             }
+            self.settle_ledger(Term::Transfer);
             if raid_at == Some(done_at) {
                 self.resolve_raid_at(done_at);
             }
@@ -3873,6 +3908,9 @@ impl GameState {
                 }
                 MissionPhase::Return => {
                     let mission = self.missions.remove(index);
+                    if let Some(ledger) = &mut self.ledger {
+                        ledger.fleets_returned += 1;
+                    }
                     self.add_fleet_at(mission.origin, mission.ships);
                     if mission.transport {
                         self.credit_at(mission.origin, mission.cargo);
@@ -3902,13 +3940,18 @@ impl GameState {
             &self.config.expedition,
             &self.config.ships,
         );
+        if let Some(ledger) = &mut self.ledger {
+            ledger.expeditions += 1;
+        }
         match result {
             ExpeditionResult::Nothing => {
                 self.push_event(done_at, "expedition: nothing found".into());
                 false
             }
             ExpeditionResult::Resources(found) => {
+                self.settle_ledger(Term::Transfer);
                 self.credit_capped(found);
+                self.settle_ledger(Term::Other);
                 self.push_event(done_at, format!("expedition: found {}", found.brief()));
                 false
             }
@@ -4602,9 +4645,7 @@ impl GameState {
             self.defences = battle.defences_after;
             let plunder = self.take_raid_plunder(battle.winner);
             self.apply_raid_standing(battle.winner, done_at);
-            if battle.winner != CombatWinner::Attacker {
-                self.raids_survived = self.raids_survived.saturating_add(1);
-            }
+            self.note_raid_outcome(battle.winner);
             self.push_event(
                 done_at,
                 format_layered_raid(pirates, parked, &battle, plunder),
@@ -4654,9 +4695,7 @@ impl GameState {
         let plunder = self.take_raid_plunder(report.winner);
         self.apply_raid_standing(report.winner, done_at);
         self.note_raid_incident(report.winner, done_at);
-        if report.winner != CombatWinner::Attacker {
-            self.raids_survived = self.raids_survived.saturating_add(1);
-        }
+        self.note_raid_outcome(report.winner);
         self.grant_admiral_xp(report.winner);
         self.push_event(done_at, format_raid_report(&report, plunder));
         self.schedule_next_raid(done_at, report)
@@ -4705,7 +4744,24 @@ impl GameState {
             self.config.raid.plunder_cap,
         );
         self.resources = self.resources.saturating_sub(taken);
+        let home = self.home;
+        if let Some(ledger) = &mut self.ledger {
+            ledger.plunder(home, taken);
+        }
         taken
+    }
+
+    fn note_raid_outcome(&mut self, winner: CombatWinner) {
+        if winner != CombatWinner::Attacker {
+            self.raids_survived = self.raids_survived.saturating_add(1);
+        }
+        if let Some(ledger) = &mut self.ledger {
+            if winner == CombatWinner::Attacker {
+                ledger.raids_lost += 1;
+            } else {
+                ledger.raids_won += 1;
+            }
+        }
     }
 
     fn apply_raid_standing(&mut self, winner: CombatWinner, done_at: u64) {
@@ -5725,6 +5781,7 @@ impl GameState {
         if now_unix <= self.last_tick_unix {
             return;
         }
+        self.settle_ledger(Term::Other);
         let from = self.last_tick_unix;
         let dismantle_progress = self.dismantle_progress(now_unix - from);
         let hours = (now_unix - from) as f64 / 3600.0;
@@ -5744,6 +5801,7 @@ impl GameState {
         if self.config.chains.enabled() {
             self.produce_chains(hours, factor, boost, from, now_unix);
         } else {
+            let mut home_capped = Resources::ZERO;
             for kind in ResourceKind::ALL {
                 let rate = self.base_production_range(kind, from, now_unix)
                     * factor
@@ -5752,9 +5810,11 @@ impl GameState {
                     * self.mine_health_factor(kind);
                 let cap = self.storage_cap(kind);
                 let current = self.resources.get(kind);
-                self.resources
-                    .set(kind, add_capped(current, rate, hours, cap));
+                let next = add_capped(current, rate, hours, cap);
+                self.resources.set(kind, next);
+                home_capped.set(kind, cap_loss(current, rate, hours, next));
             }
+            self.ledger_cap(self.home, home_capped);
             let config = self.config.clone();
             let metal_t = self.tech_modifier_range(ModifierKind::MetalOutput, from, now_unix);
             let crystal_t = self.tech_modifier_range(ModifierKind::CrystalOutput, from, now_unix);
@@ -5790,6 +5850,7 @@ impl GameState {
                     )
                 })
                 .collect();
+            let mut colony_capped = Vec::new();
             for (((colony, emission), staff), health) in self
                 .colonies
                 .iter_mut()
@@ -5837,12 +5898,28 @@ impl GameState {
                 let deut_cap = config
                     .deuterium_storage
                     .capacity(colony.buildings.deuterium_storage);
-                colony.resources.iron =
-                    add_capped(colony.resources.iron, metal_rate, hours, metal_cap);
+                let prior = colony.resources;
+                colony.resources.iron = add_capped(prior.iron, metal_rate, hours, metal_cap);
                 colony.resources.silicon =
-                    add_capped(colony.resources.silicon, crystal_rate, hours, crystal_cap);
+                    add_capped(prior.silicon, crystal_rate, hours, crystal_cap);
                 colony.resources.deuterium =
-                    add_capped(colony.resources.deuterium, deut_rate, hours, deut_cap);
+                    add_capped(prior.deuterium, deut_rate, hours, deut_cap);
+                colony_capped.push((
+                    colony.coord,
+                    Resources::from_parts(
+                        cap_loss(prior.iron, metal_rate, hours, colony.resources.iron),
+                        cap_loss(prior.silicon, crystal_rate, hours, colony.resources.silicon),
+                        cap_loss(
+                            prior.deuterium,
+                            deut_rate,
+                            hours,
+                            colony.resources.deuterium,
+                        ),
+                    ),
+                ));
+            }
+            for (coord, lost) in colony_capped {
+                self.ledger_cap(coord, lost);
             }
         }
         let mut produced = Resources::ZERO;
@@ -5853,6 +5930,7 @@ impl GameState {
             }
             produced.set(kind, added);
         }
+        self.settle_ledger(Term::Production);
         self.collect_law_tax(hours, from, now_unix);
         self.accrue_production_income(hours, produced);
         self.tick_flagship(now_unix);
@@ -5891,6 +5969,7 @@ impl GameState {
         self.last_tick_unix = now_unix;
         self.trim_event_log();
         self.sync_daily(now_unix);
+        self.settle_ledger(Term::Other);
     }
 
     fn produce_chains(&mut self, hours: f64, home_factor: f64, boost: f64, from: u64, to: u64) {
@@ -5937,7 +6016,7 @@ impl GameState {
             (from, to),
             self.home,
         );
-        apply_recipes(
+        let tally = apply_recipes(
             RecipeRun {
                 config: &chains,
                 buildings: home_buildings,
@@ -5964,6 +6043,7 @@ impl GameState {
                 }
             },
         );
+        self.ledger_recipes(self.home, tally);
 
         let n = self.colonies.len();
         for i in 0..n {
@@ -6040,7 +6120,7 @@ impl GameState {
                 coord,
             );
             let colony = &mut self.colonies[i];
-            apply_recipes(
+            let tally = apply_recipes(
                 RecipeRun {
                     config: &chains,
                     buildings,
@@ -6067,6 +6147,24 @@ impl GameState {
                     }
                 },
             );
+            self.ledger_recipes(coord, tally);
+        }
+    }
+
+    fn ledger_cap(&mut self, coord: Coord, lost: Resources) {
+        if let Some(ledger) = &mut self.ledger
+            && lost != Resources::ZERO
+        {
+            ledger.cap(coord, lost);
+        }
+    }
+
+    fn ledger_recipes(&mut self, coord: Coord, tally: crate::chains::RecipeTally) {
+        self.ledger_cap(coord, tally.capped);
+        if let Some(ledger) = &mut self.ledger
+            && tally.consumed != Resources::ZERO
+        {
+            ledger.spend(coord, tally.consumed);
         }
     }
 
@@ -6931,6 +7029,14 @@ fn start_queue_head(
     let job = &mut queue[0];
     job.started_at = Some(now);
     job.completes_at = Some(now.saturating_add(duration));
+}
+
+/// Production that [`add_capped`] discarded at the cap.
+fn cap_loss(current: f64, rate_per_hour: f64, hours: f64, next: f64) -> f64 {
+    if hours <= 0.0 || rate_per_hour <= 0.0 {
+        return 0.0;
+    }
+    (current + rate_per_hour * hours - next).max(0.0)
 }
 
 fn add_capped(current: f64, rate_per_hour: f64, hours: f64, cap: f64) -> f64 {
@@ -9306,6 +9412,84 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         cfg.crystal_storage.base = 1_000_000.0;
         cfg.deuterium_storage.base = 1_000_000.0;
         cfg
+    }
+
+    fn assert_ledger_balances(
+        state: &GameState,
+        before: &[(Coord, Resources)],
+        ledger: &crate::CatchUpLedger,
+    ) {
+        for (coord, stock) in before {
+            let planet = ledger.planets.iter().find(|p| p.coord == *coord).unwrap();
+            assert_eq!(planet.before, *stock, "{coord}");
+        }
+        for planet in &ledger.planets {
+            let after = *state.resources_at(planet.coord).unwrap();
+            assert_eq!(planet.after, after, "{}", planet.coord);
+            for kind in ResourceKind::ALL {
+                let sum = planet.before.get(kind) + planet.net(kind);
+                assert!(
+                    (sum - after.get(kind)).abs() < 1e-9,
+                    "{} {kind:?}: before+terms={sum} after={}",
+                    planet.coord,
+                    after.get(kind)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn catch_up_ledger_accounts_for_every_resource_on_every_planet() {
+        let mut cfg = logistics_config();
+        cfg.raid = crate::RaidConfig::default();
+        cfg.raid.first_delay_secs = 1800;
+        cfg.raid.min_warning_secs = 600;
+        cfg.crystal_storage.base = 2_000.0;
+        cfg.buildings.metal_mine = cheap_spec(1_800.0);
+        cfg.starting_resources = Resources::from_parts(20_000.0, 2_000.0, 500.0);
+        let mut state = GameState::with_config(0, cfg);
+        plant_colony(&mut state, neighbor());
+        state.fleet.add(ShipKind::SmallCargo, 2);
+        state
+            .schedule_route(
+                state.home,
+                neighbor(),
+                cargo_fleet(),
+                Resources::from_parts(50.0, 0.0, 0.0),
+                30,
+                0,
+            )
+            .unwrap();
+        state.enqueue_build(BuildingKind::MetalMine, 0).unwrap();
+        let before = state.stockpiles();
+
+        let ledger = state.catch_up_ledger(4 * 3600);
+
+        assert_ledger_balances(&state, &before, &ledger);
+        let home = ledger.planets[0];
+        let colony = ledger.planets[1];
+        assert_eq!(ledger.raids_lost, 1, "{:?}", state.events);
+        assert!(home.plundered.iron > 0.0);
+        assert!(home.capped.silicon > 0.0);
+        assert!(home.transfers_out.iron > 0.0);
+        assert!(colony.transfers_in.iron > 0.0);
+        assert_eq!(state.buildings.metal_mine, 2);
+    }
+
+    #[test]
+    fn catch_up_ledger_balances_on_default_chains() {
+        let mut state = GameState::with_config(0, BalanceConfig::default());
+        state.next_raid_at = Some(3600);
+        let before = state.stockpiles();
+        let ledger = state.catch_up_ledger(10 * 3600);
+        assert_ledger_balances(&state, &before, &ledger);
+        assert!(ledger.raids() >= 1);
+        assert!(ledger.planets[0].produced.iron > 0.0);
+        assert!(ledger.planets[0].plundered.iron > 0.0);
+        assert!(
+            ledger.planets[0].spent.rare_earths > 0.0,
+            "magnets consume rare earths"
+        );
     }
 
     #[test]

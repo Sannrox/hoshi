@@ -95,6 +95,16 @@ pub fn countdown(secs: u64) -> String {
     }
 }
 
+/// `+500`, `−388`, `0`: [`compact`] with an explicit sign and a true minus.
+pub fn signed(v: f64) -> String {
+    let text = compact(v.abs());
+    match text.as_str() {
+        "0" => text,
+        _ if v < 0.0 => format!("−{text}"),
+        _ => format!("+{text}"),
+    }
+}
+
 /// `500`, `12.5k`, `3.2M` for tight cells.
 pub fn compact(v: f64) -> String {
     let a = v.abs();

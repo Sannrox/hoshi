@@ -386,6 +386,15 @@ pub(crate) struct RecipeRun<'a> {
     pub boost: f64,
 }
 
+/// Stockpile flows of one [`apply_recipes`] pass that its net change hides.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct RecipeTally {
+    /// Component inputs the recipes took from storage.
+    pub consumed: Resources,
+    /// Component output the storage cap discarded.
+    pub capped: Resources,
+}
+
 /// Run every recipe once for `hours`. Extractors first (config order must be
 /// topological). Stops a recipe when any input runs out or a component output
 /// is already at cap.
@@ -395,9 +404,13 @@ pub(crate) fn apply_recipes(
     resources: &mut Resources,
     goods: &mut BTreeMap<String, f64>,
     cap_of: impl Fn(ResourceKind) -> f64,
-) {
+) -> RecipeTally {
+    let mut tally = RecipeTally {
+        consumed: Resources::ZERO,
+        capped: Resources::ZERO,
+    };
     if run.hours <= 0.0 {
-        return;
+        return tally;
     }
     let throttle = run.energy_factor.max(0.0) * run.boost.max(0.0);
     for recipe in &run.config.recipes {
@@ -420,15 +433,16 @@ pub(crate) fn apply_recipes(
         if scale <= 0.0 {
             continue;
         }
-        let mut limited: f64 = 1.0;
+        let mut by_input: f64 = 1.0;
         for (id, qty) in &recipe.inputs {
             if *qty <= 0.0 {
                 continue;
             }
             let need = *qty * scale;
             let have = available(resources, goods, id);
-            limited = limited.min(have / need);
+            by_input = by_input.min(have / need);
         }
+        let mut limited = by_input;
         for (id, qty) in &recipe.outputs {
             if *qty <= 0.0 {
                 continue;
@@ -444,11 +458,29 @@ pub(crate) fn apply_recipes(
             }
             limited = limited.min((cap - current) / (*qty * scale));
         }
+        let lost = by_input.max(0.0) - limited.max(0.0);
+        if lost > 0.0 {
+            // Only outputs whose own store is the binding limit were discarded.
+            for (id, qty) in &recipe.outputs {
+                let Some(kind) = component_kind(id).filter(|_| *qty > 0.0) else {
+                    continue;
+                };
+                let room = (cap_of(kind) - resources.get(kind)).max(0.0) / (*qty * scale);
+                if room <= limited.max(0.0) + 1e-12 {
+                    let capped = &mut tally.capped;
+                    capped.set(kind, capped.get(kind) + *qty * scale * lost);
+                }
+            }
+        }
         if limited <= 0.0 {
             continue;
         }
         let used = scale * limited;
         for (id, qty) in &recipe.inputs {
+            if let Some(kind) = component_kind(id) {
+                let taken = (*qty * used).clamp(0.0, resources.get(kind));
+                tally.consumed.set(kind, tally.consumed.get(kind) + taken);
+            }
             take_good(resources, goods, id, *qty * used);
         }
         for (id, qty) in &recipe.outputs {
@@ -456,6 +488,7 @@ pub(crate) fn apply_recipes(
             add_good(resources, goods, id, *qty * used, cap);
         }
     }
+    tally
 }
 
 #[derive(Deserialize, Default)]
@@ -677,6 +710,47 @@ mod tests {
         goods.clear();
         tick(&cfg, buildings, &empty_dep, &mut resources, &mut goods);
         assert!(resources.iron.abs() < 1e-9);
+    }
+
+    #[test]
+    fn cap_tally_charges_only_the_full_store() {
+        let cfg = ChainConfig {
+            goods: Vec::new(),
+            recipes: vec![Recipe {
+                id: "split".into(),
+                building: BuildingKind::MetalMine,
+                deposit: None,
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::from([("iron".into(), 1.0), ("electronics".into(), 1.0)]),
+                energy: 0.0,
+                heat: 0.0,
+                pollution: 0.0,
+            }],
+            deposits: BTreeMap::new(),
+            deposit_jitter: 0.0,
+        };
+        let buildings = Buildings {
+            metal_mine: 1,
+            ..Buildings::default()
+        };
+        let mut resources = Resources::from_parts(95.0, 0.0, 0.0);
+        let tally = apply_recipes(
+            RecipeRun {
+                config: &cfg,
+                buildings,
+                deposits: &BTreeMap::new(),
+                hours: 1.0,
+                energy_factor: 1.0,
+                boost: 1.0,
+            },
+            |_| 10.0,
+            &mut resources,
+            &mut BTreeMap::new(),
+            |_| 100.0,
+        );
+        assert!((tally.capped.iron - 5.0).abs() < 1e-9, "{:?}", tally.capped);
+        assert_eq!(tally.capped.silicon, 0.0);
+        assert!((resources.silicon - 5.0).abs() < 1e-9);
     }
 
     #[test]

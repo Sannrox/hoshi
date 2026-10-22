@@ -138,11 +138,13 @@ pub fn summarize_away(summary: &AwaySummary, prefs: Prefs) -> Option<Notice> {
     if prefs.build && summary.builds > 0 {
         parts.push(format!("{} builds", summary.builds));
     }
-    if prefs.raid && summary.raids > 0 {
-        parts.push(format!("{} raids", summary.raids));
+    let raids = summary.ledger.raids();
+    if prefs.raid && raids > 0 {
+        parts.push(format!("{raids} raids"));
     }
-    if prefs.fleet && summary.fleets_returned > 0 {
-        parts.push(format!("{} fleets", summary.fleets_returned));
+    let fleets = summary.ledger.fleets_returned;
+    if prefs.fleet && fleets > 0 {
+        parts.push(format!("{fleets} fleets"));
     }
     if parts.is_empty() {
         return None;
@@ -305,12 +307,14 @@ mod tests {
             body: "raid incoming in 10s".into(),
         };
         assert!(encode(prefs, 0, &[raid]).is_empty());
+        let mut ledger = hoshi_core::CatchUpLedger::default();
+        ledger.fleets_returned = 1;
+        ledger.raids_lost = 1;
         let summary = summarize_away(
             &AwaySummary {
                 elapsed_secs: 3_600,
                 builds: 2,
-                fleets_returned: 1,
-                raids: 1,
+                ledger,
                 ..AwaySummary::default()
             },
             prefs,
