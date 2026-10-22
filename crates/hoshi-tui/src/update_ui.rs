@@ -111,6 +111,11 @@ impl UpdateUi {
         self.document.is_some()
     }
 
+    /// The first-run update-check notice is on screen; the next key closes it.
+    pub fn disclosure_open(&self) -> bool {
+        self.disclosure
+    }
+
     pub fn open_changelog(&mut self) {
         self.document = Some(("Changelog".into(), update::CHANGELOG.into()));
         self.scroll = 0;
@@ -127,6 +132,11 @@ impl UpdateUi {
                 KeyCode::Home => self.scroll = 0,
                 _ => {}
             }
+            return true;
+        }
+        if self.disclosure {
+            // Consumed, so the key does not also act on the screen underneath.
+            self.disclosure = false;
             return true;
         }
         false
@@ -210,6 +220,11 @@ impl UpdateUi {
                             } else {
                                 "Updates"
                             })
+                            .title_bottom(if self.disclosure {
+                                "any key closes"
+                            } else {
+                                ""
+                            })
                             .style(style),
                     ),
                 rect,
@@ -275,6 +290,34 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect()
+    }
+
+    #[test]
+    fn update_disclosure_closes_on_the_first_key_and_stays_seen() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "hoshi-update-disclosure-{}-{nonce}",
+            std::process::id()
+        ));
+        let config = crate::config::UserConfig {
+            update_check: false,
+            ..Default::default()
+        };
+        let mut ui = UpdateUi::start(dir.clone(), &config, &[], 100);
+        // A real first run has checks on; force the notice without a network session.
+        ui.disclosure = true;
+        assert!(text(&ui).contains("Update check on"));
+        assert!(text(&ui).contains("any key closes"));
+        ui.did_draw();
+        assert!(ui.handle_key(KeyCode::Char('x')), "closing key is consumed");
+        assert!(!ui.disclosure_open());
+        assert!(!text(&ui).contains("Update check on"));
+        assert!(!ui.handle_key(KeyCode::Char('x')));
+        assert!(CheckCache::modify(&dir, |_| {}).unwrap().disclosure_seen);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

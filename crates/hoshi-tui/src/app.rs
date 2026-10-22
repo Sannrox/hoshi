@@ -2689,7 +2689,13 @@ impl App {
 
     fn footer_lines(&self, width: usize) -> Vec<Line<'static>> {
         let mut rows = Vec::new();
+        // The hint waits until the update notice, drawn over the same rows, closes.
+        let disclosure = self
+            .updates
+            .as_ref()
+            .is_some_and(crate::update_ui::UpdateUi::disclosure_open);
         if self.show_tutorial
+            && !disclosure
             && let Some(hint) = self.state.pending_hint()
         {
             for line in wrap_text(&format!("Hint: {}", hint.title), width) {
