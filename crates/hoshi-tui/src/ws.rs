@@ -39,10 +39,56 @@ pub fn websocket_version_ok(headers: &str) -> bool {
     header_line(headers, "sec-websocket-version").is_some_and(|v| v.trim() == "13")
 }
 
-pub fn write_opening(stream: &mut TcpStream, key: &str) -> io::Result<()> {
+/// Subprotocol that `/v1/events` selects when a client offers it.
+pub const PROTOCOL: &str = "hoshi.v1";
+const BEARER_PREFIX: &str = "hoshi.bearer.";
+
+/// What a client offered in `Sec-WebSocket-Protocol`. Browsers cannot set an
+/// `Authorization` header on a WebSocket, so they send the token as
+/// `hoshi.bearer.<base64url token>` next to `hoshi.v1`.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Offer {
+    pub v1: bool,
+    pub token: Option<String>,
+}
+
+/// Parse every `Sec-WebSocket-Protocol` line. `Err` for a second bearer entry,
+/// a bearer entry without `hoshi.v1`, or a token that is not base64url UTF-8.
+pub fn protocol_offer(headers: &str) -> Result<Offer, ()> {
+    let mut offer = Offer::default();
+    let entries = headers
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .filter(|(name, _)| name.trim().eq_ignore_ascii_case("sec-websocket-protocol"))
+        .flat_map(|(_, value)| value.split(','))
+        .map(str::trim);
+    for entry in entries {
+        if entry == PROTOCOL {
+            offer.v1 = true;
+        } else if let Some(encoded) = entry.strip_prefix(BEARER_PREFIX) {
+            let token = b64url_decode(encoded)
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+                .filter(|token| !token.is_empty())
+                .ok_or(())?;
+            if offer.token.replace(token).is_some() {
+                return Err(());
+            }
+        }
+    }
+    if offer.token.is_some() && !offer.v1 {
+        return Err(());
+    }
+    Ok(offer)
+}
+
+/// Send the 101 response; `protocol` becomes `Sec-WebSocket-Protocol`.
+pub fn write_opening(stream: &mut TcpStream, key: &str, protocol: Option<&str>) -> io::Result<()> {
     let accept = accept_key(key);
+    let selected = protocol
+        .map(|name| format!("Sec-WebSocket-Protocol: {name}\r\n"))
+        .unwrap_or_default();
     let header = format!(
-        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n{selected}\r\n"
     );
     stream.write_all(header.as_bytes())
 }
@@ -192,6 +238,33 @@ fn header_csv_has(headers: &str, name: &str, want: &str) -> bool {
     })
 }
 
+/// Unpadded base64url (RFC 4648 §5), as `hoshi.bearer.` carries it.
+fn b64url_decode(text: &str) -> Option<Vec<u8>> {
+    if text.len() % 4 == 1 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(text.len() * 3 / 4);
+    let mut acc = 0u32;
+    let mut bits = 0;
+    for byte in text.bytes() {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'-' => 62,
+            b'_' => 63,
+            _ => return None,
+        };
+        acc = (acc << 6) | u32::from(value);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    Some(out)
+}
+
 fn b64_20(digest: &[u8; 20]) -> String {
     const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = [0u8; 28];
@@ -226,6 +299,28 @@ mod tests {
             accept_key("dGhlIHNhbXBsZSBub25jZQ=="),
             "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
         );
+    }
+
+    #[test]
+    fn bearer_subprotocol_needs_v1_and_one_token() {
+        let offer =
+            protocol_offer("Sec-WebSocket-Protocol: hoshi.v1, hoshi.bearer.c2VjcmV0LXRva2Vu\r\n");
+        assert_eq!(
+            offer,
+            Ok(Offer {
+                v1: true,
+                token: Some("secret-token".into())
+            })
+        );
+        assert_eq!(protocol_offer("Host: x\r\n"), Ok(Offer::default()));
+        assert!(protocol_offer("Sec-WebSocket-Protocol: hoshi.bearer.c2VjcmV0\r\n").is_err());
+        assert!(
+            protocol_offer(
+                "Sec-WebSocket-Protocol: hoshi.v1, hoshi.bearer.YQ\r\nSec-WebSocket-Protocol: hoshi.bearer.Yg\r\n"
+            )
+            .is_err()
+        );
+        assert!(protocol_offer("Sec-WebSocket-Protocol: hoshi.v1, hoshi.bearer.c2V=\r\n").is_err());
     }
 
     #[test]

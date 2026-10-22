@@ -158,6 +158,18 @@ through the CLI.
 bearer token as `/v1`. Unauthenticated sockets receive `401` and are not
 upgraded. `/healthz` stays open while a socket is held.
 
+Browsers cannot set `Authorization` on a WebSocket, so they send the token as
+a subprotocol next to `hoshi.v1`, base64url-encoded without padding:
+
+```js
+new WebSocket(url, ["hoshi.v1", "hoshi.bearer." + base64url(token)])
+```
+
+The server checks it like the header (same save scope and rate limit) and
+answers `Sec-WebSocket-Protocol: hoshi.v1`; the token is never echoed. Keep it
+out of the URL. A request with both the header and a `hoshi.bearer.` entry,
+more than one `hoshi.bearer.` entry, or one without `hoshi.v1` gets `400`.
+
 Reconnect with `?cursor=<id>`, where `<id>` is the last event `id` the client
 stored. The server replays every retained public event with `id` greater than
 that cursor, then sends new ones as they land. The log keeps the last 256

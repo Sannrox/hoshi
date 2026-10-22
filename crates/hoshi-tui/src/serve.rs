@@ -1414,9 +1414,29 @@ fn serve_events(
     push: &Mutex<crate::push::Gate<crate::push::Noop>>,
 ) -> std::io::Result<()> {
     let now = SystemClock.now_unix();
+    let Ok(offer) = ws::protocol_offer(headers) else {
+        return write_http(
+            stream,
+            400,
+            &error_body("invalid", "invalid websocket protocol"),
+            "",
+        );
+    };
+    let authorization = match (authorization, offer.token) {
+        (Some(_), Some(_)) => {
+            return write_http(
+                stream,
+                400,
+                &error_body("invalid", "send the token in one place"),
+                "",
+            );
+        }
+        (None, Some(token)) => Some(format!("Bearer {token}")),
+        (header, None) => header.map(str::to_string),
+    };
     let gate = {
         let mut auth = lock_poison(auth);
-        auth.allow(save, "/v1/events", authorization, now)
+        auth.allow(save, "/v1/events", authorization.as_deref(), now)
     };
     if let Err((status, value)) = gate {
         let extra = match status {
@@ -1445,7 +1465,7 @@ fn serve_events(
             "",
         );
     };
-    ws::write_opening(stream, &key)?;
+    ws::write_opening(stream, &key, offer.v1.then_some(ws::PROTOCOL))?;
     let mut cursor = cursor;
     let mut announced_update = None;
     if pump_events(save, stream, live, push, &mut cursor, now).is_err() {
@@ -2626,6 +2646,15 @@ mod tests {
         path: &str,
         authorization: Option<&str>,
     ) -> (TcpStream, u16, String) {
+        let auth_line = match authorization {
+            Some(value) => format!("Authorization: {value}\r\n"),
+            None => String::new(),
+        };
+        ws_open_with(addr, path, &auth_line)
+    }
+
+    /// Open a WebSocket with raw extra header lines (each ending in CRLF).
+    fn ws_open_with(addr: SocketAddr, path: &str, extra: &str) -> (TcpStream, u16, String) {
         let mut stream = TcpStream::connect(addr).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
@@ -2633,13 +2662,9 @@ mod tests {
         stream
             .set_write_timeout(Some(Duration::from_secs(5)))
             .unwrap();
-        let auth_line = match authorization {
-            Some(value) => format!("Authorization: {value}\r\n"),
-            None => String::new(),
-        };
         write!(
             stream,
-            "GET {path} HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n{auth_line}\r\n"
+            "GET {path} HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n{extra}\r\n"
         )
         .unwrap();
         let (status, headers) = read_http_headers(&mut stream);
@@ -2944,6 +2969,89 @@ mod tests {
             replayed.iter().any(|v| v["type"] == "build"),
             "{replayed:?}"
         );
+        let _ = std::fs::remove_file(&save);
+        let _ = std::fs::remove_file(save_lock_path(&save));
+    }
+    /// `Sec-WebSocket-Protocol` line carrying `token` the way a browser sends it.
+    fn browser_protocol(token: &str) -> String {
+        const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let bits: String = token.bytes().map(|b| format!("{b:08b}")).collect();
+        let encoded: String = bits
+            .as_bytes()
+            .chunks(6)
+            .map(|chunk| {
+                let mut n = 0usize;
+                for (i, bit) in chunk.iter().enumerate() {
+                    n |= usize::from(*bit == b'1') << (5 - i);
+                }
+                T[n] as char
+            })
+            .collect();
+        format!("Sec-WebSocket-Protocol: hoshi.v1, hoshi.bearer.{encoded}\r\n")
+    }
+
+    #[test]
+    fn browser_token_in_subprotocol_opens_the_event_stream() {
+        let save = unique_save();
+        seed_stream_events(&save);
+        let addr = spawn_run(ephemeral(save.clone()));
+        let (mut stream, status, headers) =
+            ws_open_with(addr, "/v1/events", &browser_protocol(TEST_TOKEN));
+        assert_eq!(status, 101, "{headers}");
+        let selected: Vec<&str> = headers
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .filter(|(name, _)| name.eq_ignore_ascii_case("sec-websocket-protocol"))
+            .map(|(_, value)| value.trim())
+            .collect();
+        assert_eq!(selected, ["hoshi.v1"], "{headers}");
+        assert!(!headers.contains(TEST_TOKEN), "{headers}");
+        assert!(!read_text_events(&mut stream, 1).is_empty());
+        let _ = std::fs::remove_file(&save);
+        let _ = std::fs::remove_file(save_lock_path(&save));
+    }
+
+    #[test]
+    fn browser_token_is_checked_like_the_header() {
+        let save = unique_save();
+        seed_save(&save);
+        let tokens = vec![
+            ScopedToken {
+                admin: false,
+                secret: TEST_TOKEN.into(),
+                save: save.clone(),
+            },
+            ScopedToken {
+                admin: false,
+                secret: "other-save-token".into(),
+                save: unique_save(),
+            },
+        ];
+        let server = Server::open(ServeOptions {
+            bind: parse_bind("127.0.0.1:0").unwrap(),
+            save: save.clone(),
+        })
+        .expect("bind serve")
+        .with_auth(Auth::with_tokens(
+            tokens,
+            DEFAULT_RATE_LIMIT,
+            DEFAULT_RATE_WINDOW_SECS,
+        ));
+        let addr = spawn_run(server);
+        for token in ["other-save-token", "unknown-token"] {
+            let (_stream, status, headers) =
+                ws_open_with(addr, "/v1/events", &browser_protocol(token));
+            assert_eq!(status, 401, "{headers}");
+            assert!(!headers.contains("Switching Protocols"), "{headers}");
+            assert!(!headers.contains(token), "{headers}");
+        }
+        let both = format!(
+            "Authorization: Bearer {TEST_TOKEN}\r\n{}",
+            browser_protocol(TEST_TOKEN)
+        );
+        let (_stream, status, headers) = ws_open_with(addr, "/v1/events", &both);
+        assert_eq!(status, 400, "{headers}");
+        assert!(!headers.contains("Switching Protocols"), "{headers}");
         let _ = std::fs::remove_file(&save);
         let _ = std::fs::remove_file(save_lock_path(&save));
     }
