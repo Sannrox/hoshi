@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- The first-run update-check notice closes on the next key instead of covering the bottom of every screen for the whole session, and the tutorial hint waits until it has closed.
 - The away summary shows where resources went on every planet: produced, spent, plundered, lost at the storage cap and net, with a plunder line, raid, fleet and expedition counts taken from the simulation, the latest events first (space shows all), and a correct minus sign. It also opens after the machine wakes from sleep while the game is running.
 - Add fusion plants: D-D after `plasma_physics` and `fusion_dd`, D-He3 after `fusion_dhe3`. Plants burn deuterium (and helium-3) per delivered energy, follow the free heat sink, need a powered plasma start-up, wear from neutrons, leave brief heat after a stop, and must be switched off before dismantling. `hoshi fusion mode|status` and `POST /v1/fusion/mode` switch and inspect plants. Saves: schema 49 stores plant state; older binaries cannot open it.
 - Align solar output, cost and time growth at 1.15, cap solar levels by planet size, explain storage and power limits, and show empire energy with colony shortages. Pacing reports include the energy-recovery matrix and home recovery target. Existing solar levels remain intact.
