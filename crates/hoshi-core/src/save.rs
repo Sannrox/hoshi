@@ -2374,6 +2374,7 @@ fn u16_coord(value: i64) -> Result<u16, SaveError> {
 }
 
 /// Load an existing save, or write a new game when the file has no meta row yet.
+/// A new game gets a galaxy seed from `now_unix`, as New game does.
 pub fn load_or_new(
     conn: &mut Connection,
     now_unix: u64,
@@ -2385,8 +2386,8 @@ pub fn load_or_new(
         if leftover != 0 {
             return Err(SaveError::Corrupt("missing meta row"));
         }
-        let mut state = GameState::with_config(now_unix, config);
-        state.tutorial = crate::TutorialBoard::start();
+        let seed = crate::new_galaxy_seed(now_unix);
+        let state = GameState::new_live_galaxy(now_unix, config, seed);
         save_state(conn, &state)?;
         return Ok(state);
     }
@@ -9359,6 +9360,23 @@ mod tests {
         assert!(!state.tutorial.skipped);
         let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
         assert_eq!(loaded, state);
+    }
+
+    #[test]
+    fn new_saves_opened_by_path_get_their_own_galaxy() {
+        let new_save = |now| {
+            let mut conn = open_save(Path::new(":memory:")).unwrap();
+            load_or_new(&mut conn, now, BalanceConfig::default()).unwrap()
+        };
+        let a = new_save(1_800_000_000);
+        let b = new_save(1_800_000_001);
+        assert_ne!(a.galaxy_seed, 0);
+        assert_ne!(a.galaxy_seed, b.galaxy_seed);
+        assert_eq!(a.galaxy_seed, crate::new_galaxy_seed(1_800_000_000));
+        assert!(
+            !a.deterministic,
+            "a path-created save still catches up live"
+        );
     }
 
     #[test]
