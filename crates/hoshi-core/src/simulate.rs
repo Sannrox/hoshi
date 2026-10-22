@@ -652,11 +652,11 @@ fn simulate_raided_shipyard(mut config: BalanceConfig, limit: u64) -> Option<u64
             .and_then(|job| job.completes_at)
             .unwrap_or(u64::MAX);
         let afford = next_afford_at(&state).unwrap_or(u64::MAX);
-        // Raids change stock without a queue event, so look again each hour.
-        let mut jump = completion
-            .min(afford)
-            .min(state.last_tick_unix.saturating_add(3_600))
-            .min(limit);
+        // A raid changes stock without a queue event, so look again after it.
+        let after_raid = state
+            .next_raid_at
+            .map_or(u64::MAX, |at| at.saturating_add(1));
+        let mut jump = completion.min(afford).min(after_raid).min(limit);
         if jump <= state.last_tick_unix {
             jump = state.last_tick_unix.saturating_add(1).min(limit);
         }
