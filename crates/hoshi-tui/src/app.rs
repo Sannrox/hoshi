@@ -1246,18 +1246,30 @@ impl App {
     fn inspector_context(&self) -> (&'static str, Vec<(String, Line<'static>)>) {
         let t = &self.theme;
         match self.detail_subject() {
-            Some(DetailSubject::Building { planet, .. }) => {
+            Some(DetailSubject::Building { kind, planet }) => {
                 let mut extra = vec![(
                     "Planet".to_string(),
                     Line::styled(planet.to_string(), t.intent(Intent::Primary)),
                 )];
-                let deposits = self.state.deposits_at(planet);
-                if let Some((id, richness)) = deposits.iter().next() {
-                    extra.push((
-                        "Deposit".into(),
-                        Line::styled(format!("{id} {richness:.2}"), t.text()),
-                    ));
-                }
+                extra.extend(
+                    building_deposits(&self.state, kind, planet)
+                        .into_iter()
+                        .map(|(id, richness)| {
+                            (
+                                "Deposit".into(),
+                                Line::styled(
+                                    format!(
+                                        "{} {richness:.2}",
+                                        ResourceKind::from_key(&id).map_or_else(
+                                            || id.replace('_', " "),
+                                            |r| r.label().into()
+                                        )
+                                    ),
+                                    t.text(),
+                                ),
+                            )
+                        }),
+                );
                 ("building", extra)
             }
             Some(DetailSubject::Tech(_)) => ("tech", Vec::new()),
@@ -3890,6 +3902,28 @@ fn away_rows(ledger: &hoshi_core::PlanetLedger) -> Vec<String> {
         .collect()
 }
 
+/// Deposits the building's own recipes extract from at `planet`, in recipe
+/// order. A building without an extractor recipe reads none.
+fn building_deposits(state: &GameState, kind: BuildingKind, planet: Coord) -> Vec<(String, f64)> {
+    let deposits = state.deposits_at(planet);
+    let mut out: Vec<(String, f64)> = Vec::new();
+    for recipe in state
+        .config
+        .chains
+        .recipes
+        .iter()
+        .filter(|r| r.building == kind)
+    {
+        if let Some(id) = &recipe.deposit
+            && !out.iter().any(|(seen, _)| seen == id)
+            && let Some(richness) = deposits.get(id)
+        {
+            out.push((id.clone(), *richness));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3959,6 +3993,33 @@ mod tests {
             }
         }
         false
+    }
+
+    #[test]
+    fn building_inspector_lists_the_deposits_that_building_extracts() {
+        let mut app = App::new(GameState::new(1_000));
+        app.screen = Screen::Planet;
+        let deposits_of = |app: &mut App, kind: BuildingKind| {
+            app.selected = BuildingKind::ALL.iter().position(|k| *k == kind).unwrap();
+            let (_, rows) = app.inspector_context();
+            rows.into_iter()
+                .filter(|(label, _)| label == "Deposit")
+                .map(|(_, line)| line.to_string())
+                .collect::<Vec<_>>()
+        };
+        let metal = deposits_of(&mut app, BuildingKind::MetalMine);
+        assert!(metal[0].starts_with("iron ore "), "{metal:?}");
+        assert!(metal.iter().all(|row| !row.contains("helium")), "{metal:?}");
+        let synth = deposits_of(&mut app, BuildingKind::DeuteriumSynthesizer);
+        assert!(
+            synth.iter().any(|row| row.starts_with("water ice ")),
+            "{synth:?}"
+        );
+        assert!(
+            synth.iter().any(|row| row.starts_with("helium-3 ")),
+            "{synth:?}"
+        );
+        assert!(deposits_of(&mut app, BuildingKind::SolarPlant).is_empty());
     }
 
     #[test]
