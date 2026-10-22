@@ -797,7 +797,8 @@ impl GameState {
         Ok((fuel, available))
     }
 
-    fn parked_fleet(&self, planet: Coord) -> Option<Fleet> {
+    /// Ships parked at an owned planet, the pool `register_vehicle` draws from.
+    pub fn parked_fleet(&self, planet: Coord) -> Option<Fleet> {
         if planet == self.home {
             return Some(self.fleet);
         }

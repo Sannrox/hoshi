@@ -13,6 +13,7 @@
 
 - A save modified by cheats shows a MODIFIED tag in the header, and Bridge › Feats says feats are off and marks unearned feats as blocked instead of open past their target.
 - Add default-off local cheats through the console and CLI, with permanent modified-save provenance, durable audits and fair-play exclusions. Schema 48 preserves cheat state across restart and prestige.
+- Fleet › Ops registers a vehicle from the ships parked at the selected planet (`+`) and plans a mission for it from a short form (Enter: destination, customer, transfer, cargo) with the same core actions as `hoshi vehicle register` and `hoshi mission plan`. The empty Ops screen names the key instead of the CLI command.
 - Preview and save redacted bug reports from the CLI, title menu, Help or crash offer. Open a prefilled issue page only after consent; offline reports retain the URL. Servers support configurable report destinations without sending reports.
 
 - Raids read clearly: `r` on the bridge (or Enter on the fight in Records › History) opens a combat report with both fleets, losses, plunder per resource and the raid's age. The header shows the next raid as soon as it is scheduled, `Home undefended` stays while home has no defence, a recent lost raid has its own alert, and raid incidents close when the raid resolves. Saves: schema 50 stores raid plunder per combat log; older binaries cannot open it.
