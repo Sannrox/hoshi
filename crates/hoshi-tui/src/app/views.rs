@@ -1672,7 +1672,12 @@ impl App {
                 t,
                 Intent::Primary,
                 "No vehicles registered",
-                "Register a vehicle with hoshi vehicle register, then mission plan.",
+                &format!(
+                    "Press {} to register the ships parked at {} as a vehicle, then {} on it to plan a mission.",
+                    self.keymap.primary(Binding::Increase),
+                    self.selected_coord(),
+                    self.keymap.primary(Binding::Confirm),
+                ),
             ));
             return ListView {
                 head,

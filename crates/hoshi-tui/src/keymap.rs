@@ -453,6 +453,12 @@ impl HelpContext {
                 Binding::Cockpit,
                 Binding::SelectNext,
                 Binding::SelectPrev,
+                Binding::Confirm,
+                Binding::Cancel,
+                Binding::Increase,
+                Binding::Decrease,
+                Binding::CursorLeft,
+                Binding::CursorRight,
                 Binding::CopySeed,
             ],
             HelpContext::Map => &[

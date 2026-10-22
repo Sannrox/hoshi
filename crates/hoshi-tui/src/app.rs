@@ -2,6 +2,7 @@
 //! Core owns the rules; this module only renders and turns keys into core commands.
 
 mod dismantle;
+mod mission_form;
 
 use crate::clip::copy_to_clipboard;
 use crate::detail_panel::{self, DOCK_MIN_WIDTH};
@@ -117,6 +118,7 @@ pub enum Action {
 pub struct App {
     pub updates: Option<crate::update_ui::UpdateUi>,
     dismantle_confirm: Option<(Coord, BuildingKind)>,
+    mission_form: Option<mission_form::MissionForm>,
     pub support: Option<crate::support_ui::SupportUi>,
     cheat_prompt: Option<String>,
     bug: Option<crate::bug_ui::BugUi>,
@@ -207,6 +209,7 @@ impl App {
             keymap,
             updates: None,
             dismantle_confirm: None,
+            mission_form: None,
             help_open: false,
             help_commands: false,
             screen: Screen::Cockpit,
@@ -607,6 +610,9 @@ impl App {
         if self.dismantle_confirm.is_some() {
             return self.handle_dismantle_confirm(code, now_unix);
         }
+        if self.mission_form.is_some() {
+            return self.handle_mission_form(code, now_unix);
+        }
 
         if self.help_open && code == KeyCode::Char('b') {
             return Action::ReportBug;
@@ -855,6 +861,9 @@ impl App {
             }
             Some(Binding::Increase) if self.screen == Screen::Staff => {
                 self.recruit_selected_leader(now_unix);
+            }
+            Some(Binding::Increase) if self.screen == Screen::Ops => {
+                self.register_ops_vehicle(now_unix);
             }
             Some(Binding::Increase) if self.screen == Screen::Market => {
                 self.trade_amount =
@@ -1669,6 +1678,9 @@ impl App {
         if self.dismantle_confirm.is_some() {
             self.draw_dismantle_confirm(frame);
         }
+        if self.mission_form.is_some() {
+            self.draw_mission_form(frame);
+        }
         if let Some(report) = &self.support {
             report.draw(frame);
         }
@@ -2273,11 +2285,8 @@ impl App {
             }
             Screen::Wonder => self.activate_wonder(now_unix),
             Screen::Prestige => self.activate_prestige(now_unix),
-            Screen::Achievements
-            | Screen::Daily
-            | Screen::Goals
-            | Screen::Production
-            | Screen::Ops => {}
+            Screen::Achievements | Screen::Daily | Screen::Goals | Screen::Production => {}
+            Screen::Ops => self.open_mission_form(),
             Screen::Automation => self.activate_automation(),
             Screen::Finance => self.activate_finance(now_unix),
             Screen::Kpis => self.activate_kpi(),
@@ -5598,6 +5607,33 @@ mod tests {
         let text = render_text(&app, 100, 32);
         assert!(text.contains("Fleet / Ops"), "{text}");
         assert!(text.contains("vehicles"), "{text}");
+    }
+
+    #[test]
+    fn ops_registers_a_vehicle_and_plans_a_delivery_without_the_cli() {
+        let mut state = GameState::new(1_000);
+        state.fleet.add(ShipKind::SmallCargo, 1);
+        state.resources.deuterium = 5_000.0;
+        let mut app = App::new(state);
+        app.open(Screen::Ops);
+        let empty = render_text(&app, 120, 40);
+        assert!(empty.contains("Press + to register"), "{empty}");
+        assert!(!empty.contains("hoshi vehicle register"), "{empty}");
+        app.handle_key(KeyCode::Char('+'), 1_000);
+        assert_eq!(app.state.vehicles.len(), 1, "{}", app.status);
+        assert!(
+            app.state.fleet.is_empty(),
+            "the parked ship joined the vehicle"
+        );
+        app.map_position = 2;
+        app.selected = 0;
+        app.handle_key(KeyCode::Enter, 1_000);
+        let form = render_text(&app, 120, 40);
+        assert!(form.contains("Plan mission"), "{form}");
+        assert!(form.contains("1:1:2"), "{form}");
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.mission_form.is_none(), "{}", app.status);
+        assert_eq!(app.state.planned.len(), 1, "{}", app.status);
     }
 
     #[test]
