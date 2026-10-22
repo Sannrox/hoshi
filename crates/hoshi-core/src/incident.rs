@@ -516,16 +516,36 @@ impl GameState {
         self.incidents.next_review_at = next;
     }
 
-    pub(crate) fn note_raid_incident(&mut self, winner: crate::CombatWinner, at: u64) {
+    /// Record a lost raid. The raid is already over when this runs, so the
+    /// incident is stored resolved with what was taken. Older open raid
+    /// incidents nobody owns are closed too: they describe raids long past.
+    pub(crate) fn note_raid_incident(
+        &mut self,
+        winner: crate::CombatWinner,
+        plunder: crate::Resources,
+        at: u64,
+    ) {
         if winner != crate::CombatWinner::Attacker {
             return;
         }
-        self.auto_open(
+        let id = self.push_incident(
             IncidentKind::Raid,
             Severity::High,
             vec![self.home.to_string()],
             at,
         );
+        let resolution = format!("raid over, plunder {}", plunder.brief());
+        for row in &mut self.incidents.incidents {
+            let stale = row.kind == IncidentKind::Raid
+                && row.status != IncidentStatus::Resolved
+                && row.owner.is_none();
+            if row.id == id || stale {
+                row.status = IncidentStatus::Resolved;
+                row.closed_at = Some(at);
+                row.actions.push(format!("resolved at {at}: {resolution}"));
+                row.resolution = Some(resolution.clone());
+            }
+        }
     }
 
     pub(crate) fn note_contract_incident(&mut self, contract_id: u64, at: u64) {
@@ -684,19 +704,33 @@ mod tests {
     }
 
     #[test]
-    fn raid_loss_opens_a_high_incident() {
+    fn raid_loss_records_a_resolved_high_incident() {
         let mut cfg = BalanceConfig::default();
         cfg.raid.enabled = false;
         cfg.market.enabled = false;
         let mut state = GameState::with_config(1_000, cfg);
+        let plunder = crate::Resources::from_parts(155.0, 224.0, 0.0);
+        for n in 0..17 {
+            state.note_raid_incident(CombatWinner::Attacker, plunder, 1_000 + n);
+        }
         assert!(state.incident_snapshot().open.is_empty());
-        state.note_raid_incident(CombatWinner::Attacker, 1_000);
-        let open = state.incident_snapshot().open;
-        assert_eq!(open.len(), 1);
-        assert_eq!(open[0].kind, IncidentKind::Raid);
-        assert_eq!(open[0].severity, Severity::High);
-        state.note_raid_incident(CombatWinner::Attacker, 1_001);
-        assert_eq!(state.incident_snapshot().open.len(), 2);
+        let raids: Vec<_> = state
+            .incidents
+            .incidents
+            .iter()
+            .filter(|row| row.kind == IncidentKind::Raid)
+            .collect();
+        assert_eq!(raids.len(), 17);
+        assert!(raids.iter().all(|row| row.severity == Severity::High));
+        assert!(
+            raids[0]
+                .resolution
+                .as_deref()
+                .unwrap()
+                .contains("Fe155 Si224"),
+            "{:?}",
+            raids[0].resolution
+        );
         state.note_contract_incident(7, 1_002);
         state.note_contract_incident(8, 1_003);
         assert_eq!(
@@ -822,7 +856,7 @@ mod tests {
         let mut state = GameState::with_config(1_000, cfg);
         let cap = state.incident_config().archive_cap;
         for n in 0..=cap {
-            state.note_raid_incident(CombatWinner::Attacker, 1_000 + n as u64);
+            state.note_failure_incident(&format!("pump-{n}"), 1_000 + n as u64);
         }
         let open = state.incident_snapshot().open;
         assert!(open.len() > cap);
@@ -831,7 +865,7 @@ mod tests {
         state
             .resolve_incident(first, "cleared", Actor::Player, 1_000)
             .unwrap();
-        state.note_raid_incident(CombatWinner::Attacker, 2_000);
+        state.note_failure_incident("pump-last", 2_000);
         assert!(state.incidents.incidents.iter().all(|row| row.id != first));
         assert_eq!(state.incident_snapshot().open.len(), cap + 1);
     }

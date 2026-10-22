@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 49;
+pub const SCHEMA_VERSION: u32 = 50;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -203,6 +203,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM achievement_stats;
          DELETE FROM combat_log_ships;
          DELETE FROM combat_log_frames;
+         DELETE FROM combat_plunder;
          DELETE FROM combat_logs;
          DELETE FROM daily_slots;
          DELETE FROM daily_meta;
@@ -3166,6 +3167,7 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "achievements" => "SELECT COUNT(*) FROM achievements",
         "achievement_stats" => "SELECT COUNT(*) FROM achievement_stats",
         "combat_logs" => "SELECT COUNT(*) FROM combat_logs",
+        "combat_plunder" => "SELECT COUNT(*) FROM combat_plunder",
         "combat_log_frames" => "SELECT COUNT(*) FROM combat_log_frames",
         "combat_log_ships" => "SELECT COUNT(*) FROM combat_log_ships",
         "daily_meta" => "SELECT COUNT(*) FROM daily_meta",
@@ -3281,6 +3283,7 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "achievements")?
         + count_rows(conn, "achievement_stats")?
         + count_rows(conn, "combat_logs")?
+        + count_rows(conn, "combat_plunder")?
         + count_rows(conn, "combat_log_frames")?
         + count_rows(conn, "combat_log_ships")?
         + count_rows(conn, "daily_meta")?
@@ -3506,6 +3509,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 49 {
         migrate_v49(conn)?;
+    }
+    if found < 50 {
+        migrate_v50(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -4600,6 +4606,23 @@ fn migrate_v41(conn: &Connection) -> Result<(), SaveError> {
             credits REAL NOT NULL
         );
         ",
+    )?;
+    Ok(())
+}
+
+/// v50: what a raid on home took, per stored combat log. A row marks the log
+/// as a raid; logs without one are other fights or raids from older saves.
+fn migrate_v50(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS combat_plunder (
+            log_id INTEGER PRIMARY KEY,
+            iron REAL NOT NULL CHECK (iron >= 0),
+            silicon REAL NOT NULL CHECK (silicon >= 0),
+            rare_earths REAL NOT NULL CHECK (rare_earths >= 0),
+            water_ice REAL NOT NULL CHECK (water_ice >= 0),
+            helium_3 REAL NOT NULL CHECK (helium_3 >= 0),
+            deuterium REAL NOT NULL CHECK (deuterium >= 0)
+        );",
     )?;
     Ok(())
 }
@@ -6854,6 +6877,22 @@ fn insert_combat_logs(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Resu
             insert_combat_frame(tx, log_id, frame_i as i64, "a", frame.attacker, frame)?;
             insert_combat_frame(tx, log_id, frame_i as i64, "d", frame.defender, frame)?;
         }
+        if let Some(p) = log.raid_plunder {
+            tx.execute(
+                "INSERT INTO combat_plunder
+                    (log_id, iron, silicon, rare_earths, water_ice, helium_3, deuterium)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    log_id,
+                    p.iron,
+                    p.silicon,
+                    p.rare_earths,
+                    p.water_ice,
+                    p.helium_3,
+                    p.deuterium
+                ],
+            )?;
+        }
     }
     Ok(())
 }
@@ -6936,6 +6975,7 @@ fn load_combat_logs(conn: &Connection, state: &mut GameState) -> Result<(), Save
             None => None,
         };
         let frames = load_combat_frames(conn, id)?;
+        let raid_plunder = load_combat_plunder(conn, id)?;
         let (attacker_before, defender_before) = frames
             .first()
             .map(|f| (f.attacker, f.defender))
@@ -6958,9 +6998,31 @@ fn load_combat_logs(conn: &Connection, state: &mut GameState) -> Result<(), Save
                 frames,
                 layered: layered != 0,
             },
+            raid_plunder,
         });
     }
     Ok(())
+}
+
+fn load_combat_plunder(conn: &Connection, log_id: i64) -> Result<Option<Resources>, SaveError> {
+    let row = conn
+        .query_row(
+            "SELECT iron, silicon, rare_earths, water_ice, helium_3, deuterium
+             FROM combat_plunder WHERE log_id = ?1",
+            [log_id],
+            |row| {
+                Ok(Resources {
+                    iron: row.get(0)?,
+                    silicon: row.get(1)?,
+                    rare_earths: row.get(2)?,
+                    water_ice: row.get(3)?,
+                    helium_3: row.get(4)?,
+                    deuterium: row.get(5)?,
+                })
+            },
+        )
+        .optional()?;
+    Ok(row)
 }
 
 fn load_combat_frames(conn: &Connection, log_id: i64) -> Result<Vec<CombatFrame>, SaveError> {
@@ -9857,6 +9919,7 @@ mod tests {
                 ],
                 layered: true,
             },
+            raid_plunder: None,
         });
         save_state(&mut conn, &state).unwrap();
         let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
@@ -10459,6 +10522,27 @@ mod tests {
         assert!(!loaded.maintenance.orders.is_empty() || !loaded.maintenance.readings.is_empty());
         assert_eq!(count_rows(&conn, "maintenance_meta").unwrap(), 1);
         assert!(count_rows(&conn, "maintenance_assets").unwrap() >= 1);
+    }
+
+    #[test]
+    fn raid_plunder_survives_save_and_v49_saves_read_as_none() {
+        let mut state = GameState::new(0);
+        state.resources = Resources::from_parts(2_000.0, 2_000.0, 0.0);
+        state.trigger_raid(0);
+        let plunder = state.combat_logs.last().unwrap().raid_plunder.unwrap();
+        assert!(plunder.iron > 0.0, "{plunder:?}");
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(
+            loaded.combat_logs.last().unwrap().raid_plunder,
+            Some(plunder)
+        );
+        conn.execute_batch("DROP TABLE combat_plunder; PRAGMA user_version = 49;")
+            .unwrap();
+        migrate(&conn).unwrap();
+        let old = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(old.combat_logs.last().unwrap().raid_plunder, None);
     }
 
     #[test]

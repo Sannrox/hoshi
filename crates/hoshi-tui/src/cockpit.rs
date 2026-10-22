@@ -2,7 +2,7 @@
 
 use crate::ui::chrome::{Tile, fill};
 use crate::ui::panels::Callout;
-use crate::ui::spans::countdown;
+use crate::ui::spans::{countdown, duration};
 use crate::ui::{Intent, Surface, Theme};
 use hoshi_core::{
     Actor, Coord, GameState, HistoryKind, MissionPhase, ResourceKind, Resources, RoleKind, ShipKind,
@@ -346,14 +346,34 @@ pub fn alerts(state: &GameState) -> Vec<Alert> {
             detail: format!("pirates → {home}"),
             jump: Target::Planet(home),
         });
-        if state.defences.is_empty() {
-            rows.push(Alert {
-                kind: AlertKind::Defence,
-                text: "Home undefended".into(),
-                detail: format!("{} ships · 0 defences at {home}", state.fleet.total()),
-                jump: Target::Planet(home),
-            });
-        }
+    }
+    // The latest raid stays on the bridge until the next one replaces it.
+    if let Some(log) = state
+        .combat_logs
+        .iter()
+        .rev()
+        .find(|log| log.raid_plunder.is_some())
+        && log.report.winner == hoshi_core::CombatWinner::Attacker
+    {
+        let taken = log.raid_plunder.unwrap_or(hoshi_core::Resources::ZERO);
+        rows.push(Alert {
+            kind: AlertKind::Raid,
+            text: format!(
+                "Raid lost  {} ago",
+                duration(state.last_tick_unix.saturating_sub(log.at))
+            ),
+            detail: format!("plunder {} · r report", taken.brief()),
+            jump: Target::Planet(home),
+        });
+    }
+    // Undefended stays true between raids, not only inside the warning window.
+    if state.next_raid_in_secs().is_some() && state.defences.is_empty() {
+        rows.push(Alert {
+            kind: AlertKind::Defence,
+            text: "Home undefended".into(),
+            detail: format!("{} ships · 0 defences at {home}", state.fleet.total()),
+            jump: Target::Planet(home),
+        });
     }
     if state.pending_tactical.is_some() {
         rows.push(Alert {

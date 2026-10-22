@@ -4323,6 +4323,16 @@ impl GameState {
         true
     }
 
+    /// Seconds until the next scheduled raid, however far off. Unlike
+    /// [`GameState::raid_countdown_secs`] it does not wait for the warning
+    /// window, so the header can show the next raid as soon as it is set.
+    pub fn next_raid_in_secs(&self) -> Option<u64> {
+        if !self.config.raid.enabled {
+            return None;
+        }
+        Some(self.next_raid_at?.saturating_sub(self.last_tick_unix))
+    }
+
     /// Seconds until the next raid when it has been announced, else `None`.
     pub fn raid_countdown_secs(&self) -> Option<u64> {
         if !self.config.raid.enabled {
@@ -4645,6 +4655,7 @@ impl GameState {
             self.defences = battle.defences_after;
             let plunder = self.take_raid_plunder(battle.winner);
             self.apply_raid_standing(battle.winner, done_at);
+            self.note_raid_incident(battle.winner, plunder, done_at);
             self.note_raid_outcome(battle.winner);
             self.push_event(
                 done_at,
@@ -4663,7 +4674,7 @@ impl GameState {
                 layered: false,
             }
             .with_seed_and_endpoints(seed);
-            self.schedule_next_raid(done_at, report)
+            self.schedule_next_raid(done_at, report, plunder)
         }
     }
 
@@ -4694,18 +4705,26 @@ impl GameState {
         self.fleet = report.defender_after;
         let plunder = self.take_raid_plunder(report.winner);
         self.apply_raid_standing(report.winner, done_at);
-        self.note_raid_incident(report.winner, done_at);
+        self.note_raid_incident(report.winner, plunder, done_at);
         self.note_raid_outcome(report.winner);
         self.grant_admiral_xp(report.winner);
         self.push_event(done_at, format_raid_report(&report, plunder));
-        self.schedule_next_raid(done_at, report)
+        self.schedule_next_raid(done_at, report, plunder)
     }
 
-    fn schedule_next_raid(&mut self, done_at: u64, report: CombatReport) -> CombatReport {
+    fn schedule_next_raid(
+        &mut self,
+        done_at: u64,
+        report: CombatReport,
+        plunder: Resources,
+    ) -> CombatReport {
         self.next_raid_at = self
             .raid_interval_secs()
             .map(|wait| done_at.saturating_add(wait));
         self.push_combat_log(done_at, report.clone());
+        if let Some(log) = self.combat_logs.last_mut() {
+            log.raid_plunder = Some(plunder);
+        }
         self.note_fight_debris(done_at, self.home, &report);
         if report.winner != CombatWinner::Attacker {
             self.note_daily(DailyAction::RaidWon, done_at);
@@ -4724,7 +4743,11 @@ impl GameState {
             outcome: format!("{} rounds", report.rounds),
             ..crate::HistoryDraft::default()
         });
-        self.combat_logs.push(crate::CombatLog { at, report });
+        self.combat_logs.push(crate::CombatLog {
+            at,
+            report,
+            raid_plunder: None,
+        });
         let extra = self
             .combat_logs
             .len()
@@ -6853,29 +6876,6 @@ impl GameState {
     }
 }
 
-fn fleet_label(fleet: Fleet) -> String {
-    let parts: Vec<String> = ShipKind::ALL
-        .iter()
-        .filter_map(|&kind| {
-            let n = fleet.get(kind);
-            (n > 0).then(|| format!("{n} {kind}"))
-        })
-        .collect();
-    if parts.is_empty() {
-        "none".to_string()
-    } else {
-        parts.join(", ")
-    }
-}
-
-fn fleet_losses(before: Fleet, after: Fleet) -> Fleet {
-    let mut lost = Fleet::default();
-    for kind in ShipKind::ALL {
-        lost.add(kind, before.get(kind).saturating_sub(after.get(kind)));
-    }
-    lost
-}
-
 fn spy_event_text(report: &SpyReport) -> String {
     let detected = if report.detected { "yes" } else { "no" };
     format!(
@@ -6888,8 +6888,14 @@ fn format_outpost_attack(report: &crate::CombatReport, dest: Coord) -> String {
     format!(
         "outpost {dest}: attack. {} rounds. lost {}. defences lost {}. winner {}",
         report.rounds,
-        fleet_label(fleet_losses(report.attacker_before, report.attacker_after)),
-        fleet_label(fleet_losses(report.defender_before, report.defender_after)),
+        report
+            .attacker_before
+            .losses_to(report.attacker_after)
+            .label(),
+        report
+            .defender_before
+            .losses_to(report.defender_after)
+            .label(),
         report.winner.as_key()
     )
 }
@@ -6911,11 +6917,17 @@ fn format_outpost_invade(report: &crate::CombatReport, dest: Coord) -> String {
 fn format_raid_report(report: &crate::CombatReport, plunder: Resources) -> String {
     format!(
         "raid: pirates {} vs {}. {} rounds. lost {}. pirates lost {}. plunder {}. winner {}",
-        fleet_label(report.attacker_before),
-        fleet_label(report.defender_before),
+        report.attacker_before.label(),
+        report.defender_before.label(),
         report.rounds,
-        fleet_label(fleet_losses(report.defender_before, report.defender_after)),
-        fleet_label(fleet_losses(report.attacker_before, report.attacker_after)),
+        report
+            .defender_before
+            .losses_to(report.defender_after)
+            .label(),
+        report
+            .attacker_before
+            .losses_to(report.attacker_after)
+            .label(),
         plunder.brief(),
         report.winner.as_key(),
     )
@@ -6953,8 +6965,8 @@ fn format_layered_raid(
     };
     format!(
         "raid: pirates {} vs {}. {intercept}orbital stations {}->{} hangar {}->{} {} rounds. {dome}. batteries {}->{}. {ground}. lost {}. pirates lost {}. rebuilt {}. winner {}. plunder {}",
-        fleet_label(pirates),
-        fleet_label(parked),
+        pirates.label(),
+        parked.label(),
         battle.stations_before,
         battle.stations_after,
         battle.hangar_before,
@@ -6962,8 +6974,8 @@ fn format_layered_raid(
         battle.orbital_rounds,
         battle.batteries_before,
         battle.batteries_after,
-        fleet_label(fleet_losses(parked, battle.fleet_after)),
-        fleet_label(fleet_losses(pirates, battle.attacker_after)),
+        parked.losses_to(battle.fleet_after).label(),
+        pirates.losses_to(battle.attacker_after).label(),
         battle.rebuilt,
         battle.winner.as_key(),
         plunder.brief()

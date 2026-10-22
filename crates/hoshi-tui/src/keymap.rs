@@ -476,6 +476,7 @@ impl HelpContext {
                 Binding::NextScreen,
                 Binding::Cockpit,
                 Binding::Toggle,
+                Binding::Replay,
                 Binding::SelectNext,
                 Binding::SelectPrev,
                 Binding::CursorLeft,

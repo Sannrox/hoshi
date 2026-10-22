@@ -117,6 +117,9 @@ pub struct CombatFrame {
 pub struct CombatLog {
     pub at: u64,
     pub report: CombatReport,
+    /// For a raid on home, what it took (zero when nothing was reachable).
+    /// `None` for every other fight, and for raids saved before schema 50.
+    pub raid_plunder: Option<crate::Resources>,
 }
 
 pub const MAX_COMBAT_LOGS: usize = 8;
