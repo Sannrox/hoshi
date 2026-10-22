@@ -203,6 +203,9 @@ impl GameState {
                 ));
             }
         }
+        if kind == BuildingKind::FusionPlant {
+            reasons.extend(self.fusion_dismantle_blockers(coord, level));
+        }
         let key = format!("building:{coord}:{}", kind.as_key());
         if let Some(asset) = self
             .maintenance
@@ -328,6 +331,7 @@ impl GameState {
             .map(|buildings| self.config.energy_draw(&buildings))
             .unwrap_or(0.0)
             + self.dismantle_energy_at(coord)
+            + self.fusion_startup_draw_at(coord)
             + if coord == self.home {
                 self.automation_control_energy()
             } else {

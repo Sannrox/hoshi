@@ -26,6 +26,11 @@ pub enum Intent {
         building: BuildingKind,
         actor: Actor,
     },
+    FusionMode {
+        planet: Coord,
+        mode: crate::FusionMode,
+        actor: Actor,
+    },
     Research {
         tech: String,
     },
@@ -122,6 +127,7 @@ impl Intent {
             Intent::Cheat { .. } => "cheat",
             Intent::Build { .. } => "build",
             Intent::Dismantle { .. } => "dismantle",
+            Intent::FusionMode { .. } => "fusion_mode",
             Intent::Research { .. } => "research",
             Intent::Launch { .. } => "launch",
             Intent::Colonize { .. } => "colonize",
@@ -156,6 +162,7 @@ pub struct Proposal {
 pub enum IntentError {
     Cheat(crate::CheatError),
     Build(BuildError),
+    Fusion(crate::FusionError),
     Research(ResearchError),
     Fleet(FleetError),
     Market(MarketError),
@@ -171,6 +178,7 @@ impl fmt::Display for IntentError {
         match self {
             IntentError::Cheat(e) => write!(f, "{e}"),
             IntentError::Build(e) => write!(f, "{e}"),
+            IntentError::Fusion(e) => write!(f, "{e}"),
             IntentError::Research(e) => write!(f, "{e}"),
             IntentError::Fleet(e) => write!(f, "{e}"),
             IntentError::Market(e) => write!(f, "{e}"),
@@ -216,6 +224,15 @@ fn proposal_id(intent: &Intent, now_unix: u64, tick: u64) -> String {
         } => format!(
             "build:{now_unix}:{tick}:{planet}:{}:{}",
             building.as_key(),
+            actor.as_key()
+        ),
+        Intent::FusionMode {
+            planet,
+            mode,
+            actor,
+        } => format!(
+            "fusion_mode:{now_unix}:{tick}:{planet}:{}:{}",
+            mode.as_key(),
             actor.as_key()
         ),
         Intent::Research { tech } => format!("research:{now_unix}:{tick}:{tech}"),
@@ -366,6 +383,13 @@ fn apply_inner(state: &mut GameState, intent: &Intent, now_unix: u64) -> Result<
         } => state
             .enqueue_build_as(*planet, *building, now_unix, *actor)
             .map_err(IntentError::Build),
+        Intent::FusionMode {
+            planet,
+            mode,
+            actor,
+        } => state
+            .set_fusion_mode(*planet, *mode, now_unix, *actor)
+            .map_err(IntentError::Fusion),
         Intent::Research { tech } => state
             .start_research(tech, now_unix)
             .map_err(IntentError::Research),

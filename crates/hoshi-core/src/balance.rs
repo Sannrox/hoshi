@@ -144,6 +144,7 @@ pub struct BuildingCatalog {
     pub deuterium_synthesizer: BuildingSpec,
     pub solar_plant: BuildingSpec,
     pub fission_reactor: BuildingSpec,
+    pub fusion_plant: BuildingSpec,
     pub metal_storage: BuildingSpec,
     pub crystal_storage: BuildingSpec,
     pub deuterium_storage: BuildingSpec,
@@ -162,6 +163,7 @@ impl BuildingCatalog {
             BuildingKind::DeuteriumSynthesizer => &self.deuterium_synthesizer,
             BuildingKind::SolarPlant => &self.solar_plant,
             BuildingKind::FissionReactor => &self.fission_reactor,
+            BuildingKind::FusionPlant => &self.fusion_plant,
             BuildingKind::MetalStorage => &self.metal_storage,
             BuildingKind::CrystalStorage => &self.crystal_storage,
             BuildingKind::DeuteriumStorage => &self.deuterium_storage,
@@ -189,12 +191,29 @@ impl Default for BuildingCatalog {
             id: "fission".into(),
             level: 1,
         });
+        let mut fusion_plant = spec(
+            20_000.0,
+            15_000.0,
+            3_000.0,
+            2.0,
+            7_200.0,
+            2.0,
+            vec![
+                (BuildingKind::ResearchLab, 6),
+                (BuildingKind::FissionReactor, 1),
+            ],
+        );
+        fusion_plant.tech_prerequisites.push(TechPrereq {
+            id: "fusion_dd".into(),
+            level: 1,
+        });
         Self {
             metal_mine: spec(60.0, 15.0, 0.0, 1.5, 120.0, 1.5, vec![]),
             crystal_mine: spec(48.0, 24.0, 0.0, 1.6, 120.0, 1.6, vec![]),
             deuterium_synthesizer: spec(225.0, 75.0, 0.0, 1.5, 180.0, 1.5, vec![]),
             solar_plant: spec(75.0, 30.0, 0.0, 1.5, 120.0, 1.5, vec![]),
             fission_reactor,
+            fusion_plant,
             metal_storage: spec(1_000.0, 0.0, 0.0, 2.0, 60.0, 2.0, vec![]),
             crystal_storage: spec(1_000.0, 500.0, 0.0, 2.0, 60.0, 2.0, vec![]),
             deuterium_storage: spec(1_000.0, 1_000.0, 0.0, 2.0, 60.0, 2.0, vec![]),
@@ -329,6 +348,7 @@ pub struct BalanceConfig {
     pub deuterium_synthesizer: ProducerSpec,
     pub solar_plant: EnergyProducerSpec,
     pub fission_reactor: crate::ReactorConfig,
+    pub fusion_plant: crate::FusionConfig,
     pub metal_storage: StorageSpec,
     pub crystal_storage: StorageSpec,
     pub deuterium_storage: StorageSpec,
@@ -432,6 +452,8 @@ struct File {
     solar_plant: FileEnergy,
     #[serde(default)]
     fission_reactor: crate::ReactorConfig,
+    #[serde(default)]
+    fusion_plant: crate::FusionConfig,
     #[serde(default)]
     dismantle: crate::DismantleConfig,
     metal_storage: FileStorage,
@@ -1193,6 +1215,8 @@ struct FileBuildings {
     solar_plant: FileBuilding,
     #[serde(default)]
     fission_reactor: Option<FileBuilding>,
+    #[serde(default)]
+    fusion_plant: Option<FileBuilding>,
     metal_storage: FileBuilding,
     crystal_storage: FileBuilding,
     deuterium_storage: FileBuilding,
@@ -1261,6 +1285,8 @@ struct FileStartingBuildings {
     solar_plant: u32,
     #[serde(default)]
     fission_reactor: u32,
+    #[serde(default)]
+    fusion_plant: u32,
     #[serde(default)]
     metal_storage: u32,
     #[serde(default)]
@@ -1407,6 +1433,9 @@ impl File {
         self.fission_reactor
             .validate()
             .map_err(BalanceError::Invalid)?;
+        self.fusion_plant
+            .validate()
+            .map_err(BalanceError::Invalid)?;
         let mut config = BalanceConfig {
             metal_mine: self.metal_mine.into_spec(),
             crystal_mine: self.crystal_mine.into_spec(),
@@ -1416,6 +1445,7 @@ impl File {
                 growth: self.solar_plant.growth,
             },
             fission_reactor: self.fission_reactor,
+            fusion_plant: self.fusion_plant,
             metal_storage: self.metal_storage.into_spec(),
             crystal_storage: self.crystal_storage.into_spec(),
             deuterium_storage: self.deuterium_storage.into_spec(),
@@ -1430,6 +1460,12 @@ impl File {
                     .map(FileBuilding::into_spec)
                     .transpose()?
                     .unwrap_or_else(|| BuildingCatalog::default().fission_reactor),
+                fusion_plant: self
+                    .buildings
+                    .fusion_plant
+                    .map(FileBuilding::into_spec)
+                    .transpose()?
+                    .unwrap_or_else(|| BuildingCatalog::default().fusion_plant),
                 metal_storage: self.buildings.metal_storage.into_spec()?,
                 crystal_storage: self.buildings.crystal_storage.into_spec()?,
                 deuterium_storage: self.buildings.deuterium_storage.into_spec()?,
@@ -1520,6 +1556,7 @@ impl File {
                 deuterium_synthesizer: self.starting_buildings.deuterium_synthesizer,
                 solar_plant: self.starting_buildings.solar_plant,
                 fission_reactor: self.starting_buildings.fission_reactor,
+                fusion_plant: self.starting_buildings.fusion_plant,
                 metal_storage: self.starting_buildings.metal_storage,
                 crystal_storage: self.starting_buildings.crystal_storage,
                 deuterium_storage: self.starting_buildings.deuterium_storage,

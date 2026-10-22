@@ -201,6 +201,40 @@ the default seed, tolerates half power while saving for research, and stops afte
 30 days; its hours are separate from the greedy mining targets. The default seed
 reaches the first reactor in 317.85 hours (13.24 days) with this strategy.
 
+## Fusion
+
+`[fusion_plant]` and `[buildings.fusion_plant]` in `balance.toml`. A plant costs
+20,000 frames, 15,000 electronics and 3,000 fuel (cost and time grow by 2.0,
+7,200 seconds before robotics) and needs a level-6 lab, a fission reactor and
+`fusion_dd`. Research: `plasma_physics` (fission 3, energy 8, laser 6, lab 5),
+then `fusion_dd` (plasma physics 2, lab 6), then `fusion_dhe3` (fusion D-D 3,
+astrophysics 4).
+
+Output starts at 400 and grows by 1.1 at any orbit or planet type: about 6.7
+level-1 fission reactors. D-D burns 0.002 deuterium per energy-hour and rejects
+1.5 heat per energy; D-He3 burns 0.0008 deuterium and 0.0012 helium-3 and
+rejects 0.7. Output is capped by the heat sink the other buildings leave, so a
+radiator's 40 cooling adds 26.7 D-D or 57.1 D-He3 output. A level-1 D-D plant
+needs 600 cooling at full output.
+
+Start-up is a grid load of 3 (D-D) or 5 (D-He3) times rated output for 1,800
+seconds at full power. Like dismantling, it shares a short supply with the other
+consumers through the energy factor, so shortage stretches it and no supply
+pauses it. A plant starts up after it is built, after a fuel outage, after a
+maintenance failure or service, and after a mode change. Leftover heat after
+the plasma stops is 1% (D-D) or 0.05% (D-He3) of rated thermal power for
+10,800 seconds. Neutron wear adds 0.0007 condition per hour at full D-D output
+and a tenth of that for D-He3. Dismantling needs the plant off; the last level
+of a plant that burned D-D waits 86,400 seconds after the last stop.
+
+A second research-focused baseline grows mines to 12/12/12, a level-6 lab and
+one reactor, researches energy 3, fission 3, laser 6, energy 8, plasma physics
+2 and fusion D-D, then builds the plant; it re-plans at least daily. The default
+seed reaches the first fusion plant in 1821.67 hours (75.90 days). The test
+that reports it is ignored by default because it simulates months; run it with
+`cargo test --release -p hoshi-core first_fusion -- --ignored --nocapture`
+after balance changes.
+
 ## Dismantling
 
 `[dismantle]` in `balance.toml` sets `time_share = 0.5`,

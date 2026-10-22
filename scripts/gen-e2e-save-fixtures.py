@@ -1308,6 +1308,10 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
     elif version == 47:
         add_column(conn, "build_queue", "operation", "ALTER TABLE build_queue ADD COLUMN operation TEXT NOT NULL DEFAULT 'build'")
         add_column(conn, "build_queue", "work_left", "ALTER TABLE build_queue ADD COLUMN work_left REAL NOT NULL DEFAULT 0 CHECK (work_left >= 0)")
+    elif version == 48:
+        conn.execute("""CREATE TABLE IF NOT EXISTS cheat_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            data TEXT NOT NULL)""")
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"

@@ -476,3 +476,49 @@ time_growth = 2.0
 prereq_buildings = [{ building = "research_lab", level = 3 }]
 prereq_techs = [{ id = "energy", level = 3 }]
 modifiers = []
+
+[[tech]]
+id = "plasma_physics"
+name = "Plasma Physics"
+branch = "industry"
+tier = 3
+iron = 0.0
+silicon = 4000.0
+deuterium = 2000.0
+cost_growth = 2.0
+base_seconds = 1200.0
+time_growth = 2.0
+prereq_buildings = [{ building = "research_lab", level = 5 }]
+prereq_techs = [{ id = "fission", level = 3 }, { id = "energy", level = 8 }, { id = "laser", level = 6 }]
+modifiers = []
+
+[[tech]]
+id = "fusion_dd"
+name = "Deuterium Fusion"
+branch = "industry"
+tier = 3
+iron = 0.0
+silicon = 8000.0
+deuterium = 4000.0
+cost_growth = 2.0
+base_seconds = 1800.0
+time_growth = 2.0
+prereq_buildings = [{ building = "research_lab", level = 6 }]
+prereq_techs = [{ id = "plasma_physics", level = 2 }]
+modifiers = []
+
+[[tech]]
+id = "fusion_dhe3"
+name = "Deuterium–Helium-3 Fusion"
+branch = "industry"
+tier = 4
+max_level = 1
+iron = 0.0
+silicon = 16000.0
+deuterium = 8000.0
+cost_growth = 1.0
+base_seconds = 3600.0
+time_growth = 1.0
+prereq_buildings = [{ building = "research_lab", level = 6 }]
+prereq_techs = [{ id = "fusion_dd", level = 3 }, { id = "astrophysics", level = 4 }]
+modifiers = []

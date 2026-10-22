@@ -3,8 +3,8 @@
 use hoshi_core::{
     Actor, AssignmentTarget, BackendKind, BalanceConfig, Blueprint, BlueprintCatalog, BuildingKind,
     Classification, ClassifiedKind, Clock, Coord, Customer, DefenceKind, FakeClock, Fleet,
-    GameState, HistoryKind, HistoryQuery, Intent, Jurisdiction, JurisdictionKind, MoonFacility,
-    OrderSide, Payload, Permission, PlanRequest, ResourceKind, RoleKind, RoundAction,
+    FusionMode, GameState, HistoryKind, HistoryQuery, Intent, Jurisdiction, JurisdictionKind,
+    MoonFacility, OrderSide, Payload, Permission, PlanRequest, ResourceKind, RoleKind, RoundAction,
     SCHEMA_VERSION as SAVE_SCHEMA, SaveError, Scenario, ShipKind, SpeciesCatalog, SpyReport,
     SystemClock, TransferKind, advise, blueprint_dir, inspect_save, lock_save, open_storage,
     resolve_save_path, save_is_locked,
@@ -85,6 +85,10 @@ crate::help::catalog_commands! {
     },
     #[help("dismantle", "Queue removal of one building level with partial salvage.", "dismantle PLANET BUILDING [--as ACTOR]", "dismantle home metal_mine")]
     Dismantle { planet: Coord, building: BuildingKind, actor: Actor },
+    #[help("fusion mode", "Switch a fusion plant to D-D, D-He3, or off; a new reaction needs a plasma start-up.", "fusion mode PLANET dd|dhe3|off [--as ACTOR]", "fusion mode home off")]
+    FusionMode { planet: Coord, mode: FusionMode, actor: Actor },
+    #[help("fusion status", "Show fusion output, mode, fuel burn, start-up progress, and cooling cap.", "fusion status [PLANET]", "fusion status home")]
+    FusionStatus { planet: Option<Coord> },
     #[help("research", "Start research through the ordinary rules path.", "research TECH", "research energy")]
     Research {
         tech: String,
@@ -793,6 +797,27 @@ fn now_for(state: &GameState) -> u64 {
     }
 }
 
+/// One plant as JSON, or null when `coord` has none.
+fn fusion_status_value(state: &GameState, coord: Coord) -> Value {
+    let Some(status) = state.fusion_status_at(coord) else {
+        return Value::Null;
+    };
+    json!({
+        "planet": coord.to_string(),
+        "level": status.level,
+        "mode": status.plant.mode.as_key(),
+        "burning": status.plant.burning(),
+        "output": status.output,
+        "rated": status.rated,
+        "cooling_cap": status.cooling_cap,
+        "deuterium_per_hour": status.deuterium_per_hour,
+        "helium_3_per_hour": status.helium3_per_hour,
+        "startup_progress": status.startup_progress,
+        "startup_draw": status.startup_draw,
+        "heat": status.heat,
+    })
+}
+
 fn governed(state: &mut GameState, intent: Intent, now: u64) -> Result<(), CliError> {
     let proposal =
         hoshi_core::propose(state, &intent, now).map_err(|e| CliError::Refused(e.to_string()))?;
@@ -1053,6 +1078,37 @@ fn apply(
             let mut value = ok_state(state, "queued dismantle");
             value["dismantle"] = json!({ "planet": planet.to_string(), "building": building.as_key(), "from_level": preview.from_level, "to_level": preview.from_level - 1, "work_secs": preview.duration_secs, "energy_draw": preview.energy_draw, "expected_salvage": resources_json(preview.salvage) });
             Ok(value)
+        }
+        Command::FusionMode {
+            planet,
+            mode,
+            actor,
+        } => {
+            governed(
+                state,
+                Intent::FusionMode {
+                    planet: *planet,
+                    mode: *mode,
+                    actor: *actor,
+                },
+                now,
+            )?;
+            let mut value = ok_state(state, "fusion mode set");
+            value["fusion"] = fusion_status_value(state, *planet);
+            Ok(value)
+        }
+        Command::FusionStatus { planet } => {
+            if !state.deterministic {
+                state.catch_up(now);
+            }
+            let plants: Vec<Value> = state
+                .owned_coords()
+                .into_iter()
+                .filter(|coord| planet.is_none_or(|want| want == *coord))
+                .map(|coord| fusion_status_value(state, coord))
+                .filter(|value| !value.is_null())
+                .collect();
+            Ok(json!({ "ok": true, "schema_version": SCHEMA_VERSION, "fusion": plants }))
         }
         Command::Build {
             planet,
@@ -3181,6 +3237,7 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
                 })
             }
         }
+        "fusion" => parse_fusion_command(args),
         "staff" => parse_staff_command(args),
         "vehicle" => parse_vehicle_command(args),
         "mission" => parse_mission_command(args),
@@ -4318,6 +4375,45 @@ fn parse_amount(text: &str) -> Result<f64, CliError> {
         return Err(CliError::Invalid(format!("invalid amount {text}")));
     }
     Ok(n)
+}
+
+fn parse_fusion_command(args: &[String]) -> Result<Command, CliError> {
+    match args.get(1).map(String::as_str) {
+        Some("mode") => {
+            let usage = "fusion mode <planet> dd|dhe3|off [--as <actor>]";
+            let planet = parse_coord(nth(args, 2, usage)?)?;
+            let raw = nth(args, 3, usage)?;
+            let mode = FusionMode::from_key(raw)
+                .ok_or_else(|| CliError::Invalid(format!("unknown fusion mode {raw}")))?;
+            let mut actor = Actor::Player;
+            match args.get(4).map(String::as_str) {
+                None => {}
+                Some("--as") => {
+                    let raw = nth(args, 5, usage)?;
+                    actor = Actor::parse(raw)
+                        .ok_or_else(|| CliError::Invalid(format!("invalid --as {raw}")))?;
+                    expect_end(args, 6)?;
+                }
+                Some(other) => {
+                    return Err(CliError::Invalid(format!("unexpected argument {other}")));
+                }
+            }
+            Ok(Command::FusionMode {
+                planet,
+                mode,
+                actor,
+            })
+        }
+        Some("status") => {
+            let planet = args.get(2).map(|raw| parse_coord(raw)).transpose()?;
+            expect_end(args, if planet.is_some() { 3 } else { 2 })?;
+            Ok(Command::FusionStatus { planet })
+        }
+        Some(other) => Err(CliError::Invalid(format!("unknown fusion command {other}"))),
+        None => Err(CliError::Invalid(
+            "fusion mode|status: missing subcommand".into(),
+        )),
+    }
 }
 
 fn parse_vehicle_command(args: &[String]) -> Result<Command, CliError> {

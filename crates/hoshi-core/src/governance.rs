@@ -170,7 +170,9 @@ pub fn dest_of(intent: &Intent) -> Option<Coord> {
         Intent::Launch { dest, .. }
         | Intent::Colonize { dest, .. }
         | Intent::Invade { dest, .. } => Some(*dest),
-        Intent::Build { planet, .. } | Intent::Dismantle { planet, .. } => Some(*planet),
+        Intent::Build { planet, .. }
+        | Intent::Dismantle { planet, .. }
+        | Intent::FusionMode { planet, .. } => Some(*planet),
         Intent::PlaceOrder { region, .. } => Some(*region),
         Intent::ShipGoods { dest, .. } => Some(*dest),
         Intent::Cheat { .. }
@@ -241,6 +243,7 @@ pub fn spend_of(state: &GameState, intent: &Intent, _now: u64) -> f64 {
         } => cargo.total() + state.shipment_fuel(*origin, *dest, *cargo),
         Intent::Cheat { .. }
         | Intent::Dismantle { .. }
+        | Intent::FusionMode { .. }
         | Intent::AcceptContract { .. }
         | Intent::FulfilContract { .. }
         | Intent::SetBudget { .. }

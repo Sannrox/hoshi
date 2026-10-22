@@ -829,6 +829,39 @@ time_growth = 1.8
 prerequisites = [{ building = "research_lab", level = 2 }]
 tech_prerequisites = [{ id = "fission", level = 1 }]
 
+# Fusion: D-D first, D-He3 (fusion_dhe3) later. Fuel burns from the planet's
+# deuterium and helium-3 stock in proportion to delivered energy. Output is
+# capped by the heat sink the other buildings leave (fusion cools first).
+# Start-up draws startup_energy_* x rated from spare solar and fission supply
+# for startup_secs; less spare supply stretches it, none pauses it.
+[fusion_plant]
+base_energy = 400.0
+growth = 1.1
+deuterium_per_energy_hour_dd = 0.002
+deuterium_per_energy_hour_dhe3 = 0.0008
+helium3_per_energy_hour_dhe3 = 0.0012
+waste_heat_per_energy_dd = 1.5
+waste_heat_per_energy_dhe3 = 0.7
+startup_energy_dd = 3.0
+startup_energy_dhe3 = 5.0
+startup_secs = 1800
+residual_fraction_dd = 0.01
+residual_fraction_dhe3 = 0.0005
+residual_secs = 10800
+wear_neutron_per_hour = 0.0007
+dhe3_neutron_share = 0.1
+activation_cooldown_secs = 86400
+
+[buildings.fusion_plant]
+frames = 20000.0
+electronics = 15000.0
+fuel = 3000.0
+cost_growth = 2.0
+base_seconds = 7200.0
+time_growth = 2.0
+prerequisites = [{ building = "research_lab", level = 6 }, { building = "fission_reactor", level = 1 }]
+tech_prerequisites = [{ id = "fusion_dd", level = 1 }]
+
 [dismantle]
 time_share = 0.5
 energy_share = 0.25

@@ -90,6 +90,30 @@ pub struct Detail {
     pub ship: Option<ShipTravel>,
 }
 
+/// Plant line for the side panel: mode, output, fuel, start-up and cooling cap.
+fn fusion_summary(status: &crate::FusionStatus) -> String {
+    let state = if status.plant.mode == crate::FusionMode::Off {
+        "off".to_string()
+    } else if status.plant.burning() {
+        format!("{:.0}/{:.0} energy", status.output, status.rated)
+    } else {
+        format!(
+            "start-up {:.0}% drawing {:.0}",
+            status.startup_progress * 100.0,
+            status.startup_draw
+        )
+    };
+    let mut fuel = format!("deuterium {:.2}/h", status.deuterium_per_hour);
+    if status.helium3_per_hour > 0.0 {
+        fuel.push_str(&format!(", helium-3 {:.2}/h", status.helium3_per_hour));
+    }
+    format!(
+        "; fusion {} {state}; {fuel}; cooling cap {:.0}",
+        status.plant.mode.as_key(),
+        status.cooling_cap
+    )
+}
+
 impl GameState {
     /// Pure glance for a list selection. `travel_dest` is the map cursor for ships.
     pub fn describe(&self, subject: DetailSubject, travel_dest: Option<Coord>) -> Option<Detail> {
@@ -190,9 +214,15 @@ impl GameState {
                     }),
             )
             .collect();
+        let mut description = format!("next level {}", level.saturating_add(1));
+        if kind == BuildingKind::FusionPlant
+            && let Some(status) = self.fusion_status_at(planet)
+        {
+            description.push_str(&fusion_summary(&status));
+        }
         Some(Detail {
             name: kind.to_string(),
-            description: format!("next level {}", level.saturating_add(1)),
+            description,
             level,
             costs: material_lines_at(self, planet, cost),
             energy_draw: Some(energy_next - energy_now),
@@ -757,6 +787,28 @@ mod tests {
             detail.afford,
             Some(AffordEta::Now | AffordEta::In(_))
         ));
+    }
+
+    #[test]
+    fn fusion_detail_shows_mode_startup_and_cooling_cap() {
+        let mut state = GameState::with_config(0, quiet());
+        state.buildings.fusion_plant = 1;
+        state.resources.deuterium = 100.0;
+        let detail = state
+            .describe(
+                DetailSubject::Building {
+                    kind: BuildingKind::FusionPlant,
+                    planet: state.home,
+                },
+                None,
+            )
+            .unwrap();
+        assert!(
+            detail.description.contains("fusion dd start-up 0%")
+                && detail.description.contains("cooling cap"),
+            "{}",
+            detail.description
+        );
     }
 
     #[test]

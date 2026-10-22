@@ -595,6 +595,10 @@ impl GameState {
         if asset.key.ends_with(":fission_reactor") && self.reactor_output_at(asset.coord) > 0.0 {
             self.note_reactor_shutdown(asset.coord, at);
         }
+        let asset = &self.maintenance.assets[idx];
+        if asset.key.ends_with(":fusion_plant") {
+            self.note_fusion_shutdown(asset.coord, at);
+        }
         self.resources = self.resources.saturating_sub(cost);
         let ends = match kind {
             WorkKind::Scheduled => at.saturating_add(cfg.work_secs),
@@ -777,8 +781,14 @@ impl GameState {
             } else {
                 0.0
             };
+            let neutron_w = if self.maintenance.assets[idx].key.ends_with(":fusion_plant") {
+                self.fusion_neutron_wear_per_hour(coord) * hours
+            } else {
+                0.0
+            };
             let cond =
-                (self.maintenance.assets[idx].condition - use_w - age_w - heat_w).clamp(0.05, 1.0);
+                (self.maintenance.assets[idx].condition - use_w - age_w - heat_w - neutron_w)
+                    .clamp(0.05, 1.0);
             self.maintenance.assets[idx].condition = cond;
             self.maintenance.assets[idx].hours_use += hours;
         }
@@ -848,6 +858,9 @@ impl GameState {
             && self.reactor_output_at(self.maintenance.assets[idx].coord) > 0.0
         {
             self.note_reactor_shutdown(self.maintenance.assets[idx].coord, at);
+        }
+        if key.ends_with(":fusion_plant") {
+            self.note_fusion_shutdown(self.maintenance.assets[idx].coord, at);
         }
         let cond = (self.maintenance.assets[idx].condition * 0.5).clamp(0.05, 1.0);
         self.maintenance.assets[idx].condition = cond;
@@ -938,6 +951,56 @@ mod tests {
             .retain(|order| order.asset_id != asset);
         assert!(state.reactor_decay_heat_at(state.home) > 0.0);
         assert!(state.reactor_output_at(state.home) > 0.0);
+    }
+
+    #[test]
+    fn fusion_disruption_needs_a_new_startup_and_keeps_the_building() {
+        let mut state = GameState::new(1_000);
+        state.buildings.fusion_plant = 1;
+        state.buildings.radiator = 20;
+        state.resources.deuterium = 100.0;
+        state.fusion_plants.insert(
+            state.home,
+            crate::FusionPlant {
+                mode: crate::FusionMode::Dd,
+                startup_left: 0.0,
+                activated: true,
+                stopped_at: None,
+                residual_heat: 0.0,
+            },
+        );
+        state.sync_maintenance_assets(1_000);
+        let asset = state
+            .maintenance
+            .assets
+            .iter()
+            .find(|asset| asset.key.ends_with(":fusion_plant"))
+            .unwrap()
+            .id;
+        assert!(state.fusion_output_at(state.home) > 0.0);
+        let config = state.maintenance_config();
+        state.fail_asset(asset, 1_000, &config);
+        assert_eq!(state.fusion_output_at(state.home), 0.0);
+        assert_eq!(state.buildings.fusion_plant, 1);
+        let residual = state
+            .config
+            .fusion_plant
+            .residual_heat(crate::FusionMode::Dd, 1);
+        assert_eq!(state.fusion_heat_at(state.home), residual);
+        assert!(
+            state
+                .incidents
+                .incidents
+                .iter()
+                .any(|i| i.kind == IncidentKind::Failure)
+        );
+        state.last_tick_unix += config.offline_secs;
+        state
+            .maintenance
+            .orders
+            .retain(|order| order.asset_id != asset);
+        assert_eq!(state.fusion_output_at(state.home), 0.0);
+        assert!(!state.fusion_plants[&state.home].burning());
     }
 
     #[test]

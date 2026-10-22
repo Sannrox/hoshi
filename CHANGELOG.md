@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add fusion plants: D-D after `plasma_physics` and `fusion_dd`, D-He3 after `fusion_dhe3`. Plants burn deuterium (and helium-3) per delivered energy, follow the free heat sink, need a powered plasma start-up, wear from neutrons, leave brief heat after a stop, and must be switched off before dismantling. `hoshi fusion mode|status` and `POST /v1/fusion/mode` switch and inspect plants. Saves: schema 49 stores plant state; older binaries cannot open it.
+
 - Add default-off local cheats through the console and CLI, with permanent modified-save provenance, durable audits and fair-play exclusions. Schema 48 preserves cheat state across restart and prestige.
 - Preview and save redacted bug reports from the CLI, title menu, Help or crash offer. Open a prefilled issue page only after consent; offline reports retain the URL. Servers support configurable report destinations without sending reports.
 

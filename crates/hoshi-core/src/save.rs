@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 48;
+pub const SCHEMA_VERSION: u32 = 49;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -269,6 +269,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM maintenance_readings;
          DELETE FROM maintenance_predictions;
          DELETE FROM reactor_shutdowns;
+         DELETE FROM fusion_plants;
          DELETE FROM maintenance_meta;",
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
@@ -515,6 +516,12 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
     persist_kpi(&tx, state)?;
     persist_incidents(&tx, state)?;
     persist_maintenance(&tx, state)?;
+    for (coord, plant) in &state.fusion_plants {
+        tx.execute(
+            "INSERT INTO fusion_plants (galaxy, system, position, mode, startup_left, activated, stopped_at, residual_heat) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![i64::from(coord.galaxy), i64::from(coord.system), i64::from(coord.position), plant.mode.as_key(), plant.startup_left, plant.activated, plant.stopped_at.map(|at| at as i64), plant.residual_heat],
+        )?;
+    }
     for (coord, shutdown) in &state.reactor_shutdowns {
         tx.execute(
             "INSERT INTO reactor_shutdowns (galaxy, system, position, at, thermal_power) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -2021,6 +2028,53 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         );
     }
 
+    let mut plants = conn.prepare(
+        "SELECT galaxy, system, position, mode, startup_left, activated, stopped_at, residual_heat FROM fusion_plants",
+    )?;
+    let rows = plants.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, f64>(4)?,
+            row.get::<_, bool>(5)?,
+            row.get::<_, Option<i64>>(6)?,
+            row.get::<_, f64>(7)?,
+        ))
+    })?;
+    for row in rows {
+        let (galaxy, system, position, mode, startup_left, activated, stopped_at, residual_heat) =
+            row?;
+        let mode =
+            crate::FusionMode::from_key(&mode).ok_or(SaveError::Corrupt("invalid fusion mode"))?;
+        if !startup_left.is_finite()
+            || startup_left < 0.0
+            || !residual_heat.is_finite()
+            || residual_heat < 0.0
+        {
+            return Err(SaveError::Corrupt("invalid fusion plant state"));
+        }
+        let coord = Coord {
+            galaxy: u16_coord(galaxy)?,
+            system: u16_coord(system)?,
+            position: u16_coord(position)?,
+        };
+        if state.buildings_at(coord).is_none() {
+            return Err(SaveError::Corrupt("fusion plant on unowned planet"));
+        }
+        state.fusion_plants.insert(
+            coord,
+            crate::FusionPlant {
+                mode,
+                startup_left,
+                activated,
+                stopped_at: unix_ts_opt(stopped_at)?,
+                residual_heat,
+            },
+        );
+    }
+
     state.activity = ActivityTracker::default();
     if let Some((prod_until, prod_factor, research_until, research_factor)) = conn
         .query_row(
@@ -3173,6 +3227,7 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "incident_reviews" => "SELECT COUNT(*) FROM incident_reviews",
         "incident_risks" => "SELECT COUNT(*) FROM incident_risks",
         "reactor_shutdowns" => "SELECT COUNT(*) FROM reactor_shutdowns",
+        "fusion_plants" => "SELECT COUNT(*) FROM fusion_plants",
         "maintenance_meta" => "SELECT COUNT(*) FROM maintenance_meta",
         "maintenance_assets" => "SELECT COUNT(*) FROM maintenance_assets",
         "maintenance_plans" => "SELECT COUNT(*) FROM maintenance_plans",
@@ -3287,6 +3342,7 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "incident_reviews")?
         + count_rows(conn, "incident_risks")?
         + count_rows(conn, "reactor_shutdowns")?
+        + count_rows(conn, "fusion_plants")?
         + count_rows(conn, "maintenance_meta")?
         + count_rows(conn, "maintenance_assets")?
         + count_rows(conn, "maintenance_plans")?
@@ -3446,6 +3502,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 48 {
         migrate_v48(conn)?;
+    }
+    if found < 49 {
+        migrate_v49(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -4540,6 +4599,21 @@ fn migrate_v41(conn: &Connection) -> Result<(), SaveError> {
             credits REAL NOT NULL
         );
         ",
+    )?;
+    Ok(())
+}
+
+fn migrate_v49(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS fusion_plants (
+            galaxy INTEGER NOT NULL, system INTEGER NOT NULL, position INTEGER NOT NULL,
+            mode TEXT NOT NULL CHECK (mode IN ('off', 'dd', 'dhe3')),
+            startup_left REAL NOT NULL CHECK (startup_left >= 0),
+            activated INTEGER NOT NULL CHECK (activated IN (0, 1)),
+            stopped_at INTEGER CHECK (stopped_at >= 0),
+            residual_heat REAL NOT NULL CHECK (residual_heat >= 0),
+            PRIMARY KEY (galaxy, system, position)
+        );",
     )?;
     Ok(())
 }
@@ -10343,6 +10417,20 @@ mod tests {
         assert!(!loaded.maintenance.orders.is_empty() || !loaded.maintenance.readings.is_empty());
         assert_eq!(count_rows(&conn, "maintenance_meta").unwrap(), 1);
         assert!(count_rows(&conn, "maintenance_assets").unwrap() >= 1);
+    }
+
+    #[test]
+    fn migrate_v49_adds_empty_fusion_state_to_previous_save() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let state = GameState::new(100);
+        save_state(&mut conn, &state).unwrap();
+        conn.execute_batch("DROP TABLE fusion_plants; PRAGMA user_version = 48;")
+            .unwrap();
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap();
+        let loaded = load_state(&conn, state.config.clone()).unwrap();
+        assert!(loaded.fusion_plants.is_empty());
+        assert_eq!(loaded.buildings, state.buildings);
     }
 
     #[test]
