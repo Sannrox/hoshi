@@ -573,6 +573,7 @@ impl GameState {
     }
 
     pub(crate) fn on_market_tick(&mut self, at: u64) {
+        self.expire_open_contracts_at(at);
         self.ensure_region(self.config.market.hub());
         self.ensure_region(self.home);
         self.expire_npc_orders_at(at);
@@ -1114,6 +1115,16 @@ impl GameState {
                 self.try_auto_fulfil_at(dest, at);
             }
         }
+    }
+
+    /// An open contract nobody accepted before its deadline leaves the board.
+    /// Nobody holds it, so no penalty is due and nothing is worth keeping;
+    /// the NPC tick posts fresh ones. Runs on the market tick, not at each
+    /// deadline.
+    fn expire_open_contracts_at(&mut self, at: u64) {
+        self.board
+            .contracts
+            .retain(|_, c| !(c.status == ContractStatus::Open && c.deadline <= at));
     }
 
     fn fail_contracts_at(&mut self, at: u64) {
@@ -1913,6 +1924,73 @@ mod tests {
         assert_eq!(state.board.contracts[&1].status, ContractStatus::Failed);
         let after = state.resources.iron;
         assert!(after < metal);
+    }
+
+    #[test]
+    fn an_open_contract_nobody_took_expires_after_its_deadline() {
+        let mut state = ready(1_000);
+        let hub = state.config.market.hub();
+        state.board.next_contract_id = 2;
+        state.board.contracts.insert(
+            1,
+            MarketContract {
+                id: 1,
+                kind: ContractKind::Delivery,
+                region: hub,
+                good: ResourceKind::Silicon,
+                amount: 10.0,
+                remaining: 10.0,
+                price: 2.0,
+                deadline: 1_050,
+                penalty: 40.0,
+                issuer: TraderId::Npc,
+                holder: None,
+                status: ContractStatus::Open,
+            },
+        );
+        let iron = state.resources.iron;
+        state.catch_up(1_050 + state.config.market.tick_secs);
+        assert!(!state.board.contracts.contains_key(&1));
+        assert!(
+            state.resources.iron >= iron,
+            "no penalty for a contract nobody held"
+        );
+        state.catch_up(1_050 + 40 * state.config.market.tick_secs);
+        assert!(
+            state.board.contracts.len() <= 4,
+            "expired contracts do not pile up: {}",
+            state.board.contracts.len()
+        );
+    }
+
+    #[test]
+    fn trade_blocker_names_missing_stock_and_cargo_before_the_trade() {
+        let mut state = ready(1_000);
+        state.config.market.cargo_free = 100.0;
+        state.resources.silicon = 4_000.0;
+        let quote = state
+            .quote_market(ResourceKind::Silicon, ResourceKind::Deuterium, 800.0)
+            .unwrap();
+        assert!(matches!(
+            state.trade_blocker(&quote),
+            Some(MarketError::NeedCargo { need, .. }) if (need - 800.0).abs() < 1e-9
+        ));
+        assert_eq!(state.max_trade_amount(ResourceKind::Silicon), 100.0);
+        state.resources.deuterium = 95.0;
+        let quote = state
+            .quote_market(ResourceKind::Deuterium, ResourceKind::Iron, 800.0)
+            .unwrap();
+        assert!(matches!(
+            state.trade_blocker(&quote),
+            Some(MarketError::Insufficient {
+                kind: ResourceKind::Deuterium,
+                ..
+            })
+        ));
+        let small = state
+            .quote_market(ResourceKind::Silicon, ResourceKind::Deuterium, 50.0)
+            .unwrap();
+        assert!(state.trade_blocker(&small).is_none());
     }
 
     #[test]

@@ -16,6 +16,7 @@
 
 - Add signed background release checks, a plain release log, explicit managed updates and rollback, save backups, and server build metadata.
 - Dismantle one building level through the build queue, CLI, server or the remappable `D` action. Work consumes power, stops the building's output and returns condition-scaled salvage to normal stock. Prerequisites, maintenance, raid warnings and spent-fuel capacity can block removal.
+- Trade › Market: the inspector follows the chosen amount (stock now and next for both sides), rows show missing stock or cargo before Enter, `+`/`-` step by the amount's size and space sets the largest tradable amount. Open contracts nobody accepted leave the board after their deadline, active contracts are listed first, and due times read as relative time.
 - Saves: schema 47 stores build/dismantle operations and remaining powered work. Older saves migrate with existing jobs preserved as builds; older binaries cannot open the new schema.
 - Add local support-report previews, explicit save archives, redacted rotating logs and crash capture, and an admin-only server report.
 

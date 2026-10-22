@@ -329,6 +329,7 @@ impl HelpContext {
                 Binding::Confirm,
                 Binding::Increase,
                 Binding::Decrease,
+                Binding::Toggle,
                 Binding::CopySeed,
             ],
             HelpContext::Diplomacy | HelpContext::Laws => &[
@@ -621,7 +622,7 @@ impl HelpContext {
             Binding::SendProbe => "send spy probe",
             Binding::DeleteSlot => "delete save",
             Binding::RenameSlot => "rename save",
-            Binding::Toggle => "toggle / cycle / commit reserves",
+            Binding::Toggle => "toggle / cycle / max trade / commit reserves",
             Binding::CursorLeft => "cursor left / previous branch",
             Binding::CursorRight => "cursor right / next branch",
             Binding::Activity => "activity log",
