@@ -609,7 +609,16 @@ impl App {
             Span::styled(format!("{earned}/{total} "), t.strong()),
         ];
         spans.extend(bar(t, frac, 20, Intent::Success));
-        let head = vec![Line::from(spans)];
+        let mut head = vec![Line::from(spans)];
+        // Achievements stop on a modified save; say so instead of showing
+        // targets that were passed but never earned.
+        let blocked = self.state.is_modified();
+        if blocked {
+            head.push(Line::styled(
+                "Feats are off: cheats modified this save.",
+                t.intent(Intent::Warning),
+            ));
+        }
         let rows = self
             .state
             .config
@@ -640,7 +649,11 @@ impl App {
                             format!("{current:.0}/{target:.0}"),
                             Intent::Primary,
                         ),
-                        self.chip("open", Intent::Neutral, true),
+                        if blocked {
+                            self.chip("blocked", Intent::Warning, true)
+                        } else {
+                            self.chip("open", Intent::Neutral, true)
+                        },
                     ]
                 }
             })
