@@ -13,6 +13,8 @@ first_upgrade_secs = 300
 min_metal_mine_per_day = 1
 # metal(with max PR-merge pulses) / metal(activity off) must stay at or below this.
 max_bridge_metal_ratio = 8.0
+# With raids on, greedy play must finish shipyard 1 within this many seconds.
+raided_shipyard_secs = 604800
 
 [self_play]
 # Opt-in CI / CLI matrix. Never runs during normal play.
@@ -287,6 +289,9 @@ strength_factor = 0.4
 min_ships = 1
 max_rounds = 6
 plunder_share = 0.5
+# Share of each storage capacity raiders cannot reach (500 D at base storage,
+# enough for the robotics factory and shipyard gates).
+protected_share = 0.05
 
 [raid.plunder_cap]
 iron = 10000.0

@@ -82,6 +82,8 @@ pub struct SimReport {
     pub victory_max_secs: u64,
     pub ladder_tiers: Vec<LadderSimRow>,
     pub frontier_unlock_secs: Option<u64>,
+    /// When the greedy strategy, raided and undefended, finished shipyard 1.
+    pub raided_shipyard_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -259,6 +261,11 @@ impl SimReport {
         })
     }
 
+    pub fn raided_shipyard_ok(&self) -> bool {
+        self.raided_shipyard_secs
+            .is_some_and(|secs| secs <= self.pacing.raided_shipyard_secs)
+    }
+
     pub fn passed(&self) -> bool {
         self.energy_recovery
             .first()
@@ -271,6 +278,7 @@ impl SimReport {
             && self.tactics_ok
             && self.ladder_ok()
             && self.frontier_ok()
+            && self.raided_shipyard_ok()
     }
 
     pub fn frontier_ok(&self) -> bool {
@@ -326,7 +334,9 @@ impl SimReport {
         out.push_str(&format!(
             "First reactor, default-seed research-focused economy: {reactor}\n"
         ));
-        out.push_str("Strategy: greedy mines; solar when energy would go short. Raids off.\n\n");
+        out.push_str(
+            "Strategy: greedy mines; solar when energy would go short. Raids off, except the raided shipyard run.\n\n",
+        );
         out.push_str("## Targets\n\n");
         out.push_str(&format!(
             "- first upgrade within {}s\n",
@@ -339,6 +349,10 @@ impl SimReport {
         out.push_str(&format!(
             "- bridge metal ratio at most {:.1}\n",
             self.pacing.max_bridge_metal_ratio
+        ));
+        out.push_str(&format!(
+            "- shipyard 1 with raids on within {}s\n",
+            self.pacing.raided_shipyard_secs
         ));
         out.push_str(&format!(
             "- each branch keystone within {}s\n\n",
@@ -382,6 +396,14 @@ impl SimReport {
         out.push_str(&format!(
             "- tactics: no combo dominates ({})\n",
             mark(self.tactics_ok)
+        ));
+        let raided = match self.raided_shipyard_secs {
+            Some(secs) => format!("{secs}s"),
+            None => "never".into(),
+        };
+        out.push_str(&format!(
+            "- shipyard 1 with raids on: {raided} ({})\n",
+            mark(self.raided_shipyard_ok())
         ));
         if self.frontier_unlock_secs.is_some() || self.victory_max_secs > 0 {
             let elapsed = match self.frontier_unlock_secs {
@@ -568,6 +590,8 @@ pub fn simulate_greedy(config: BalanceConfig, days: u32) -> SimReport {
     };
     let respec = simulate_respec(config.clone());
     let first_reactor_secs = simulate_first_reactor(config.clone());
+    let raided_shipyard_secs =
+        simulate_raided_shipyard(config.clone(), pacing.raided_shipyard_secs);
     let prestige_runs = vec![
         prestige_row(&quiet, 1, 0),
         prestige_row(&run_once(config.clone(), days, false, 1), 2, 1),
@@ -605,7 +629,40 @@ pub fn simulate_greedy(config: BalanceConfig, days: u32) -> SimReport {
         victory_max_secs,
         ladder_tiers,
         frontier_unlock_secs,
+        raided_shipyard_secs,
     }
+}
+
+/// Greedy mines with raids on and no defence, also queueing the shipyard as
+/// soon as it is allowed. Returns when shipyard 1 finished, within `limit`.
+fn simulate_raided_shipyard(mut config: BalanceConfig, limit: u64) -> Option<u64> {
+    config.raid.enabled = true;
+    let mut state = GameState::with_config(0, config);
+    let mut steps = 0_u32;
+    while state.last_tick_unix < limit && steps < 100_000 {
+        steps += 1;
+        let _ = state.enqueue_build(BuildingKind::Shipyard, state.last_tick_unix);
+        fill_queue(&mut state);
+        if state.buildings.shipyard > 0 {
+            return Some(state.last_tick_unix);
+        }
+        let completion = state
+            .build_queue
+            .first()
+            .and_then(|job| job.completes_at)
+            .unwrap_or(u64::MAX);
+        let afford = next_afford_at(&state).unwrap_or(u64::MAX);
+        // Raids change stock without a queue event, so look again each hour.
+        let mut jump = completion
+            .min(afford)
+            .min(state.last_tick_unix.saturating_add(3_600))
+            .min(limit);
+        if jump <= state.last_tick_unix {
+            jump = state.last_tick_unix.saturating_add(1).min(limit);
+        }
+        state.catch_up(jump);
+    }
+    (state.buildings.shipyard > 0).then_some(state.last_tick_unix)
 }
 
 /// Compare shedding one oversized mine level with adding one solar level.
@@ -2503,6 +2560,14 @@ mod tests {
         assert!(report.frontier_unlock_secs.is_some());
         let md = report.to_markdown();
         assert!(md.contains("frontier unlock"), "{md}");
+    }
+
+    #[test]
+    fn raided_greedy_play_reaches_the_shipyard_within_pacing() {
+        let config = BalanceConfig::default();
+        let limit = config.pacing.raided_shipyard_secs;
+        let at = simulate_raided_shipyard(config, limit).expect("shipyard under raids");
+        assert!(at <= limit, "{at}");
     }
 
     #[test]

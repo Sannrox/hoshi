@@ -265,6 +265,15 @@ synthesizer, then only solar until supply covers demand. It uses ordinary
 construction, spending and catch-up with raids off. The home target defaults to
 `[pacing] energy_recovery_secs = 7200`; missing it fails the pacing report.
 
+Raids plunder `plunder_share` of home stock, clamped by `plunder_cap`, but only
+from stock above `[raid] protected_share` of each storage capacity (default
+0.05, which is 500 D at base deuterium storage). An undefended home can
+therefore still save the 300 D that the robotics factory and the shipyard
+need, and the shipyard is what unlocks the first defence. The same floor
+protects a home raided by rivals or on a shard. `hoshi simulate` also runs
+greedy play with raids on and fails when shipyard 1 is not finished within
+`[pacing] raided_shipyard_secs` (default seven days).
+
 The default-seed rocky home reaches positive energy at solar 6 after 1,112
 seconds, spending 1,114 construction resources including the synthesizer.
 The matrix also reports rocky, ice and gas worlds at slots 1, 8 and 15, with

@@ -267,7 +267,7 @@ impl<C: Clock> ShardSession<C> {
         defender.fleet = report.defender_after;
         let plunder = if report.winner == CombatWinner::Attacker {
             plunder_from(
-                defender.resources,
+                defender.plunderable(),
                 defender.config.raid.plunder_share,
                 defender.config.raid.plunder_cap,
             )
@@ -750,14 +750,17 @@ mod tests {
         defender.resources.iron = 200.0;
         defender.config.raid.plunder_share = 0.5;
         defender.config.raid.plunder_cap = Resources::from_parts(40.0, 0.0, 0.0);
+        defender.config.raid.protected_share = 0.0;
         let stock = defender.resources;
+        let reachable = defender.plunderable();
         let before = attacker.resources;
         let result = shard
             .raid(&mut attacker, &mut defender, raid_cmd("a", "b", "loot"))
             .unwrap();
         assert_eq!(result.report.winner, CombatWinner::Attacker);
-        let expected = plunder_from(stock, 0.5, defender.config.raid.plunder_cap);
+        let expected = plunder_from(reachable, 0.5, defender.config.raid.plunder_cap);
         assert_eq!(result.plunder, expected);
+        assert_eq!(result.plunder.iron, 40.0);
         assert_eq!(attacker.resources, before.saturating_add(expected));
         assert_eq!(defender.resources, stock.saturating_sub(expected));
     }
