@@ -34,6 +34,7 @@ mod kpi;
 mod ladder;
 mod laws;
 mod leaders;
+mod ledger;
 mod maintenance;
 mod market;
 mod moons;
@@ -177,6 +178,7 @@ pub use leaders::{
     Actor, Assignment, AssignmentTarget, Delegation, Leader, LeaderConfig, LeaderError,
     PLAYER as LEADER_PLAYER, Permission, RoleKind, TraitSpec,
 };
+pub use ledger::{CatchUpLedger, PlanetLedger};
 pub use maintenance::{
     Asset, AssetKind, FailurePrediction, MaintenanceConfig, MaintenanceError, MaintenancePlan,
     MaintenanceSnapshot, MaintenanceState, PlanKind, TelemetryReading, WorkKind, WorkOrder,

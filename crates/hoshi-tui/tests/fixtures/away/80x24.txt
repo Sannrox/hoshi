@@ -1,0 +1,24 @@
+ ◆ HOSHI  │  Colony / Research                             RAID 1:00:00   1:1:1
+  Fe       │ Si       │ REE      │ H2O      │ He3      │ D        │ Energy
+  500      │ 500      │ 0        │ 0        │ 0        │ 0        │ +2
+   ▦ While you were away   10h 00m                                          x
+──                                                                            ──
+ ▦  Pirates plundered Fe 2.7k Si 1.0k while you were away.                    c
+            PRODUCED    SPENT    RAIDS    OTHER      NET   CAPPED
+ ─  Fe         +5.6k     −200    −2.7k        ·    +2.7k        ·             ─
+    Si         +1.8k        ·    −1.0k        ·     +800      300
+    D            +12     −400        ·        ·     −388        ·
+    builds 1  research 0  fleets returned 0  expeditions 0  raids 1
+
+    EVENTS
+ ▌  story 5                                                                   C
+    story 4                                                                   C
+    story 3
+    story 2                                                                   C
+    1-4 of 6, newest first (space for more)                                   C
+                                                                              C
+    enter  dismiss   r  replay   w  reopen on overview                        C
+  TIER 3
+    Adaptive routes                     800  1.2k   400   6m 40s   NEED RESEARC
+                                                                    ⏎ research
+      [/]  planet   h/l  branch   j/k  select          0000-0000-0000-00 gen 1

@@ -65,6 +65,10 @@ enum HistoryPane {
     AsOf,
 }
 
+/// Shortest jump a running game treats as a wake, so a low launch threshold
+/// cannot open the away summary on ordinary frames.
+pub const MIN_WAKE_SECS: u64 = 60;
+const AWAY_EVENTS_PER_PAGE: usize = 4;
 const MAP_SYSTEM_MAX: u16 = 81;
 const MAP_SLOT_COUNT: u16 = 16;
 
@@ -119,6 +123,13 @@ pub struct App {
     trade_amount: f64,
     away: Option<AwaySummary>,
     away_hidden: bool,
+    /// Page of away-dialog events shown, newest page first.
+    away_event_page: usize,
+    /// A running game shows the away summary when one catch-up advances game
+    /// time by at least this many seconds (wake from sleep). `None` disables.
+    pub away_on_wake: Option<u64>,
+    /// A wake summary whose desktop notice has not gone out yet.
+    away_notice_due: bool,
     opened_report: bool,
     map_system: u16,
     map_position: u16,
@@ -196,6 +207,9 @@ impl App {
             trade_amount: 10.0,
             away: None,
             away_hidden: false,
+            away_event_page: 0,
+            away_on_wake: None,
+            away_notice_due: false,
             opened_report: false,
             map_system: Coord::HOME.system,
             map_position: Coord::HOME.position,
@@ -452,6 +466,7 @@ impl App {
     pub fn set_away(&mut self, summary: AwaySummary) {
         self.away = Some(summary);
         self.away_hidden = false;
+        self.away_event_page = 0;
     }
 
     pub fn set_notify(&mut self, prefs: NotifyPrefs) {
@@ -461,7 +476,12 @@ impl App {
 
     pub fn poll_notify(&mut self) -> Vec<u8> {
         let now = self.state.last_tick_unix;
-        let notices = self.watch.observe(&self.state, now);
+        let mut notices = self.watch.observe(&self.state, now);
+        if std::mem::take(&mut self.away_notice_due)
+            && let Some(away) = &self.away
+        {
+            notices.extend(notify::summarize_away(away, self.notify));
+        }
         notify::encode(self.notify, now, &notices)
     }
 
@@ -473,10 +493,25 @@ impl App {
     }
 
     pub fn catch_up_now(&mut self, now_unix: u64) {
-        self.state.interactive_tactics = true;
-        self.state.catch_up(self.state.effective_time(now_unix));
+        self.catch_up_to(self.state.effective_time(now_unix));
         self.record_production_sample();
         crate::cockpit::record_gauge(&mut self.gauge_history, self.state.resources);
+    }
+
+    /// Catch up to the effective game time `target`. A gap of at least
+    /// `away_on_wake` opens the away summary; returns true when it did.
+    fn catch_up_to(&mut self, target: u64) -> bool {
+        self.state.interactive_tactics = true;
+        let gap = target.saturating_sub(self.state.last_tick_unix);
+        if !self.away_on_wake.is_some_and(|secs| gap >= secs) {
+            self.state.catch_up(target);
+            return false;
+        }
+        let before = crate::title::snapshot_away(&self.state);
+        let ledger = self.state.catch_up_ledger(target);
+        self.set_away(crate::title::summarize_away(&before, ledger, &self.state));
+        self.away_notice_due = true;
+        true
     }
 
     pub fn open_support(&mut self, save: &std::path::Path) {
@@ -566,8 +601,10 @@ impl App {
             }
             return Action::None;
         }
-        self.state.interactive_tactics = true;
-        self.state.catch_up(now_unix);
+        if self.catch_up_to(now_unix) {
+            // The key that woke the game must not dismiss the summary it opened.
+            return Action::None;
+        }
         self.clamp_planet();
         if self.help_open {
             if matches!(code, KeyCode::Tab | KeyCode::BackTab) {
@@ -628,6 +665,12 @@ impl App {
             return self.handle_replay_key(code);
         }
         if self.away.is_some() && !self.away_hidden {
+            if self.keymap.matches(Binding::Toggle, code) {
+                let events = self.away.as_ref().map_or(0, |away| away.events.len());
+                let pages = events.div_ceil(AWAY_EVENTS_PER_PAGE).max(1);
+                self.away_event_page = (self.away_event_page + 1) % pages;
+                return Action::None;
+            }
             match self.keymap.lookup(ctx, code) {
                 Some(Binding::Confirm | Binding::Cancel) => self.away_hidden = true,
                 Some(Binding::Replay) => self.open_latest_replay(),
@@ -1763,30 +1806,61 @@ impl App {
 
     fn draw_away(&self, frame: &mut Frame<'_>, away: &AwaySummary) {
         let t = &self.theme;
-        let mut lines = vec![
-            Line::from(vec![
-                Span::styled("GAINED  ", t.label()),
-                Span::styled(
-                    format!(
-                        "Fe +{}  Si +{}  D +{}",
-                        ui::spans::compact(away.iron),
-                        ui::spans::compact(away.silicon),
-                        ui::spans::compact(away.deuterium)
-                    ),
-                    t.intent(Intent::Success),
-                ),
-            ]),
-            Line::styled(
+        let ledger = &away.ledger;
+        let total = ledger.total();
+        let mut lines = Vec::new();
+        let plundered = resource_list(total.plundered);
+        if !plundered.is_empty() {
+            lines.push(Line::styled(
+                format!("Pirates plundered {plundered} while you were away."),
+                t.intent(Intent::Danger),
+            ));
+        }
+        if ledger.planets.len() > 1 {
+            for planet in &ledger.planets {
+                let nets: Vec<String> = ResourceKind::ALL
+                    .iter()
+                    .filter(|&&kind| planet.net(kind).abs() >= 0.5)
+                    .map(|&kind| format!("{} {}", kind.abbr(), ui::spans::signed(planet.net(kind))))
+                    .collect();
+                if !nets.is_empty() {
+                    lines.push(Line::styled(
+                        format!("{:<9}{}", planet.coord.to_string(), nets.join("  ")),
+                        t.text(),
+                    ));
+                }
+            }
+        }
+        let rows = away_rows(&total);
+        if !rows.is_empty() {
+            let title = if ledger.planets.len() > 1 {
+                "total"
+            } else {
+                ""
+            };
+            lines.push(Line::styled(
                 format!(
-                    "builds {}  research {}  fleets returned {}  expeditions {}  raids {}",
-                    away.builds, away.research, away.fleets_returned, away.expeditions, away.raids
+                    "{title:<6}{:>10}{:>9}{:>9}{:>9}{:>9}{:>9}",
+                    "PRODUCED", "SPENT", "RAIDS", "OTHER", "NET", "CAPPED"
                 ),
-                t.text(),
+                t.label(),
+            ));
+            lines.extend(rows.into_iter().map(|row| Line::styled(row, t.text())));
+        }
+        let raids = match (ledger.raids_won, ledger.raids_lost) {
+            (0, lost) => lost.to_string(),
+            (won, lost) => format!("{} ({won} won, {lost} lost)", won + lost),
+        };
+        lines.push(Line::styled(
+            format!(
+                "builds {}  research {}  fleets returned {}  expeditions {}  raids {raids}",
+                away.builds, away.research, ledger.fleets_returned, ledger.expeditions
             ),
-        ];
+            t.text(),
+        ));
         for (title, items) in [
-            ("deliveries", &away.deliveries),
             ("stalls", &away.stalls),
+            ("deliveries", &away.deliveries),
             ("completed", &away.completed),
         ] {
             if items.is_empty() {
@@ -1804,11 +1878,30 @@ impl App {
                 ));
             }
         }
+        let toggle = self.keymap.primary(Binding::Toggle);
         if !away.events.is_empty() {
             lines.push(Line::default());
             lines.push(ui::panels::section(t, "events"));
-            for event in away.events.iter().take(4) {
+            let skip = self.away_event_page * AWAY_EVENTS_PER_PAGE;
+            for event in away
+                .events
+                .iter()
+                .rev()
+                .skip(skip)
+                .take(AWAY_EVENTS_PER_PAGE)
+            {
                 lines.push(Line::styled(event.clone(), t.muted()));
+            }
+            let total = away.events.len();
+            if total > AWAY_EVENTS_PER_PAGE {
+                let last = (skip + AWAY_EVENTS_PER_PAGE).min(total);
+                lines.push(Line::styled(
+                    format!(
+                        "{}-{last} of {total}, newest first ({toggle} for more)",
+                        skip + 1
+                    ),
+                    t.muted(),
+                ));
             }
         }
         self.dialog(
@@ -3739,6 +3832,58 @@ fn wrap_chunks(word: &str, width: usize) -> Vec<String> {
     out
 }
 
+/// `Fe 2.7k Si 1.2k` for every resource above half a unit.
+fn resource_list(amounts: Resources) -> String {
+    ResourceKind::ALL
+        .iter()
+        .filter(|&&kind| amounts.get(kind) >= 0.5)
+        .map(|&kind| format!("{} {}", kind.abbr(), ui::spans::compact(amounts.get(kind))))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// One away-table row per resource that moved. PRODUCED is what reached
+/// storage; CAPPED is production the full store discarded.
+fn away_rows(ledger: &hoshi_core::PlanetLedger) -> Vec<String> {
+    let cell = |v: f64| {
+        if v.abs() < 0.5 {
+            "·".to_string()
+        } else {
+            ui::spans::signed(v)
+        }
+    };
+    ResourceKind::ALL
+        .iter()
+        .filter_map(|&kind| {
+            let produced = ledger.produced.get(kind) - ledger.capped.get(kind);
+            let other = ledger.gained.get(kind) + ledger.transfers_in.get(kind)
+                - ledger.transfers_out.get(kind);
+            let terms = [
+                produced,
+                ledger.spent.get(kind),
+                ledger.plundered.get(kind),
+                other,
+                ledger.capped.get(kind),
+            ];
+            if terms.iter().all(|v| v.abs() < 0.5) {
+                return None;
+            }
+            Some(format!(
+                "{:<6}{:>10}{:>9}{:>9}{:>9}{:>9}{:>9}",
+                kind.abbr(),
+                cell(produced),
+                cell(-ledger.spent.get(kind)),
+                cell(-ledger.plundered.get(kind)),
+                cell(other),
+                ui::spans::signed(ledger.net(kind)),
+                cell(ledger.capped.get(kind))
+                    .trim_start_matches('+')
+                    .to_string(),
+            ))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3815,7 +3960,6 @@ mod tests {
         let mut app = App::new(GameState::new(1_000));
         app.set_away(crate::title::AwaySummary {
             elapsed_secs: 120,
-            iron: 10.0,
             builds: 1,
             events: vec!["raid: lost".into()],
             ..crate::title::AwaySummary::default()
@@ -3833,6 +3977,84 @@ mod tests {
         app.handle_key(KeyCode::Char('w'), 1_000);
         let text = render_text(&app, 80, 24);
         assert!(text.contains("While you were away"), "{text}");
+    }
+
+    fn plundered_summary() -> AwaySummary {
+        let mut ledger = hoshi_core::CatchUpLedger::default();
+        let before = Resources::from_parts(1_000.0, 800.0, 400.0);
+        let mut home = hoshi_core::PlanetLedger {
+            coord: Coord::HOME,
+            before,
+            after: before,
+            produced: Resources::from_parts(5_630.0, 2_100.0, 12.0),
+            capped: Resources::from_parts(0.0, 300.0, 0.0),
+            spent: Resources::from_parts(200.0, 0.0, 400.0),
+            plundered: Resources::from_parts(2_729.0, 1_000.0, 0.0),
+            transfers_in: Resources::ZERO,
+            transfers_out: Resources::ZERO,
+            gained: Resources::ZERO,
+        };
+        for kind in ResourceKind::ALL {
+            home.after.set(kind, before.get(kind) + home.net(kind));
+        }
+        ledger.planets.push(home);
+        ledger.raids_lost = 1;
+        let mut events = vec!["raid: pirates 3 light fighter vs none. winner attacker".to_string()];
+        events.extend((1..=5).map(|n| format!("story {n}")));
+        AwaySummary {
+            elapsed_secs: 10 * 3_600,
+            ledger,
+            builds: 1,
+            events,
+            ..AwaySummary::default()
+        }
+    }
+
+    #[test]
+    fn away_dialog_shows_where_resources_went() {
+        let mut app = App::new(GameState::new(1_000));
+        app.set_away(plundered_summary());
+        let text = render_text(&app, 80, 24);
+        assert_eq!(
+            text,
+            include_str!("../tests/fixtures/away/80x24.txt"),
+            "{text}"
+        );
+        assert!(text.contains("Pirates plundered Fe 2.7k Si 1.0k"), "{text}");
+        assert!(text.contains("−388"), "{text}");
+        assert!(!text.contains("+-"), "{text}");
+        assert!(text.contains("raids 1"), "{text}");
+        assert!(!text.contains("story 1"), "{text}");
+        app.handle_key(KeyCode::Char(' '), 1_000);
+        let text = render_text(&app, 80, 24);
+        assert!(text.contains("story 1"), "{text}");
+        assert!(text.contains("raid: pirates"), "{text}");
+        assert!(!text.contains("story 5"), "{text}");
+        app.handle_key(KeyCode::Char(' '), 1_000);
+        assert!(render_text(&app, 80, 24).contains("story 5"));
+    }
+
+    #[test]
+    fn running_game_shows_the_away_summary_once_after_a_wake() {
+        let mut app = App::new(GameState::new(1_000));
+        app.away_on_wake = Some(600);
+        app.catch_up_now(1_010);
+        app.catch_up_now(1_400);
+        assert!(app.away.is_none());
+        app.handle_key(KeyCode::Enter, 1_400 + 3_600);
+        let away = app.away.as_ref().expect("summary after a wake");
+        assert_eq!(away.elapsed_secs, 3_600);
+        assert!(!app.away_hidden);
+        app.set_notify(NotifyPrefs {
+            enabled: true,
+            ..NotifyPrefs::default()
+        });
+        assert!(String::from_utf8_lossy(&app.poll_notify()).contains("while away"));
+        assert!(!String::from_utf8_lossy(&app.poll_notify()).contains("while away"));
+        app.handle_key(KeyCode::Enter, 5_000);
+        app.catch_up_now(5_001);
+        app.catch_up_now(5_300);
+        assert!(app.away_hidden);
     }
 
     #[test]
@@ -4048,7 +4270,6 @@ mod tests {
         app.replay = None;
         app.set_away(AwaySummary {
             elapsed_secs: 10,
-            raids: 1,
             events: vec!["raid: replay".into()],
             ..AwaySummary::default()
         });

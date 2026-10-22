@@ -9104,6 +9104,30 @@ mod tests {
         assert_eq!(loaded, original);
     }
 
+    /// Per-second stepping through a raid is pinned by
+    /// `raid_during_offline_gap_matches_step_by_step`.
+    #[test]
+    fn one_gap_gives_one_state_however_it_is_caught_up() {
+        let fresh = || {
+            let mut state = GameState::with_config(0, BalanceConfig::default());
+            state.next_raid_at = Some(3_600);
+            state
+        };
+        let mut plain = fresh();
+        plain.catch_up(7_200);
+
+        let mut ledger = fresh();
+        let report = ledger.catch_up_ledger(7_200);
+        assert_eq!(ledger, plain);
+        assert_eq!(report.raids(), 1);
+
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        save_state(&mut conn, &fresh()).unwrap();
+        let mut loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        loaded.catch_up(7_200);
+        assert_eq!(loaded, plain);
+    }
+
     #[test]
     fn activity_tracker_round_trips() {
         let mut original = GameState::new(10);

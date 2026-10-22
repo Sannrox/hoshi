@@ -934,7 +934,7 @@ fn play_path(
         state.effective_time(now),
     );
     let before = snapshot_away(&state);
-    state.catch_up(state.effective_time(now));
+    let ledger = state.catch_up_ledger(state.effective_time(now));
     if user.reset_tutorial {
         state.reset_hints();
         store.save(&state)?;
@@ -968,10 +968,11 @@ fn play_path(
         app.ai_advisor = false;
     }
     app.set_notify(user.notify_prefs());
+    app.away_on_wake = Some(user.away_threshold_secs.max(app::MIN_WAKE_SECS));
     #[cfg(feature = "bridge")]
     app.set_bridge_ui(user.bridge);
     if now.saturating_sub(before.tick) >= user.away_threshold_secs {
-        let away = summarize_away(&before, &app.state);
+        let away = summarize_away(&before, ledger, &app.state);
         write_notify(app.notify_away(&away));
         app.set_away(away);
     }
