@@ -646,11 +646,7 @@ impl App {
         }
 
         if self.screen == Screen::Overview && self.keymap.matches(Binding::CheatConsole, code) {
-            if self.state.cheats_enabled() {
-                self.cheat_prompt = Some(String::new());
-            } else {
-                self.status = "cheats are disabled".into();
-            }
+            self.open_cheat_console();
             return Action::None;
         }
         if self.catch_up_to(now_unix) {
@@ -941,6 +937,7 @@ impl App {
             Some(Binding::Toggle) if self.screen == Screen::Map && self.dispatch.is_none() => {
                 self.cycle_map_galaxy();
             }
+            _ if self.keymap.matches(Binding::CheatConsole, code) => self.open_cheat_console(),
             _ => {}
         }
         Action::None
@@ -981,6 +978,7 @@ impl App {
                 copy_to_clipboard(&seed);
                 self.status = format!("copied {seed}");
             }
+            _ if self.keymap.matches(Binding::CheatConsole, code) => self.open_cheat_console(),
             _ => {}
         }
         Action::None
@@ -1027,6 +1025,18 @@ impl App {
         self.dispatch = None;
         self.pending_invasion = None;
         self.history_pane = HistoryPane::List;
+    }
+
+    /// Open the console, or say cheats are off. Overview binds the key
+    /// directly; elsewhere it is the last resort, after every other handler
+    /// (context bindings, hub digits, tutorial keys) passed on the key, so a
+    /// remapped console key never shadows one.
+    fn open_cheat_console(&mut self) {
+        if self.state.cheats_enabled() {
+            self.cheat_prompt = Some(String::new());
+        } else {
+            self.status = "cheats are disabled".into();
+        }
     }
 
     fn help_context(&self) -> HelpContext {
@@ -3024,7 +3034,7 @@ impl App {
 
     fn draw_help(&self, frame: &mut Frame<'_>) {
         let mut lines = self.keymap.help_lines(self.help_context());
-        if self.state.cheats_enabled() && self.help_context() == HelpContext::Overview {
+        if self.state.cheats_enabled() {
             lines.push(format!(
                 "  {}  local cheat console",
                 self.keymap.display(Binding::CheatConsole)
@@ -6179,6 +6189,29 @@ mod tests {
         app.handle_key(KeyCode::Esc, 100);
         assert!(app.cheat_prompt.is_none());
         assert!(!app.state.is_modified());
+    }
+
+    #[test]
+    fn cheat_console_opens_from_the_bridge_and_other_play_screens() {
+        let mut app = App::new(GameState::new(100));
+        app.screen = Screen::Cockpit;
+        app.handle_key(KeyCode::Char('`'), 100);
+        assert!(app.cheat_prompt.is_none());
+        assert_eq!(app.status, "cheats are disabled");
+        app.state.set_cheats_enabled(true, Actor::Player, 100);
+        for screen in [Screen::Cockpit, Screen::Map, Screen::Market] {
+            app.screen = screen;
+            app.handle_key(KeyCode::Char('`'), 100);
+            assert!(app.cheat_prompt.is_some(), "{screen:?}");
+            app.handle_key(KeyCode::Esc, 100);
+        }
+        // A console key remapped onto a hub digit or a tutorial key leaves
+        // that key's own action alone.
+        app.keymap = Keymap::from_overrides([("cheat_console", "2")]).unwrap();
+        app.screen = Screen::Cockpit;
+        app.handle_key(KeyCode::Char('2'), 100);
+        assert!(app.cheat_prompt.is_none());
+        assert_ne!(app.screen, Screen::Cockpit);
     }
 
     #[test]
