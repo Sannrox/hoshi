@@ -14,6 +14,9 @@ cargo install --git https://github.com/Sannrox/hoshi --locked hoshi
 
 Optional backends (`--features mikura`, `--features chisei`, `--features bridge`)
 are available from this install.
+`--features ui` embeds the pinned web client for `hoshi serve`
+([docs/server.md](server.md#web-client)); it downloads one release at build
+time and needs `curl`. Release binaries include it.
 
 ## Prebuilt binaries
 

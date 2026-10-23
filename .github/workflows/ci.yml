@@ -36,6 +36,8 @@ jobs:
         run: cargo test --locked -p hoshi-core --features chisei
       - name: Chisei TUI demo
         run: cargo test --locked -p hoshi --features chisei
+      - name: Embedded web client
+        run: cargo test --locked -p hoshi --features ui --bin hoshi -- web_ui ui_pin serve::tests::ui_ serve::tests::root_and_ui
 
   fmt:
     name: Rustfmt
@@ -62,6 +64,7 @@ jobs:
       - run: cargo clippy --locked -p hoshi-core --features mikura --all-targets -- -D warnings
       - run: cargo clippy --locked -p hoshi-core --features chisei --all-targets -- -D warnings
       - run: cargo clippy --locked -p hoshi --features chisei --all-targets -- -D warnings
+      - run: cargo clippy --locked -p hoshi --features ui --all-targets -- -D warnings
 
   workflow-skills:
     name: Workflow Skills

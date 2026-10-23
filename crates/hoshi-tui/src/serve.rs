@@ -361,6 +361,7 @@ pub struct Server {
     live: Arc<Mutex<Live>>,
     push: Arc<Mutex<crate::push::Gate>>,
     oidc: Arc<Mutex<crate::oidc::Gate>>,
+    ui: Arc<Option<crate::web_ui::Ui>>,
 }
 
 impl Server {
@@ -406,7 +407,14 @@ impl Server {
             oidc: Arc::new(Mutex::new(crate::oidc::Gate::noop(
                 crate::oidc::Settings::default(),
             ))),
+            ui: Arc::new(crate::web_ui::Ui::new(None)),
         })
+    }
+
+    /// Serve the client from `dir` instead of the embedded bundle.
+    pub fn with_ui_dir(mut self, dir: PathBuf) -> Self {
+        self.ui = Arc::new(crate::web_ui::Ui::new(Some(dir)));
+        self
     }
 
     pub fn with_updates(self, updates: crate::update::CheckSession) -> Self {
@@ -477,6 +485,7 @@ impl Server {
         let live = self.live;
         let push = self.push;
         let oidc = self.oidc;
+        let ui = self.ui;
         let inflight = Arc::new(AtomicUsize::new(0));
         let stop = Arc::new(AtomicBool::new(false));
         if lock_poison(push.as_ref()).armed() {
@@ -532,6 +541,7 @@ impl Server {
             let live = Arc::clone(&live);
             let push = Arc::clone(&push);
             let oidc = Arc::clone(&oidc);
+            let ui = Arc::clone(&ui);
             let worker = Inflight(Arc::clone(&inflight));
             let _ = std::thread::Builder::new()
                 .name("hoshi-serve".into())
@@ -544,6 +554,7 @@ impl Server {
                         live.as_ref(),
                         push.as_ref(),
                         oidc.as_ref(),
+                        ui.as_ref().as_ref(),
                         bind,
                     );
                 });
@@ -608,7 +619,8 @@ pub fn first_positional(args: &[String]) -> Option<&str> {
     let mut i = 1;
     while i < args.len() {
         let a = args[i].as_str();
-        if a == "--save" || a == "--balance" || a == "--bind" || a == "--config" {
+        if a == "--save" || a == "--balance" || a == "--bind" || a == "--config" || a == "--ui-dir"
+        {
             i += 2;
             continue;
         }
@@ -629,12 +641,19 @@ pub fn first_positional(args: &[String]) -> Option<&str> {
     None
 }
 
-type ServeArgs = (Option<String>, Option<String>, Option<PathBuf>);
+/// Bind, save, config dir and `--ui-dir`, each when given.
+type ServeArgs = (
+    Option<String>,
+    Option<String>,
+    Option<PathBuf>,
+    Option<PathBuf>,
+);
 
 pub fn parse_serve_args(args: &[String]) -> Result<ServeArgs, ServeError> {
     let mut bind = None;
     let mut save = None;
     let mut config_dir = None;
+    let mut ui_dir = None;
     let mut i = 1;
     while i < args.len() {
         let a = args[i].as_str();
@@ -679,6 +698,15 @@ pub fn parse_serve_args(args: &[String]) -> Result<ServeArgs, ServeError> {
             i += 2;
             continue;
         }
+        if a == "--ui-dir" {
+            let value = args.get(i + 1).ok_or_else(|| ServeError {
+                message: "missing --ui-dir directory".into(),
+                exit: crate::cli::EXIT_INVALID,
+            })?;
+            ui_dir = Some(PathBuf::from(value));
+            i += 2;
+            continue;
+        }
         if matches!(a, "--update-check" | "--offline") {
             i += 1;
             continue;
@@ -691,7 +719,7 @@ pub fn parse_serve_args(args: &[String]) -> Result<ServeArgs, ServeError> {
         }
         i += 1;
     }
-    Ok((bind, save, config_dir))
+    Ok((bind, save, config_dir, ui_dir))
 }
 
 fn error_body(code: &str, message: &str) -> Value {
@@ -1044,6 +1072,44 @@ fn write_redirect(stream: &mut TcpStream, location: &str) -> std::io::Result<()>
     stream.write_all(header.as_bytes())
 }
 
+/// `/` and `/ui` redirect to `ui/` (relative, so a proxy sub-path keeps
+/// working); `/ui/...` serves the client with a strict CSP.
+fn serve_ui(
+    stream: &mut TcpStream,
+    method: &str,
+    route: &str,
+    ui: &crate::web_ui::Ui,
+) -> std::io::Result<()> {
+    if method != "GET" && method != "HEAD" {
+        return write_http(
+            stream,
+            405,
+            &error_body("invalid", "method not allowed"),
+            "Allow: GET, HEAD\r\n",
+        );
+    }
+    let Some(rel) = route.strip_prefix("/ui/") else {
+        return write_redirect(stream, "ui/");
+    };
+    let asset = match ui.get(rel) {
+        Some(crate::web_ui::Reply::File(asset)) => asset,
+        Some(crate::web_ui::Reply::Redirect(location)) => return write_redirect(stream, &location),
+        None => return write_http(stream, 404, &error_body("invalid", "not found"), ""),
+    };
+    let header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: {}\r\nContent-Security-Policy: {}\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n",
+        asset.content_type,
+        asset.body.len(),
+        asset.cache_control,
+        crate::web_ui::CSP,
+    );
+    stream.write_all(header.as_bytes())?;
+    if method == "GET" {
+        stream.write_all(&asset.body)?;
+    }
+    Ok(())
+}
+
 /// Network sends run on their own thread, without the game or gate lock, so a
 /// slow push service never delays the next raid-warning poll. The queue is
 /// bounded; the thread ends when the sender drops.
@@ -1064,6 +1130,7 @@ fn spawn_push_delivery(
     Some(tx)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn serve_one(
     save: &Path,
     mut stream: TcpStream,
@@ -1071,6 +1138,7 @@ fn serve_one(
     live: &Mutex<Live>,
     push: &Mutex<crate::push::Gate>,
     oidc: &Mutex<crate::oidc::Gate>,
+    ui: Option<&crate::web_ui::Ui>,
     bind: SocketAddr,
 ) -> std::io::Result<()> {
     {
@@ -1151,6 +1219,11 @@ fn serve_one(
         )["latest"]
             .clone();
         return write_http(&mut stream, 200, &body, "");
+    }
+    if let Some(ui) = ui
+        && (route == "/" || route == "/ui" || route.starts_with("/ui/"))
+    {
+        return serve_ui(&mut stream, method, route, ui);
     }
     if route == "/v1/admin/support-report" {
         return serve_support_report(
@@ -1961,7 +2034,7 @@ fn pump_events(
 
 /// Start the serve loop. Prints one JSON line with the bound address, then blocks.
 pub fn run(args: &[String]) -> Result<(), ServeError> {
-    let (cli_bind, cli_save, config_dir) = parse_serve_args(args)?;
+    let (cli_bind, cli_save, config_dir, ui_dir) = parse_serve_args(args)?;
     let hint = resolve_save(cli_save.as_deref(), "");
     let dir = config_dir.unwrap_or_else(|| {
         if cli_save.is_some() {
@@ -2009,6 +2082,9 @@ pub fn run(args: &[String]) -> Result<(), ServeError> {
             },
             cfg.keys.clone(),
         );
+    if let Some(ui_dir) = ui_dir {
+        server = server.with_ui_dir(ui_dir);
+    }
     lock_poison(&server.live).config_dir = dir.clone();
     if args.iter().any(|arg| arg == "--update-check") {
         let settings = crate::update::settings(&cfg, args);
@@ -2384,6 +2460,7 @@ mod tests {
                     server.live.as_ref(),
                     server.push.as_ref(),
                     server.oidc.as_ref(),
+                    None,
                     addr,
                 )
                 .unwrap();
@@ -2440,6 +2517,7 @@ mod tests {
                         server.live.as_ref(),
                         server.push.as_ref(),
                         server.oidc.as_ref(),
+                        None,
                         addr,
                     )
                     .unwrap();
@@ -2491,6 +2569,7 @@ mod tests {
                 server.live.as_ref(),
                 server.push.as_ref(),
                 server.oidc.as_ref(),
+                None,
                 addr,
             )
             .unwrap();
@@ -2580,6 +2659,7 @@ mod tests {
                     server.live.as_ref(),
                     server.push.as_ref(),
                     server.oidc.as_ref(),
+                    None,
                     addr,
                 )
                 .unwrap();
@@ -3094,6 +3174,80 @@ mod tests {
         assert_eq!(after_window, 200, "{value}");
         let _ = std::fs::remove_file(&save);
         let _ = std::fs::remove_file(save_lock_path(&save));
+    }
+
+    #[test]
+    fn ui_redirects_root_serves_files_and_falls_back_to_index() {
+        let save = unique_save();
+        let dir = save.with_extension("ui");
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        std::fs::write(dir.join("index.html"), "<!doctype html>index").unwrap();
+        std::fs::write(dir.join("sw.js"), "self.x=1").unwrap();
+        std::fs::write(dir.join("manifest.webmanifest"), "{}").unwrap();
+        std::fs::write(dir.join("assets/app.js"), "app").unwrap();
+        std::fs::write(save.with_extension("secret"), "secret").unwrap();
+        let addr = spawn_run(ephemeral(save.clone()).with_ui_dir(dir.clone()));
+
+        let (status, headers, _) = get_full(addr, "/", None).unwrap();
+        assert_eq!(status, 302);
+        assert_eq!(header_line(&headers, "location").as_deref(), Some("ui/"));
+        let (status, headers, _) = get_full(addr, "/ui", None).unwrap();
+        assert_eq!(
+            (status, header_line(&headers, "location").as_deref()),
+            (302, Some("ui/"))
+        );
+        assert_eq!(send_json(addr, "POST", "/", "{}").0, 405);
+
+        let (status, headers, body) = get_full(addr, "/ui/", None).unwrap();
+        assert_eq!((status, body.as_str()), (200, "<!doctype html>index"));
+        assert!(
+            header_line(&headers, "content-security-policy")
+                .is_some_and(|csp| csp.starts_with("default-src 'self'")),
+            "{headers}"
+        );
+        let (status, _, body) = get_full(addr, "/ui/cockpit?tab=queue", None).unwrap();
+        assert_eq!((status, body.as_str()), (200, "<!doctype html>index"));
+        // Deeper paths would break the page's relative links: send them up.
+        let (status, headers, _) = get_full(addr, "/ui/terminal/", None).unwrap();
+        assert_eq!(
+            (status, header_line(&headers, "location").as_deref()),
+            (302, Some("../terminal"))
+        );
+        for (path, content_type) in [
+            ("/ui/sw.js", "text/javascript; charset=utf-8"),
+            ("/ui/manifest.webmanifest", "application/manifest+json"),
+            ("/ui/assets/app.js", "text/javascript; charset=utf-8"),
+        ] {
+            let (status, headers, _) = get_full(addr, path, None).unwrap();
+            assert_eq!(status, 200, "{path}");
+            assert_eq!(
+                header_line(&headers, "content-type").as_deref(),
+                Some(content_type)
+            );
+        }
+        let secret = format!(
+            "/ui/../{}",
+            save.with_extension("secret")
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+        );
+        for path in ["/ui/assets/missing.js", secret.as_str(), "/ui/.hidden.js"] {
+            assert_eq!(get_full(addr, path, None).unwrap().0, 404, "{path}");
+        }
+        assert_eq!(get_path(addr, "/v1/state").unwrap().0, 401);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(save.with_extension("secret"));
+    }
+
+    #[test]
+    fn root_and_ui_are_not_found_without_a_client() {
+        let save = unique_save();
+        let addr = spawn_run(ephemeral(save));
+        if crate::web_ui::FILES.is_empty() {
+            assert_eq!(get_path(addr, "/").unwrap().0, 404);
+            assert_eq!(get_path(addr, "/ui/").unwrap().0, 404);
+        }
     }
 
     #[test]
