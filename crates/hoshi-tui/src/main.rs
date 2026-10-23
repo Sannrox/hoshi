@@ -24,6 +24,7 @@ mod oidc;
 mod portraits;
 mod push;
 mod serve;
+mod terminal;
 mod title;
 mod ui;
 mod update;

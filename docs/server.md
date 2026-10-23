@@ -28,6 +28,7 @@ serve_token = ""
 serve_token_file = ""
 serve_rate_limit = 60
 serve_rate_window_secs = 60
+serve_terminal_idle_secs = 1800
 serve_push = false
 serve_vapid_private = ""
 serve_vapid_subject = ""
@@ -190,6 +191,37 @@ Each text frame is JSON (`schema_version` 2):
 
 Frames omit hidden simulation fields (RNG, unrevealed map, pending intel,
 `next_raid_at`). A breaking event shape bumps `schema_version`.
+
+## Terminal
+
+`GET /v1/terminal` is a WebSocket that runs a TUI session against the served
+save inside the `hoshi serve` process, for a browser terminal. It
+authenticates like `/v1/events`: the `Authorization` header, or the
+`hoshi.v1` and `hoshi.bearer.` subprotocols from a browser. It is not a shell
+or a PTY; it only draws the game.
+
+- **Binary frames** carry terminal bytes both ways. The client sends key
+  input as an xterm would: printable characters, Enter, Esc, Tab, Backspace,
+  arrows, Home, End, Page Up/Down. The server sends rendered output as ANSI
+  escape sequences.
+- **Text frames** carry JSON control messages. The only one is
+  `{"type":"resize","cols":120,"rows":40}`; sizes are clamped to 20x8 at
+  least and 500x500 at most. A session starts at 80x24 and repaints in full
+  after a resize.
+
+One writer per save. While a terminal session holds the save, `/v1` game
+actions (every `POST` route) and a second `/v1/terminal` get `409 refused`
+with "a terminal session holds the save", like the TUI's save lock.
+`GET /v1/state`, `/healthz` and `/v1/events` keep working.
+
+The server pings every 5 seconds; a client that sends no frame at all (pongs
+count) for 15 seconds is treated as dropped. The session ends when the player
+quits, the client sends a close frame, or no
+input arrives for `serve_terminal_idle_secs` (default 1800, 0 disables); the save is free
+at once and every change is already saved. If the socket drops instead, the
+save stays held for a 10-second grace period, so an old socket that is still
+closing and a new one never both write. After that a new socket takes over
+and draws the whole screen.
 
 ### Errors
 
