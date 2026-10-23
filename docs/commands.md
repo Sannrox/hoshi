@@ -1143,6 +1143,22 @@ Environment: HOSHI_SAVE, HOSHI_BALANCE, HOSHI_PORTRAIT_PROTOCOL, NO_COLOR
 
 Area: tui.
 
+## pair
+
+Mint a one-time code and QR that signs a phone in to a running hoshi serve.
+
+```text
+hoshi pair [--label TEXT] [--url URL] [--config DIR]
+```
+
+Wraps one locked local save. Loopback binding is the default; authenticated remote actions use the same core rules. Update requests require --update-check; --offline suppresses them.
+
+Example: `hoshi pair --label phone`
+
+Environment: HOSHI_SAVE, HOSHI_BALANCE, HOSHI_SERVE_TOKEN, HOSHI_SERVE_TOKEN_FILE, HOSHI_SERVE_ADMIN_TOKEN, HOSHI_SERVE_PUSH, HOSHI_SERVE_VAPID_PRIVATE, HOSHI_SERVE_VAPID_SUBJECT, HOSHI_SERVE_OIDC, HOSHI_SERVE_OIDC_ISSUER, HOSHI_SERVE_OIDC_CLIENT_ID, HOSHI_SERVE_OIDC_AUTHORIZATION, HOSHI_SERVE_OIDC_TOKEN
+
+Area: serve.
+
 ## post
 
 Post a bridge activity event (bridge feature required).
@@ -1372,7 +1388,7 @@ Area: cli.
 Serve a versioned HTTP and WebSocket API for one save.
 
 ```text
-hoshi serve [--save PATH] [--bind ADDRESS:PORT] [--config DIR] [--update-check] [--offline]
+hoshi serve [--save PATH] [--bind ADDRESS:PORT] [--config DIR] [--url URL] [--update-check] [--offline]
 ```
 
 Wraps one locked local save. Loopback binding is the default; authenticated remote actions use the same core rules. Update requests require --update-check; --offline suppresses them.

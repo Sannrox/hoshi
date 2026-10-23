@@ -52,10 +52,6 @@ pub struct Client {
 }
 
 impl Client {
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "pairing (#277) reads the request")
-    )]
     pub fn from_request(user_agent: Option<&str>, peer: Option<IpAddr>) -> Self {
         let ua = user_agent.unwrap_or("");
         let has = |needle: &str| ua.contains(needle);
@@ -145,10 +141,6 @@ impl Devices {
 
     /// Store a new session and return it with its secret, which exists nowhere
     /// else afterwards. Nothing changes in memory unless the file was written.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "pairing (#277) creates sessions")
-    )]
     pub fn create(
         &mut self,
         label: Option<&str>,

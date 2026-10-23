@@ -7,7 +7,7 @@ use hoshi_core::{
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -124,9 +124,23 @@ impl Credential {
 pub struct Auth {
     tokens: Vec<ScopedToken>,
     devices: Option<crate::devices::Devices>,
+    /// One-time pairing codes; memory only.
+    codes: crate::pair::Codes,
+    /// The base players reach this server at (`--url`): pairing links and
+    /// the session cookie's `Path` and `Secure` follow it.
+    public_url: Option<String>,
     limit: u32,
     window_secs: u64,
     hits: HashMap<(Caller, String), Vec<u64>>,
+}
+
+/// Why a pairing code did not create a device session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PairError {
+    Refused(crate::pair::Refused),
+    /// Device sessions are off (sessions file unreadable).
+    Unavailable,
+    Storage,
 }
 
 /// Who a request authenticated as: rate limits are per caller, and a device
@@ -162,6 +176,8 @@ impl Auth {
         Self {
             tokens,
             devices: None,
+            codes: crate::pair::Codes::default(),
+            public_url: None,
             limit: if limit == 0 {
                 DEFAULT_RATE_LIMIT
             } else {
@@ -228,6 +244,114 @@ impl Auth {
             });
         }
         self
+    }
+
+    /// Advertise `url` (`http[s]://host[:port][/prefix]`) as this server's base.
+    pub fn with_public_url(mut self, url: Option<String>) -> Self {
+        self.public_url = url.map(|url| url.trim_end_matches('/').to_string());
+        self
+    }
+
+    /// Mint a pairing code; `None` when device sessions are unavailable.
+    pub fn mint_pair_code(
+        &mut self,
+        label: Option<String>,
+        now: u64,
+    ) -> Option<std::io::Result<(String, u64)>> {
+        self.devices.as_ref()?;
+        Some(self.codes.mint(label, now))
+    }
+
+    /// Exchange a pairing code for a new device session and its secret. The
+    /// code is spent only when the session was stored.
+    fn pair(
+        &mut self,
+        code: &str,
+        client: crate::devices::Client,
+        now: u64,
+    ) -> Result<(crate::devices::Device, String), PairError> {
+        let devices = self.devices.as_mut().ok_or(PairError::Unavailable)?;
+        let peer = client.ip.parse().ok();
+        let spent = self
+            .codes
+            .redeem(code, peer, now)
+            .map_err(PairError::Refused)?;
+        devices
+            .create(spent.label.as_deref(), client, now)
+            .map_err(|_| {
+                self.codes.restore(spent);
+                PairError::Storage
+            })
+    }
+
+    /// The cookie's `Path`: the advertised prefix, else `/`.
+    fn cookie_path(&self) -> String {
+        let path = self
+            .public_url
+            .as_deref()
+            .and_then(|url| url.split_once("://"))
+            .and_then(|(_, rest)| rest.find('/').map(|at| &rest[at..]))
+            .unwrap_or("");
+        if path.is_empty() {
+            "/".into()
+        } else {
+            path.to_string()
+        }
+    }
+
+    /// `Set-Cookie` for a device session (`secret`), or clearing it (`None`).
+    /// `Secure` when the request came over HTTPS or the advertised base is.
+    fn session_cookie(&self, secret: Option<&str>, headers: &str) -> String {
+        let https = self
+            .public_url
+            .as_deref()
+            .is_some_and(|url| url.starts_with("https://"))
+            || header_value(headers, "x-forwarded-proto")
+                .is_some_and(|proto| proto.trim().eq_ignore_ascii_case("https"));
+        // Browsers cap cookie lifetime at 400 days; the session's own expiry
+        // decides when it ends.
+        let (value, age) = match secret {
+            Some(secret) => (secret, 400 * 24 * 60 * 60),
+            None => ("", 0),
+        };
+        format!(
+            "Set-Cookie: {SESSION_COOKIE}={value}; Path={}; Max-Age={age}; HttpOnly; SameSite=Lax{}\r\n",
+            self.cookie_path(),
+            if https { "; Secure" } else { "" }
+        )
+    }
+
+    /// Base URL for pairing links: the advertised one, else this request's
+    /// host. A request over loopback (`hoshi pair` on this machine) to a
+    /// server bound wider gets the address a phone can reach instead.
+    fn link_base(&self, headers: &str, peer: Option<IpAddr>, bind: SocketAddr) -> String {
+        if let Some(url) = &self.public_url {
+            return url.clone();
+        }
+        let local_request = peer.is_some_and(|ip| ip.is_loopback());
+        match header_value(headers, "host") {
+            Some(host) if !(local_request && !bind.ip().is_loopback()) => format!("http://{host}"),
+            _ => format!("http://{}", advertised_socket(bind)),
+        }
+    }
+
+    /// The client's address for pairing limits and device metadata. Only a
+    /// proxy on this machine (a loopback peer) in front of a server with an
+    /// advertised `--url` is trusted, and only for the last
+    /// `X-Forwarded-For` entry, the one that proxy appended itself.
+    fn client_addr(&self, peer: Option<IpAddr>, headers: &str) -> Option<IpAddr> {
+        let forwarded = || {
+            header_value(headers, "x-forwarded-for")?
+                .rsplit(',')
+                .next()?
+                .trim()
+                .parse()
+                .ok()
+        };
+        match peer {
+            Some(ip) if ip.is_loopback() && self.public_url.is_some() => forwarded().or(peer),
+            _ => peer,
+        }
     }
 
     /// Accept device sessions for the save they were loaded from.
@@ -579,6 +703,36 @@ impl Server {
         self
     }
 
+    /// Print a pairing QR to stderr (stdout carries the startup JSON). A
+    /// loopback bind gets a hint instead: phones cannot reach it.
+    fn announce_pairing(&mut self, addr: SocketAddr, url: Option<&str>) {
+        if url.is_none() && addr.ip().is_loopback() {
+            eprintln!(
+                "hoshi: to pair a phone, bind a LAN or tailnet address (--bind 0.0.0.0:8787)"
+            );
+            return;
+        }
+        let base = match url {
+            Some(url) => url.trim_end_matches('/').to_string(),
+            None => format!("http://{}", advertised_socket(addr)),
+        };
+        let Some(Ok((code, _))) = self
+            .auth
+            .mint_pair_code(Some("startup".into()), SystemClock.now_unix())
+        else {
+            eprintln!("hoshi: pairing unavailable (device sessions are off)");
+            return;
+        };
+        let link = format!("{base}/ui/#pair={code}");
+        eprintln!(
+            "hoshi: pair a phone: scan or open {link}\n       code {} works once, for 10 minutes; hoshi pair mints another",
+            crate::pair::display(&code)
+        );
+        if let Some(art) = crate::pair::qr(&link) {
+            eprintln!("{art}");
+        }
+    }
+
     pub fn local_addr(&self) -> Result<SocketAddr, ServeError> {
         Ok(self.listener.local_addr()?)
     }
@@ -735,6 +889,7 @@ pub fn first_positional(args: &[String]) -> Option<&str> {
             || a == "--config"
             || a == "--ui-dir"
             || a == "--url"
+            || a == "--label"
         {
             i += 2;
             continue;
@@ -756,19 +911,23 @@ pub fn first_positional(args: &[String]) -> Option<&str> {
     None
 }
 
-/// Bind, save, config dir and `--ui-dir`, each when given.
-type ServeArgs = (
-    Option<String>,
-    Option<String>,
-    Option<PathBuf>,
-    Option<PathBuf>,
-);
+/// `hoshi serve` flags, each when given.
+#[derive(Debug, Default)]
+pub struct ServeArgs {
+    pub bind: Option<String>,
+    pub save: Option<String>,
+    pub config_dir: Option<PathBuf>,
+    pub ui_dir: Option<PathBuf>,
+    /// The base players reach the server at, for pairing links and cookies.
+    pub url: Option<String>,
+}
 
 pub fn parse_serve_args(args: &[String]) -> Result<ServeArgs, ServeError> {
     let mut bind = None;
     let mut save = None;
     let mut config_dir = None;
     let mut ui_dir = None;
+    let mut url = None;
     let mut i = 1;
     while i < args.len() {
         let a = args[i].as_str();
@@ -822,6 +981,21 @@ pub fn parse_serve_args(args: &[String]) -> Result<ServeArgs, ServeError> {
             i += 2;
             continue;
         }
+        if a == "--url" {
+            let value = args.get(i + 1).ok_or_else(|| ServeError {
+                message: "missing --url".into(),
+                exit: crate::cli::EXIT_INVALID,
+            })?;
+            if !(value.starts_with("http://") || value.starts_with("https://")) {
+                return Err(ServeError {
+                    message: "--url must start with http:// or https://".into(),
+                    exit: crate::cli::EXIT_INVALID,
+                });
+            }
+            url = Some(value.clone());
+            i += 2;
+            continue;
+        }
         if matches!(a, "--update-check" | "--offline") {
             i += 1;
             continue;
@@ -834,7 +1008,13 @@ pub fn parse_serve_args(args: &[String]) -> Result<ServeArgs, ServeError> {
         }
         i += 1;
     }
-    Ok((bind, save, config_dir, ui_dir))
+    Ok(ServeArgs {
+        bind,
+        save,
+        config_dir,
+        ui_dir,
+        url,
+    })
 }
 
 fn error_body(code: &str, message: &str) -> Value {
@@ -1259,6 +1439,7 @@ fn serve_devices(
     stream: &mut TcpStream,
     method: &str,
     route: &str,
+    headers: &str,
     caller: &Caller,
     auth: &Mutex<Auth>,
     now: u64,
@@ -1288,10 +1469,9 @@ fn serve_devices(
     }
     let (id, extra) = match (route.strip_prefix("/v1/admin/devices/"), caller) {
         (Some(id), _) => (id, String::new()),
-        (None, Caller::Device(id)) => (
-            id.as_str(),
-            format!("Set-Cookie: {SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax\r\n"),
-        ),
+        (None, Caller::Device(id)) => {
+            (id.as_str(), lock_poison(auth).session_cookie(None, headers))
+        }
         (None, Caller::Token(_)) => {
             return write_http(
                 stream,
@@ -1308,6 +1488,178 @@ fn serve_devices(
             stream,
             500,
             &error_body("internal", "device sessions could not be saved"),
+            "",
+        ),
+    }
+}
+
+/// Whether the request declares a JSON body. Cross-site forms and `no-cors`
+/// fetches cannot, so routes a foreign page must not trigger require it.
+fn sends_json(headers: &str) -> bool {
+    header_value(headers, "content-type").is_some_and(|value| {
+        value
+            .split(';')
+            .next()
+            .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/json"))
+    })
+}
+
+/// `POST /v1/pair {"code"}` (no token): spend a pairing code, create a device
+/// session from the request's metadata and set its cookie. The secret only
+/// travels in the cookie, never in the body.
+fn serve_pair(
+    stream: &mut TcpStream,
+    method: &str,
+    headers: &str,
+    body: &[u8],
+    client: crate::devices::Client,
+    auth: &Mutex<Auth>,
+    now: u64,
+) -> std::io::Result<()> {
+    if method != "POST" {
+        return write_http(
+            stream,
+            405,
+            &error_body("invalid", "method not allowed"),
+            "",
+        );
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Request {
+        code: String,
+    }
+    // Before any attempt counts, so a foreign page cannot spend a visitor's
+    // allowance.
+    if !sends_json(headers) {
+        return write_http(
+            stream,
+            403,
+            &error_body(
+                "unauthorized",
+                "pairing requests must send application/json",
+            ),
+            "",
+        );
+    }
+    let Ok(request) = serde_json::from_slice::<Request>(body) else {
+        return write_http(
+            stream,
+            400,
+            &error_body("invalid", "send {\"code\": \"...\"}"),
+            "",
+        );
+    };
+    let mut auth = lock_poison(auth);
+    match auth.pair(&request.code, client, now) {
+        Ok((device, secret)) => {
+            let extra = format!(
+                "Cache-Control: no-store\r\n{}",
+                auth.session_cookie(Some(&secret), headers)
+            );
+            drop(auth);
+            let value = json!({"ok": true, "device": {
+                "id": device.id,
+                "label": device.label,
+                "device_type": device.device_type,
+            }});
+            write_http(stream, 200, &value, &extra)
+        }
+        Err(PairError::Refused(crate::pair::Refused::Limited)) => {
+            drop(auth);
+            crate::diagnostics::log("warn", "pairing rate limit exceeded");
+            write_http(
+                stream,
+                429,
+                &error_body("rate_limited", "too many wrong codes; try again later"),
+                "Retry-After: 600\r\n",
+            )
+        }
+        Err(PairError::Refused(crate::pair::Refused::Invalid)) => {
+            drop(auth);
+            write_http(
+                stream,
+                401,
+                &error_body("unauthorized", "unknown or expired code"),
+                "",
+            )
+        }
+        Err(PairError::Unavailable) => {
+            drop(auth);
+            write_http(
+                stream,
+                503,
+                &error_body("internal", "device sessions unavailable"),
+                "",
+            )
+        }
+        Err(PairError::Storage) => {
+            drop(auth);
+            write_http(
+                stream,
+                500,
+                &error_body("internal", "device session could not be saved"),
+                "",
+            )
+        }
+    }
+}
+
+/// `POST /v1/admin/pair {"label"?}` (admin token, checked by the gate): mint
+/// a pairing code and the link a phone opens to use it.
+fn serve_admin_pair(
+    stream: &mut TcpStream,
+    method: &str,
+    headers: &str,
+    body: &[u8],
+    auth: &Mutex<Auth>,
+    bind: SocketAddr,
+    now: u64,
+) -> std::io::Result<()> {
+    if method != "POST" {
+        return write_http(
+            stream,
+            405,
+            &error_body("invalid", "method not allowed"),
+            "",
+        );
+    }
+    #[derive(serde::Deserialize, Default)]
+    #[serde(deny_unknown_fields)]
+    struct Request {
+        #[serde(default)]
+        label: Option<String>,
+    }
+    let request = if body.is_empty() {
+        Request::default()
+    } else {
+        match serde_json::from_slice::<Request>(body) {
+            Ok(request) => request,
+            Err(_) => return write_http(stream, 400, &error_body("invalid", "invalid json"), ""),
+        }
+    };
+    let peer = stream.peer_addr().ok().map(|addr| addr.ip());
+    let mut auth = lock_poison(auth);
+    let base = auth.link_base(headers, peer, bind);
+    let minted = auth.mint_pair_code(request.label, now);
+    drop(auth);
+    match minted {
+        Some(Ok((code, expires_at))) => write_http(
+            stream,
+            200,
+            &json!({
+                "ok": true,
+                "code": crate::pair::display(&code),
+                "expires_at": expires_at,
+                "url": format!("{base}/ui/#pair={code}"),
+            }),
+            "Cache-Control: no-store\r\n",
+        ),
+        Some(Err(_)) => write_http(stream, 500, &error_body("internal", "no randomness"), ""),
+        None => write_http(
+            stream,
+            503,
+            &error_body("internal", "device sessions unavailable"),
             "",
         ),
     }
@@ -1416,12 +1768,7 @@ fn serve_one(
     if route.starts_with("/v1")
         && Credential::is_cookie(credential.as_ref())
         && !matches!(method, "GET" | "HEAD" | "OPTIONS")
-        && !header_value(&headers, "content-type").is_some_and(|value| {
-            value
-                .split(';')
-                .next()
-                .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/json"))
-        })
+        && !sends_json(&headers)
     {
         return write_http(
             &mut stream,
@@ -1507,6 +1854,14 @@ fn serve_one(
     if !route.starts_with("/v1") {
         return write_http(&mut stream, 404, &error_body("invalid", "not found"), "");
     }
+    if route == "/v1/pair" {
+        let peer = stream.peer_addr().ok().map(|addr| addr.ip());
+        let client = crate::devices::Client::from_request(
+            header_value(&headers, "user-agent").as_deref(),
+            lock_poison(auth).client_addr(peer, &headers),
+        );
+        return serve_pair(&mut stream, method, &headers, &body, client, auth, now);
+    }
     let gate = {
         let mut auth = lock_poison(auth);
         match auth.allow(save, route, credential.as_ref(), now) {
@@ -1522,7 +1877,10 @@ fn serve_one(
         || route.starts_with("/v1/admin/devices/")
         || route == "/v1/devices/self"
     {
-        return serve_devices(&mut stream, method, route, &caller, auth, now);
+        return serve_devices(&mut stream, method, route, &headers, &caller, auth, now);
+    }
+    if route == "/v1/admin/pair" {
+        return serve_admin_pair(&mut stream, method, &headers, &body, auth, bind, now);
     }
     if route == "/v1/bug" {
         let config_dir = lock_poison(live).config_dir.clone();
@@ -2305,7 +2663,13 @@ fn pump_events(
 
 /// Start the serve loop. Prints one JSON line with the bound address, then blocks.
 pub fn run(args: &[String]) -> Result<(), ServeError> {
-    let (cli_bind, cli_save, config_dir, ui_dir) = parse_serve_args(args)?;
+    let ServeArgs {
+        bind: cli_bind,
+        save: cli_save,
+        config_dir,
+        ui_dir,
+        url,
+    } = parse_serve_args(args)?;
     let hint = resolve_save(cli_save.as_deref(), "");
     let dir = config_dir.unwrap_or_else(|| {
         if cli_save.is_some() {
@@ -2348,6 +2712,7 @@ pub fn run(args: &[String]) -> Result<(), ServeError> {
             auth
         }
     };
+    let auth = auth.with_public_url(url.clone());
     crate::diagnostics::log("info", "server startup");
     let mut server = Server::open(ServeOptions { bind, save })?
         .with_auth(auth)
@@ -2385,14 +2750,76 @@ pub fn run(args: &[String]) -> Result<(), ServeError> {
         })
     );
     let _ = std::io::stdout().flush();
+    server.announce_pairing(addr, url.as_deref());
     server.run()
 }
 
-/// `hoshi devices [revoke ID] [--url URL] [--config DIR]`: list or revoke
-/// paired devices through the running server's admin routes. The server is
-/// `--url`, else `serve_bind`; the admin token comes from
-/// `HOSHI_SERVE_ADMIN_TOKEN` or `serve_admin_token`. Prints the JSON reply.
-pub fn run_devices(args: &[String]) -> Result<(), ServeError> {
+/// The address a phone can use for `addr`: an unspecified bind (`0.0.0.0`)
+/// becomes this machine's outbound address. The UDP connect sends nothing.
+fn advertised_socket(addr: SocketAddr) -> SocketAddr {
+    if !addr.ip().is_unspecified() {
+        return addr;
+    }
+    std::net::UdpSocket::bind("0.0.0.0:0")
+        .and_then(|socket| {
+            socket.connect("192.0.2.1:9")?;
+            socket.local_addr()
+        })
+        .map(|local| SocketAddr::new(local.ip(), addr.port()))
+        .unwrap_or_else(|_| concrete_socket(addr))
+}
+
+/// `hoshi pair [--label TEXT] [--url URL] [--config DIR]`: mint a pairing
+/// code on the running server and print it with a QR code of its link.
+pub fn run_pair(args: &[String]) -> Result<(), ServeError> {
+    let invalid = |message: String| ServeError {
+        message,
+        exit: crate::cli::EXIT_INVALID,
+    };
+    let mut label = None;
+    let (target, rest) = admin_target(args, |flag, value| match flag {
+        "--label" => {
+            label = Some(value.to_string());
+            true
+        }
+        _ => false,
+    })?;
+    if rest.as_slice() != ["pair"] {
+        return Err(invalid(
+            "usage: hoshi pair [--label TEXT] [--url URL]".into(),
+        ));
+    }
+    let body = json!({ "label": label }).to_string();
+    let (status, reply) =
+        admin_request(&target.base, "POST", "/v1/admin/pair", &target.token, &body)?;
+    let value: Value = serde_json::from_str(&reply).unwrap_or(Value::Null);
+    let (Some(code), Some(link)) = (value["code"].as_str(), value["url"].as_str()) else {
+        println!("{reply}");
+        return Err(ServeError {
+            message: format!("server answered {status}"),
+            exit: crate::cli::EXIT_REFUSED,
+        });
+    };
+    println!("Scan with the phone, or open {link}");
+    println!("Code {code} works once, for 10 minutes.");
+    if let Some(art) = crate::pair::qr(link) {
+        println!("{art}");
+    }
+    Ok(())
+}
+
+/// Where `hoshi devices` and `hoshi pair` reach the running server.
+struct AdminTarget {
+    base: String,
+    token: String,
+}
+
+/// Parse `--url` and `--config` (plus flags `extra` claims) and resolve the
+/// server and admin token. Returns the remaining words.
+fn admin_target(
+    args: &[String],
+    mut extra: impl FnMut(&str, &str) -> bool,
+) -> Result<(AdminTarget, Vec<&str>), ServeError> {
     let invalid = |message: String| ServeError {
         message,
         exit: crate::cli::EXIT_INVALID,
@@ -2403,26 +2830,20 @@ pub fn run_devices(args: &[String]) -> Result<(), ServeError> {
     let mut rest = args.iter().skip(1);
     while let Some(arg) = rest.next() {
         match arg.as_str() {
-            "--url" => url = Some(rest.next().ok_or_else(|| invalid("missing --url".into()))?),
-            "--config" => {
-                config_dir = Some(PathBuf::from(
-                    rest.next()
-                        .ok_or_else(|| invalid("missing --config".into()))?,
-                ));
+            flag if flag.starts_with("--") => {
+                let value = rest
+                    .next()
+                    .ok_or_else(|| invalid(format!("missing value for {flag}")))?;
+                match flag {
+                    "--url" => url = Some(value.clone()),
+                    "--config" => config_dir = Some(PathBuf::from(value)),
+                    _ if extra(flag, value) => {}
+                    _ => return Err(invalid(format!("unknown flag {flag}"))),
+                }
             }
-            flag if flag.starts_with('-') => return Err(invalid(format!("unknown flag {flag}"))),
             word => words.push(word),
         }
     }
-    let (method, path) = match words.as_slice() {
-        ["devices"] => ("GET", "/v1/admin/devices".to_string()),
-        ["devices", "revoke", id] => ("DELETE", format!("/v1/admin/devices/{id}")),
-        _ => {
-            return Err(invalid(
-                "usage: hoshi devices [revoke ID] [--url URL]".into(),
-            ));
-        }
-    };
     let cfg =
         crate::config::UserConfig::load(&config_dir.unwrap_or_else(hoshi_core::default_save_dir));
     let token = std::env::var("HOSHI_SERVE_ADMIN_TOKEN")
@@ -2435,13 +2856,32 @@ pub fn run_devices(args: &[String]) -> Result<(), ServeError> {
         ));
     }
     let base = match url {
-        Some(url) => url.clone(),
+        Some(url) => url,
         None => format!(
             "http://{}",
             concrete_socket(resolve_bind(None, &cfg.serve_bind)?)
         ),
     };
-    let (status, body) = admin_request(&base, method, &path, &token)?;
+    Ok((AdminTarget { base, token }, words))
+}
+
+/// `hoshi devices [revoke ID] [--url URL] [--config DIR]`: list or revoke
+/// paired devices through the running server's admin routes. The server is
+/// `--url`, else `serve_bind`; the admin token comes from
+/// `HOSHI_SERVE_ADMIN_TOKEN` or `serve_admin_token`. Prints the JSON reply.
+pub fn run_devices(args: &[String]) -> Result<(), ServeError> {
+    let (target, words) = admin_target(args, |_, _| false)?;
+    let (method, path) = match words.as_slice() {
+        ["devices"] => ("GET", "/v1/admin/devices".to_string()),
+        ["devices", "revoke", id] => ("DELETE", format!("/v1/admin/devices/{id}")),
+        _ => {
+            return Err(ServeError {
+                message: "usage: hoshi devices [revoke ID] [--url URL]".into(),
+                exit: crate::cli::EXIT_INVALID,
+            });
+        }
+    };
+    let (status, body) = admin_request(&target.base, method, &path, &target.token, "")?;
     println!("{body}");
     if (200..300).contains(&status) {
         Ok(())
@@ -2458,12 +2898,13 @@ pub fn run_devices(args: &[String]) -> Result<(), ServeError> {
 }
 
 /// One plain-HTTP request to a running `hoshi serve` at `base`
-/// (`http://host:port[/prefix]`).
+/// (`http://host:port[/prefix]`), with an optional JSON `body`.
 fn admin_request(
     base: &str,
     method: &str,
     path: &str,
     token: &str,
+    body: &str,
 ) -> Result<(u16, String), ServeError> {
     let fail = |message: String| ServeError {
         message,
@@ -2486,7 +2927,8 @@ fn admin_request(
     stream.set_write_timeout(Some(Duration::from_secs(10)))?;
     write!(
         stream,
-        "{method} {target} HTTP/1.1\r\nHost: {authority}\r\nAuthorization: Bearer {token}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        "{method} {target} HTTP/1.1\r\nHost: {authority}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
     )?;
     let mut reply = String::new();
     stream.read_to_string(&mut reply)?;
@@ -3985,7 +4427,7 @@ mod tests {
         let base = format!("http://{addr}");
 
         let (status, body) =
-            admin_request(&base, "GET", "/v1/admin/devices", "admin-fixture").unwrap();
+            admin_request(&base, "GET", "/v1/admin/devices", "admin-fixture", "").unwrap();
         assert_eq!(status, 200, "{body}");
         let listed: Value = serde_json::from_str(&body).unwrap();
         let row = listed["devices"]
@@ -4004,7 +4446,7 @@ mod tests {
         );
         let as_device = format!("Bearer {kept_secret}");
         assert_eq!(
-            admin_request(&base, "GET", "/v1/admin/devices", &kept_secret)
+            admin_request(&base, "GET", "/v1/admin/devices", &kept_secret, "")
                 .unwrap()
                 .0,
             403
@@ -4017,13 +4459,13 @@ mod tests {
         assert_eq!(status, 101);
         let path = format!("/v1/admin/devices/{}", lost.id);
         assert_eq!(
-            admin_request(&base, "DELETE", &path, "admin-fixture")
+            admin_request(&base, "DELETE", &path, "admin-fixture", "")
                 .unwrap()
                 .0,
             200
         );
         assert_eq!(
-            admin_request(&base, "DELETE", &path, "admin-fixture")
+            admin_request(&base, "DELETE", &path, "admin-fixture", "")
                 .unwrap()
                 .0,
             404
@@ -4066,6 +4508,190 @@ mod tests {
             }
         }
         false
+    }
+
+    /// `POST /v1/pair` as a phone would send it; returns status, headers, body.
+    fn pair_request(addr: SocketAddr, code: &str, extra: &str) -> (u16, String, String) {
+        let body = format!("{{\"code\":\"{code}\"}}");
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        write!(
+            stream,
+            "POST /v1/pair HTTP/1.1\r\nHost: localhost\r\nUser-Agent: Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) Safari/604.1\r\n{extra}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        let mut reply = String::new();
+        stream.read_to_string(&mut reply).unwrap();
+        let status = reply
+            .split_whitespace()
+            .nth(1)
+            .and_then(|code| code.parse().ok())
+            .unwrap_or(0);
+        let (headers, body) = reply.split_once("\r\n\r\n").unwrap_or((&reply, ""));
+        (status, headers.to_string(), body.to_string())
+    }
+
+    #[test]
+    fn a_code_pairs_a_phone_once_and_the_session_outlives_a_restart() {
+        use crate::devices::Devices;
+        let save = unique_save();
+        let auth = || {
+            Auth::single(&save, TEST_TOKEN)
+                .with_admin_token(&save, "admin-fixture")
+                .with_devices(Devices::open(&save).unwrap())
+        };
+        let addr = spawn_run(ephemeral(save.clone()).with_auth(auth()));
+        let base = format!("http://{addr}");
+        assert_eq!(
+            admin_request(&base, "POST", "/v1/admin/pair", TEST_TOKEN, "{}")
+                .unwrap()
+                .0,
+            403
+        );
+        let (status, minted) = admin_request(
+            &base,
+            "POST",
+            "/v1/admin/pair",
+            "admin-fixture",
+            r#"{"label":"kitchen"}"#,
+        )
+        .unwrap();
+        assert_eq!(status, 200, "{minted}");
+        let minted: Value = serde_json::from_str(&minted).unwrap();
+        let code = minted["code"].as_str().unwrap().to_string();
+        let raw = code.replace('-', "");
+        assert_eq!(
+            minted["url"],
+            format!("http://{addr}/ui/#pair={raw}").as_str()
+        );
+
+        let (status, headers, body) = pair_request(addr, &code, "");
+        assert_eq!(status, 200, "{headers}\n{body}");
+        let reply: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(reply["device"]["label"], "kitchen");
+        assert_eq!(reply["device"]["device_type"], "mobile");
+        assert_eq!(
+            header_line(&headers, "cache-control").as_deref(),
+            Some("no-store")
+        );
+        let cookie = header_line(&headers, "set-cookie").unwrap();
+        assert!(
+            cookie.contains("Path=/;") && cookie.contains("HttpOnly"),
+            "{cookie}"
+        );
+        assert!(!cookie.contains("Secure"), "{cookie}");
+        let secret = cookie
+            .strip_prefix(&format!("{SESSION_COOKIE}="))
+            .and_then(|rest| rest.split(';').next())
+            .unwrap()
+            .to_string();
+        assert!(!body.contains(&secret), "secret in the body: {body}");
+        let session = format!("Cookie: {SESSION_COOKIE}={secret}\r\n");
+        assert_eq!(send_raw(addr, "GET", "/v1/state", &session, "").0, 200);
+        // Single use.
+        assert_eq!(pair_request(addr, &code, "").0, 401);
+
+        // A restart keeps the paired session and drops unused codes.
+        let (_, unused) =
+            admin_request(&base, "POST", "/v1/admin/pair", "admin-fixture", "").unwrap();
+        let unused: Value = serde_json::from_str(&unused).unwrap();
+        // A fresh Auth is the restarted server: sessions reload, codes do not.
+        let mut fresh = auth();
+        assert!(matches!(
+            fresh.pair(
+                unused["code"].as_str().unwrap(),
+                crate::devices::Client::from_request(None, None),
+                SystemClock.now_unix()
+            ),
+            Err(PairError::Refused(crate::pair::Refused::Invalid))
+        ));
+        assert!(
+            fresh
+                .allow(
+                    &save,
+                    "/v1/state",
+                    Some(&Credential::Cookie(secret)),
+                    SystemClock.now_unix()
+                )
+                .is_ok()
+        );
+        let _ = std::fs::remove_file(crate::devices::store_path(&save));
+    }
+
+    #[test]
+    fn links_and_limits_resolve_the_real_client() {
+        let save = unique_save();
+        let local = Some(IpAddr::from([127, 0, 0, 1]));
+        let phone = Some(IpAddr::from([192, 0, 2, 7]));
+        let wide: SocketAddr = "192.0.2.1:8787".parse().unwrap();
+        let direct = Auth::single(&save, TEST_TOKEN);
+        // hoshi pair over loopback to a LAN-bound server links the LAN address.
+        assert_eq!(
+            direct.link_base("Host: 127.0.0.1:8787", local, wide),
+            "http://192.0.2.1:8787"
+        );
+        assert_eq!(
+            direct.link_base("Host: 192.0.2.1:8787", phone, wide),
+            "http://192.0.2.1:8787"
+        );
+        let forwarded = "X-Forwarded-For: 203.0.113.5, 198.51.100.9";
+        // Without --url, forwarded headers are never trusted.
+        assert_eq!(direct.client_addr(local, forwarded), local);
+        let proxied = Auth::single(&save, TEST_TOKEN)
+            .with_public_url(Some("https://example.test/hoshi".into()));
+        assert_eq!(
+            proxied.client_addr(local, forwarded),
+            Some(IpAddr::from([198, 51, 100, 9]))
+        );
+        // A remote peer cannot claim another address.
+        assert_eq!(proxied.client_addr(phone, forwarded), phone);
+    }
+
+    #[test]
+    fn wrong_codes_are_rate_limited_and_the_cookie_follows_the_public_url() {
+        use crate::devices::Devices;
+        let save = unique_save();
+        let mut auth = Auth::single(&save, TEST_TOKEN)
+            .with_devices(Devices::open(&save).unwrap())
+            .with_public_url(Some("https://example.test/hoshi/".into()));
+        let (code, _) = auth
+            .mint_pair_code(None, SystemClock.now_unix())
+            .unwrap()
+            .unwrap();
+        let addr = spawn_run(ephemeral(save.clone()).with_auth(auth));
+        // A cross-site form post is refused before it counts as an attempt.
+        for _ in 0..6 {
+            let form = r#"{"code":"ZZZZ-ZZZZ"}"#;
+            let plain = "Content-Type: text/plain\r\n";
+            assert_eq!(send_raw(addr, "POST", "/v1/pair", plain, form).0, 403);
+        }
+        for _ in 0..5 {
+            assert_eq!(pair_request(addr, "ZZZZ-ZZZZ", "").0, 401);
+        }
+        // Even the right code is refused once this address is limited.
+        assert_eq!(pair_request(addr, &code, "").0, 429);
+        let _ = std::fs::remove_file(crate::devices::store_path(&save));
+
+        let save = unique_save();
+        let mut auth = Auth::single(&save, TEST_TOKEN)
+            .with_devices(Devices::open(&save).unwrap())
+            .with_public_url(Some("https://example.test/hoshi/".into()));
+        let (code, _) = auth
+            .mint_pair_code(None, SystemClock.now_unix())
+            .unwrap()
+            .unwrap();
+        let addr = spawn_run(ephemeral(save.clone()).with_auth(auth));
+        let (status, headers, _) = pair_request(addr, &code, "");
+        assert_eq!(status, 200, "{headers}");
+        let cookie = header_line(&headers, "set-cookie").unwrap();
+        assert!(
+            cookie.contains("Path=/hoshi;") && cookie.contains("Secure"),
+            "{cookie}"
+        );
+        let _ = std::fs::remove_file(crate::devices::store_path(&save));
     }
 
     #[test]

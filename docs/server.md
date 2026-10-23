@@ -113,6 +113,40 @@ one proxy origin do not collide) and `Secure` over HTTPS. `/v1` routes,
   request's `Host`; otherwise `403`.
 - An expired or unknown session is `401`.
 
+### Pairing a phone
+
+`hoshi serve` started on a LAN or tailnet address prints a pairing link and QR
+code to stderr. Scan it with the phone, or open the link: the phone is signed
+in to the client at `/ui/` with its own device session, and no secret is
+typed. On a loopback bind it prints a hint instead, since a phone cannot reach
+loopback. `hoshi pair [--label TEXT]` mints a fresh code on the running server
+any time.
+
+- Codes are 8 characters from an alphabet without look-alikes (shown as
+  `ABCD-2345`, typeable when a camera fails), work once, expire after 10
+  minutes and live in memory only: a restart drops unused codes, never paired
+  sessions.
+- `POST /v1/admin/pair {"label"?}` (admin token) mints one:
+  `{"ok":true,"code","expires_at","url"}`. The link is
+  `<base>/ui/#pair=<code>`; the code travels in the fragment, which browsers
+  never send in requests.
+- `POST /v1/pair {"code"}` (no token, `Content-Type: application/json`, else
+  `403` before the attempt counts) spends the code, creates a device session
+  from the request's User-Agent and peer address, and sets the session cookie.
+  The reply is `{"ok":true,"device":{"id","label","device_type"}}` with
+  `Cache-Control: no-store`; the secret is only in the cookie. A wrong code is
+  `401`; five wrong codes from one address within 10 minutes make further tries
+  `429` for the rest of that window. Behind a reverse proxy on the same machine
+  (with `--url` set) the address is the last `X-Forwarded-For` entry, which
+  that proxy appends; otherwise it is the TCP peer. A proxy on another machine
+  shares one limit for all its clients.
+- `--url http[s]://HOST[:PORT][/prefix]` on `hoshi serve` sets the base players
+  use, for a reverse proxy or HTTPS front end. The cookie `Path` is that
+  prefix (else `/`), and the cookie is `Secure` when the base is HTTPS or the
+  proxy sends `X-Forwarded-Proto: https`. Without `--url`, links use the
+  request's host; a `0.0.0.0` bind (or `hoshi pair` run on the server's own
+  machine) advertises this machine's outbound address.
+
 ### Managing devices
 
 - `GET /v1/admin/devices` (admin token) lists live sessions: `id`, `label`,

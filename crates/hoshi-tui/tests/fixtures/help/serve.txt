@@ -1,7 +1,7 @@
 serve
 Serve a versioned HTTP and WebSocket API for one save.
 
-Usage: hoshi serve [--save PATH] [--bind ADDRESS:PORT] [--config DIR] [--update-check] [--offline]
+Usage: hoshi serve [--save PATH] [--bind ADDRESS:PORT] [--config DIR] [--url URL] [--update-check] [--offline]
 
 Wraps one locked local save. Loopback binding is the default; authenticated remote actions use the same core rules. Update requests require --update-check; --offline suppresses them.
 
