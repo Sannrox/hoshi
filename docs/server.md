@@ -95,6 +95,24 @@ browser, address and timestamps, and only the SHA-256 of its secret. A session
 expires 30 days after its last use. If the file cannot be read, every device
 session is refused and the file is left untouched.
 
+### Session cookie
+
+A browser on the same origin sends its device session in an `HttpOnly`
+cookie, `hoshi_session`, that page scripts cannot read. Pairing sets it with
+`SameSite=Lax`, `Path` set to the install's base path (so two installs behind
+one proxy origin do not collide) and `Secure` over HTTPS. `/v1` routes,
+`/v1/events` and `/v1/terminal` accept the cookie as well as a bearer token:
+
+- The cookie only ever carries a device session, never an operator token.
+  Same save scope and rate limits as a bearer token.
+- Cookie and bearer are alternatives; a request with both is `400`.
+- Writes (`POST`, `DELETE`) with the cookie must send
+  `Content-Type: application/json`, which a cross-site form cannot; otherwise
+  `403`.
+- A WebSocket upgrade with the cookie must send an `Origin` whose host is the
+  request's `Host`; otherwise `403`.
+- An expired or unknown session is `401`.
+
 ## Web push
 
 Raid warnings and finished builds reach browsers with the tab closed. Off until
