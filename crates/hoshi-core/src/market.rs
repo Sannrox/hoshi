@@ -112,8 +112,26 @@ pub enum MarketError {
     Disabled,
     SameResource,
     BadAmount,
-    Insufficient { missing: f64, kind: ResourceKind },
-    NeedCargo { need: f64, have: f64 },
+    Insufficient {
+        missing: f64,
+        kind: ResourceKind,
+    },
+    /// The player's stock in `region` (that planet plus its market
+    /// warehouse) is short; goods reach another region with `market ship`.
+    ShortAt {
+        missing: f64,
+        kind: ResourceKind,
+        region: Coord,
+    },
+    /// A market order found nobody to trade with in `region`; nothing moved.
+    NoCounterparty {
+        region: Coord,
+        side: OrderSide,
+    },
+    NeedCargo {
+        need: f64,
+        have: f64,
+    },
     QuoteGood,
     UnknownOrder,
     UnknownContract,
@@ -133,11 +151,31 @@ impl fmt::Display for MarketError {
             MarketError::Insufficient { missing, kind } => {
                 write!(f, "market: missing {missing:.0} {}", kind.label())
             }
+            MarketError::ShortAt {
+                missing,
+                kind,
+                region,
+            } => write!(
+                f,
+                "market: missing {missing:.0} {} at {region} (that planet plus its market warehouse); move goods there with market ship",
+                kind.label()
+            ),
+            MarketError::NoCounterparty { region, side } => write!(
+                f,
+                "market: no {} at {region}; nothing was traded",
+                match side {
+                    OrderSide::Buy => "sellers",
+                    OrderSide::Sell => "buyers",
+                }
+            ),
             MarketError::NeedCargo { need, have } => {
                 write!(f, "market: need {need:.0} cargo, have {have:.0}")
             }
             MarketError::QuoteGood => {
-                write!(f, "market: metal is the quote; pick crystal or deuterium")
+                write!(
+                    f,
+                    "market: iron is the quote and rare earths do not trade; pick silicon, deuterium, water ice or helium-3"
+                )
             }
             MarketError::UnknownOrder => write!(f, "market: unknown order"),
             MarketError::UnknownContract => write!(f, "market: unknown contract"),
@@ -789,20 +827,28 @@ impl GameState {
             OrderSide::Buy => (self.buy_order_escrow(good, amount, limit), 0.0),
             OrderSide::Sell => (0.0, amount),
         };
-        if side == OrderSide::Buy {
-            self.debit_trader(
-                trader,
-                region,
-                Resources {
-                    iron: escrow_metal,
-                    ..Resources::ZERO
-                },
-            )?;
+        let escrow = if side == OrderSide::Buy {
+            Resources {
+                iron: escrow_metal,
+                ..Resources::ZERO
+            }
         } else {
             let mut pay = Resources::ZERO;
             pay.set(good, escrow_good);
-            self.debit_trader(trader, region, pay)?;
-        }
+            pay
+        };
+        // An order pays from its region, so a short player says which one.
+        self.debit_trader(trader, region, escrow)
+            .map_err(|err| match err {
+                MarketError::Insufficient { missing, kind } if trader == TraderId::Player => {
+                    MarketError::ShortAt {
+                        missing,
+                        kind,
+                        region,
+                    }
+                }
+                other => other,
+            })?;
         self.ensure_region(region);
         let id = self.board.next_order_id.max(1);
         self.board.next_order_id = id.saturating_add(1);
@@ -835,7 +881,13 @@ impl GameState {
             && order.remaining > 1e-9
         {
             let leftover = order.id;
+            let unfilled = (order.remaining - amount).abs() <= 1e-9;
             self.cancel_order(leftover, now);
+            // A player's market order that traded nothing is refused, not
+            // reported as placed; the cancel already returned the escrow.
+            if unfilled && trader == TraderId::Player {
+                return Err(MarketError::NoCounterparty { region, side });
+            }
         }
         if trader == TraderId::Player {
             self.push_event(
@@ -1433,6 +1485,13 @@ impl GameState {
         (self.market.price(good) / metal).max(1e-9)
     }
 
+    /// The player's stock a market order in `region` trades from: that
+    /// planet's stockpile (when it is home or a colony) plus the region's
+    /// player warehouse.
+    pub fn player_stock_at(&self, region: Coord) -> Resources {
+        self.trader_stock(TraderId::Player, region)
+    }
+
     pub(crate) fn buy_order_escrow(
         &self,
         good: ResourceKind,
@@ -1772,6 +1831,57 @@ mod tests {
                 .orders
                 .values()
                 .all(|o| o.remaining <= 1e-9 || o.trader != TraderId::Player)
+        );
+    }
+
+    #[test]
+    fn unfilled_market_order_is_refused_and_short_stock_names_the_region() {
+        let mut state = ready(1_000);
+        let home = Coord::HOME;
+        state.board.orders.clear();
+        let before = state.resources;
+        let err = state
+            .place_order(
+                home,
+                OrderSide::Buy,
+                ResourceKind::Silicon,
+                10.0,
+                None,
+                0,
+                1_000,
+            )
+            .unwrap_err();
+        assert_eq!(
+            err,
+            MarketError::NoCounterparty {
+                region: home,
+                side: OrderSide::Buy
+            }
+        );
+        assert!(state.board.orders.is_empty());
+        assert!(
+            (state.resources.iron - before.iron).abs() < 1e-6,
+            "escrow returned"
+        );
+
+        state.resources.silicon = 0.0;
+        let err = state
+            .place_order(
+                home,
+                OrderSide::Sell,
+                ResourceKind::Silicon,
+                10.0,
+                Some(2.0),
+                0,
+                1_000,
+            )
+            .unwrap_err();
+        assert!(matches!(err, MarketError::ShortAt { region, .. } if region == home));
+        assert!(err.to_string().contains("market ship"), "{err}");
+        assert!(
+            MarketError::QuoteGood
+                .to_string()
+                .contains("iron is the quote")
         );
     }
 
