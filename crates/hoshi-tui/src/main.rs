@@ -137,8 +137,26 @@ fn main() {
             }
         }
     }
-    if args.get(1).map(String::as_str) == Some("season") {
-        match run_season(&args[2..]) {
+    if let Some(word) = serve::first_positional(&args).filter(|word| *word == "season") {
+        // A leading --save applies like for every other command; listing
+        // takes no save, and `season start` reads only --save.
+        let at = args
+            .iter()
+            .position(|arg| std::ptr::eq(arg.as_str(), word))
+            .unwrap_or(1);
+        let mut rest: Vec<String> = args[at + 1..].to_vec();
+        if !rest.is_empty() {
+            let mut flags = args[1..at].iter();
+            while let Some(flag) = flags.next() {
+                if flag == "--save" {
+                    rest.push(flag.clone());
+                    rest.extend(flags.next().cloned());
+                } else if flag.starts_with("--save=") {
+                    rest.push(flag.clone());
+                }
+            }
+        }
+        match run_season(&rest) {
             Ok(()) => return,
             Err(e) => {
                 eprintln!("hoshi: {e}");

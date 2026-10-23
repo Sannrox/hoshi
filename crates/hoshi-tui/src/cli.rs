@@ -1788,6 +1788,11 @@ fn apply(
                 Some(text) => Some(parse_amount(text)?),
                 None => None,
             };
+            // Catch up first, so NPC orders and production during the gap do
+            // not take this order's id or count as its fill.
+            state.catch_up(now);
+            let id = state.board.next_order_id.max(1);
+            let before = state.player_stock_at(*region).get(*good);
             governed(
                 state,
                 Intent::PlaceOrder {
@@ -1800,7 +1805,18 @@ fn apply(
                 },
                 now,
             )?;
-            Ok(ok_state(state, "placed order"))
+            let after = state.player_stock_at(*region).get(*good);
+            let resting = state.board.orders.get(&id).map_or(0.0, |o| o.remaining);
+            // Bought goods arrive in the stock; sold goods leave it, less what
+            // still sits in escrow on a resting limit order.
+            let filled = match side {
+                OrderSide::Buy => after - before,
+                OrderSide::Sell => before - after - resting,
+            }
+            .max(0.0);
+            let mut value = ok_state(state, "placed order");
+            value["order"] = json!({ "id": id, "filled": filled, "resting": resting });
+            Ok(value)
         }
         Command::MarketAccept { id } => {
             governed(state, Intent::AcceptContract { id: *id }, now)?;
@@ -5355,6 +5371,33 @@ mod tests {
         let out = run_cli(&argv);
         let value: Value = serde_json::from_str(&out.json).unwrap();
         (value, out.exit)
+    }
+
+    #[test]
+    fn unfilled_market_order_is_refused_with_its_region() {
+        let save = unique_save("market-unfilled");
+        let (_, exit) = run_on(&save, &["--seed=3", "state"]);
+        assert_eq!(exit, EXIT_OK);
+        let (out, exit) = run_on(
+            &save,
+            &["market", "order", "home", "buy", "deuterium", "10"],
+        );
+        assert_eq!(exit, EXIT_REFUSED, "{out}");
+        assert!(
+            out["error"]["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("no sellers at 1:1:1")),
+            "{out}"
+        );
+        let (out, _) = run_on(&save, &["market", "order", "home", "sell", "iron", "100"]);
+        assert!(
+            out["error"]["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("iron is the quote"),
+            "{out}"
+        );
+        let _ = std::fs::remove_file(&save);
     }
 
     #[test]
