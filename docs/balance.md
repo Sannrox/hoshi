@@ -64,13 +64,21 @@ is how often expected vs actual is sampled.
 | Key | Meaning |
 | --- | --- |
 | `first_upgrade_secs` | First building upgrade must complete within this many seconds. |
-| `min_metal_mine_per_day` | Metal mine levels gained per simulated day under the greedy strategy. |
+| `min_metal_mine_per_day` | Metal mine levels gained per simulated day under the greedy strategy, for the first `metal_mine_days` days. |
+| `metal_mine_days` | Days the per-day mine gain applies to. Longer runs must reach the level of day `metal_mine_days`. |
 | `max_bridge_metal_ratio` | `metal` after maxed PR-merge pulses divided by `metal` with activity off. |
 | `keystone_secs` | Each playable branch keystone must complete within this many seconds under a research-greedy run. |
 
-Defaults: first upgrade in 5 minutes, at least one metal mine level per day,
-bridge pulses must not multiply stored metal by more than 8, and each branch
-keystone within 14 days.
+Defaults: first upgrade in 5 minutes, at least one metal mine level per day
+for the first 7 days, bridge pulses must not multiply stored metal by more
+than 8, and each branch keystone within 14 days.
+
+The mine target stops at 7 days because the greedy strategy only builds mines
+and solar. Solar is capped by planet size (level 14 at home), and around day 5
+the next mine level needs more energy than that cap delivers, so the mine stays
+at 14. Growth past the cap needs a fission reactor, which the first-reactor
+check covers. Mine costs also grow 1.5x per level, so one level per day cannot
+hold over weeks under any strategy.
 
 ## Tactics
 

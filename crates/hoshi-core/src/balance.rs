@@ -313,6 +313,9 @@ pub struct PacingTargets {
     pub first_upgrade_secs: u64,
     /// Metal mine levels gained per simulated day under the greedy strategy.
     pub min_metal_mine_per_day: u32,
+    /// Days the per-day mine gain applies to. Mines-only play then stops at
+    /// the solar cap; later growth needs fission, which has its own target.
+    pub metal_mine_days: u32,
     /// `metal(with max PR-merge) / metal(activity off)` must stay at or below this.
     pub max_bridge_metal_ratio: f64,
     /// Each branch keystone should complete within this many seconds.
@@ -322,12 +325,23 @@ pub struct PacingTargets {
     pub raided_shipyard_secs: u64,
 }
 
+impl PacingTargets {
+    /// Metal mine level a greedy run of `days` must reach: level 1 plus the
+    /// per-day gain for each day up to `metal_mine_days`.
+    pub fn metal_mine_target(&self, days: u32) -> u32 {
+        self.min_metal_mine_per_day
+            .saturating_mul(days.min(self.metal_mine_days))
+            .saturating_add(1)
+    }
+}
+
 impl Default for PacingTargets {
     fn default() -> Self {
         Self {
             energy_recovery_secs: 7200,
             first_upgrade_secs: 300,
             min_metal_mine_per_day: 1,
+            metal_mine_days: default_metal_mine_days(),
             max_bridge_metal_ratio: 8.0,
             keystone_secs: 14 * 86_400,
             raided_shipyard_secs: default_raided_shipyard_secs(),
@@ -1155,11 +1169,17 @@ struct FilePacing {
     energy_recovery_secs: u64,
     first_upgrade_secs: u64,
     min_metal_mine_per_day: u32,
+    #[serde(default = "default_metal_mine_days")]
+    metal_mine_days: u32,
     max_bridge_metal_ratio: f64,
     #[serde(default = "default_keystone_secs")]
     keystone_secs: u64,
     #[serde(default = "default_raided_shipyard_secs")]
     raided_shipyard_secs: u64,
+}
+
+fn default_metal_mine_days() -> u32 {
+    7
 }
 
 fn default_raided_shipyard_secs() -> u64 {
@@ -1621,6 +1641,7 @@ impl File {
                 energy_recovery_secs: self.pacing.energy_recovery_secs,
                 first_upgrade_secs: self.pacing.first_upgrade_secs,
                 min_metal_mine_per_day: self.pacing.min_metal_mine_per_day,
+                metal_mine_days: self.pacing.metal_mine_days,
                 max_bridge_metal_ratio: self.pacing.max_bridge_metal_ratio,
                 keystone_secs: self.pacing.keystone_secs,
                 raided_shipyard_secs: self.pacing.raided_shipyard_secs,
@@ -1952,6 +1973,11 @@ impl BalanceConfig {
         if self.pacing.min_metal_mine_per_day == 0 {
             return Err(BalanceError::Invalid(
                 "pacing.min_metal_mine_per_day must be > 0".into(),
+            ));
+        }
+        if self.pacing.metal_mine_days == 0 {
+            return Err(BalanceError::Invalid(
+                "pacing.metal_mine_days must be > 0".into(),
             ));
         }
         finite_positive(
