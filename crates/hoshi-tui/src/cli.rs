@@ -5567,7 +5567,9 @@ mod tests {
         assert!(value["research"]["exclusive_picks"].is_object());
         assert!(value["achievements"].is_array());
         assert!(value["daily"]["slots"].is_array());
-        assert_eq!(value["daily"]["slots"].as_array().unwrap().len(), 3);
+        // A new save draws only the goals it can reach (no raid or expedition yet).
+        let slots = value["daily"]["slots"].as_array().unwrap().len();
+        assert!((1..=3).contains(&slots), "{slots}");
         assert!(value["moons"].is_array());
         assert!(value["leaders"].is_array());
         assert_eq!(value["leaders"].as_array().unwrap().len(), 2);

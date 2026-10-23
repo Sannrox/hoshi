@@ -1,9 +1,9 @@
 [[hints]]
 id = "opening"
 trigger = "opening"
-screen = "overview"
+screen = "planet"
 title = "Welcome"
-body = "This is the bridge. Mines tick while you work elsewhere. Tab cycles screens. Skip the tutorial with s, or dismiss a hint with x."
+body = "This is the bridge. Mines tick while you work elsewhere; start by upgrading the metal mine on the planet screen. Tab cycles screens. Skip the tutorial with s, or dismiss a hint with x."
 
 [[hints]]
 id = "first_mine"
