@@ -77,6 +77,47 @@ pub struct ScopedToken {
     pub save: PathBuf,
 }
 
+/// Cookie that carries a paired browser's device session secret (ADR 0016).
+pub const SESSION_COOKIE: &str = "hoshi_session";
+
+/// What a request presented to authenticate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Credential {
+    /// The raw `Authorization` header value.
+    Header(String),
+    /// A device session secret from the [`SESSION_COOKIE`]; never matched
+    /// against operator tokens.
+    Cookie(String),
+}
+
+impl Credential {
+    /// The one credential in `headers`. The header and the cookie are
+    /// alternatives; a request carrying both is refused (`400`).
+    fn from_headers(headers: &str) -> Result<Option<Self>, (u16, Value)> {
+        let header = header_value(headers, "authorization");
+        let cookie = headers
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .filter(|(name, _)| name.trim().eq_ignore_ascii_case("cookie"))
+            .flat_map(|(_, value)| value.split(';'))
+            .filter_map(|pair| pair.trim().split_once('='))
+            .find(|(name, value)| *name == SESSION_COOKIE && !value.is_empty())
+            .map(|(_, value)| value.to_string());
+        match (header, cookie) {
+            (Some(_), Some(_)) => Err((
+                400,
+                error_body("invalid", "send the token or the session cookie, not both"),
+            )),
+            (Some(header), None) => Ok(Some(Self::Header(header))),
+            (None, cookie) => Ok(cookie.map(Self::Cookie)),
+        }
+    }
+
+    fn is_cookie(credential: Option<&Self>) -> bool {
+        matches!(credential, Some(Self::Cookie(_)))
+    }
+}
+
 /// Bearer gate and sliding-window limits for `/v1`. Accepts operator tokens
 /// and the device sessions of paired browsers (ADR 0016).
 #[derive(Debug, Clone)]
@@ -198,15 +239,22 @@ impl Auth {
         &mut self,
         save: &Path,
         action: &str,
-        authorization: Option<&str>,
+        credential: Option<&Credential>,
         now: u64,
     ) -> Result<(), (u16, Value)> {
         let unauthorized = || (401, error_body("unauthorized", "unauthorized"));
-        let presented = bearer(authorization).ok_or_else(unauthorized)?;
-        let token = self
-            .tokens
-            .iter()
-            .position(|token| eq_secret(token.secret.as_bytes(), presented.as_bytes()));
+        let (presented, cookie) = match credential {
+            Some(Credential::Header(raw)) => (bearer(Some(raw)).ok_or_else(unauthorized)?, false),
+            Some(Credential::Cookie(secret)) => (secret.as_str(), true),
+            None => return Err(unauthorized()),
+        };
+        let token = if cookie {
+            None
+        } else {
+            self.tokens
+                .iter()
+                .position(|token| eq_secret(token.secret.as_bytes(), presented.as_bytes()))
+        };
         let (caller, admin) = match token {
             Some(idx) if same_save(&self.tokens[idx].save, save) => {
                 (Caller::Token(idx), self.tokens[idx].admin)
@@ -946,8 +994,9 @@ pub fn handle(
         }
         return (200, healthz_body());
     }
+    let credential = authorization.map(|header| Credential::Header(header.into()));
     if path.starts_with("/v1")
-        && let Err(err) = auth.allow(save, path, authorization, now)
+        && let Err(err) = auth.allow(save, path, credential.as_ref(), now)
     {
         return err;
     }
@@ -1150,9 +1199,34 @@ fn serve_one(
     } else {
         buf[header_len.min(buf.len())..].to_vec()
     };
-    let authorization = header_value(&headers, "authorization");
     let now = SystemClock.now_unix();
     let route = path.split('?').next().unwrap_or(path);
+    let credential = match Credential::from_headers(&headers) {
+        Ok(credential) => credential,
+        Err((status, value)) if route.starts_with("/v1") => {
+            return write_http(&mut stream, status, &value, "");
+        }
+        Err(_) => None,
+    };
+    // A cookie rides along on cross-site requests; a cross-site form cannot
+    // send JSON, so writes with the cookie must.
+    if route.starts_with("/v1")
+        && Credential::is_cookie(credential.as_ref())
+        && !matches!(method, "GET" | "HEAD" | "OPTIONS")
+        && !header_value(&headers, "content-type").is_some_and(|value| {
+            value
+                .split(';')
+                .next()
+                .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/json"))
+        })
+    {
+        return write_http(
+            &mut stream,
+            403,
+            &error_body("unauthorized", "cookie requests must send application/json"),
+            "",
+        );
+    }
     if route == "/v1/bug"
         && crate::config::UserConfig::load(&lock_poison(live).config_dir).bug_report_target == "off"
     {
@@ -1182,7 +1256,7 @@ fn serve_one(
             save,
             &mut stream,
             method,
-            authorization.as_deref(),
+            credential.as_ref(),
             auth,
             live,
             bind,
@@ -1205,7 +1279,7 @@ fn serve_one(
             &mut stream,
             path,
             &headers,
-            authorization.as_deref(),
+            credential.as_ref(),
             auth,
             live,
             push,
@@ -1220,21 +1294,14 @@ fn serve_one(
                 "",
             );
         }
-        return serve_terminal(
-            save,
-            &mut stream,
-            &headers,
-            authorization.as_deref(),
-            auth,
-            live,
-        );
+        return serve_terminal(save, &mut stream, &headers, credential.as_ref(), auth, live);
     }
     if !route.starts_with("/v1") {
         return write_http(&mut stream, 404, &error_body("invalid", "not found"), "");
     }
     let gate = {
         let mut auth = lock_poison(auth);
-        match auth.allow(save, route, authorization.as_deref(), now) {
+        match auth.allow(save, route, credential.as_ref(), now) {
             Ok(()) => Ok(auth.window_secs),
             Err((status, value)) => Err((status, value, auth.window_secs)),
         }
@@ -1429,7 +1496,7 @@ fn serve_support_report(
     save: &Path,
     stream: &mut TcpStream,
     method: &str,
-    authorization: Option<&str>,
+    credential: Option<&Credential>,
     auth: &Mutex<Auth>,
     live: &Mutex<Live>,
     bind: SocketAddr,
@@ -1450,7 +1517,7 @@ fn serve_support_report(
     let gate = {
         let mut auth = lock_poison(auth);
         if auth.tokens.is_empty()
-            && authorization.is_none()
+            && credential.is_none()
             && bind.ip().is_loopback()
             && stream.peer_addr()?.ip().is_loopback()
         {
@@ -1459,7 +1526,7 @@ fn serve_support_report(
             auth.allow(
                 save,
                 "/v1/admin/support-report",
-                authorization,
+                credential,
                 SystemClock.now_unix(),
             )
         }
@@ -1613,7 +1680,7 @@ fn authorize_upgrade(
     stream: &mut TcpStream,
     route: &str,
     headers: &str,
-    authorization: Option<&str>,
+    credential: Option<&Credential>,
     auth: &Mutex<Auth>,
     now: u64,
 ) -> std::io::Result<Option<Upgrade>> {
@@ -1626,7 +1693,7 @@ fn authorize_upgrade(
         )?;
         return Ok(None);
     };
-    let authorization = match (authorization, offer.token) {
+    let credential = match (credential, offer.token) {
         (Some(_), Some(_)) => {
             write_http(
                 stream,
@@ -1636,10 +1703,21 @@ fn authorize_upgrade(
             )?;
             return Ok(None);
         }
-        (None, Some(token)) => Some(format!("Bearer {token}")),
-        (header, None) => header.map(str::to_string),
+        (None, Some(token)) => Some(Credential::Header(format!("Bearer {token}"))),
+        (credential, None) => credential.cloned(),
     };
-    let gate = lock_poison(auth).allow(save, route, authorization.as_deref(), now);
+    // Any site can open a socket here and the browser adds the cookie, so a
+    // cookie upgrade must come from a page on this host.
+    if Credential::is_cookie(credential.as_ref()) && !same_origin(headers) {
+        write_http(
+            stream,
+            403,
+            &error_body("unauthorized", "cross-origin socket refused"),
+            "",
+        )?;
+        return Ok(None);
+    }
+    let gate = lock_poison(auth).allow(save, route, credential.as_ref(), now);
     if let Err((status, value)) = gate {
         let extra = match status {
             401 => "WWW-Authenticate: Bearer\r\n",
@@ -1660,6 +1738,19 @@ fn authorize_upgrade(
         return Ok(None);
     };
     Ok(Some(Upgrade { key, v1: offer.v1 }))
+}
+
+/// `Origin` names the host the request was sent to (`Host`), any scheme.
+fn same_origin(headers: &str) -> bool {
+    let (Some(origin), Some(host)) = (
+        header_value(headers, "origin"),
+        header_value(headers, "host"),
+    ) else {
+        return false;
+    };
+    origin
+        .split_once("://")
+        .is_some_and(|(_, authority)| authority.eq_ignore_ascii_case(host.trim()))
 }
 
 /// Swaps the server's game state into the session's app for one step and
@@ -1697,20 +1788,13 @@ fn serve_terminal(
     save: &Path,
     stream: &mut TcpStream,
     headers: &str,
-    authorization: Option<&str>,
+    credential: Option<&Credential>,
     auth: &Mutex<Auth>,
     live: &Mutex<Live>,
 ) -> std::io::Result<()> {
     let now = SystemClock.now_unix();
-    let Some(upgrade) = authorize_upgrade(
-        save,
-        stream,
-        "/v1/terminal",
-        headers,
-        authorization,
-        auth,
-        now,
-    )?
+    let Some(upgrade) =
+        authorize_upgrade(save, stream, "/v1/terminal", headers, credential, auth, now)?
     else {
         return Ok(());
     };
@@ -1887,21 +1971,14 @@ fn serve_events(
     stream: &mut TcpStream,
     path: &str,
     headers: &str,
-    authorization: Option<&str>,
+    credential: Option<&Credential>,
     auth: &Mutex<Auth>,
     live: &Mutex<Live>,
     push: &Mutex<crate::push::Gate>,
 ) -> std::io::Result<()> {
     let now = SystemClock.now_unix();
-    let Some(upgrade) = authorize_upgrade(
-        save,
-        stream,
-        "/v1/events",
-        headers,
-        authorization,
-        auth,
-        now,
-    )?
+    let Some(upgrade) =
+        authorize_upgrade(save, stream, "/v1/events", headers, credential, auth, now)?
     else {
         return Ok(());
     };
@@ -3422,6 +3499,84 @@ mod tests {
             }
         }
         String::from_utf8_lossy(&out).into_owned()
+    }
+
+    /// One request with raw extra header lines (each ending in CRLF).
+    fn send_raw(
+        addr: SocketAddr,
+        method: &str,
+        path: &str,
+        extra: &str,
+        body: &str,
+    ) -> (u16, String) {
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        write!(
+            stream,
+            "{method} {path} HTTP/1.1\r\nHost: localhost\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        let mut buf = String::new();
+        stream.read_to_string(&mut buf).unwrap();
+        let status = buf
+            .split_whitespace()
+            .nth(1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let body = buf.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("");
+        (status, body.to_string())
+    }
+
+    #[test]
+    fn session_cookie_authenticates_from_this_origin_only() {
+        use crate::devices::{Client, Devices};
+        let save = unique_save();
+        let now = SystemClock.now_unix();
+        let mut devices = Devices::open(&save).unwrap();
+        let (_, secret) = devices
+            .create(None, Client::from_request(None, None), now)
+            .unwrap();
+        let (_, expired) = devices
+            .create(None, Client::from_request(None, None), 0)
+            .unwrap();
+        let auth = Auth::single(&save, TEST_TOKEN).with_devices(Devices::open(&save).unwrap());
+        let addr = spawn_run(ephemeral(save.clone()).with_auth(auth));
+        let cookie = format!("Cookie: theme=dark; {SESSION_COOKIE}={secret}\r\n");
+        let json = "Content-Type: application/json\r\n";
+        let build = r#"{"planet":"home","building":"metal_mine"}"#;
+
+        let (status, body) = send_raw(addr, "GET", "/v1/state", &cookie, "");
+        assert_eq!(status, 200, "{body}");
+        let (status, body) = send_raw(addr, "POST", "/v1/build", &format!("{cookie}{json}"), build);
+        assert!(![400, 401, 403].contains(&status), "{status} {body}");
+        // A cross-site form cannot send JSON; without it a cookie write is refused.
+        let form = "Content-Type: application/x-www-form-urlencoded\r\n";
+        let (status, _) = send_raw(addr, "POST", "/v1/build", &format!("{cookie}{form}"), build);
+        assert_eq!(status, 403);
+        let both = format!("{cookie}Authorization: Bearer {TEST_TOKEN}\r\n");
+        assert_eq!(send_raw(addr, "GET", "/v1/state", &both, "").0, 400);
+        let stale = format!("Cookie: {SESSION_COOKIE}={expired}\r\n");
+        assert_eq!(send_raw(addr, "GET", "/v1/state", &stale, "").0, 401);
+        // The cookie never stands in for an operator token.
+        let operator = format!("Cookie: {SESSION_COOKIE}={TEST_TOKEN}\r\n");
+        assert_eq!(send_raw(addr, "GET", "/v1/state", &operator, "").0, 401);
+
+        let here = format!("{cookie}Origin: http://localhost\r\n");
+        let elsewhere = format!("{cookie}Origin: https://evil.example\r\n");
+        for path in ["/v1/events", "/v1/terminal"] {
+            assert_eq!(ws_open_with(addr, path, &elsewhere).1, 403, "{path}");
+            assert_eq!(
+                ws_open_with(addr, path, &cookie).1,
+                403,
+                "{path} without Origin"
+            );
+            let (_socket, status, headers) = ws_open_with(addr, path, &here);
+            assert_eq!(status, 101, "{path} {headers}");
+        }
+        let _ = std::fs::remove_file(crate::devices::store_path(&save));
     }
 
     #[test]
