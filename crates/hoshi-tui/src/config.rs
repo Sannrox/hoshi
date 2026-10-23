@@ -69,7 +69,6 @@ pub struct UserConfig {
     /// Operator VAPID contact URI (`mailto:` or `https:`).
     pub serve_vapid_subject: String,
     /// Push subscription endpoint. Empty skips a live POST.
-    pub serve_push_endpoint: String,
     /// Player opt-in for optional identity login. Off by default.
     pub serve_oidc: bool,
     /// Identity issuer URL. Runtime config, never the save.
@@ -138,7 +137,6 @@ impl Default for UserConfig {
             serve_push: false,
             serve_vapid_private: String::new(),
             serve_vapid_subject: String::new(),
-            serve_push_endpoint: String::new(),
             serve_oidc: false,
             serve_oidc_issuer: String::new(),
             serve_oidc_client_id: String::new(),
@@ -324,9 +322,6 @@ impl UserConfig {
                 "serve_vapid_subject" => {
                     cfg.serve_vapid_subject = value.trim_matches('"').to_string()
                 }
-                "serve_push_endpoint" => {
-                    cfg.serve_push_endpoint = value.trim_matches('"').to_string()
-                }
                 "serve_oidc" => cfg.serve_oidc = value == "true",
                 "serve_oidc_issuer" => cfg.serve_oidc_issuer = value.trim_matches('"').to_string(),
                 "serve_oidc_client_id" => {
@@ -372,7 +367,7 @@ impl UserConfig {
             _ => String::new(),
         };
         let text = format!(
-            "reduced_motion = {}\nno_animation = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\narena = {}\nself_play = {}\ncheats = {}\nrivals = {}\nseason = {}\ndemo = {}\ngovernance = {}\nchisei = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}\ntutorial = {}\nreset_tutorial = {}\nnotify = {}\nnotify_build = {}\nnotify_raid = {}\nnotify_fleet = {}\ncommentary = {}\ncommentary_model_url = \"{}\"\nadvisor_model_url = \"{}\"\nadvisor_model_name = \"{}\"\nadvisor_allow_lan = {}\ncockpit_layout = \"{}\"\ncockpit_overview = \"{}\"\ncockpit_economy = \"{}\"\ncockpit_war = \"{}\"\ndetail_panel = {}\nserve_bind = \"{}\"\nserve_save = \"{}\"\nserve_token = \"{}\"\nserve_token_file = \"{}\"\nserve_rate_limit = {}\nserve_rate_window_secs = {}\nserve_push = {}\nserve_vapid_private = \"{}\"\nserve_vapid_subject = \"{}\"\nserve_push_endpoint = \"{}\"\nserve_oidc = {}\nserve_oidc_issuer = \"{}\"\nserve_oidc_client_id = \"{}\"\nserve_oidc_authorization = \"{}\"\nserve_oidc_token = \"{}\"\n{quiet}{}\n",
+            "reduced_motion = {}\nno_animation = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\narena = {}\nself_play = {}\ncheats = {}\nrivals = {}\nseason = {}\ndemo = {}\ngovernance = {}\nchisei = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}\ntutorial = {}\nreset_tutorial = {}\nnotify = {}\nnotify_build = {}\nnotify_raid = {}\nnotify_fleet = {}\ncommentary = {}\ncommentary_model_url = \"{}\"\nadvisor_model_url = \"{}\"\nadvisor_model_name = \"{}\"\nadvisor_allow_lan = {}\ncockpit_layout = \"{}\"\ncockpit_overview = \"{}\"\ncockpit_economy = \"{}\"\ncockpit_war = \"{}\"\ndetail_panel = {}\nserve_bind = \"{}\"\nserve_save = \"{}\"\nserve_token = \"{}\"\nserve_token_file = \"{}\"\nserve_rate_limit = {}\nserve_rate_window_secs = {}\nserve_push = {}\nserve_vapid_private = \"{}\"\nserve_vapid_subject = \"{}\"\nserve_oidc = {}\nserve_oidc_issuer = \"{}\"\nserve_oidc_client_id = \"{}\"\nserve_oidc_authorization = \"{}\"\nserve_oidc_token = \"{}\"\n{quiet}{}\n",
             self.reduced_motion,
             self.no_animation,
             self.high_contrast,
@@ -414,7 +409,6 @@ impl UserConfig {
             self.serve_push,
             self.serve_vapid_private.replace('"', ""),
             self.serve_vapid_subject.replace('"', ""),
-            self.serve_push_endpoint.replace('"', ""),
             self.serve_oidc,
             self.serve_oidc_issuer.replace('"', ""),
             self.serve_oidc_client_id.replace('"', ""),
@@ -672,7 +666,6 @@ mod tests {
         assert!(cfg.serve_push);
         assert_eq!(cfg.serve_vapid_private, "k");
         assert_eq!(cfg.serve_vapid_subject, "mailto:hoshi@localhost");
-        assert_eq!(cfg.serve_push_endpoint, "http://127.0.0.1/push");
         cfg.save(&dir).unwrap();
         let again = UserConfig::load(&dir);
         assert!(again.serve_push);

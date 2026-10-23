@@ -343,7 +343,7 @@ pub struct Server {
     save: PathBuf,
     auth: Auth,
     live: Arc<Mutex<Live>>,
-    push: Arc<Mutex<crate::push::Gate<crate::push::Noop>>>,
+    push: Arc<Mutex<crate::push::Gate>>,
     oidc: Arc<Mutex<crate::oidc::Gate>>,
 }
 
@@ -370,9 +370,10 @@ impl Server {
             state,
         };
         let push = crate::push::Gate::new(
-            crate::push::Settings::default(),
+            &crate::push::Settings::default(),
             &live.state,
-            crate::push::Noop,
+            &opts.save,
+            None,
         );
         let listener = TcpListener::bind(opts.bind)?;
         Ok(Self {
@@ -398,10 +399,19 @@ impl Server {
         self
     }
 
-    pub fn with_push(mut self, settings: crate::push::Settings) -> Self {
+    pub fn with_push(self, settings: crate::push::Settings) -> Self {
+        self.with_push_transport(settings, None)
+    }
+
+    /// `None` sends over HTTPS; tests inject a recording transport.
+    fn with_push_transport(
+        mut self,
+        settings: crate::push::Settings,
+        transport: Option<Arc<dyn crate::push::Transport>>,
+    ) -> Self {
         let gate = {
             let live = lock_poison(&self.live);
-            crate::push::Gate::new(settings, &live.state, crate::push::Noop)
+            crate::push::Gate::new(&settings, &live.state, &self.save, transport)
         };
         self.push = Arc::new(Mutex::new(gate));
         self
@@ -447,6 +457,7 @@ impl Server {
                 .name("hoshi-push".into())
                 .spawn(move || {
                     let _worker = worker;
+                    let outboxes = spawn_push_delivery(Arc::clone(&push));
                     while !stop.load(Ordering::SeqCst) {
                         std::thread::sleep(Duration::from_secs(1));
                         if stop.load(Ordering::SeqCst) {
@@ -456,12 +467,24 @@ impl Server {
                             continue;
                         }
                         let now = SystemClock.now_unix();
-                        let mut live = lock_poison(live.as_ref());
-                        if !live.state.deterministic {
-                            live.state.catch_up(now);
+                        {
+                            let mut live = lock_poison(live.as_ref());
+                            if !live.state.deterministic {
+                                live.state.catch_up(now);
+                            }
+                            lock_poison(push.as_ref()).poll(&live.state, now);
+                            let _ = persist(save.as_path(), &mut live, false);
                         }
-                        lock_poison(push.as_ref()).poll(&live.state, now);
-                        let _ = persist(save.as_path(), &mut live, false);
+                        let outbox = lock_poison(push.as_ref()).take_outbox();
+                        if !outbox.is_empty()
+                            && let Some(outboxes) = &outboxes
+                            && outboxes.try_send(outbox).is_err()
+                        {
+                            crate::diagnostics::log(
+                                "warn",
+                                "web push backlog full; notice dropped",
+                            );
+                        }
                     }
                 });
         }
@@ -988,12 +1011,32 @@ fn write_redirect(stream: &mut TcpStream, location: &str) -> std::io::Result<()>
     stream.write_all(header.as_bytes())
 }
 
+/// Network sends run on their own thread, without the game or gate lock, so a
+/// slow push service never delays the next raid-warning poll. The queue is
+/// bounded; the thread ends when the sender drops.
+fn spawn_push_delivery(
+    push: Arc<Mutex<crate::push::Gate>>,
+) -> Option<std::sync::mpsc::SyncSender<crate::push::Outbox>> {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<crate::push::Outbox>(4);
+    std::thread::Builder::new()
+        .name("hoshi-push-send".into())
+        .spawn(move || {
+            for outbox in rx {
+                for endpoint in outbox.deliver() {
+                    let _ = lock_poison(push.as_ref()).unsubscribe(&endpoint);
+                }
+            }
+        })
+        .ok()?;
+    Some(tx)
+}
+
 fn serve_one(
     save: &Path,
     mut stream: TcpStream,
     auth: &Mutex<Auth>,
     live: &Mutex<Live>,
-    push: &Mutex<crate::push::Gate<crate::push::Noop>>,
+    push: &Mutex<crate::push::Gate>,
     oidc: &Mutex<crate::oidc::Gate>,
     bind: SocketAddr,
 ) -> std::io::Result<()> {
@@ -1206,6 +1249,9 @@ fn serve_one(
             "",
         );
     }
+    if route == "/v1/push/key" || route == "/v1/push/subscription" {
+        return serve_push(&mut stream, method, route, &body, push);
+    }
     if route == "/v1/version" {
         if method != "GET" {
             return write_http(
@@ -1232,6 +1278,65 @@ fn serve_one(
         result
     };
     write_http(&mut stream, status, &value, "")
+}
+
+/// Browser opt-in: read the VAPID key, register or remove a subscription.
+/// Subscriptions go to the file beside the save, never into the save.
+fn serve_push(
+    stream: &mut TcpStream,
+    method: &str,
+    route: &str,
+    body: &[u8],
+    push: &Mutex<crate::push::Gate>,
+) -> std::io::Result<()> {
+    use crate::push::Refused;
+    let mut gate = lock_poison(push);
+    let Some(key) = gate.public_key().map(str::to_string) else {
+        return write_http(stream, 404, &error_body("invalid", "not found"), "");
+    };
+    let result = match (route, method) {
+        ("/v1/push/key", "GET") => {
+            return write_http(stream, 200, &json!({"ok": true, "key": key}), "");
+        }
+        ("/v1/push/subscription", "POST") => {
+            match serde_json::from_slice::<crate::push::Subscription>(body) {
+                Ok(sub) => gate.subscribe(sub).map(|()| json!({"ok": true})),
+                Err(_) => Err(Refused::Invalid),
+            }
+        }
+        ("/v1/push/subscription", "DELETE") => {
+            #[derive(serde::Deserialize)]
+            struct Request {
+                endpoint: String,
+            }
+            match serde_json::from_slice::<Request>(body) {
+                Ok(request) => gate
+                    .unsubscribe(&request.endpoint)
+                    .map(|removed| json!({"ok": true, "removed": removed})),
+                Err(_) => Err(Refused::Invalid),
+            }
+        }
+        _ => {
+            return write_http(
+                stream,
+                405,
+                &error_body("invalid", "method not allowed"),
+                "",
+            );
+        }
+    };
+    drop(gate);
+    let (status, value) = match result {
+        Ok(value) => (200, value),
+        Err(Refused::Off) => (404, error_body("invalid", "not found")),
+        Err(Refused::Invalid) => (400, error_body("invalid", "invalid push subscription")),
+        Err(Refused::Full) => (409, error_body("refused", "too many push subscriptions")),
+        Err(Refused::Storage) => (
+            500,
+            error_body("internal", "subscription could not be saved"),
+        ),
+    };
+    write_http(stream, status, &value, "")
 }
 
 fn serve_support_report(
@@ -1411,7 +1516,7 @@ fn serve_events(
     authorization: Option<&str>,
     auth: &Mutex<Auth>,
     live: &Mutex<Live>,
-    push: &Mutex<crate::push::Gate<crate::push::Noop>>,
+    push: &Mutex<crate::push::Gate>,
 ) -> std::io::Result<()> {
     let now = SystemClock.now_unix();
     let Ok(offer) = ws::protocol_offer(headers) else {
@@ -1516,7 +1621,7 @@ fn pump_events(
     save: &Path,
     stream: &mut TcpStream,
     live: &Mutex<Live>,
-    push: &Mutex<crate::push::Gate<crate::push::Noop>>,
+    push: &Mutex<crate::push::Gate>,
     cursor: &mut u64,
     now: u64,
 ) -> std::io::Result<()> {
@@ -1717,20 +1822,83 @@ mod tests {
         .with_auth(auth)
     }
 
-    #[test]
-    fn with_push_arms_only_when_opt_in_and_vapid_are_set() {
-        let save = unique_save();
-        let off = ephemeral(save.clone());
-        assert!(!lock_poison(off.push.as_ref()).armed());
-        drop(off);
-        let on = ephemeral(save.clone()).with_push(crate::push::Settings {
+    fn push_settings() -> crate::push::Settings {
+        crate::push::Settings {
             opt_in: true,
-            vapid_private: "k".into(),
+            vapid_private: "yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw".into(),
             vapid_subject: "mailto:hoshi@localhost".into(),
-            endpoint: String::new(),
-        });
-        assert!(lock_poison(on.push.as_ref()).armed());
-        drop(on);
+        }
+    }
+
+    /// Keeps server tests off the network; delivery is covered in `push`.
+    struct NoNetwork;
+
+    impl crate::push::Transport for NoNetwork {
+        fn send(&self, _to: &crate::push::Subscription, _payload: &Value) -> crate::push::Delivery {
+            crate::push::Delivery::Sent
+        }
+    }
+
+    #[test]
+    fn push_routes_are_off_without_vapid_keys() {
+        let save = unique_save();
+        seed_save(&save);
+        let addr = spawn_run(ephemeral(save.clone()));
+        let (status, body) =
+            get_path_auth(addr, "/v1/push/key", Some(&format!("Bearer {TEST_TOKEN}"))).unwrap();
+        assert_eq!(status, 404, "{body}");
+        let (status, body) = post_json(addr, "/v1/push/subscription", "{}");
+        assert_eq!(status, 404, "{body}");
+        let (status, _) = get_path(addr, "/v1/push/key").unwrap();
+        assert_eq!(status, 401);
+        let _ = std::fs::remove_file(&save);
+        let _ = std::fs::remove_file(save_lock_path(&save));
+    }
+
+    #[test]
+    fn browser_subscribes_and_unsubscribes_without_touching_the_save() {
+        let save = unique_save();
+        seed_save(&save);
+        let server =
+            ephemeral(save.clone()).with_push_transport(push_settings(), Some(Arc::new(NoNetwork)));
+        let addr = spawn_run(server);
+
+        let (status, body) =
+            get_path_auth(addr, "/v1/push/key", Some(&format!("Bearer {TEST_TOKEN}"))).unwrap();
+        assert_eq!(status, 200, "{body}");
+        let key: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            key["key"],
+            "BP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A8"
+        );
+        let subscription = r#"{"endpoint":"https://fcm.googleapis.com/fcm/send/hoshi-test-sub-a","expirationTime":null,"keys":{"p256dh":"BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4","auth":"BTBZMqHH6r4Tts7J_aSIgg"}}"#;
+        let (status, body) = post_json(addr, "/v1/push/subscription", subscription);
+        assert_eq!(status, 200, "{body}");
+        let (status, body) = post_json(
+            addr,
+            "/v1/push/subscription",
+            r#"{"endpoint":"https://fcm.googleapis.com/fcm/send/hoshi-test-sub-b","keys":{"p256dh":"x","auth":"y"}}"#,
+        );
+        assert_eq!(status, 400, "{body}");
+        let in_save = std::fs::read(&save).unwrap();
+        assert!(
+            !in_save.windows(16).any(|w| w == b"hoshi-test-sub-a"),
+            "subscription leaked into the save"
+        );
+        let stored = std::fs::read_to_string(crate::push::store_path(&save)).unwrap();
+        assert!(stored.contains("hoshi-test-sub-a"), "{stored}");
+
+        let (status, body) = send_json(
+            addr,
+            "DELETE",
+            "/v1/push/subscription",
+            r#"{"endpoint":"https://fcm.googleapis.com/fcm/send/hoshi-test-sub-a"}"#,
+        );
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains(r#""removed":true"#), "{body}");
+        let stored = std::fs::read_to_string(crate::push::store_path(&save)).unwrap();
+        assert!(!stored.contains("hoshi-test-sub-a"), "{stored}");
+        let _ = std::fs::remove_file(crate::push::store_path(&save));
         let _ = std::fs::remove_file(&save);
         let _ = std::fs::remove_file(save_lock_path(&save));
     }
@@ -1844,6 +2012,10 @@ mod tests {
     }
 
     fn post_json(addr: SocketAddr, path: &str, body: &str) -> (u16, String) {
+        send_json(addr, "POST", path, body)
+    }
+
+    fn send_json(addr: SocketAddr, method: &str, path: &str, body: &str) -> (u16, String) {
         let mut stream = TcpStream::connect(addr).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
@@ -1853,7 +2025,7 @@ mod tests {
             .unwrap();
         write!(
             stream,
-            "POST {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {TEST_TOKEN}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            "{method} {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {TEST_TOKEN}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         )
         .unwrap();

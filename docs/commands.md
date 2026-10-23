@@ -1363,7 +1363,7 @@ Wraps one locked local save. Loopback binding is the default; authenticated remo
 
 Example: `hoshi serve --save game.sqlite`
 
-Environment: HOSHI_SAVE, HOSHI_BALANCE, HOSHI_SERVE_TOKEN, HOSHI_SERVE_TOKEN_FILE, HOSHI_SERVE_PUSH, HOSHI_SERVE_PUSH_ENDPOINT, HOSHI_SERVE_VAPID_PRIVATE, HOSHI_SERVE_VAPID_SUBJECT, HOSHI_SERVE_OIDC, HOSHI_SERVE_OIDC_ISSUER, HOSHI_SERVE_OIDC_CLIENT_ID, HOSHI_SERVE_OIDC_AUTHORIZATION, HOSHI_SERVE_OIDC_TOKEN
+Environment: HOSHI_SAVE, HOSHI_BALANCE, HOSHI_SERVE_TOKEN, HOSHI_SERVE_TOKEN_FILE, HOSHI_SERVE_PUSH, HOSHI_SERVE_VAPID_PRIVATE, HOSHI_SERVE_VAPID_SUBJECT, HOSHI_SERVE_OIDC, HOSHI_SERVE_OIDC_ISSUER, HOSHI_SERVE_OIDC_CLIENT_ID, HOSHI_SERVE_OIDC_AUTHORIZATION, HOSHI_SERVE_OIDC_TOKEN
 
 Area: serve.
 
@@ -1767,7 +1767,6 @@ Area: help.
 - `HOSHI_SERVE_TOKEN`: Runtime bearer token for the selected save.
 - `HOSHI_SERVE_TOKEN_FILE`: Read the runtime bearer token from this file.
 - `HOSHI_SERVE_PUSH`: Enable optional web push.
-- `HOSHI_SERVE_PUSH_ENDPOINT`: Override the opt-in push endpoint.
 - `HOSHI_SERVE_VAPID_PRIVATE`: Runtime push signing key; never stored in the save.
 - `HOSHI_SERVE_VAPID_SUBJECT`: Push contact subject.
 - `HOSHI_SERVE_OIDC`: Enable optional identity login.

@@ -66,7 +66,7 @@ pub fn protocol_offer(headers: &str) -> Result<Offer, ()> {
         if entry == PROTOCOL {
             offer.v1 = true;
         } else if let Some(encoded) = entry.strip_prefix(BEARER_PREFIX) {
-            let token = b64url_decode(encoded)
+            let token = crate::b64url::decode(encoded)
                 .and_then(|bytes| String::from_utf8(bytes).ok())
                 .filter(|token| !token.is_empty())
                 .ok_or(())?;
@@ -236,33 +236,6 @@ fn header_csv_has(headers: &str, name: &str, want: &str) -> bool {
         v.split(',')
             .any(|part| part.trim().eq_ignore_ascii_case(want))
     })
-}
-
-/// Unpadded base64url (RFC 4648 §5), as `hoshi.bearer.` carries it.
-fn b64url_decode(text: &str) -> Option<Vec<u8>> {
-    if text.len() % 4 == 1 {
-        return None;
-    }
-    let mut out = Vec::with_capacity(text.len() * 3 / 4);
-    let mut acc = 0u32;
-    let mut bits = 0;
-    for byte in text.bytes() {
-        let value = match byte {
-            b'A'..=b'Z' => byte - b'A',
-            b'a'..=b'z' => byte - b'a' + 26,
-            b'0'..=b'9' => byte - b'0' + 52,
-            b'-' => 62,
-            b'_' => 63,
-            _ => return None,
-        };
-        acc = (acc << 6) | u32::from(value);
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((acc >> bits) as u8);
-        }
-    }
-    Some(out)
 }
 
 fn b64_20(digest: &[u8; 20]) -> String {

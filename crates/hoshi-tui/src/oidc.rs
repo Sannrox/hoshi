@@ -120,9 +120,9 @@ impl Gate {
         if !self.settings.armed() {
             return Err(StartError::Off);
         }
-        let verifier = b64url(&entropy[..32]);
-        let state = b64url(&entropy[32..48]);
-        let nonce = b64url(&entropy[48..64]);
+        let verifier = crate::b64url::encode(&entropy[..32]);
+        let state = crate::b64url::encode(&entropy[32..48]);
+        let nonce = crate::b64url::encode(&entropy[48..64]);
         let challenge = s256(&verifier);
         self.pending = Some(Pending {
             state: state.clone(),
@@ -185,7 +185,7 @@ pub enum CallbackError {
 
 /// 32-byte secret as a URL-safe bearer token.
 pub fn secret_from_entropy(entropy: [u8; 32]) -> String {
-    b64url(&entropy)
+    crate::b64url::encode(&entropy)
 }
 
 pub fn query_value(path: &str, key: &str) -> Option<String> {
@@ -220,7 +220,7 @@ fn fill_random(buf: &mut [u8]) -> std::io::Result<()> {
 }
 
 pub(crate) fn s256(verifier: &str) -> String {
-    b64url(&Sha256::digest(verifier.as_bytes()))
+    crate::b64url::encode(&Sha256::digest(verifier.as_bytes()))
 }
 
 fn authorize_url(
@@ -244,34 +244,6 @@ fn authorize_url(
         percent_encode(nonce),
         percent_encode(challenge),
     )
-}
-
-fn b64url(data: &[u8]) -> String {
-    const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut out = String::new();
-    let mut i = 0;
-    while i < data.len() {
-        let b0 = data[i];
-        let b1 = data.get(i + 1).copied();
-        let b2 = data.get(i + 2).copied();
-        out.push(T[(b0 >> 2) as usize] as char);
-        match (b1, b2) {
-            (None, _) => {
-                out.push(T[((b0 & 3) << 4) as usize] as char);
-            }
-            (Some(b1), None) => {
-                out.push(T[(((b0 & 3) << 4) | (b1 >> 4)) as usize] as char);
-                out.push(T[((b1 & 15) << 2) as usize] as char);
-            }
-            (Some(b1), Some(b2)) => {
-                out.push(T[(((b0 & 3) << 4) | (b1 >> 4)) as usize] as char);
-                out.push(T[(((b1 & 15) << 2) | (b2 >> 6)) as usize] as char);
-                out.push(T[(b2 & 63) as usize] as char);
-            }
-        }
-        i += 3;
-    }
-    out
 }
 
 fn percent_encode(raw: &str) -> String {
