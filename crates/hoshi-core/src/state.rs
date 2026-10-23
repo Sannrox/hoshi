@@ -4653,7 +4653,7 @@ impl GameState {
             );
             self.fleet = battle.fleet_after;
             self.defences = battle.defences_after;
-            let plunder = self.take_raid_plunder(battle.winner);
+            let plunder = self.take_raid_plunder(battle.winner, battle.attacker_after);
             self.apply_raid_standing(battle.winner, done_at);
             self.note_raid_incident(battle.winner, plunder, done_at);
             self.note_raid_outcome(battle.winner);
@@ -4703,7 +4703,7 @@ impl GameState {
             self.rng_seed = rng;
         }
         self.fleet = report.defender_after;
-        let plunder = self.take_raid_plunder(report.winner);
+        let plunder = self.take_raid_plunder(report.winner, report.attacker_after);
         self.apply_raid_standing(report.winner, done_at);
         self.note_raid_incident(report.winner, plunder, done_at);
         self.note_raid_outcome(report.winner);
@@ -4757,14 +4757,23 @@ impl GameState {
         }
     }
 
-    fn take_raid_plunder(&mut self, winner: CombatWinner) -> Resources {
+    /// What winning raiders carry off: the plunder share of reachable stock,
+    /// capped per resource, and no more than the survivors' holds take.
+    fn take_raid_plunder(&mut self, winner: CombatWinner, survivors: Fleet) -> Resources {
         if winner != CombatWinner::Attacker {
             return Resources::ZERO;
         }
-        let taken = plunder_from(
-            self.plunderable(),
-            self.config.raid.plunder_share,
-            self.config.raid.plunder_cap,
+        let hold: f64 = ShipKind::ALL
+            .iter()
+            .map(|&kind| f64::from(survivors.get(kind)) * self.config.ships.get(kind).cargo)
+            .sum();
+        let taken = crate::combat::fill_hold(
+            plunder_from(
+                self.plunderable(),
+                self.config.raid.plunder_share,
+                self.config.raid.plunder_cap,
+            ),
+            hold,
         );
         self.resources = self.resources.saturating_sub(taken);
         let home = self.home;
@@ -8892,6 +8901,8 @@ modifiers = []
         let mut cfg = BalanceConfig::default();
         cfg.raid.first_delay_secs = 10;
         cfg.raid.min_warning_secs = 10;
+        // Enough raiders that their holds are not the limit here.
+        cfg.raid.min_ships = 100;
         let mut state = GameState::with_config(0, cfg);
         state.resources = Resources::from_parts(2_000.0, 300.0, 400.0);
         let protected = state.storage_cap(ResourceKind::Iron) * state.config.raid.protected_share;
@@ -8922,6 +8933,29 @@ modifiers = []
         assert!(unguarded < 100.0, "{unguarded}");
     }
 
+    /// #284: one light fighter took thousands. Winning raiders now carry
+    /// at most what their holds take.
+    #[test]
+    fn a_small_raid_takes_no_more_than_its_holds() {
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.first_delay_secs = 10;
+        cfg.raid.min_warning_secs = 10;
+        let mut state = GameState::with_config(0, cfg);
+        state.resources = Resources::from_parts(9_000.0, 9_000.0, 9_000.0);
+        let before = state.resources;
+        state.trigger_raid(0);
+        let log = state.combat_logs.last().expect("raid fought");
+        let hold: f64 = ShipKind::ALL
+            .iter()
+            .map(|&kind| {
+                f64::from(log.report.attacker_after.get(kind)) * state.config.ships.get(kind).cargo
+            })
+            .sum();
+        let taken = before.total() - state.resources.total();
+        assert!(taken > 0.0);
+        assert!(taken <= hold + 1e-6, "took {taken} with a hold of {hold}");
+    }
+
     #[test]
     fn plunder_cap_is_applied_on_a_lost_raid() {
         let mut cfg = BalanceConfig::default();
@@ -8930,6 +8964,7 @@ modifiers = []
         cfg.raid.plunder_share = 1.0;
         cfg.raid.plunder_cap = Resources::from_parts(40.0, 30.0, 5.0);
         cfg.raid.protected_share = 0.0;
+        cfg.raid.min_ships = 100;
         cfg.starting_resources = Resources::from_parts(500.0, 500.0, 100.0);
         cfg.starting_buildings.metal_mine = 0;
         cfg.starting_buildings.crystal_mine = 0;

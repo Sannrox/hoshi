@@ -293,6 +293,8 @@ interval_secs = 28800
 strength_factor = 0.4
 min_ships = 1
 max_rounds = 6
+# Winners take this share of reachable stock, then at most plunder_cap per
+# resource and at most what the surviving raiders' cargo holds.
 plunder_share = 0.5
 # Share of each storage capacity raiders cannot reach (500 D at base storage,
 # enough for the robotics factory and shipyard gates).
