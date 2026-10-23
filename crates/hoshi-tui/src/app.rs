@@ -88,6 +88,30 @@ struct DispatchForm {
     dest: Coord,
     ships: Fleet,
     selected: usize,
+    mission: Mission,
+}
+
+/// What a star map dispatch does at its target: the same core actions as
+/// `hoshi fleet send`. Deliveries to own colonies are planned in Fleet › Ops.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mission {
+    Attack,
+    Spy,
+    Invade,
+    Colonize,
+    Expedition,
+}
+
+impl Mission {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Attack => "attack",
+            Self::Spy => "spy",
+            Self::Invade => "invade",
+            Self::Colonize => "colonize",
+            Self::Expedition => "expedition",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -913,6 +937,7 @@ impl App {
                 copy_to_clipboard(&seed);
                 self.status = format!("copied {seed}");
             }
+            Some(Binding::Toggle) if self.dispatch.is_some() => self.cycle_dispatch_mission(),
             Some(Binding::Toggle) if self.screen == Screen::Map && self.dispatch.is_none() => {
                 self.cycle_map_galaxy();
             }
@@ -2451,12 +2476,56 @@ impl App {
             self.status = "same location".into();
             return;
         }
+        let Some(&mission) = self.dispatch_missions(dest).first() else {
+            self.status = format!("{dest} is yours: plan deliveries in Fleet › Ops");
+            return;
+        };
         self.dispatch = Some(DispatchForm {
             dest,
             ships: Fleet::default(),
             selected: 0,
+            mission,
         });
         self.status.clear();
+    }
+
+    /// Missions that fit `dest`, the default first: the expedition slot,
+    /// an outpost (invade first once its defences are gone), or anywhere
+    /// else to settle. Own planets have none; Ops plans their deliveries.
+    fn dispatch_missions(&self, dest: Coord) -> &'static [Mission] {
+        if dest == self.state.expedition_dest() {
+            &[Mission::Expedition]
+        } else if let Some(outpost) = self.state.outpost(dest) {
+            if outpost.defences.total() == 0 {
+                &[Mission::Invade, Mission::Attack, Mission::Spy]
+            } else {
+                &[Mission::Attack, Mission::Spy, Mission::Invade]
+            }
+        } else if self.state.owned_coords().contains(&dest) {
+            &[]
+        } else {
+            &[Mission::Colonize]
+        }
+    }
+
+    fn cycle_dispatch_mission(&mut self) {
+        let Some(form) = self.dispatch else {
+            return;
+        };
+        let missions = self.dispatch_missions(form.dest);
+        if missions.is_empty() {
+            // The target became ours while the form was open.
+            self.status = format!("{} is yours: plan deliveries in Fleet › Ops", form.dest);
+            self.dispatch = None;
+            return;
+        }
+        let at = missions
+            .iter()
+            .position(|m| *m == form.mission)
+            .unwrap_or(0);
+        if let Some(form) = self.dispatch.as_mut() {
+            form.mission = missions[(at + 1) % missions.len()];
+        }
     }
 
     fn confirm_dispatch(&mut self, now_unix: u64) {
@@ -2471,12 +2540,26 @@ impl App {
             );
             return;
         }
-        match self
-            .state
-            .launch_fleet(form.ships, form.dest, 100, 0, now_unix)
-        {
-            Ok(()) => {
-                self.status = format!("launched to {}", form.dest);
+        let (ships, dest) = (form.ships, form.dest);
+        let launched = match form.mission {
+            Mission::Attack => self.state.launch_attack(ships, dest, 100, now_unix),
+            Mission::Spy => self.state.launch_spy(ships, dest, 100, now_unix),
+            Mission::Invade => self.state.launch_invasion(ships, dest, 100, now_unix),
+            Mission::Colonize => {
+                if ships.get(ShipKind::ColonyShip) != 1 || ships.total() != 1 {
+                    self.status = "colonize needs exactly one colony ship".into();
+                    return;
+                }
+                self.state.launch_colony(dest, 100, now_unix)
+            }
+            Mission::Expedition => {
+                let hold = self.state.config.expedition.min_hold_secs;
+                self.state.launch_expedition(ships, hold, 100, now_unix)
+            }
+        };
+        match launched {
+            Ok(_) => {
+                self.status = format!("{} launched to {dest}", form.mission.label());
                 self.dispatch = None;
             }
             Err(e) => self.status = e.to_string(),
@@ -2484,7 +2567,8 @@ impl App {
     }
 
     fn is_invasion_dispatch(&self, form: &DispatchForm) -> bool {
-        form.ships.get(ShipKind::TroopTransport) > 0
+        form.mission == Mission::Invade
+            && form.ships.get(ShipKind::TroopTransport) > 0
             && self
                 .state
                 .outpost(form.dest)
@@ -5882,15 +5966,89 @@ mod tests {
         app.handle_key(KeyCode::Char('+'), 1_000);
         let preview = render_text(&app, 100, 32);
         assert!(preview.contains("ETA"), "{preview}");
+        assert!(preview.contains("colonize"), "{preview}");
+        // An empty slot means colonize: cargo ships alone are refused, not flown.
         app.handle_key(KeyCode::Enter, 1_000);
-        assert!(app.dispatch.is_none());
-        assert_eq!(app.state.missions.len(), 1);
-        assert_eq!(app.state.missions[0].dest.to_string(), "1:1:2");
-        let text = render_text(&app, 100, 32);
-        assert!(text.contains("Fleet / Star map"), "{text}");
-        assert!(text.contains("fleet #"), "{text}");
-        assert!(text.contains("outbound"), "{text}");
-        assert!(text.contains("launched to 1:1:2"), "{text}");
+        assert!(app.dispatch.is_some());
+        assert!(app.state.missions.is_empty());
+        assert!(app.status.contains("colony ship"), "{}", app.status);
+    }
+
+    fn outpost_at(state: &mut GameState, coord: Coord, defences: Fleet) {
+        state.outposts.push(Outpost {
+            coord,
+            kind: PlanetType::Rocky,
+            size: 8,
+            defences,
+            garrison: 2,
+            rare: None,
+            last_rebuild_at: 0,
+            homeworld: false,
+        });
+    }
+
+    /// Open dispatch to `dest` with its default mission and pick `count` of `kind`.
+    fn open_dispatch(app: &mut App, dest: Coord, kind: ShipKind, count: u32) {
+        app.open(Screen::Map);
+        app.dispatch = Some(DispatchForm {
+            dest,
+            ships: Fleet::default(),
+            selected: ShipKind::ALL.iter().position(|k| *k == kind).unwrap(),
+            mission: app.dispatch_missions(dest)[0],
+        });
+        for _ in 0..count {
+            app.handle_key(KeyCode::Char('+'), 1_000);
+        }
+    }
+
+    #[test]
+    fn dispatch_attacks_an_outpost_and_space_switches_to_spy() {
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 2,
+        };
+        let mut state = GameState::new(1_000);
+        state.resources.deuterium = 10_000.0;
+        state.fleet.add(ShipKind::LightFighter, 3);
+        state.fleet.add(ShipKind::EspionageProbe, 1);
+        let mut defences = Fleet::default();
+        defences.add(ShipKind::LightFighter, 1);
+        outpost_at(&mut state, dest, defences);
+        let spare = state.clone();
+        let mut app = App::new(state);
+        open_dispatch(&mut app, dest, ShipKind::LightFighter, 3);
+        assert_eq!(app.dispatch.unwrap().mission, Mission::Attack);
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.state.missions[0].attack, "{}", app.status);
+        assert!(
+            app.status.contains("attack launched to 1:1:2"),
+            "{}",
+            app.status
+        );
+
+        let mut app = App::new(spare);
+        open_dispatch(&mut app, dest, ShipKind::EspionageProbe, 1);
+        app.handle_key(KeyCode::Char(' '), 1_000);
+        assert_eq!(app.dispatch.unwrap().mission, Mission::Spy);
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.state.missions[0].spy, "{}", app.status);
+    }
+
+    #[test]
+    fn dispatch_to_the_expedition_slot_runs_an_expedition() {
+        let mut state = GameState::new(1_000);
+        state.resources.deuterium = 10_000.0;
+        state.fleet.add(ShipKind::SmallCargo, 1);
+        let dest = state.expedition_dest();
+        let mut app = App::new(state);
+        open_dispatch(&mut app, dest, ShipKind::SmallCargo, 1);
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(
+            app.state.missions[0].expedition_seed.is_some(),
+            "{}",
+            app.status
+        );
     }
 
     #[test]
@@ -5922,16 +6080,7 @@ mod tests {
         state.resources.deuterium = 10_000.0;
         state.tech_levels.insert("colonization".into(), 1);
         state.fleet.add(ShipKind::TroopTransport, 2);
-        state.outposts.push(Outpost {
-            coord: dest,
-            kind: PlanetType::Rocky,
-            size: 8,
-            defences: Fleet::default(),
-            garrison: 2,
-            rare: None,
-            last_rebuild_at: 0,
-            homeworld: false,
-        });
+        outpost_at(&mut state, dest, Fleet::default());
         let mut app = App::new(state);
         app.governance = true;
         app.open(Screen::Map);

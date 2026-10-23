@@ -1108,6 +1108,17 @@ impl App {
                 Span::raw("  "),
                 tag(t, &place.to_uppercase(), Intent::Neutral, true),
             ]),
+            Line::from({
+                let mut spans = vec![Span::styled("mission ", t.muted())];
+                for mission in self.dispatch_missions(dest) {
+                    if *mission == form.mission {
+                        spans.push(tag(t, mission.label(), Intent::Primary, true));
+                    } else {
+                        spans.push(Span::styled(format!(" {} ", mission.label()), t.faint()));
+                    }
+                }
+                spans
+            }),
             Line::default(),
             section(t, "ships"),
         ];
@@ -1171,12 +1182,12 @@ impl App {
             }
         }
         lines.push(Line::default());
-        lines.push(Line::from(vec![
-            keycap(t, "⏎"),
-            Span::styled(" launch  ", t.muted()),
-            keycap(t, "x"),
-            Span::styled(" close", t.muted()),
-        ]));
+        let mut keys = vec![keycap(t, "⏎"), Span::styled(" launch  ", t.muted())];
+        if self.dispatch_missions(dest).len() > 1 {
+            keys.extend([keycap(t, "space"), Span::styled(" mission  ", t.muted())]);
+        }
+        keys.extend([keycap(t, "x"), Span::styled(" close", t.muted())]);
+        lines.push(Line::from(keys));
         lines
     }
 

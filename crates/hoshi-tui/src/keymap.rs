@@ -498,6 +498,7 @@ impl HelpContext {
                 Binding::SelectPrev,
                 Binding::Increase,
                 Binding::Decrease,
+                Binding::Toggle,
                 Binding::Confirm,
                 Binding::Cancel,
             ],
