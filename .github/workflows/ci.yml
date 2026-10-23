@@ -10,6 +10,12 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# A new push to a pull request cancels its previous run; other events run
+# every commit. The workflow name keeps workflows from cancelling each other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build-and-test:
     name: Build & Test
@@ -30,14 +36,36 @@ jobs:
         run: cargo build --locked --workspace --all-targets
       - name: Test
         run: cargo test --locked --workspace
-      - name: Mikura backend
-        run: cargo test --locked -p hoshi-core --features mikura
-      - name: Chisei backend
-        run: cargo test --locked -p hoshi-core --features chisei
-      - name: Chisei TUI demo
-        run: cargo test --locked -p hoshi --features chisei
-      - name: Embedded web client
-        run: cargo test --locked -p hoshi --features ui --bin hoshi -- web_ui ui_pin serve::tests::ui_ serve::tests::root_and_ui
+
+  # Each feature set compiles on its own, so each runs as its own job, in
+  # parallel with Build & Test. All three are required checks.
+  feature-tests:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Mikura backend
+            run: cargo test --locked -p hoshi-core --features mikura
+          - name: Chisei backend
+            run: |
+              cargo test --locked -p hoshi-core --features chisei
+              cargo test --locked -p hoshi --features chisei
+          - name: Embedded web client
+            run: cargo test --locked -p hoshi --features ui --bin hoshi -- web_ui ui_pin serve::tests::ui_ serve::tests::root_and_ui
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+      - name: ${{ matrix.name }}
+        run: ${{ matrix.run }}
 
   fmt:
     name: Rustfmt
