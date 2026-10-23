@@ -4341,6 +4341,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn market_shows_a_full_store_before_enter_and_refuses_the_trade() {
+        let mut state = GameState::new(1_000);
+        state.resources.silicon = state.storage_cap(ResourceKind::Silicon);
+        state.resources.iron = 1_000.0;
+        let mut app = App::new(state);
+        app.screen = Screen::Market;
+        app.selected = TRADE_PAIRS
+            .iter()
+            .position(|p| *p == (ResourceKind::Iron, ResourceKind::Silicon))
+            .unwrap();
+        let text = render_text(&app, 140, 45);
+        assert!(text.contains("storage is full"), "{text}");
+        let iron = app.state.resources.iron;
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert_eq!(app.state.resources.iron, iron, "{}", app.status);
+        assert!(app.status.contains("storage is full"), "{}", app.status);
+    }
+
     /// A lived-in four-day game for whole-screen text checks.
     fn played_state() -> GameState {
         let mut state = GameState::new_live_galaxy(1_000, BalanceConfig::default(), 7);
