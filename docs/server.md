@@ -60,6 +60,18 @@ Rate limits are per token and per action path (`/v1/state`, `/v1/build`, …).
 The sliding window uses `serve_rate_limit` (default 60) and
 `serve_rate_window_secs` (default 60). A 429 response may include `Retry-After`.
 
+## Device sessions
+
+A paired browser holds its own device session ([ADR 0016](decisions/0016-device-pairing-and-sessions.md)).
+Its secret is accepted as `Authorization: Bearer <secret>` wherever a scoped
+token is: same save scope, same rate limits per device, never admin scope.
+
+Sessions are runtime data in `<save>.devices.json` beside the save (mode
+`0600`, replaced atomically). The file stores each device's label, type, OS,
+browser, address and timestamps, and only the SHA-256 of its secret. A session
+expires 30 days after its last use. If the file cannot be read, every device
+session is refused and the file is left untouched.
+
 ## Web push
 
 Raid warnings and finished builds reach browsers with the tab closed. Off until

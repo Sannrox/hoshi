@@ -77,13 +77,22 @@ pub struct ScopedToken {
     pub save: PathBuf,
 }
 
-/// Bearer gate and sliding-window limits for `/v1`.
+/// Bearer gate and sliding-window limits for `/v1`. Accepts operator tokens
+/// and the device sessions of paired browsers (ADR 0016).
 #[derive(Debug, Clone)]
 pub struct Auth {
     tokens: Vec<ScopedToken>,
+    devices: Option<crate::devices::Devices>,
     limit: u32,
     window_secs: u64,
-    hits: HashMap<(usize, String), Vec<u64>>,
+    hits: HashMap<(Caller, String), Vec<u64>>,
+}
+
+/// Who a request authenticated as, for per-caller rate limits.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum Caller {
+    Token(usize),
+    Device(String),
 }
 
 impl Auth {
@@ -110,6 +119,7 @@ impl Auth {
     pub fn with_tokens(tokens: Vec<ScopedToken>, limit: u32, window_secs: u64) -> Self {
         Self {
             tokens,
+            devices: None,
             limit: if limit == 0 {
                 DEFAULT_RATE_LIMIT
             } else {
@@ -178,6 +188,12 @@ impl Auth {
         self
     }
 
+    /// Accept device sessions for the save they were loaded from.
+    pub fn with_devices(mut self, devices: crate::devices::Devices) -> Self {
+        self.devices = Some(devices);
+        self
+    }
+
     fn allow(
         &mut self,
         save: &Path,
@@ -185,26 +201,35 @@ impl Auth {
         authorization: Option<&str>,
         now: u64,
     ) -> Result<(), (u16, Value)> {
-        let presented = match bearer(authorization) {
-            Some(token) => token,
-            None => return Err((401, error_body("unauthorized", "unauthorized"))),
-        };
-        let Some(idx) = self
+        let unauthorized = || (401, error_body("unauthorized", "unauthorized"));
+        let presented = bearer(authorization).ok_or_else(unauthorized)?;
+        let token = self
             .tokens
             .iter()
-            .position(|token| eq_secret(token.secret.as_bytes(), presented.as_bytes()))
-        else {
-            return Err((401, error_body("unauthorized", "unauthorized")));
+            .position(|token| eq_secret(token.secret.as_bytes(), presented.as_bytes()));
+        let (caller, admin) = match token {
+            Some(idx) if same_save(&self.tokens[idx].save, save) => {
+                (Caller::Token(idx), self.tokens[idx].admin)
+            }
+            Some(_) => return Err(unauthorized()),
+            None => {
+                let devices = self
+                    .devices
+                    .as_mut()
+                    .filter(|devices| same_save(devices.save(), save))
+                    .ok_or_else(unauthorized)?;
+                let id = devices
+                    .authenticate(presented, now)
+                    .ok_or_else(unauthorized)?;
+                (Caller::Device(id), false)
+            }
         };
-        if !same_save(&self.tokens[idx].save, save) {
-            return Err((401, error_body("unauthorized", "unauthorized")));
-        }
-        if action == "/v1/admin/support-report" && !self.tokens[idx].admin {
+        if action == "/v1/admin/support-report" && !admin {
             return Err((403, error_body("unauthorized", "admin scope required")));
         }
         let window = self.window_secs;
         let limit = self.limit;
-        let hits = self.hits.entry((idx, action.to_string())).or_default();
+        let hits = self.hits.entry((caller, action.to_string())).or_default();
         hits.retain(|at| now.saturating_sub(*at) < window);
         if hits.len() as u32 >= limit {
             return Err((429, error_body("rate_limited", "rate limited")));
@@ -267,7 +292,7 @@ fn bearer(header: Option<&str>) -> Option<&str> {
     (!token.is_empty()).then_some(token)
 }
 
-fn eq_secret(left: &[u8], right: &[u8]) -> bool {
+pub(crate) fn eq_secret(left: &[u8], right: &[u8]) -> bool {
     let mut acc = left.len() ^ right.len();
     let n = left.len().max(right.len());
     for i in 0..n {
@@ -1997,6 +2022,13 @@ pub fn run(args: &[String]) -> Result<(), ServeError> {
         cfg.serve_rate_window_secs,
     );
     let auth = auth.with_admin_token(&save, &cfg.serve_admin_token);
+    let auth = match crate::devices::Devices::open(&save) {
+        Ok(devices) => auth.with_devices(devices),
+        Err(_) => {
+            crate::diagnostics::log("warn", "device sessions unreadable; paired devices refused");
+            auth
+        }
+    };
     crate::diagnostics::log("info", "server startup");
     let mut server = Server::open(ServeOptions { bind, save })?
         .with_auth(auth)
@@ -3025,6 +3057,71 @@ mod tests {
         let _ = std::fs::remove_file(&other);
         let _ = std::fs::remove_file(save_lock_path(&save));
         let _ = std::fs::remove_file(save_lock_path(&other));
+    }
+
+    #[test]
+    fn device_session_authenticates_its_save_across_restarts() {
+        let save = unique_save();
+        seed_save(&save);
+        let other = unique_save();
+        seed_save(&other);
+        let before = std::fs::read(&save).unwrap();
+        let client = crate::devices::Client::from_request(None, None);
+        let (_, secret) = crate::devices::Devices::open(&save)
+            .unwrap()
+            .create(None, client, 1_000)
+            .unwrap();
+        assert_eq!(std::fs::read(&save).unwrap(), before);
+        let header = format!("Bearer {secret}");
+        // A fresh Auth is a restarted server: sessions come back from the file.
+        let restarted =
+            |path: &Path| Auth::empty().with_devices(crate::devices::Devices::open(path).unwrap());
+        let (status, value) = handle(
+            &save,
+            "GET",
+            "/v1/state",
+            b"",
+            Some(&header),
+            &mut restarted(&save),
+            1_001,
+        );
+        assert_eq!(status, 200, "{value}");
+        let (status, _) = handle(
+            &other,
+            "GET",
+            "/v1/state",
+            b"",
+            Some(&header),
+            &mut restarted(&save),
+            1_001,
+        );
+        assert_eq!(status, 401);
+        let (status, _) = handle(
+            &other,
+            "GET",
+            "/v1/state",
+            b"",
+            Some(&header),
+            &mut restarted(&other),
+            1_001,
+        );
+        assert_eq!(status, 401);
+        let expired = 1_000 + crate::devices::LIFETIME_SECS;
+        let (status, _) = handle(
+            &save,
+            "GET",
+            "/v1/state",
+            b"",
+            Some(&header),
+            &mut restarted(&save),
+            expired,
+        );
+        assert_eq!(status, 401);
+        for path in [&save, &other] {
+            let _ = std::fs::remove_file(path);
+            let _ = std::fs::remove_file(save_lock_path(path));
+            let _ = std::fs::remove_file(crate::devices::store_path(path));
+        }
     }
 
     #[test]
