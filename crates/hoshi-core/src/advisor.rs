@@ -1,6 +1,7 @@
 //! Rule-based next-move suggestions from player-visible state. Never acts.
 
 use crate::buildings::BuildingKind;
+use crate::defences::{DefenceKind, DefenceRole};
 use crate::ships::ShipKind;
 use crate::state::{GameState, ResourceKind};
 
@@ -111,21 +112,93 @@ fn push_energy(state: &GameState, out: &mut Vec<Advice>) {
     }
 }
 
+/// Defence wanted before a raid lands this soon.
+const RAID_WARNING_SECS: u64 = 7_200;
+/// Units the advice aims for; past this the home counts as guarded.
+const RAID_GUARD: u32 = 5;
+
+/// Before a raid: the cheapest defence the shipyard can build now (as many
+/// as the stock pays for), or else the next building on the way to the
+/// shipyard. Never a unit whose shipyard or research is still out of reach.
 fn push_raid(state: &GameState, out: &mut Vec<Advice>) {
     let Some(at) = state.next_raid_at else {
         return;
     };
     let wait = at.saturating_sub(state.last_tick_unix);
-    if wait > 7_200 {
+    if wait > RAID_WARNING_SECS {
         return;
     }
-    let fighters = state.fleet.get(ShipKind::LightFighter);
-    if fighters >= 5 {
+    let batteries: u32 = DefenceKind::ALL
+        .into_iter()
+        .filter(|&kind| state.config.defences.get(kind).role == DefenceRole::Battery)
+        .map(|kind| state.defences.get(kind))
+        .sum();
+    if batteries >= RAID_GUARD || state.fleet.get(ShipKind::LightFighter) >= RAID_GUARD {
         return;
     }
+    let shipyard = state.buildings.shipyard;
+    let cheapest = DefenceKind::ALL
+        .into_iter()
+        // Batteries fire on raiders; garrisons only fight landings and domes
+        // only absorb, so neither holds a raid on its own.
+        .filter(|&kind| {
+            let spec = state.config.defences.get(kind);
+            spec.role == DefenceRole::Battery && spec.shipyard <= shipyard.max(1)
+        })
+        .min_by(|&a, &b| {
+            let cost = |kind| state.config.defences.get(kind).unit_cost().total();
+            cost(a).total_cmp(&cost(b))
+        });
+    if shipyard > 0
+        && let Some(kind) = cheapest
+    {
+        let unit = state.config.defences.get(kind).unit_cost();
+        let afford = ResourceKind::ALL
+            .into_iter()
+            .filter(|&r| unit.get(r) > 0.0)
+            .map(|r| (state.resources.get(r) / unit.get(r)).floor())
+            .fold(f64::from(RAID_GUARD), f64::min)
+            .max(0.0) as u32;
+        let name = state.config.defences.get(kind).name.to_lowercase();
+        out.push(Advice {
+            id: "raid",
+            text: if afford > 0 {
+                format!(
+                    "a raid in {wait}s; queue {afford} {name} in the shipyard ({} each)",
+                    unit.brief()
+                )
+            } else {
+                format!(
+                    "a raid in {wait}s; a {name} costs {}, more than the stock holds",
+                    unit.brief()
+                )
+            },
+        });
+        return;
+    }
+    // No shipyard yet: the next building on its prerequisite path.
+    let gate = state
+        .config
+        .buildings
+        .get(BuildingKind::Shipyard)
+        .prerequisites
+        .iter()
+        .find(|(building, level)| state.buildings.get(*building) < *level)
+        .map(|(building, _)| *building)
+        .unwrap_or(BuildingKind::Shipyard);
+    let step = if gate == BuildingKind::Shipyard {
+        "build the shipyard".to_string()
+    } else {
+        format!("build the {gate} on the way to the shipyard")
+    };
+    let market = if state.config.market.enabled {
+        ", and trade iron for deuterium on the market if it is short"
+    } else {
+        ""
+    };
     out.push(Advice {
         id: "raid",
-        text: format!("a raid in {wait}s; build 5 light fighters (you have {fighters})"),
+        text: format!("a raid in {wait}s; no defence can be built yet: {step}{market}"),
     });
 }
 
@@ -205,7 +278,7 @@ fn push_idle_queues(state: &GameState, out: &mut Vec<Advice>) {
             ),
         });
     }
-    if state.research.is_none() {
+    if state.research.is_none() && state.buildings.research_lab > 0 {
         out.push(Advice {
             id: "research",
             text: "the lab is idle; queue a technology".into(),
@@ -312,7 +385,37 @@ mod tests {
         state.fleet = fleet;
         let hit = advise(&state).into_iter().find(|a| a.id == "raid").unwrap();
         assert!(hit.text.contains("1800"));
-        assert!(hit.text.contains("light fighter"));
+        // No shipyard: point at the next building toward it, not at ships.
+        assert!(hit.text.contains("robotics factory"), "{}", hit.text);
+        assert!(!hit.text.contains("light fighter"), "{}", hit.text);
+        state.buildings.robotics_factory = 1;
+        let hit = advise(&state).into_iter().find(|a| a.id == "raid").unwrap();
+        assert!(
+            hit.text
+                .contains("no defence can be built yet: build the shipyard"),
+            "{}",
+            hit.text
+        );
+        // Domes do not hold a raid, so they do not silence the warning.
+        state.defences.set(DefenceKind::ShieldDome, 9);
+        assert!(advise(&state).iter().any(|a| a.id == "raid"));
+
+        // With a shipyard: the cheapest defence it can build, as many as paid for.
+        state.buildings.robotics_factory = 1;
+        state.buildings.shipyard = 1;
+        state.resources = crate::Resources::from_parts(500.0, 500.0, 0.0);
+        let hit = advise(&state).into_iter().find(|a| a.id == "raid").unwrap();
+        let cannon = state
+            .config
+            .defences
+            .get(DefenceKind::LightCannon)
+            .unit_cost();
+        let afford = (500.0 / cannon.iron).floor().min(5.0) as u32;
+        assert!(
+            hit.text.contains(&format!("queue {afford} light cannon")),
+            "{}",
+            hit.text
+        );
     }
 
     #[test]
@@ -347,7 +450,10 @@ mod tests {
         state.research = None;
         let advice = advise(&state);
         assert!(advice.iter().any(|a| a.id == "build"));
-        assert!(advice.iter().any(|a| a.id == "research"));
+        // No lab, so an idle lab is not advice.
+        assert!(!advice.iter().any(|a| a.id == "research"));
+        state.buildings.research_lab = 1;
+        assert!(advise(&state).iter().any(|a| a.id == "research"));
         let blob = advice
             .iter()
             .map(|a| a.text.as_str())

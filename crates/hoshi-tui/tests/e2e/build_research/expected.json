@@ -51,17 +51,17 @@
         "target": 1
       },
       {
-        "done": false,
-        "id": "send_trade",
-        "name": "Make a trade",
-        "progress": 0,
-        "target": 1
-      },
-      {
         "done": true,
         "id": "upgrade_mine",
         "name": "Upgrade a mine",
         "progress": 1,
+        "target": 1
+      },
+      {
+        "done": false,
+        "id": "send_trade",
+        "name": "Make a trade",
+        "progress": 0,
         "target": 1
       }
     ],

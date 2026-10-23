@@ -316,7 +316,12 @@ impl GameState {
         }
         self.daily.day_index = Some(day);
         let lab = self.buildings.research_lab;
-        let raid = self.config.raid.enabled;
+        // A raid can only be held with a shipyard, defences or a fleet; an
+        // expedition needs ships or a shipyard to build them before reset.
+        let can_fight =
+            self.buildings.shipyard > 0 || !self.defences.is_empty() || self.fleet.total() > 0;
+        let raid = self.config.raid.enabled && can_fight;
+        let ships = self.buildings.shipyard > 0 || self.fleet.total() > 0;
         let market = self.config.market.enabled;
         self.daily.slots = self.config.daily.pick_slots(self.galaxy_seed, day, |spec| {
             if spec.min_lab > lab {
@@ -325,6 +330,7 @@ impl GameState {
             match spec.kind {
                 DailyKind::WinRaid => raid,
                 DailyKind::SendTrade => market,
+                DailyKind::SendExpedition => ships,
                 _ => true,
             }
         });
@@ -472,6 +478,23 @@ mod tests {
             "{:?}",
             state.events
         );
+    }
+
+    #[test]
+    fn day_zero_offers_only_reachable_goals() {
+        let mut state = GameState::new(0);
+        state.daily = Default::default();
+        state.sync_daily(0);
+        let ids: Vec<&str> = state
+            .daily
+            .slots
+            .iter()
+            .map(|s| s.spec_id.as_str())
+            .collect();
+        assert!(!ids.contains(&"win_raid"), "{ids:?}");
+        assert!(!ids.contains(&"send_expedition"), "{ids:?}");
+        assert!(!ids.contains(&"finish_research"), "{ids:?}");
+        assert!(!ids.is_empty());
     }
 
     #[test]

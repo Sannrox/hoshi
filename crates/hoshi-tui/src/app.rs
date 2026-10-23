@@ -6214,8 +6214,9 @@ mod tests {
         assert!(text.contains("Welcome"), "{text}");
         assert!(text.contains("Skip"), "{text}");
         assert!(text.contains("dismiss"), "{text}");
+        // "Show me" opens the buildings, where the first upgrade is possible.
         app.handle_key(KeyCode::Char('g'), 1_000);
-        assert_eq!(app.screen, Screen::Overview);
+        assert_eq!(app.screen, Screen::Planet);
         let after = render_text(&app, 80, 24);
         assert!(!after.contains("Welcome"), "{after}");
         app.handle_key(KeyCode::Char('s'), 1_000);
