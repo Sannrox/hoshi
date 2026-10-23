@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `hoshi serve` runs the TUI for a browser terminal at `GET /v1/terminal` (WebSocket, same bearer auth as `/v1/events`): binary frames carry keys and rendered output, a JSON text frame resizes. While a session holds the save, `/v1` game actions and a second terminal get `409 refused`; reads keep working. A dropped socket can be taken over after a short grace, idle sessions close after `serve_terminal_idle_secs`.
 - Browsers can open `GET /v1/events` by sending the bearer token as a `hoshi.bearer.<base64url>` WebSocket subprotocol next to `hoshi.v1`; the server selects `hoshi.v1` and never echoes the token. The `Authorization` header keeps working.
 - A new save opened by path (`hoshi --save new.sqlite`, `HOSHI_SAVE`, the CLI and the server) gets its own galaxy seed from the creation time, like New game, instead of always seed 0.
 - Raids no longer take the last of a stockpile: plunder only reaches stock above `raid.protected_share` of storage (default 5%, 500 D at base storage), so an undefended home can save up for the robotics factory and shipyard. `hoshi simulate` now also checks that greedy play reaches shipyard 1 with raids on.
