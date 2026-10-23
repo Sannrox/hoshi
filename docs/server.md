@@ -32,7 +32,6 @@ serve_terminal_idle_secs = 1800
 serve_push = false
 serve_vapid_private = ""
 serve_vapid_subject = ""
-serve_push_endpoint = ""
 serve_oidc = false
 serve_oidc_issuer = ""
 serve_oidc_client_id = ""
@@ -63,23 +62,50 @@ The sliding window uses `serve_rate_limit` (default 60) and
 
 ## Web push
 
-Raid warnings and finished builds, off until the player opts in and the
-operator sets VAPID keys. Keys never enter the save.
+Raid warnings and finished builds reach browsers with the tab closed. Off until
+the player opts in and the operator sets VAPID keys. Keys and subscriptions
+never enter the save.
 
 - `HOSHI_SERVE_PUSH` or `serve_push`: player opt-in (default off).
 - `HOSHI_SERVE_VAPID_PRIVATE` / `serve_vapid_private` and
   `HOSHI_SERVE_VAPID_SUBJECT` / `serve_vapid_subject`: operator VAPID private
-  key and contact URI (`mailto:` or `https:`). Incomplete keys send nothing
-  even when opt-in is on.
-- `HOSHI_SERVE_PUSH_ENDPOINT` / `serve_push_endpoint`: subscription URL the
-  player registered.
+  key (the 32-byte P-256 scalar, base64url) and contact URI (`mailto:` or
+  `https:`). A missing subject or a key that does not parse keeps push off even
+  when opt-in is on.
 
-Payloads use the same public build and raid text as the TUI (`kind`, `title`,
-`body`). They omit hidden simulation (`next_raid_at`, RNG, unrevealed map).
-Fleet returns stay off this channel. While opt-in and VAPID keys are set, the
-process catches up the save about once a second so raid warnings and finished
-builds are seen without a connected client. The process does not add a TLS
-HTTP client; a transport is injected for tests.
+A browser opts in through three routes. They use the same bearer token and
+rate limits as the rest of `/v1`, and answer `404` while push is off.
+
+| Route | Body | Result |
+| --- | --- | --- |
+| `GET /v1/push/key` | | `{"ok":true,"key":"<base64url>"}`, the `applicationServerKey` |
+| `POST /v1/push/subscription` | `PushSubscription.toJSON()` | stores it for this save; `400` for an endpoint outside the browser push services or keys that do not parse, `409` past 16 subscriptions |
+| `DELETE /v1/push/subscription` | `{"endpoint":"…"}` | `{"ok":true,"removed":true\|false}` |
+
+Endpoints must be HTTPS on port 443 at a browser push service:
+`fcm.googleapis.com`, `*.push.services.mozilla.com`, `*.notify.windows.com`,
+`web.push.apple.com` or `*.push.apple.com`. The server never posts anywhere
+else, so a subscription cannot aim it at an internal address.
+
+Subscriptions are runtime data in `<save>.push.json` beside the save (mode
+`0600`), like token files. Posting the same endpoint again replaces its keys.
+
+Each notice is encrypted for each subscription (RFC 8291, `aes128gcm`), signed
+with VAPID (RFC 8292), and posted by `curl` over HTTPS with a one-day `TTL`. A
+push service answering `404` or `410` removes that subscription; other failures
+are logged and the notice is dropped. Sends run on their own thread behind a
+short queue, so a slow push service never delays the next raid warning; when
+the queue is full the notice is dropped and logged. Payloads are JSON:
+
+```json
+{"kind":"raid","title":"hoshi","body":"raid incoming in 50s","url":"#/bridge"}
+```
+
+`url` is relative to the web client (`#/bridge` for raids, `#/colony` for
+builds). Payloads use the same public text as the TUI and omit hidden
+simulation (`next_raid_at`, RNG, unrevealed map). Fleet returns stay off this
+channel. While push is on, the process catches up the save about once a second
+so notices fire without a connected client.
 
 This is not the in-session WebSocket and not a shared-universe notifier.
 

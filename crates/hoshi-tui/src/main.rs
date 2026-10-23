@@ -9,6 +9,7 @@ mod support_ui;
 
 mod app;
 mod arena;
+mod b64url;
 mod cli;
 mod clip;
 mod cockpit;
@@ -30,6 +31,7 @@ mod ui;
 mod update;
 mod update_command;
 mod update_ui;
+mod webpush;
 mod ws;
 
 use app::{Action, App};

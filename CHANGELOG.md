@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `hoshi serve` delivers web push to browsers: `GET /v1/push/key` returns the VAPID public key, `POST`/`DELETE /v1/push/subscription` register and remove a browser subscription (stored beside the save, never in it), and raid warnings and finished builds are encrypted per subscription (RFC 8291) and sent with a VAPID signature (RFC 8292). Gone subscriptions (`404`/`410`) are removed. `serve_push_endpoint` and `HOSHI_SERVE_PUSH_ENDPOINT` are no longer read.
 - `hoshi serve` runs the TUI for a browser terminal at `GET /v1/terminal` (WebSocket, same bearer auth as `/v1/events`): binary frames carry keys and rendered output, a JSON text frame resizes. While a session holds the save, `/v1` game actions and a second terminal get `409 refused`; reads keep working. A dropped socket can be taken over after a short grace, idle sessions close after `serve_terminal_idle_secs`.
 - Browsers can open `GET /v1/events` by sending the bearer token as a `hoshi.bearer.<base64url>` WebSocket subprotocol next to `hoshi.v1`; the server selects `hoshi.v1` and never echoes the token. The `Authorization` header keeps working.
 - A new save opened by path (`hoshi --save new.sqlite`, `HOSHI_SAVE`, the CLI and the server) gets its own galaxy seed from the creation time, like New game, instead of always seed 0.
