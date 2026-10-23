@@ -1327,6 +1327,21 @@ hoshi share traders \-\-class open
 .fi
 .PP
 Environment: HOSHI_SAVE, HOSHI_BALANCE
+.SS ship
+Queue ships or defences in the home shipyard as one batch.
+.PP
+Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair\-play restrictions.
+.PP
+.nf
+hoshi ship PLANET SHIP\-OR\-DEFENCE [COUNT]
+.fi
+.PP
+Example:
+.nf
+hoshi ship home light_fighter 5
+.fi
+.PP
+Environment: HOSHI_SAVE, HOSHI_BALANCE
 .SS simulate
 Print a deterministic pacing report.
 .PP
@@ -1519,6 +1534,21 @@ hoshi tick \-\-advance DURATION
 Example:
 .nf
 hoshi tick \-\-advance 60
+.fi
+.PP
+Environment: HOSHI_SAVE, HOSHI_BALANCE
+.SS trade
+Spot\-trade one resource for another at the home market.
+.PP
+Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair\-play restrictions.
+.PP
+.nf
+hoshi trade PAY RECEIVE AMOUNT
+.fi
+.PP
+Example:
+.nf
+hoshi trade iron deuterium 1000
 .fi
 .PP
 Environment: HOSHI_SAVE, HOSHI_BALANCE

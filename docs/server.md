@@ -272,6 +272,8 @@ Game routes call the same hoshi-core actions as the CLI. Responses carry
 | `POST` | `/v1/research` | `hoshi research <tech>` |
 | `POST` | `/v1/cancel` | `hoshi cancel <queue-item>` |
 | `POST` | `/v1/fleet/send` | `hoshi fleet send <from> <to> <mission> <ships...>` |
+| `POST` | `/v1/ship` | `hoshi ship <planet> <ship-or-defence> [count]` |
+| `POST` | `/v1/trade` | `hoshi trade <pay> <receive> <amount>` |
 
 POST bodies are JSON:
 
@@ -281,6 +283,8 @@ POST bodies are JSON:
 {"tech":"energy"}
 {"item":"0"}
 {"from":"home","to":"1:1:8","mission":"attack","ships":["light_fighter:1"]}
+{"planet":"home","unit":"light_cannon","count":5}
+{"pay":"iron","recv":"deuterium","amount":1000}
 ```
 
 There is no `tick --advance` route. Clients see only what a player sees

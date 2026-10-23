@@ -51,6 +51,8 @@ hoshi --save PATH staff delegate <id> [--permission queue_build|accept_battle|pr
 hoshi --save PATH staff revoke <id> [--permission queue_build|accept_battle|propose_law]
 hoshi --save PATH staff clearance <id> --class open|internal|restricted|secret [--compartment ID]
 hoshi --save PATH build <planet> <building> [--as player|leader:ID]
+hoshi --save PATH ship <planet> <ship-or-defence> [count]
+hoshi --save PATH trade <pay> <receive> <amount>
 hoshi --save PATH research <tech>
 hoshi --save PATH cancel <queue-item>
 hoshi --save PATH fleet send <from> <to> <mission> <ships...>
@@ -143,7 +145,7 @@ type (`+`/`-`) and opens lineage (Enter) or the glance (`r`).
 
 `vehicle register` assigns parked ships to a named vehicle. `mission windows` lists synodic launch windows with delta-v and coast time. `mission plan` is PlanMission (propose, check, apply): payload mass changes fuel through the rocket equation; `--window N` can book an upcoming window (the vehicle launches when it opens). A missed window or a double-booked vehicle is refused. `mission schedule` lists vehicles, in-flight plans, and double-book / missed-window alerts. Transfer is `hohmann`, `high_energy`, or `assist`. Customer is `colony` (owned dest, cargo credited there), `faction:<id>` (standing moves by that faction's trade delta), or `market` (cargo lands in the destination regional warehouse; refused while the market is off).
 
-`market` is the regional book: silicon and deuterium priced in iron, limit and market orders, delivery and procurement contracts, and shipments that pay fuel and take flight time. `market order` is PlaceOrder; `market contract accept|fulfil` and `market ship` are the same core actions as the TUI. `market history --export` writes JSON lines of per-region price history. NPC traders post through the same PlaceOrder path. Home over-the-counter barter (`trade` on the TUI market screen) is unchanged.
+`market` is the regional book: silicon and deuterium priced in iron, limit and market orders, delivery and procurement contracts, and shipments that pay fuel and take flight time. `market order` is PlaceOrder; `market contract accept|fulfil` and `market ship` are the same core actions as the TUI. `market history --export` writes JSON lines of per-region price history. NPC traders post through the same PlaceOrder path. Home over-the-counter barter is `hoshi trade <pay> <receive> <amount>`, the same spot trade as the TUI market screen; it needs cargo ships at home to carry the goods. `hoshi ship <planet> <ship-or-defence> [count]` queues ships or defences in the home shipyard as one batch, like the TUI shipyard; the reply's `queued` names the unit, the count and the queue length.
 
 `staff` lists leaders, roles, assignments and delegations. `staff recruit` spends the configured cost. `staff assign` places one role per leader (reassignment waits `reassign_secs`). `staff delegate` lets that leader act with an optional spending cap; `staff revoke` removes it. `staff clearance` grants extra classification and compartments. `build --as leader:ID` runs the same queue checks under that leader's permissions.
 
