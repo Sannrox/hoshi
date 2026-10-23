@@ -72,6 +72,8 @@ pub const MIN_WAKE_SECS: u64 = 60;
 const AWAY_EVENTS_PER_PAGE: usize = 4;
 const MIN_TRADE_AMOUNT: f64 = 10.0;
 const MAX_TRADE_AMOUNT: f64 = 1_000_000.0;
+/// Largest shipyard batch one Enter queues as a single job.
+const MAX_SHIP_BATCH: u32 = 999;
 
 /// `+`/`-` step on the market amount: one digit below its size, at least 10,
 /// so 10 → 100 takes nine presses and 100 → 1000 nine more.
@@ -157,6 +159,8 @@ pub struct App {
     status: String,
     confirming_prestige: bool,
     trade_amount: f64,
+    /// Units the shipyard queues per Enter, as one job in one queue slot.
+    ship_batch: u32,
     away: Option<AwaySummary>,
     away_hidden: bool,
     /// Page of away-dialog events shown, newest page first.
@@ -242,6 +246,7 @@ impl App {
             status: String::new(),
             confirming_prestige: false,
             trade_amount: MIN_TRADE_AMOUNT,
+            ship_batch: 1,
             away: None,
             away_hidden: false,
             away_event_page: 0,
@@ -884,6 +889,15 @@ impl App {
             }
             Some(Binding::Increase) if self.screen == Screen::Ops => {
                 self.register_ops_vehicle(now_unix);
+            }
+            Some(Binding::Increase) if self.screen == Screen::Shipyard => {
+                self.ship_batch = (self.ship_batch + 1).min(MAX_SHIP_BATCH);
+            }
+            Some(Binding::Decrease) if self.screen == Screen::Shipyard => {
+                self.ship_batch = self.ship_batch.saturating_sub(1).max(1);
+            }
+            Some(Binding::Toggle) if self.screen == Screen::Shipyard => {
+                self.ship_batch = self.max_ship_batch();
             }
             Some(Binding::Increase) if self.screen == Screen::Market => {
                 self.trade_amount =
@@ -2294,7 +2308,7 @@ impl App {
             }
             Screen::Shipyard => {
                 if let Some(kind) = ShipKind::ALL.get(self.selected).copied() {
-                    match self.state.enqueue_ships(kind, 1, now_unix) {
+                    match self.state.enqueue_ships(kind, self.ship_batch, now_unix) {
                         Ok(()) => self.status.clear(),
                         Err(e) => self.status = e.to_string(),
                     }
@@ -2304,7 +2318,7 @@ impl App {
                 let Some(kind) = DefenceKind::ALL.get(di).copied() else {
                     return;
                 };
-                match self.state.enqueue_defence(kind, 1, now_unix) {
+                match self.state.enqueue_defence(kind, self.ship_batch, now_unix) {
                     Ok(()) => self.status.clear(),
                     Err(e) => self.status = e.to_string(),
                 }
@@ -2516,6 +2530,49 @@ impl App {
         } else {
             &[Mission::Colonize]
         }
+    }
+
+    /// The selected shipyard unit, as a ship or a defence.
+    fn shipyard_unit(&self) -> Option<Result<ShipKind, DefenceKind>> {
+        match ShipKind::ALL.get(self.selected) {
+            Some(&kind) => Some(Ok(kind)),
+            None => DefenceKind::ALL
+                .get(self.selected - ShipKind::ALL.len())
+                .map(|&kind| Err(kind)),
+        }
+    }
+
+    /// Cost and build time of `count` of the selected shipyard unit, priced
+    /// as the queue charges it (the unit cost, like the table rows).
+    fn shipyard_batch(&self, count: u32) -> Option<(Resources, u64)> {
+        let n = f64::from(count);
+        Some(match self.shipyard_unit()? {
+            Ok(kind) => {
+                let unit = self.state.config.ships.get(kind).unit_cost();
+                (
+                    Resources::from_parts(unit.iron * n, unit.silicon * n, unit.deuterium * n),
+                    self.state.ship_time_secs(kind) * u64::from(count),
+                )
+            }
+            Err(kind) => (
+                self.state.defence_cost(kind, count),
+                self.state.defence_time_secs(kind) * u64::from(count),
+            ),
+        })
+    }
+
+    /// The largest batch of the selected unit the stockpile pays for (at least 1).
+    fn max_ship_batch(&self) -> u32 {
+        let Some((unit, _)) = self.shipyard_batch(1) else {
+            return 1;
+        };
+        let stock = self.state.resources;
+        ResourceKind::ALL
+            .iter()
+            .filter(|&&kind| unit.get(kind) > 0.0)
+            .map(|&kind| (stock.get(kind) / unit.get(kind)).floor())
+            .fold(f64::from(MAX_SHIP_BATCH), f64::min)
+            .clamp(1.0, f64::from(MAX_SHIP_BATCH)) as u32
     }
 
     fn cycle_dispatch_mission(&mut self) {
@@ -4907,6 +4964,41 @@ mod tests {
             line_is_dim(terminal.backend(), "Research lab"),
             "unaffordable building should be dim: {text}"
         );
+    }
+
+    #[test]
+    fn shipyard_queues_a_batch_in_one_slot() {
+        let mut state = GameState::new(1_000);
+        state.buildings.shipyard = 1;
+        state.resources = Resources::from_parts(100_000.0, 100_000.0, 100_000.0);
+        let mut app = App::new(state);
+        app.open(Screen::Shipyard);
+        app.selected = ShipKind::ALL.len()
+            + DefenceKind::ALL
+                .iter()
+                .position(|k| *k == DefenceKind::LightCannon)
+                .unwrap();
+        for _ in 0..5 {
+            app.handle_key(KeyCode::Char('+'), 1_000);
+        }
+        let unit = app.state.defence_time_secs(DefenceKind::LightCannon);
+        let text = render_text(&app, 140, 45);
+        assert!(text.contains("×6"), "{text}");
+        assert!(text.contains(&ui::spans::duration(unit * 6)), "{text}");
+        let before = app.state.resources;
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert_eq!(app.state.ship_queue.len(), 1, "{}", app.status);
+        assert_eq!(app.state.ship_queue[0].remaining, 6);
+        let paid = before.iron - app.state.resources.iron;
+        let six = app.state.defence_cost(DefenceKind::LightCannon, 6).iron;
+        assert!((paid - six).abs() < 1e-6, "paid {paid}, six cost {six}");
+
+        // Space picks the largest batch the stockpile pays for.
+        app.state.resources = app.state.defence_cost(DefenceKind::LightCannon, 3);
+        app.handle_key(KeyCode::Char(' '), 1_000);
+        assert_eq!(app.ship_batch, 3);
+        app.handle_key(KeyCode::Char('-'), 1_000);
+        assert_eq!(app.ship_batch, 2);
     }
 
     #[test]

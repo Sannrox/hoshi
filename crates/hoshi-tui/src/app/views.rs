@@ -342,6 +342,20 @@ impl App {
                 self.state.config.max_ship_queue
             ),
         )])];
+        if let Some((cost, secs)) = self.shipyard_batch(self.ship_batch) {
+            head.push(Line::from(vec![
+                Span::styled("batch ", t.label()),
+                keycap(t, "-"),
+                Span::styled(format!(" ×{} ", self.ship_batch), t.strong()),
+                keycap(t, "+"),
+                Span::styled(
+                    format!("  {}  {}  ", cost.brief(), duration(secs)),
+                    t.text(),
+                ),
+                keycap(t, "space"),
+                Span::styled(" max", t.muted()),
+            ]));
+        }
         for (i, job) in self.state.ship_queue.iter().enumerate() {
             let timer = job
                 .completes_at
