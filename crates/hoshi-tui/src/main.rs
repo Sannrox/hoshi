@@ -23,6 +23,7 @@ mod keymap;
 mod managed_update;
 mod notify;
 mod oidc;
+mod pair;
 mod portraits;
 mod push;
 mod serve;
@@ -147,6 +148,15 @@ fn main() {
     }
     if args.get(1).map(String::as_str) == Some("new") {
         match run_new_game(&args) {
+            Ok(()) => return,
+            Err(e) => {
+                eprintln!("hoshi: {e}");
+                std::process::exit(e.exit);
+            }
+        }
+    }
+    if serve::first_positional(&args) == Some("pair") {
+        match serve::run_pair(&args) {
             Ok(()) => return,
             Err(e) => {
                 eprintln!("hoshi: {e}");

@@ -145,8 +145,17 @@ const EXTRA: &[Topic] = &[
     Topic {
         name: "serve",
         summary: "Serve a versioned HTTP and WebSocket API for one save.",
-        usage: "serve [--save PATH] [--bind ADDRESS:PORT] [--config DIR] [--update-check] [--offline]",
+        usage: "serve [--save PATH] [--bind ADDRESS:PORT] [--config DIR] [--url URL] [--update-check] [--offline]",
         example: "serve --save game.sqlite",
+        area: "serve",
+        planned: false,
+        command_prefix: true,
+    },
+    Topic {
+        name: "pair",
+        summary: "Mint a one-time code and QR that signs a phone in to a running hoshi serve.",
+        usage: "pair [--label TEXT] [--url URL] [--config DIR]",
+        example: "pair --label phone",
         area: "serve",
         planned: false,
         command_prefix: true,

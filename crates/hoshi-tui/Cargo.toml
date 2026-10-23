@@ -42,6 +42,7 @@ tar = "0.4"
 p256 = { version = "0.13", default-features = false, features = ["ecdh", "ecdsa", "std"] }
 hkdf = "0.12"
 aes-gcm = "0.10"
+qrcode = { version = "0.14", default-features = false }
 
 [build-dependencies]
 sha2 = "0.10"
