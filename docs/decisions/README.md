@@ -17,3 +17,4 @@
 | [0013](0013-local-cheats-and-modified-saves.md) | Local cheats and modified saves | Accepted |
 | [0014](0014-consented-bug-reports.md) | Consented bug reports | Accepted |
 | [0015](0015-fusion-lifecycle.md) | Fusion lifecycle in core | Accepted |
+| [0016](0016-device-pairing-and-sessions.md) | Device pairing and sessions | Accepted |

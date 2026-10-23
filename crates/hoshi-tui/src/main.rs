@@ -16,6 +16,7 @@ mod cockpit;
 mod config;
 mod demo;
 mod detail_panel;
+mod devices;
 mod help;
 mod hubs;
 mod keymap;
