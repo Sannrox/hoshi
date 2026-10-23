@@ -1415,6 +1415,22 @@ Environment: HOSHI_SAVE, HOSHI_BALANCE
 
 Area: cli.
 
+## ship
+
+Queue ships or defences in the home shipyard as one batch.
+
+```text
+hoshi ship PLANET SHIP-OR-DEFENCE [COUNT]
+```
+
+Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair-play restrictions.
+
+Example: `hoshi ship home light_fighter 5`
+
+Environment: HOSHI_SAVE, HOSHI_BALANCE
+
+Area: cli.
+
 ## simulate
 
 Print a deterministic pacing report.
@@ -1618,6 +1634,22 @@ hoshi tick --advance DURATION
 Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair-play restrictions.
 
 Example: `hoshi tick --advance 60`
+
+Environment: HOSHI_SAVE, HOSHI_BALANCE
+
+Area: cli.
+
+## trade
+
+Spot-trade one resource for another at the home market.
+
+```text
+hoshi trade PAY RECEIVE AMOUNT
+```
+
+Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair-play restrictions.
+
+Example: `hoshi trade iron deuterium 1000`
 
 Environment: HOSHI_SAVE, HOSHI_BALANCE
 

@@ -1141,6 +1141,8 @@ fn v1_parts(method: &str, path: &str, body: &Value) -> Result<Vec<String>, (u16,
             | "/v1/research"
             | "/v1/cancel"
             | "/v1/fleet/send"
+            | "/v1/ship"
+            | "/v1/trade"
     );
     if path.starts_with("/v1/tick") || path == "/v1/tick" {
         return Err((404, error_body("invalid", "not found")));
@@ -1179,6 +1181,43 @@ fn v1_parts(method: &str, path: &str, body: &Value) -> Result<Vec<String>, (u16,
             require_str(body, "mode")
                 .map_err(|m| (400, error_body("invalid", &m)))?
                 .into(),
+        ],
+        "/v1/ship" => {
+            let mut parts = vec![
+                "ship".into(),
+                require_str(body, "planet")
+                    .map_err(|m| (400, error_body("invalid", &m)))?
+                    .into(),
+                require_str(body, "unit")
+                    .map_err(|m| (400, error_body("invalid", &m)))?
+                    .into(),
+            ];
+            match body.get("count") {
+                None => {}
+                Some(count) => match count.as_u64() {
+                    Some(n) => parts.push(n.to_string()),
+                    None => {
+                        return Err((
+                            400,
+                            error_body("invalid", "count must be a positive integer"),
+                        ));
+                    }
+                },
+            }
+            parts
+        }
+        "/v1/trade" => vec![
+            "trade".into(),
+            require_str(body, "pay")
+                .map_err(|m| (400, error_body("invalid", &m)))?
+                .into(),
+            require_str(body, "recv")
+                .map_err(|m| (400, error_body("invalid", &m)))?
+                .into(),
+            match body.get("amount").and_then(Value::as_f64) {
+                Some(amount) => amount.to_string(),
+                None => return Err((400, error_body("invalid", "missing amount"))),
+            },
         ],
         "/v1/research" => vec![
             "research".into(),
@@ -3749,6 +3788,63 @@ mod tests {
             assert_eq!(exit, expected_exit, "{building}");
             assert_eq!(status, http_status(exit), "{http}");
         }
+        let (cli, _) = cli_on(&save_cli, &["state"]);
+        let (_, http) = handle_v1(&save_http, "GET", "/v1/state", &[]);
+        assert_eq!(cli, http);
+        for path in [&save_cli, &save_http] {
+            let _ = std::fs::remove_file(path);
+            let _ = std::fs::remove_file(save_lock_path(path));
+        }
+    }
+
+    #[test]
+    fn ship_and_trade_cli_and_server_share_success_bad_input_and_refusal() {
+        let save_cli = unique_save();
+        let save_http = unique_save();
+        for path in [&save_cli, &save_http] {
+            seed_save(path);
+            let mut conn = hoshi_core::open_save(path).unwrap();
+            let mut state = hoshi_core::load_state(&conn, BalanceConfig::default()).unwrap();
+            state.next_raid_at = None;
+            state.buildings.shipyard = 1;
+            state.resources = hoshi_core::Resources::from_parts(50_000.0, 50_000.0, 50_000.0);
+            // Spot trades move goods in the home cargo fleet.
+            state.fleet.add(hoshi_core::ShipKind::LargeCargo, 2);
+            hoshi_core::save_state(&mut conn, &state).unwrap();
+        }
+        for (unit, count, planet, expected_exit) in [
+            ("light_cannon", 3, "home", 0),
+            ("galleon", 1, "home", 2),
+            ("light_cannon", 1, "1:1:9", 3),
+        ] {
+            let count_word = count.to_string();
+            let (_, exit) = cli_on(&save_cli, &["ship", planet, unit, &count_word]);
+            let body = serde_json::to_vec(&json!({"planet": planet, "unit": unit, "count": count}))
+                .unwrap();
+            let (status, http) = handle_v1(&save_http, "POST", "/v1/ship", &body);
+            assert_eq!(exit, expected_exit, "{unit} at {planet}");
+            assert_eq!(status, http_status(exit), "{http}");
+        }
+        let (queued, exit) = cli_on(&save_cli, &["ship", "home", "light_cannon", "2"]);
+        assert_eq!(exit, 0, "{queued}");
+        assert_eq!(queued["queued"]["unit"], "light_cannon");
+        assert_eq!(queued["queued"]["count"], 2);
+        assert_eq!(queued["queued"]["queue_len"], 2);
+        let body = br#"{"planet":"home","unit":"light_cannon","count":2}"#;
+        assert_eq!(handle_v1(&save_http, "POST", "/v1/ship", body).0, 200);
+
+        let (traded, exit) = cli_on(&save_cli, &["trade", "iron", "deuterium", "1000"]);
+        let body = br#"{"pay":"iron","recv":"deuterium","amount":1000}"#;
+        let (status, http) = handle_v1(&save_http, "POST", "/v1/trade", body);
+        assert_eq!(exit, 0, "{traded}");
+        assert_eq!(status, 200, "{http}");
+        assert_eq!(traded["trade"]["pay_amount"], 1000.0);
+        assert!(traded["trade"]["recv_amount"].as_f64().unwrap() > 0.0);
+        assert_eq!(
+            cli_on(&save_cli, &["trade", "metal", "deuterium", "10"]).1,
+            2
+        );
+
         let (cli, _) = cli_on(&save_cli, &["state"]);
         let (_, http) = handle_v1(&save_http, "GET", "/v1/state", &[]);
         assert_eq!(cli, http);

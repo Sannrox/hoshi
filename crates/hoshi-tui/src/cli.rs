@@ -83,6 +83,10 @@ crate::help::catalog_commands! {
         building: BuildingKind,
         actor: Actor,
     },
+    #[help("ship", "Queue ships or defences in the home shipyard as one batch.", "ship PLANET SHIP-OR-DEFENCE [COUNT]", "ship home light_fighter 5")]
+    Ship { planet: Coord, unit: Unit, count: u32 },
+    #[help("trade", "Spot-trade one resource for another at the home market.", "trade PAY RECEIVE AMOUNT", "trade iron deuterium 1000")]
+    Trade { pay: ResourceKind, recv: ResourceKind, amount: String },
     #[help("dismantle", "Queue removal of one building level with partial salvage.", "dismantle PLANET BUILDING [--as ACTOR]", "dismantle home metal_mine")]
     Dismantle { planet: Coord, building: BuildingKind, actor: Actor },
     #[help("fusion mode", "Switch a fusion plant to D-D, D-He3, or off; a new reaction needs a plasma start-up.", "fusion mode PLANET dd|dhe3|off [--as ACTOR]", "fusion mode home off")]
@@ -452,6 +456,13 @@ crate::help::catalog_commands! {
 enum CancelItem {
     Build(usize),
     Research,
+}
+
+/// What `hoshi ship` queues: a ship or a defence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Unit {
+    Ship(ShipKind),
+    Defence(DefenceKind),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1056,6 +1067,47 @@ fn apply(
                 state.catch_up(now);
             }
             Ok(incidents_value(state, *actor))
+        }
+        Command::Ship {
+            planet,
+            unit,
+            count,
+        } => {
+            if *planet != state.home {
+                return Err(CliError::Refused(
+                    "ships and defences are built in the home shipyard".into(),
+                ));
+            }
+            let queued = match unit {
+                Unit::Ship(kind) => state.enqueue_ships(*kind, *count, now),
+                Unit::Defence(kind) => state.enqueue_defence(*kind, *count, now),
+            };
+            queued.map_err(|e| CliError::Refused(e.to_string()))?;
+            let key = match unit {
+                Unit::Ship(kind) => kind.as_key(),
+                Unit::Defence(kind) => kind.as_key(),
+            };
+            let mut value = ok_state(state, "queued ships");
+            value["queued"] = json!({
+                "unit": key,
+                "count": count,
+                "queue_len": state.ship_queue.len(),
+            });
+            Ok(value)
+        }
+        Command::Trade { pay, recv, amount } => {
+            let quote = state
+                .trade_market(*pay, *recv, parse_amount(amount)?, now)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            let mut value = ok_state(state, "traded");
+            value["trade"] = json!({
+                "pay": quote.pay.as_key(),
+                "recv": quote.recv.as_key(),
+                "pay_amount": quote.pay_amount,
+                "recv_amount": quote.recv_amount,
+                "fee": quote.fee,
+            });
+            Ok(value)
         }
         Command::Dismantle {
             planet,
@@ -3236,6 +3288,37 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
                     actor,
                 })
             }
+        }
+        "ship" => {
+            let usage = "ship <planet> <ship-or-defence> [count]";
+            let planet = parse_coord(nth(args, 1, usage)?)?;
+            let key = nth(args, 2, usage)?;
+            let unit = ShipKind::from_key(key)
+                .map(Unit::Ship)
+                .or_else(|| DefenceKind::from_key(key).map(Unit::Defence))
+                .ok_or_else(|| CliError::Invalid(format!("unknown ship or defence {key}")))?;
+            let count = match args.get(3) {
+                Some(raw) => raw
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|n| *n > 0)
+                    .ok_or_else(|| CliError::Invalid(format!("invalid count {raw}")))?,
+                None => 1,
+            };
+            expect_end(args, 4)?;
+            Ok(Command::Ship {
+                planet,
+                unit,
+                count,
+            })
+        }
+        "trade" => {
+            let usage = "trade <pay> <receive> <amount>";
+            let pay = parse_resource_id(nth(args, 1, usage)?)?;
+            let recv = parse_resource_id(nth(args, 2, usage)?)?;
+            let amount = nth(args, 3, usage)?.to_string();
+            expect_end(args, 4)?;
+            Ok(Command::Trade { pay, recv, amount })
         }
         "fusion" => parse_fusion_command(args),
         "staff" => parse_staff_command(args),
