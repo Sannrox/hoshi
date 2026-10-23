@@ -2,7 +2,7 @@
   "achievements": [
     {
       "id": "first_fighter",
-      "unlocked_at": 1
+      "unlocked_at": 333
     }
   ],
   "build_queue": [],
@@ -81,11 +81,11 @@
       "text": "daily: Launch an expedition complete"
     },
     {
-      "at": 1,
+      "at": 333,
       "text": "expedition: found Fe1068 Si534 D213"
     },
     {
-      "at": 1,
+      "at": 333,
       "text": "achievement: First fighter"
     },
     {
@@ -98,7 +98,7 @@
     },
     {
       "at": 3600,
-      "text": "raid: pirates 900 light fighter vs 5 light fighter. 1 rounds. lost 5 light fighter. pirates lost none. plunder Fe553 Si286 D4750. winner attacker"
+      "text": "raid: pirates 900 light fighter vs 5 light fighter. 1 rounds. lost 5 light fighter. pirates lost none. plunder Fe553 Si285 D4750. winner attacker"
     },
     {
       "at": 3600,
@@ -118,7 +118,7 @@
     }
   ],
   "finance": {
-    "cash": 790.0540309788805,
+    "cash": 790.0540309788798,
     "debt": 0.0,
     "pending": 0
   },
@@ -275,7 +275,7 @@
   "rates": {
     "deuterium": 0.0,
     "helium_3": 0.0,
-    "iron": 32.9227800000001,
+    "iron": 32.92277999999999,
     "rare_earths": 2.4770939320804786,
     "silicon": 21.94852000000003,
     "water_ice": 0.0
@@ -322,9 +322,9 @@
   "resources": {
     "deuterium": 2875.0,
     "helium_3": 0.0,
-    "iron": 1007.19112,
+    "iron": 1007.1911199999998,
     "rare_earths": 54.762892153699454,
-    "silicon": 796.5440800000001,
+    "silicon": 796.5440799999999,
     "water_ice": 0.0
   },
   "rivals": {

@@ -2168,7 +2168,7 @@ impl GameState {
             units_fuel += f64::from(n) * stats.fuel;
         }
         Ok((
-            flight_secs(dist, slowest, speed_percent),
+            flight_secs(dist, slowest, speed_percent, &self.config.flight),
             fuel_cost(units_fuel, dist, speed_percent, &self.config.flight),
         ))
     }
@@ -7847,8 +7847,11 @@ mod tests {
         let started = std::time::Instant::now();
         state.catch_up(7 * 24 * 3600);
         let elapsed = started.elapsed();
+        // Minutes-long hops make each route's arrival and return separate
+        // events (about 1,700 steps here). Release holds the real budget;
+        // the debug figure only catches order-of-magnitude regressions.
         let budget = if cfg!(debug_assertions) {
-            std::time::Duration::from_millis(4_000)
+            std::time::Duration::from_millis(10_000)
         } else {
             std::time::Duration::from_secs(1)
         };
@@ -9467,6 +9470,9 @@ modifiers = [{ kind = "expedition_slots", per_level = 1.0 }]
 
     fn logistics_config() -> BalanceConfig {
         let mut cfg = test_config();
+        // Logistics tests count resources per second; keep hops to one second.
+        cfg.flight.overhead_secs = 0.0;
+        cfg.flight.secs_per_root = 1.0;
         cfg.techs = TechTree::parse(
             r#"
 [[tech]]
@@ -10522,9 +10528,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
 
     #[test]
     fn outpost_strength_scales_with_player_progress_and_early_outposts_are_winnable() {
-        let mut cfg = outpost_config();
-        cfg.outposts.rebuild_secs = 10;
-        let mut state = GameState::with_config(0, cfg);
+        let mut state = GameState::with_config(0, outpost_config());
         state.resources.deuterium = 10_000.0;
         state.tech_levels.insert("colonization".into(), 1);
         let dest = state.outposts[0].coord;
@@ -10543,7 +10547,9 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
             "early outpost should fall to a small fighter wing"
         );
         state.fleet.add(ShipKind::LightFighter, 200);
-        state.catch_up(10);
+        // Rebuild soon after the wing is home, so it sees the bigger fleet.
+        state.config.outposts.rebuild_secs = 10;
+        state.catch_up(state.last_tick_unix + 10);
         let rebuilt = state
             .outpost(dest)
             .unwrap()

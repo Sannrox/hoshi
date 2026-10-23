@@ -154,6 +154,15 @@ fn main() {
             }
         }
     }
+    if serve::first_positional(&args) == Some("devices") {
+        match serve::run_devices(&args) {
+            Ok(()) => return,
+            Err(e) => {
+                eprintln!("hoshi: {e}");
+                std::process::exit(e.exit);
+            }
+        }
+    }
     if serve::first_positional(&args) == Some("serve") {
         match serve::run(&args) {
             Ok(()) => return,

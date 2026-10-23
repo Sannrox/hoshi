@@ -375,6 +375,22 @@ Environment: HOSHI_SAVE, HOSHI_BALANCE
 
 Area: cli.
 
+## devices
+
+List or revoke browsers paired with a running hoshi serve.
+
+```text
+hoshi devices [revoke ID] [--url URL] [--config DIR]
+```
+
+Wraps one locked local save. Loopback binding is the default; authenticated remote actions use the same core rules. Update requests require --update-check; --offline suppresses them.
+
+Example: `hoshi devices revoke Q2xpZW50MDE`
+
+Environment: HOSHI_SAVE, HOSHI_BALANCE, HOSHI_SERVE_TOKEN, HOSHI_SERVE_TOKEN_FILE, HOSHI_SERVE_ADMIN_TOKEN, HOSHI_SERVE_PUSH, HOSHI_SERVE_VAPID_PRIVATE, HOSHI_SERVE_VAPID_SUBJECT, HOSHI_SERVE_OIDC, HOSHI_SERVE_OIDC_ISSUER, HOSHI_SERVE_OIDC_CLIENT_ID, HOSHI_SERVE_OIDC_AUTHORIZATION, HOSHI_SERVE_OIDC_TOKEN
+
+Area: serve.
+
 ## dismantle
 
 Queue removal of one building level with partial salvage.
@@ -1363,7 +1379,7 @@ Wraps one locked local save. Loopback binding is the default; authenticated remo
 
 Example: `hoshi serve --save game.sqlite`
 
-Environment: HOSHI_SAVE, HOSHI_BALANCE, HOSHI_SERVE_TOKEN, HOSHI_SERVE_TOKEN_FILE, HOSHI_SERVE_PUSH, HOSHI_SERVE_VAPID_PRIVATE, HOSHI_SERVE_VAPID_SUBJECT, HOSHI_SERVE_OIDC, HOSHI_SERVE_OIDC_ISSUER, HOSHI_SERVE_OIDC_CLIENT_ID, HOSHI_SERVE_OIDC_AUTHORIZATION, HOSHI_SERVE_OIDC_TOKEN
+Environment: HOSHI_SAVE, HOSHI_BALANCE, HOSHI_SERVE_TOKEN, HOSHI_SERVE_TOKEN_FILE, HOSHI_SERVE_ADMIN_TOKEN, HOSHI_SERVE_PUSH, HOSHI_SERVE_VAPID_PRIVATE, HOSHI_SERVE_VAPID_SUBJECT, HOSHI_SERVE_OIDC, HOSHI_SERVE_OIDC_ISSUER, HOSHI_SERVE_OIDC_CLIENT_ID, HOSHI_SERVE_OIDC_AUTHORIZATION, HOSHI_SERVE_OIDC_TOKEN
 
 Area: serve.
 

@@ -113,6 +113,26 @@ one proxy origin do not collide) and `Secure` over HTTPS. `/v1` routes,
   request's `Host`; otherwise `403`.
 - An expired or unknown session is `401`.
 
+### Managing devices
+
+- `GET /v1/admin/devices` (admin token) lists live sessions: `id`, `label`,
+  `device_type`, `os`, `browser`, `ip`, `created_at`, `last_used_at`,
+  `expires_at`. Never the secret or its hash.
+- `DELETE /v1/admin/devices/{id}` (admin token) revokes one session.
+- `DELETE /v1/devices/self` (the session's own credential) revokes it and
+  clears the cookie. With the cookie it needs `Content-Type: application/json`
+  like every cookie write.
+
+A revoked session is refused at once: its next request is `401` and its open
+`/v1/events` and `/v1/terminal` sockets close. Revocation is written to the
+sessions file before it answers, so it survives a restart. Other devices keep
+working.
+
+From a shell, `hoshi devices` lists and `hoshi devices revoke ID` revokes
+through these routes. The server is `--url http://HOST:PORT[/prefix]`, else
+`serve_bind`; the admin token comes from `HOSHI_SERVE_ADMIN_TOKEN` or
+`serve_admin_token`.
+
 ## Web push
 
 Raid warnings and finished builds reach browsers with the tab closed. Off until

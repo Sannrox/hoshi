@@ -48,9 +48,15 @@ pub struct FlightConfig {
     pub system_base: f64,
     /// Distance added per system step.
     pub system_unit: f64,
+    /// Distance floor for a different position in the same system.
+    pub position_base: f64,
     /// Distance added per position step in the same system.
     pub position_unit: f64,
     pub min_distance: f64,
+    /// Fixed seconds every flight takes (launch and docking).
+    pub overhead_secs: f64,
+    /// Seconds at 100% speed per `sqrt(distance / speed)`; see [`flight_secs`].
+    pub secs_per_root: f64,
     /// Fuel is `sum(count * fuel) * distance / fuel_distance * speed_percent/100`.
     pub fuel_distance: f64,
     pub base_fleet_slots: u32,
@@ -62,8 +68,11 @@ impl Default for FlightConfig {
             galaxy_unit: 20_000.0,
             system_base: 2_700.0,
             system_unit: 95.0,
+            position_base: 1_000.0,
             position_unit: 5.0,
             min_distance: 5.0,
+            overhead_secs: 10.0,
+            secs_per_root: 1_100.0,
             fuel_distance: 35_000.0,
             base_fleet_slots: 1,
         }
@@ -78,14 +87,27 @@ pub fn distance(from: Coord, to: Coord, cfg: &FlightConfig) -> f64 {
         cfg.galaxy_unit * dg
     } else if ds > 0.0 {
         cfg.system_base + cfg.system_unit * ds
+    } else if dp > 0.0 {
+        cfg.position_base + cfg.position_unit * dp
     } else {
-        (cfg.position_unit * dp).max(cfg.min_distance)
+        cfg.min_distance
     }
 }
 
-pub fn flight_secs(distance: f64, slowest_speed: f64, speed_percent: u8) -> u64 {
-    let speed = slowest_speed.max(1.0) * (f64::from(speed_percent) / 100.0).max(0.01);
-    (distance / speed).ceil().max(1.0) as u64
+/// Flight time: a fixed overhead plus a term that grows with the square root
+/// of distance over the slowest ship's speed, scaled down by the speed
+/// setting. Distance and speed are unitless points (see docs/realism.md).
+pub fn flight_secs(
+    distance: f64,
+    slowest_speed: f64,
+    speed_percent: u8,
+    cfg: &FlightConfig,
+) -> u64 {
+    let share = (f64::from(speed_percent) / 100.0).max(0.01);
+    let root = (distance.max(0.0) / slowest_speed.max(1.0)).sqrt();
+    (cfg.overhead_secs + cfg.secs_per_root * root / share)
+        .ceil()
+        .max(1.0) as u64
 }
 
 pub fn fuel_cost(units_fuel: f64, distance: f64, speed_percent: u8, cfg: &FlightConfig) -> f64 {
@@ -305,35 +327,70 @@ mod tests {
     fn flight_time_and_fuel_match_fixed_examples() {
         let cfg = FlightConfig::default();
         let home = Coord::HOME;
-        let neighbor = Coord {
+        let at = |galaxy, system, position| Coord {
+            galaxy,
+            system,
+            position,
+        };
+        let neighbor = distance(home, at(1, 1, 2), &cfg);
+        assert!((neighbor - 1_005.0).abs() < 1e-9);
+        // 10 + 1100 * sqrt(1005 / 12500), rounded up.
+        assert_eq!(flight_secs(neighbor, 12_500.0, 100, &cfg), 322);
+        let fuel = fuel_cost(20.0, neighbor, 100, &cfg);
+        assert!((fuel - 20.0 * 1_005.0 / 35_000.0).abs() < 1e-12);
+
+        let other_sys = distance(home, at(1, 2, 1), &cfg);
+        assert!((other_sys - 2_795.0).abs() < 1e-9);
+        assert_eq!(flight_secs(other_sys, 10_000.0, 100, &cfg), 592);
+        // Half speed doubles the distance term.
+        assert_eq!(flight_secs(other_sys, 10_000.0, 50, &cfg), 1_174);
+
+        let other_gal = distance(home, at(2, 1, 1), &cfg);
+        assert!((other_gal - 20_000.0).abs() < 1e-9);
+        assert_eq!(flight_secs(other_gal, 10_000.0, 100, &cfg), 1_566);
+        let fuel_gal = fuel_cost(75.0, other_gal, 100, &cfg);
+        assert!((fuel_gal - 75.0 * 20_000.0 / 35_000.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn flights_take_minutes_and_lengthen_with_distance() {
+        let balance = crate::BalanceConfig::default();
+        let cfg = balance.flight.clone();
+        let pacing = balance.pacing;
+        // Espionage probes are the deliberate exception: they arrive in seconds.
+        let fastest = crate::ShipKind::ALL
+            .iter()
+            .filter(|kind| **kind != crate::ShipKind::EspionageProbe)
+            .map(|kind| balance.ships.get(*kind).speed)
+            .fold(0.0, f64::max);
+        let secs = |dest: Coord| flight_secs(distance(Coord::HOME, dest, &cfg), fastest, 100, &cfg);
+        let in_system = secs(Coord {
             galaxy: 1,
             system: 1,
             position: 2,
-        };
-        let dist = distance(home, neighbor, &cfg);
-        assert!((dist - 5.0).abs() < 1e-9);
-        assert_eq!(flight_secs(dist, 12_500.0, 100), 1);
-        let fuel = fuel_cost(20.0, dist, 100, &cfg);
-        assert!((fuel - 20.0 * 5.0 / 35_000.0).abs() < 1e-12);
-
-        let other_sys = Coord {
+        });
+        let far_slot = secs(Coord {
+            galaxy: 1,
+            system: 1,
+            position: 15,
+        });
+        let next_system = secs(Coord {
             galaxy: 1,
             system: 2,
             position: 1,
-        };
-        let dsys = distance(home, other_sys, &cfg);
-        assert!((dsys - 2_795.0).abs() < 1e-9);
-        assert_eq!(flight_secs(dsys, 10_000.0, 50), 1);
-
-        let other_gal = Coord {
+        });
+        let far_system = secs(Coord {
+            galaxy: 1,
+            system: 80,
+            position: 1,
+        });
+        let other_galaxy = secs(Coord {
             galaxy: 2,
             system: 1,
             position: 1,
-        };
-        let dgal = distance(home, other_gal, &cfg);
-        assert!((dgal - 20_000.0).abs() < 1e-9);
-        assert_eq!(flight_secs(dgal, 10_000.0, 100), 2);
-        let fuel_gal = fuel_cost(75.0, dgal, 100, &cfg);
-        assert!((fuel_gal - 75.0 * 20_000.0 / 35_000.0).abs() < 1e-12);
+        });
+        assert!(in_system >= pacing.min_flight_secs, "{in_system}");
+        assert!(in_system < far_slot && far_slot < next_system);
+        assert!(next_system < far_system && next_system < other_galaxy);
     }
 }

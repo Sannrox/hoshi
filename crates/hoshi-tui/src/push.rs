@@ -104,6 +104,10 @@ impl Payload {
 pub struct Subscription {
     pub endpoint: String,
     pub keys: Keys,
+    /// The device session that registered it, set by the server from the
+    /// request's credential (never the body). Revoking the device drops it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -474,10 +478,13 @@ impl Gate {
         }
     }
 
-    /// Pair queued payloads with every stored subscription.
-    pub fn take_outbox(&mut self) -> Outbox {
+    /// Pair queued payloads with every stored subscription whose device
+    /// session is still `live` (subscriptions without a device always are).
+    /// Subscriptions of revoked or expired devices are dropped from the file,
+    /// so a failed cleanup is retried on the next notice.
+    pub fn take_outbox(&mut self, live: impl Fn(&str) -> bool) -> Outbox {
         let payloads = std::mem::take(&mut self.pending);
-        let subs = if payloads.is_empty() {
+        let mut subs = if payloads.is_empty() {
             Vec::new()
         } else {
             load(&self.path).unwrap_or_else(|_| {
@@ -488,6 +495,11 @@ impl Gate {
                 Vec::new()
             })
         };
+        let before = subs.len();
+        subs.retain(|sub| sub.device.as_deref().is_none_or(&live));
+        if subs.len() != before && store(&self.path, &subs).is_err() {
+            crate::diagnostics::log("warn", "revoked devices' push subscriptions not removed");
+        }
         let messages = payloads
             .iter()
             .flat_map(|payload| subs.iter().map(|sub| (sub.clone(), payload.clone())))
@@ -594,6 +606,7 @@ mod tests {
                 p256dh: UA_PUBLIC.into(),
                 auth: UA_AUTH.into(),
             },
+            device: None,
         }
     }
 
@@ -611,7 +624,7 @@ mod tests {
         gate.poll(&state, 1_000);
         state.next_raid_at = Some(1_050);
         gate.poll(&state, 1_000);
-        assert!(gate.take_outbox().deliver().is_empty());
+        assert!(gate.take_outbox(|_| true).deliver().is_empty());
         let sent = recording.sent();
         assert_eq!(sent.len(), 4, "{sent:?}");
         for endpoint in ["a", "b"] {
@@ -639,6 +652,28 @@ mod tests {
     }
 
     #[test]
+    fn revoked_device_stops_receiving_notices() {
+        let mut state = GameState::new(1_000);
+        let (mut gate, recording, path) = armed_gate(&state);
+        let lost = "https://fcm.googleapis.com/fcm/send/lost";
+        let kept = "https://fcm.googleapis.com/fcm/send/kept";
+        gate.subscribe(Subscription {
+            device: Some("lost-phone".into()),
+            ..browser(lost)
+        })
+        .unwrap();
+        subscribe(&mut gate, kept);
+        state.buildings.increment(BuildingKind::MetalMine);
+        gate.poll(&state, 1_000);
+        gate.take_outbox(|device| device != "lost-phone").deliver();
+        let sent: Vec<String> = recording.sent().into_iter().map(|(to, _)| to).collect();
+        assert_eq!(sent, vec![kept.to_string()]);
+        let stored = std::fs::read_to_string(&path).unwrap();
+        assert!(!stored.contains(lost), "{stored}");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn unsubscribe_stops_delivery_and_gone_endpoints_are_dropped() {
         let mut state = GameState::new(1_000);
         let (mut gate, recording, path) = gate_with(&armed(), &state, Delivery::Gone);
@@ -654,7 +689,7 @@ mod tests {
         );
         state.buildings.increment(BuildingKind::MetalMine);
         gate.poll(&state, 1_000);
-        let gone = gate.take_outbox().deliver();
+        let gone = gate.take_outbox(|_| true).deliver();
         assert_eq!(gone, ["https://fcm.googleapis.com/fcm/send/b"]);
         assert_eq!(recording.sent().len(), 1);
         for endpoint in gone {
@@ -724,7 +759,7 @@ mod tests {
             state.buildings.increment(BuildingKind::MetalMine);
             state.next_raid_at = Some(1_050);
             gate.poll(&state, 1_000);
-            gate.take_outbox().deliver();
+            gate.take_outbox(|_| true).deliver();
             assert!(recording.sent().is_empty());
             let _ = std::fs::remove_file(path);
         }
@@ -841,7 +876,7 @@ mod tests {
         subscribe(&mut gate, "https://fcm.googleapis.com/fcm/send/a");
         state.missions.clear();
         gate.poll(&state, 1_100);
-        gate.take_outbox().deliver();
+        gate.take_outbox(|_| true).deliver();
         assert!(recording.sent().is_empty());
         let _ = std::fs::remove_file(path);
     }
