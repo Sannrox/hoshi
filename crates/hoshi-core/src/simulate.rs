@@ -238,13 +238,7 @@ impl SimReport {
     }
 
     pub fn mine_goal_ok(&self) -> bool {
-        // Starting metal mine is level 1; require the documented per-day gain.
-        let need = self
-            .pacing
-            .min_metal_mine_per_day
-            .saturating_mul(self.days)
-            .saturating_add(1);
-        self.metal_mine_level >= need
+        self.metal_mine_level >= self.pacing.metal_mine_target(self.days)
     }
 
     pub fn bridge_ok(&self) -> bool {
@@ -343,8 +337,8 @@ impl SimReport {
             self.pacing.first_upgrade_secs
         ));
         out.push_str(&format!(
-            "- at least {} metal mine level(s) per day\n",
-            self.pacing.min_metal_mine_per_day
+            "- at least {} metal mine level(s) per day for the first {} days\n",
+            self.pacing.min_metal_mine_per_day, self.pacing.metal_mine_days
         ));
         out.push_str(&format!(
             "- bridge metal ratio at most {:.1}\n",
@@ -2430,6 +2424,17 @@ mod tests {
             seconds as f64 / 3600.0
         );
         assert!(seconds > 0 && seconds < 30 * 86_400);
+    }
+
+    #[test]
+    fn greedy_mine_meets_target_over_four_weeks() {
+        // Mines-only play stops at the solar cap in the first week, so the
+        // per-day gain is a first-week target, not a four-week one.
+        let config = BalanceConfig::default();
+        let pacing = config.pacing.clone();
+        let mine = run_once(config, 28, false, 0).metal_mine;
+        assert_eq!(pacing.metal_mine_target(28), pacing.metal_mine_target(7));
+        assert!(mine >= pacing.metal_mine_target(28), "mine level {mine}");
     }
 
     #[test]

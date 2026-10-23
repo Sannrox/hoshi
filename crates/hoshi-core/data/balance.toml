@@ -9,8 +9,11 @@ version = 1
 energy_recovery_secs = 7200
 # First building upgrade must complete within this many seconds.
 first_upgrade_secs = 300
-# Metal mine levels gained per simulated day (greedy strategy).
+# Metal mine levels gained per simulated day (greedy strategy), for the first
+# metal_mine_days days. Mines-only play then stops at the solar cap; growth past
+# it needs fission (first reactor target).
 min_metal_mine_per_day = 1
+metal_mine_days = 7
 # metal(with max PR-merge pulses) / metal(activity off) must stay at or below this.
 max_bridge_metal_ratio = 8.0
 # With raids on, greedy play must finish shipyard 1 within this many seconds.
