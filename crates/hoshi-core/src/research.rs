@@ -447,7 +447,11 @@ impl fmt::Display for PrereqGap {
                 id,
                 required,
                 actual,
-            } => write!(f, "{id} level {required} (have {actual})"),
+            } => write!(
+                f,
+                "{} level {required} (have {actual})",
+                id.replace('_', " ")
+            ),
         }
     }
 }

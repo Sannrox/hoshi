@@ -44,15 +44,21 @@ impl LimitingFactor {
             Self::Energy => "upgrade solar or cut energy draw".into(),
             Self::Heat => "build radiators to reject heat".into(),
             Self::Pollution => "build scrubbers to dump pollution".into(),
-            Self::Input { good } => format!("feed {good} into the chain"),
-            Self::FullBuffer { good } => format!("upgrade storage or spend {good}"),
+            Self::Input { good } => format!("feed {} into the chain", good.replace('_', " ")),
+            Self::FullBuffer { good } => {
+                format!("upgrade storage or spend {}", good.replace('_', " "))
+            }
             Self::Transport {
                 good,
                 from,
                 eta_secs,
             } => match eta_secs {
-                Some(eta) => format!("await {good} from {from} in {eta}s"),
-                None => format!("move {good} from {from}"),
+                Some(eta) => format!(
+                    "await {} from {from} in {}m",
+                    good.replace('_', " "),
+                    eta.div_ceil(60)
+                ),
+                None => format!("move {} from {from}", good.replace('_', " ")),
             },
         }
     }
@@ -661,7 +667,7 @@ mod tests {
         assert_eq!(report.limited_by.as_key(), "input");
         let smelt = report.steps.iter().find(|s| s.id == "smelt").unwrap();
         assert_eq!(smelt.limited_by.as_key(), "input");
-        assert!(report.limited_by.suggestion().contains("iron_ore"));
+        assert!(report.limited_by.suggestion().contains("iron ore"));
     }
 
     #[test]

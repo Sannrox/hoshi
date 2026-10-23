@@ -167,6 +167,8 @@ weight = 9
 timeout_secs = 86400
 timeout_choice = "wait"
 min_elapsed_secs = 0
+# The premise is ships on a lane; without any it would make no sense.
+min_fighters = 1
 
 [[event.choices]]
 id = "push"

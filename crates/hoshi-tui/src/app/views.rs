@@ -453,7 +453,8 @@ impl App {
         let mut columns = vec![Column::fill("tech")];
         Self::cost_columns(&mut columns);
         columns.push(Column::right("time", 7));
-        columns.push(Column::left("status", 13));
+        // Wide enough for "need research lab 1", which used to read NEED RESEARC.
+        columns.push(Column::left("status", 20));
         ListView {
             head: vec![Line::from(tabs)],
             table: Some(TableView {
@@ -1632,7 +1633,16 @@ impl App {
                     self.chip(event.kind.as_key(), Intent::Neutral, true),
                     Line::styled(event.actor.clone(), t.text()),
                     Line::styled(
-                        format!("{}  {}", event.action, event.objects.join(", ")),
+                        format!(
+                            "{}  {}",
+                            event.action.replace('_', " "),
+                            event
+                                .objects
+                                .iter()
+                                .map(|id| self.state.display_name(id))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
                         t.text(),
                     ),
                 ]
@@ -1643,7 +1653,7 @@ impl App {
             table: Some(TableView {
                 columns: vec![
                     Column::right("id", 5),
-                    Column::right("age", 9),
+                    Column::right("age", 11),
                     Column::left("type", 12),
                     Column::left("actor", 10),
                     Column::fill("event"),

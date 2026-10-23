@@ -266,7 +266,11 @@ impl fmt::Display for BuildError {
                 id,
                 required,
                 actual,
-            } => write!(f, "requires {id} level {required} (have {actual})"),
+            } => write!(
+                f,
+                "requires {} level {required} (have {actual})",
+                id.replace('_', " ")
+            ),
             BuildError::EmptySlot { index, len } => {
                 write!(f, "no build job at index {index} (queue length {len})")
             }

@@ -292,6 +292,10 @@ impl Title {
             .map(|row| row.id.clone())
             .collect();
         title.refresh_slots();
+        // Without a playable save, Continue can only say "no save"; start on New game.
+        if !title.slots.iter().any(|slot| slot.status.playable()) {
+            title.selected = 1;
+        }
         title
     }
 
@@ -2954,7 +2958,7 @@ mod tests {
     fn season_page_shows_the_current_window_seed_and_past_results() {
         let dir = unique_dir();
         let mut title = Title::new(dir.clone(), 1_800_000_000);
-        title.handle_key(KeyCode::Char('j'));
+        // No saves, so the menu starts on New game; one step reaches the page.
         title.handle_key(KeyCode::Char('j'));
         title.handle_key(KeyCode::Enter);
         let text = render(&title, 80, 24);
@@ -3268,7 +3272,7 @@ mod tests {
     fn new_game_rejects_an_invalid_seed() {
         let dir = unique_dir();
         let mut title = Title::new(dir.clone(), 100);
-        title.handle_key(KeyCode::Down);
+        assert_eq!(title.menu_items()[title.selected], "New game");
         title.handle_key(KeyCode::Enter);
         title.new_field = NewField::Seed;
         for c in "abc".chars() {

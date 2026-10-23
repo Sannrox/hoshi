@@ -111,6 +111,7 @@ enum AlertKind {
     Raid,
     Defence,
     Hostile,
+    Power,
     IdleQueue,
     Storage,
 }
@@ -119,7 +120,7 @@ impl AlertKind {
     fn intent(self) -> Intent {
         match self {
             Self::Raid | Self::Defence => Intent::Danger,
-            Self::Hostile | Self::Storage => Intent::Warning,
+            Self::Hostile | Self::Power | Self::Storage => Intent::Warning,
             Self::IdleQueue => Intent::Primary,
         }
     }
@@ -129,8 +130,9 @@ impl AlertKind {
             Self::Raid => 0,
             Self::Defence => 1,
             Self::Hostile => 2,
-            Self::IdleQueue => 3,
-            Self::Storage => 4,
+            Self::Power => 3,
+            Self::IdleQueue => 4,
+            Self::Storage => 5,
         }
     }
 }
@@ -411,6 +413,31 @@ pub fn alerts(state: &GameState) -> Vec<Alert> {
                 jump: Target::Planet(colony.coord),
             });
         }
+    }
+    // Shortfalls slow every chain at home, so they belong on the bridge,
+    // not only in a tutorial hint.
+    let energy = state.energy_balance();
+    if energy < 0.0 {
+        rows.push(Alert {
+            kind: AlertKind::Power,
+            text: format!("Energy short {energy:.0}"),
+            detail: format!("production slows at {home} · build solar"),
+            jump: Target::Planet(home),
+        });
+    }
+    let waste = state.waste_home();
+    if waste.heat_sink > 0.0 && waste.heat_load > waste.heat_sink {
+        rows.push(Alert {
+            kind: AlertKind::Power,
+            text: format!(
+                "Heat {:.0}/{:.0} ({:.0}%)",
+                waste.heat_load,
+                waste.heat_sink,
+                100.0 * waste.heat_load / waste.heat_sink
+            ),
+            detail: format!("work slows at {home} · build radiators"),
+            jump: Target::Planet(home),
+        });
     }
     for kind in ResourceKind::ALL {
         let cap = state.storage_cap(kind);
@@ -967,7 +994,11 @@ fn queue_lines(state: &GameState, height: usize, selected: usize, t: &Theme) -> 
     }
     if let Some(job) = &state.research {
         let eta = job.completes_at.saturating_sub(now);
-        entries.push(Line::from(format!("research {} {eta}s", job.tech)));
+        entries.push(Line::from(format!(
+            "research {} {}",
+            state.display_name(&job.tech),
+            duration(eta)
+        )));
     }
     window(
         &entries,
@@ -1058,10 +1089,11 @@ fn timeline_lines(state: &GameState, height: usize, t: &Theme) -> Vec<Line<'stat
             let style = timeline_style(event.kind, t);
             entries.push(Line::from(Span::styled(
                 format!(
-                    "{ago}s {} {} {}",
+                    "{} ago {} {} {}",
+                    duration(ago),
                     event.kind.as_key(),
                     event.actor,
-                    event.action
+                    event.action.replace('_', " ")
                 ),
                 style,
             )));
@@ -1074,7 +1106,7 @@ fn timeline_lines(state: &GameState, height: usize, t: &Theme) -> Vec<Line<'stat
             .take(height.max(1))
         {
             let ago = now.saturating_sub(event.at);
-            entries.push(Line::from(format!("{ago}s {}", event.text)));
+            entries.push(Line::from(format!("{} ago {}", duration(ago), event.text)));
         }
     }
     if let Some(line) = bridge_line(state, t) {

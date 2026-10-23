@@ -24,6 +24,7 @@
 - Saves: schema 47 stores build/dismantle operations and remaining powered work. Older saves migrate with existing jobs preserved as builds; older binaries cannot open the new schema.
 - Add local support-report previews, explicit save archives, redacted rotating logs and crash capture, and an admin-only server report.
 
+- Screens read as words, not data: resources, recipes, goods, techs, law kinds and history actions use display names; ages and timeline entries read as `2h 05m ago` instead of raw seconds or unix times; the history age and research status columns no longer cut off, and the Colony deposits wrap. Cost bars fill toward affording the cost, shortfalls read `short Fe 500`, an unmet requirement shows BLOCKED instead of an ETA, and energy or heat shortfalls are bridge alerts. The first hint names the bridge, the title menu starts on New game without saves, and the dust cloud story needs a ship.
 - Human CLI help, man pages, shell completions, TUI command examples, and generated command documentation share one catalog.
 - Add fuelled fission reactors with research gating, cooling limits, spent-fuel pools, and persistent protective-shutdown heat.
 
