@@ -1,7 +1,7 @@
 //! Round-based fleet combat. Raids use this resolver; rapid-fire extra shots live here.
 
 use crate::ships::{Fleet, SHIP_KINDS, ShipKind, ShipStats};
-use crate::state::Resources;
+use crate::state::{ResourceKind, Resources};
 
 /// Splitmix64. Mutates `seed` so combat and raids stay reproducible across saves.
 pub fn next_u64(seed: &mut u64) -> u64 {
@@ -493,6 +493,28 @@ pub fn plunder_from(stock: Resources, share: f64, cap: Resources) -> Resources {
     }
 }
 
+/// Load `want` into a hold of `capacity`: each resource gets an equal share
+/// of the room left, and room a resource does not need passes to the others.
+pub fn fill_hold(want: Resources, capacity: f64) -> Resources {
+    let mut out = Resources::ZERO;
+    let mut room = capacity.max(0.0);
+    loop {
+        let open: Vec<ResourceKind> = ResourceKind::ALL
+            .into_iter()
+            .filter(|&kind| want.get(kind) - out.get(kind) > 1e-9)
+            .collect();
+        if open.is_empty() || room <= 1e-9 {
+            return out;
+        }
+        let share = room / open.len() as f64;
+        for kind in open {
+            let add = (want.get(kind) - out.get(kind)).min(share);
+            out.set(kind, out.get(kind) + add);
+            room -= add;
+        }
+    }
+}
+
 pub fn rapid_fire_table(catalog: &crate::ShipCatalog) -> [[u32; SHIP_KINDS]; SHIP_KINDS] {
     let mut table = [[0u32; SHIP_KINDS]; SHIP_KINDS];
     for kind in ShipKind::ALL {
@@ -688,6 +710,19 @@ mod tests {
         assert_eq!(replayed.attacker_after, left.attacker_after);
         assert_eq!(replayed.defender_after, left.defender_after);
         assert_eq!(replayed.frames, left.frames);
+    }
+
+    #[test]
+    fn hold_fills_evenly_and_passes_spare_room_on() {
+        let want = Resources::from_parts(1_000.0, 10.0, 1_000.0);
+        let taken = fill_hold(want, 150.0);
+        // Three resources share 150; silicon only needs 10, so the rest
+        // splits between iron and deuterium.
+        assert!((taken.silicon - 10.0).abs() < 1e-9);
+        assert!((taken.iron - 70.0).abs() < 1e-9, "{taken:?}");
+        assert!((taken.deuterium - 70.0).abs() < 1e-9, "{taken:?}");
+        assert_eq!(fill_hold(want, 5_000.0), want);
+        assert_eq!(fill_hold(want, 0.0), Resources::ZERO);
     }
 
     #[test]

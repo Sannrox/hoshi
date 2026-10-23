@@ -292,7 +292,11 @@ from stock above `[raid] protected_share` of each storage capacity (default
 0.05, which is 500 D at base deuterium storage). An undefended home can
 therefore still save the 300 D that the robotics factory and the shipyard
 need, and the shipyard is what unlocks the first defence. The same floor
-protects a home raided by rivals or on a shard. `hoshi simulate` also runs
+protects a home raided by rivals or on a shard. Winning pirates also carry
+no more than the cargo of their surviving ships (`ships.toml` `cargo`, 50 for
+a light fighter): the hold is split evenly across the resources on offer, and
+room one resource does not need goes to the others. A one-fighter raid takes
+at most 50 units, so a home left alone keeps growing between raids. `hoshi simulate` also runs
 greedy play with raids on and fails when shipyard 1 is not finished within
 `[pacing] raided_shipyard_secs` (default seven days).
 
