@@ -509,6 +509,20 @@ mod tests {
     }
 
     #[test]
+    fn opening_synthesizer_completes_only_the_first_tier() {
+        let mut state = GameState::with_config(0, quiet_config());
+        state.buildings.deuterium_synthesizer = 1;
+        state.evaluate_ladder(0);
+        let ids: Vec<_> = state
+            .ladder
+            .completed
+            .iter()
+            .map(|row| row.id.as_str())
+            .collect();
+        assert_eq!(ids, ["water_propellant"]);
+    }
+
+    #[test]
     fn catch_up_split_matches_one_shot_for_tier_completion() {
         let mut gap = industrial(0);
         let mut step = industrial(0);
