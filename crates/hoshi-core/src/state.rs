@@ -5405,8 +5405,9 @@ impl GameState {
         self.on_market_tick(at);
     }
 
-    /// Why the home cannot make this trade now: missing stock to pay, or too
-    /// little cargo capacity above the free amount. `None` when it can.
+    /// Why the home cannot make this trade now: missing stock to pay, too
+    /// little cargo capacity above the free amount, or no storage room for
+    /// what it would receive. `None` when it can.
     pub fn trade_blocker(&self, quote: &crate::TradeQuote) -> Option<crate::MarketError> {
         let have = self.resources.get(quote.pay);
         if have + 1e-9 < quote.pay_amount {
@@ -5423,6 +5424,14 @@ impl GameState {
                     have: have_cargo,
                 });
             }
+        }
+        // Proceeds above the cap would be discarded, so the trade is refused.
+        let room = (self.storage_cap(quote.recv) - self.resources.get(quote.recv)).max(0.0);
+        if quote.recv_amount > room + 1e-9 {
+            return Some(crate::MarketError::NoRoom {
+                kind: quote.recv,
+                room,
+            });
         }
         None
     }

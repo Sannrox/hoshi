@@ -3807,7 +3807,8 @@ mod tests {
             let mut state = hoshi_core::load_state(&conn, BalanceConfig::default()).unwrap();
             state.next_raid_at = None;
             state.buildings.shipyard = 1;
-            state.resources = hoshi_core::Resources::from_parts(50_000.0, 50_000.0, 50_000.0);
+            // Deuterium stays under its cap so the trade into it has room.
+            state.resources = hoshi_core::Resources::from_parts(50_000.0, 50_000.0, 1_000.0);
             // Spot trades move goods in the home cargo fleet.
             state.fleet.add(hoshi_core::ShipKind::LargeCargo, 2);
             hoshi_core::save_state(&mut conn, &state).unwrap();

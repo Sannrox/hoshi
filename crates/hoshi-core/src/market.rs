@@ -140,6 +140,11 @@ pub enum MarketError {
     Closed,
     SameLocation,
     CannotFly,
+    /// The home storage for the received resource cannot hold the proceeds.
+    NoRoom {
+        kind: ResourceKind,
+        room: f64,
+    },
 }
 
 impl fmt::Display for MarketError {
@@ -184,6 +189,11 @@ impl fmt::Display for MarketError {
             MarketError::Closed => write!(f, "market: contract is closed"),
             MarketError::SameLocation => write!(f, "market: origin and destination are the same"),
             MarketError::CannotFly => write!(f, "market: shipment needs a legal flight"),
+            MarketError::NoRoom { kind, room } => write!(
+                f,
+                "market: {} storage is full (room for {room:.0}); upgrade it or trade less",
+                kind.label()
+            ),
         }
     }
 }
@@ -2101,6 +2111,32 @@ mod tests {
             .quote_market(ResourceKind::Silicon, ResourceKind::Deuterium, 50.0)
             .unwrap();
         assert!(state.trade_blocker(&small).is_none());
+    }
+
+    #[test]
+    fn a_full_store_refuses_the_trade_instead_of_discarding_the_proceeds() {
+        let mut state = ready(1_000);
+        let cap = state.storage_cap(ResourceKind::Silicon);
+        state.resources.silicon = cap;
+        state.resources.iron = 1_000.0;
+        let before = state.resources;
+        let err = state
+            .trade_market(ResourceKind::Iron, ResourceKind::Silicon, 10.0, 1_000)
+            .unwrap_err();
+        assert!(
+            matches!(err, MarketError::NoRoom { kind: ResourceKind::Silicon, room } if room < 1e-9),
+            "{err}"
+        );
+        assert!(err.to_string().contains("storage is full"), "{err}");
+        assert_eq!(state.resources.iron, before.iron, "nothing was paid");
+
+        // With room for part of it, a trade that fits still goes through.
+        state.resources.silicon = cap - 100.0;
+        assert!(
+            state
+                .trade_market(ResourceKind::Iron, ResourceKind::Silicon, 10.0, 1_000)
+                .is_ok()
+        );
     }
 
     #[test]

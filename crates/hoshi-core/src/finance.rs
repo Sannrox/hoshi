@@ -1135,7 +1135,7 @@ mod tests {
     }
 
     #[test]
-    fn trade_overflow_does_not_credit_discarded_resources() {
+    fn trade_overflow_is_refused_and_moves_no_cash() {
         let mut cfg = BalanceConfig::default();
         cfg.raid.enabled = false;
         cfg.market = crate::MarketConfig::default_active();
@@ -1146,25 +1146,13 @@ mod tests {
         state.resources.set(ResourceKind::Silicon, cap);
         state.resources.iron = 500.0;
         let cash = state.finance.treasury.cash;
-        let quote = state
-            .trade_market(ResourceKind::Iron, ResourceKind::Silicon, 100.0, 1_000)
-            .unwrap();
-        assert!(quote.recv_amount > 0.0);
-        assert!((state.resources.get(ResourceKind::Silicon) - cap).abs() < 1e-9);
-        let mut paid = Resources::ZERO;
-        paid.set(ResourceKind::Iron, quote.pay_amount);
-        let expected = cash - state.value_resources(paid);
+        let refused = state.trade_market(ResourceKind::Iron, ResourceKind::Silicon, 100.0, 1_000);
         assert!(
-            (state.finance.treasury.cash - expected).abs() < 1e-9,
-            "cash {} expected {expected} quote recv {}",
-            state.finance.treasury.cash,
-            quote.recv_amount
+            matches!(refused, Err(crate::MarketError::NoRoom { .. })),
+            "{refused:?}"
         );
-        assert!(
-            state.finance.income.trade <= 0.0,
-            "trade {}",
-            state.finance.income.trade
-        );
+        assert_eq!(state.resources.iron, 500.0);
+        assert!((state.finance.treasury.cash - cash).abs() < 1e-9);
     }
 
     #[test]
