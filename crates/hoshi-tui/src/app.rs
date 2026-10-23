@@ -1490,20 +1490,26 @@ impl App {
                     Span::styled(format!("{balance:+.0}"), energy_style),
                     Span::styled(" home", t.label()),
                 ]),
-                foot: Line::styled(
-                    format!(
-                        "{} short · Σ{:.0}/{:.0}",
-                        s.colonies
-                            .iter()
-                            .filter(|colony| s
-                                .energy_balance_at(colony.coord)
-                                .is_some_and(|balance| balance < -1e-9))
-                            .count(),
-                        energy.energy_supply,
-                        energy.energy_demand
+                // One story per state: how many planets (home included) run
+                // short, or else how much of the supply is drawn. Compact
+                // numbers keep every digit inside the cell.
+                foot: match s
+                    .owned_coords()
+                    .into_iter()
+                    .filter(|&coord| s.energy_balance_at(coord).is_some_and(|b| b < -1e-9))
+                    .count()
+                {
+                    0 => Line::styled(
+                        format!(
+                            "{}/{} used",
+                            ui::spans::compact(energy.energy_demand),
+                            ui::spans::compact(energy.energy_supply)
+                        ),
+                        t.label(),
                     ),
-                    t.label(),
-                ),
+                    1 => Line::styled("1 planet short", t.intent(Intent::Danger)),
+                    n => Line::styled(format!("{n} planets short"), t.intent(Intent::Danger)),
+                },
             });
             let heat_intent = if waste.overflowing() {
                 Intent::Danger
@@ -6262,10 +6268,27 @@ mod tests {
             rare: None,
             goods: std::collections::BTreeMap::new(),
         });
-        let app = App::new(state);
+        let mut app = App::new(state);
         let text = render_text(&app, 160, 40);
-        assert!(text.contains("1 short"), "{text}");
-        assert!(text.contains("Σ22/49"), "{text}");
+        assert!(text.contains("1 planet short"), "{text}");
+
+        // Home short too (the deficit #294 found uncounted) makes two.
+        app.state.buildings.deuterium_synthesizer = 6;
+        let text = render_text(&app, 160, 40);
+        assert!(text.contains("2 planets short"), "{text}");
+
+        // Nobody short: demand over supply, with every digit inside the cell.
+        app.state.colonies.clear();
+        app.state.buildings.deuterium_synthesizer = 0;
+        app.state.buildings.solar_plant = 30;
+        let report = app.state.production_report();
+        let text = render_text(&app, 160, 40);
+        let used = format!(
+            "{}/{} used",
+            ui::spans::compact(report.energy_demand),
+            ui::spans::compact(report.energy_supply)
+        );
+        assert!(text.contains(&used), "{used} in {text}");
     }
 
     #[test]
