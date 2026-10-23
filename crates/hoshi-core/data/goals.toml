@@ -1,6 +1,9 @@
 # Industrial goal ladder. Tiers complete from sustained production rates
 # (goods per hour and energy supply), never from a one-off stockpile.
-# hold_secs = 0 means the current rate is the evidence.
+# hold_secs = 0 means the current rate is the evidence. Each tier needs
+# higher building levels than the last (roughly deuterium synthesizer 1,
+# metal and crystal mines 4, metal mine 8, deuterium synthesizer 10, then
+# metal mine 12), so tiers never complete together.
 
 hold_secs = 0
 
@@ -9,15 +12,15 @@ id = "water_propellant"
 name = "Self-sufficient volatiles"
 blurb = "Keep water ice extraction and propellant refining running."
 goods = { water_ice = 0.2, propellant = 0.05 }
-reward_metal = 120.0
-reward_crystal = 40.0
+reward_metal = 300.0
+reward_crystal = 100.0
 reward_deuterium = 0.0
 
 [[tier]]
 id = "steel_electronics"
 name = "Steel and electronics"
 blurb = "Sustain a steel mill and an electronics line."
-goods = { steel = 0.5, electronics = 0.05 }
+goods = { steel = 100.0, electronics = 80.0 }
 reward_metal = 200.0
 reward_crystal = 80.0
 reward_deuterium = 0.0
@@ -26,7 +29,7 @@ reward_deuterium = 0.0
 id = "logistics"
 name = "Interplanetary logistics"
 blurb = "Sustain structural frames for a cargo network."
-goods = { frames = 0.5 }
+goods = { frames = 450.0 }
 reward_metal = 240.0
 reward_crystal = 80.0
 reward_deuterium = 0.0
@@ -35,7 +38,7 @@ reward_deuterium = 0.0
 id = "helium3_fusion"
 name = "Helium-3 fusion economy"
 blurb = "Extract helium-3 and refine fuel for a fusion plant."
-goods = { helium_3 = 0.05, fuel = 0.02 }
+goods = { helium_3 = 25.0, fuel = 25.0 }
 reward_metal = 280.0
 reward_crystal = 100.0
 reward_deuterium = 0.0
@@ -44,7 +47,7 @@ reward_deuterium = 0.0
 id = "wonder_supply"
 name = "Wonder supply chain"
 blurb = "Sustained structural frames and photovoltaic output for a Dyson ring segment."
-goods = { frames = 2.0 }
+goods = { frames = 1500.0 }
 energy = 80.0
 reward_metal = 400.0
 reward_crystal = 200.0
