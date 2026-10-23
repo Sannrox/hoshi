@@ -3,7 +3,7 @@ id = "opening"
 trigger = "opening"
 screen = "overview"
 title = "Welcome"
-body = "This is the overview. Mines tick while you work elsewhere. Tab cycles screens. Skip the tutorial with s, or dismiss a hint with x."
+body = "This is the bridge. Mines tick while you work elsewhere. Tab cycles screens. Skip the tutorial with s, or dismiss a hint with x."
 
 [[hints]]
 id = "first_mine"
