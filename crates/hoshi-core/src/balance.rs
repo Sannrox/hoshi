@@ -313,6 +313,9 @@ pub struct PacingTargets {
     pub first_upgrade_secs: u64,
     /// Metal mine levels gained per simulated day under the greedy strategy.
     pub min_metal_mine_per_day: u32,
+    /// The fastest ship's flight to a neighbouring slot (probes excepted) takes
+    /// at least this long.
+    pub min_flight_secs: u64,
     /// Days the per-day mine gain applies to. Mines-only play then stops at
     /// the solar cap; later growth needs fission, which has its own target.
     pub metal_mine_days: u32,
@@ -342,6 +345,7 @@ impl Default for PacingTargets {
             first_upgrade_secs: 300,
             min_metal_mine_per_day: 1,
             metal_mine_days: default_metal_mine_days(),
+            min_flight_secs: default_min_flight_secs(),
             max_bridge_metal_ratio: 8.0,
             keystone_secs: 14 * 86_400,
             raided_shipyard_secs: default_raided_shipyard_secs(),
@@ -1171,6 +1175,8 @@ struct FilePacing {
     min_metal_mine_per_day: u32,
     #[serde(default = "default_metal_mine_days")]
     metal_mine_days: u32,
+    #[serde(default = "default_min_flight_secs")]
+    min_flight_secs: u64,
     max_bridge_metal_ratio: f64,
     #[serde(default = "default_keystone_secs")]
     keystone_secs: u64,
@@ -1180,6 +1186,22 @@ struct FilePacing {
 
 fn default_metal_mine_days() -> u32 {
     7
+}
+
+fn default_min_flight_secs() -> u64 {
+    180
+}
+
+fn default_position_base() -> f64 {
+    crate::fleets::FlightConfig::default().position_base
+}
+
+fn default_overhead_secs() -> f64 {
+    crate::fleets::FlightConfig::default().overhead_secs
+}
+
+fn default_secs_per_root() -> f64 {
+    crate::fleets::FlightConfig::default().secs_per_root
 }
 
 fn default_raided_shipyard_secs() -> u64 {
@@ -1455,8 +1477,14 @@ struct FileFlight {
     galaxy_unit: f64,
     system_base: f64,
     system_unit: f64,
+    #[serde(default = "default_position_base")]
+    position_base: f64,
     position_unit: f64,
     min_distance: f64,
+    #[serde(default = "default_overhead_secs")]
+    overhead_secs: f64,
+    #[serde(default = "default_secs_per_root")]
+    secs_per_root: f64,
     fuel_distance: f64,
     base_fleet_slots: u32,
 }
@@ -1555,8 +1583,11 @@ impl File {
                 galaxy_unit: self.flight.galaxy_unit,
                 system_base: self.flight.system_base,
                 system_unit: self.flight.system_unit,
+                position_base: self.flight.position_base,
                 position_unit: self.flight.position_unit,
                 min_distance: self.flight.min_distance,
+                overhead_secs: self.flight.overhead_secs,
+                secs_per_root: self.flight.secs_per_root,
                 fuel_distance: self.flight.fuel_distance,
                 base_fleet_slots: self.flight.base_fleet_slots,
             },
@@ -1642,6 +1673,7 @@ impl File {
                 first_upgrade_secs: self.pacing.first_upgrade_secs,
                 min_metal_mine_per_day: self.pacing.min_metal_mine_per_day,
                 metal_mine_days: self.pacing.metal_mine_days,
+                min_flight_secs: self.pacing.min_flight_secs,
                 max_bridge_metal_ratio: self.pacing.max_bridge_metal_ratio,
                 keystone_secs: self.pacing.keystone_secs,
                 raided_shipyard_secs: self.pacing.raided_shipyard_secs,
@@ -1978,6 +2010,12 @@ impl BalanceConfig {
         if self.pacing.metal_mine_days == 0 {
             return Err(BalanceError::Invalid(
                 "pacing.metal_mine_days must be > 0".into(),
+            ));
+        }
+        finite_positive("flight.secs_per_root", self.flight.secs_per_root)?;
+        if !self.flight.overhead_secs.is_finite() || self.flight.overhead_secs < 0.0 {
+            return Err(BalanceError::Invalid(
+                "flight.overhead_secs must be >= 0".into(),
             ));
         }
         finite_positive(

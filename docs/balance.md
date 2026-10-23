@@ -68,6 +68,7 @@ is how often expected vs actual is sampled.
 | `metal_mine_days` | Days the per-day mine gain applies to. Longer runs must reach the level of day `metal_mine_days`. |
 | `max_bridge_metal_ratio` | `metal` after maxed PR-merge pulses divided by `metal` with activity off. |
 | `keystone_secs` | Each playable branch keystone must complete within this many seconds under a research-greedy run. |
+| `min_flight_secs` | The fastest ship's flight to a neighbouring slot takes at least this many seconds. |
 
 Defaults: first upgrade in 5 minutes, at least one metal mine level per day
 for the first 7 days, bridge pulses must not multiply stored metal by more
@@ -103,6 +104,19 @@ comparison). `troop_strength` is the landing power of one troop transport.
 `shipyard_speed` speeds the empire shipyard (ships queue at home).
 
 ## Orbits
+
+`[flight]` times fleet missions. Distance is `galaxy_unit` per galaxy step
+across galaxies, `system_base + system_unit` per system step across systems,
+and `position_base + position_unit` per slot within a system (`min_distance`
+for the same slot). A flight takes
+`overhead_secs + secs_per_root * sqrt(distance / slowest speed) / speed%`
+seconds: time grows with the square root of distance, and 50% speed doubles
+the distance term. With the bundled numbers a light
+fighter needs about 5 minutes to a neighbouring slot, 10 to the next system
+and 26 to another galaxy. Espionage probes are the exception: their speed
+puts a scan seconds away. Fuel is `sum(count * fuel) * distance / fuel_distance *
+speed%`. A test holds the fastest ship's neighbouring hop (probes excepted, base
+speeds) at `pacing.min_flight_secs` (3 minutes) or more and keeps slot, system and galaxy hops in that order.
 
 `[orbits]` is PlanMission only. `mu_star` and `au_metres` are SI. Slot 1 of system 1 sits at `inner_au` (1 AU in the bundle); each later slot adds `au_per_slot` (slot 6 is 1.5 AU). Later systems add `system_au_base` then `system_au_step`; later galaxies add `galaxy_au`, so a cross-galaxy hop is larger than an in-system hop. `coast_compress` is game seconds per real coast second (synodic waits use the same factor). `kg_per_hull` / `kg_per_cargo` turn ship hull and cargo units into kilograms for the rocket equation; `m3_per_cargo` is payload volume. Exhaust velocity is per drive (`combustion_ve`, `impulse_ve`, `hyperspace_ve`). Gravity-well burns are per planet type. `high_energy_dv` / `high_energy_time` scale Hohmann; `assist_dv` discounts it when a body sits between the two radii. `window_half_secs` and `window_count` size the listed launch windows; `turnaround_secs` books the vehicle after arrival. Existing `fleet send` still uses `[flight]`.
 
