@@ -2,7 +2,7 @@
 
 use crate::balance::BalanceConfig;
 use crate::buildings::BuildingKind;
-use crate::fleets::{Coord, distance, flight_secs};
+use crate::fleets::{Coord, distance};
 use crate::planets::Colony;
 use crate::prestige::Prestige;
 use crate::research::{TechBranch, TechModifier, TechPrereq, TechSpec};
@@ -10,6 +10,9 @@ use crate::ships::Fleet;
 use crate::state::{GameState, ResourceKind, Resources};
 use crate::victory::VictoryPath;
 use serde::Deserialize;
+
+/// Flagship speed in flight points per second; its moves stay linear in distance.
+const FLAGSHIP_SPEED: f64 = 10.0;
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -329,7 +332,8 @@ impl GameState {
         self.check_frontier_flight(from, dest)
             .map_err(|e| SpeciesError::Invalid(e.to_string()))?;
         let dist = distance(from, dest, &self.config.flight);
-        let secs = flight_secs(dist, 10.0, 100);
+        // The flagship keeps its own slow linear clock: distance / 10.
+        let secs = (dist / FLAGSHIP_SPEED).ceil() as u64;
         let ship = self
             .species
             .as_mut()

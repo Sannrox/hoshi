@@ -14,6 +14,8 @@ first_upgrade_secs = 300
 # it needs fission (first reactor target).
 min_metal_mine_per_day = 1
 metal_mine_days = 7
+# The fastest ship's flight to a neighbouring slot (probes excepted) takes at least this long.
+min_flight_secs = 180
 # metal(with max PR-merge pulses) / metal(activity off) must stay at or below this.
 max_bridge_metal_ratio = 8.0
 # With raids on, greedy play must finish shipyard 1 within this many seconds.
@@ -364,12 +366,17 @@ early_return = 8
 pirates = 9
 loss = 1
 
+# Flight time = overhead_secs + secs_per_root * sqrt(distance / speed) / speed%.
+# In-system distances start at position_base, so even a neighbour is minutes away.
 [flight]
 galaxy_unit = 20000.0
 system_base = 2700.0
 system_unit = 95.0
+position_base = 1000.0
 position_unit = 5.0
 min_distance = 5.0
+overhead_secs = 10.0
+secs_per_root = 1100.0
 fuel_distance = 35000.0
 base_fleet_slots = 1
 
