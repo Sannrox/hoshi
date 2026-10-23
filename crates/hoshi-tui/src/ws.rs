@@ -10,6 +10,7 @@ const MAX_FRAME: u64 = 65_536;
 #[derive(Debug)]
 pub enum Frame {
     Text(Vec<u8>),
+    Binary(Vec<u8>),
     Close,
     Ping(Vec<u8>),
     Pong,
@@ -95,6 +96,14 @@ pub fn write_opening(stream: &mut TcpStream, key: &str, protocol: Option<&str>) 
 
 pub fn write_text(stream: &mut TcpStream, payload: &[u8]) -> io::Result<()> {
     write_frame(stream, 0x1, payload)
+}
+
+pub fn write_binary(stream: &mut TcpStream, payload: &[u8]) -> io::Result<()> {
+    write_frame(stream, 0x2, payload)
+}
+
+pub fn write_ping(stream: &mut TcpStream) -> io::Result<()> {
+    write_frame(stream, 0x9, &[])
 }
 
 pub fn write_pong(stream: &mut TcpStream, payload: &[u8]) -> io::Result<()> {
@@ -190,6 +199,7 @@ fn take_frame(buf: &mut Vec<u8>) -> io::Result<Option<Frame>> {
     }
     Ok(Some(match opcode {
         0x1 => Frame::Text(payload),
+        0x2 => Frame::Binary(payload),
         0x8 => Frame::Close,
         0x9 => Frame::Ping(payload),
         0xA => Frame::Pong,

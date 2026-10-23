@@ -303,6 +303,22 @@ struct Live {
     state: GameState,
     last_save_tick: u64,
     saved_next_id: u64,
+    /// The browser terminal holding the save, if any. Never in the save.
+    terminal: Option<crate::terminal::Lease>,
+    terminal_settings: crate::terminal::Settings,
+    /// The operator's key bindings, so the browser terminal answers to the
+    /// same keys as the local TUI.
+    terminal_keys: crate::keymap::Keymap,
+    next_terminal_id: u64,
+}
+
+impl Live {
+    /// While a terminal session holds the save, `/v1` writes and a second
+    /// terminal are refused, like the TUI's save lock.
+    fn terminal_holds(&self, now: u64) -> bool {
+        self.terminal
+            .is_some_and(|lease| lease.holds(now, self.terminal_settings.grace_secs))
+    }
 }
 
 #[derive(Clone)]
@@ -368,6 +384,10 @@ impl Server {
             last_save_tick: state.last_tick_unix,
             saved_next_id: state.history.next_id,
             state,
+            terminal: None,
+            terminal_settings: crate::terminal::Settings::default(),
+            terminal_keys: crate::keymap::Keymap::default(),
+            next_terminal_id: 1,
         };
         let push = crate::push::Gate::new(
             &crate::push::Settings::default(),
@@ -391,6 +411,19 @@ impl Server {
 
     pub fn with_updates(self, updates: crate::update::CheckSession) -> Self {
         lock_poison(&self.live).updates = Some(updates);
+        self
+    }
+
+    pub fn with_terminal(
+        self,
+        settings: crate::terminal::Settings,
+        keys: crate::keymap::Keymap,
+    ) -> Self {
+        {
+            let mut live = lock_poison(&self.live);
+            live.terminal_settings = settings;
+            live.terminal_keys = keys;
+        }
         self
     }
 
@@ -1153,6 +1186,24 @@ fn serve_one(
             push,
         );
     }
+    if route == "/v1/terminal" {
+        if method != "GET" {
+            return write_http(
+                &mut stream,
+                405,
+                &error_body("invalid", "method not allowed"),
+                "",
+            );
+        }
+        return serve_terminal(
+            save,
+            &mut stream,
+            &headers,
+            authorization.as_deref(),
+            auth,
+            live,
+        );
+    }
     if !route.starts_with("/v1") {
         return write_http(&mut stream, 404, &error_body("invalid", "not found"), "");
     }
@@ -1273,6 +1324,16 @@ fn serve_one(
     };
     let (status, value) = {
         let mut live = lock_poison(live);
+        // Game actions are POSTs; reads (GET /v1/state) keep working.
+        if method != "GET" && live.terminal_holds(now) {
+            drop(live);
+            return write_http(
+                &mut stream,
+                409,
+                &error_body("refused", crate::terminal::HELD),
+                "",
+            );
+        }
         let result = mutate_live(save, &mut live, &parts, now);
         lock_poison(push).poll(&live.state, now);
         result
@@ -1507,6 +1568,294 @@ fn serve_oidc(
     )
 }
 
+/// A checked WebSocket upgrade, not yet answered.
+struct Upgrade {
+    key: String,
+    v1: bool,
+}
+
+impl Upgrade {
+    fn open(&self, stream: &mut TcpStream) -> std::io::Result<()> {
+        ws::write_opening(stream, &self.key, self.v1.then_some(ws::PROTOCOL))
+    }
+}
+
+/// Auth and handshake checks shared by `/v1/events` and `/v1/terminal`. The
+/// token may come in the `Authorization` header or the browser subprotocol,
+/// not both. On refusal the HTTP error is written and `None` returned.
+fn authorize_upgrade(
+    save: &Path,
+    stream: &mut TcpStream,
+    route: &str,
+    headers: &str,
+    authorization: Option<&str>,
+    auth: &Mutex<Auth>,
+    now: u64,
+) -> std::io::Result<Option<Upgrade>> {
+    let Ok(offer) = ws::protocol_offer(headers) else {
+        write_http(
+            stream,
+            400,
+            &error_body("invalid", "invalid websocket protocol"),
+            "",
+        )?;
+        return Ok(None);
+    };
+    let authorization = match (authorization, offer.token) {
+        (Some(_), Some(_)) => {
+            write_http(
+                stream,
+                400,
+                &error_body("invalid", "send the token in one place"),
+                "",
+            )?;
+            return Ok(None);
+        }
+        (None, Some(token)) => Some(format!("Bearer {token}")),
+        (header, None) => header.map(str::to_string),
+    };
+    let gate = lock_poison(auth).allow(save, route, authorization.as_deref(), now);
+    if let Err((status, value)) = gate {
+        let extra = match status {
+            401 => "WWW-Authenticate: Bearer\r\n",
+            _ => "",
+        };
+        write_http(stream, status, &value, extra)?;
+        return Ok(None);
+    }
+    let key = ws::websocket_key(headers)
+        .filter(|_| ws::is_upgrade(headers) && ws::websocket_version_ok(headers));
+    let Some(key) = key else {
+        write_http(
+            stream,
+            400,
+            &error_body("invalid", "websocket upgrade required"),
+            "",
+        )?;
+        return Ok(None);
+    };
+    Ok(Some(Upgrade { key, v1: offer.v1 }))
+}
+
+/// Swaps the server's game state into the session's app for one step and
+/// back on drop, so the server keeps the only copy even if the step panics.
+struct Lent<'a> {
+    live: std::sync::MutexGuard<'a, Live>,
+    session: &'a mut crate::terminal::Session,
+}
+
+impl<'a> Lent<'a> {
+    fn new(live: &'a Mutex<Live>, session: &'a mut crate::terminal::Session) -> Self {
+        let mut live = lock_poison(live);
+        std::mem::swap(&mut session.app.state, &mut live.state);
+        Self { live, session }
+    }
+}
+
+impl Drop for Lent<'_> {
+    fn drop(&mut self) {
+        std::mem::swap(&mut self.session.app.state, &mut self.live.state);
+    }
+}
+
+/// How a terminal session ended.
+enum Ending {
+    /// Quit, close frame or idle timeout: the save is free at once.
+    Clean,
+    /// The socket broke: the save stays held for the grace period.
+    Dropped,
+}
+
+/// `GET /v1/terminal`: run the TUI for one browser terminal. See
+/// [`crate::terminal`] and docs/server.md.
+fn serve_terminal(
+    save: &Path,
+    stream: &mut TcpStream,
+    headers: &str,
+    authorization: Option<&str>,
+    auth: &Mutex<Auth>,
+    live: &Mutex<Live>,
+) -> std::io::Result<()> {
+    let now = SystemClock.now_unix();
+    let Some(upgrade) = authorize_upgrade(
+        save,
+        stream,
+        "/v1/terminal",
+        headers,
+        authorization,
+        auth,
+        now,
+    )?
+    else {
+        return Ok(());
+    };
+    let (lease_id, settings, keys, state) = {
+        let mut live = lock_poison(live);
+        if live.terminal_holds(now) {
+            drop(live);
+            return write_http(
+                stream,
+                409,
+                &error_body("refused", crate::terminal::HELD),
+                "",
+            );
+        }
+        let id = live.next_terminal_id;
+        live.next_terminal_id += 1;
+        live.terminal = Some(crate::terminal::Lease { id, left_at: None });
+        (
+            id,
+            live.terminal_settings,
+            live.terminal_keys.clone(),
+            live.state.clone(),
+        )
+    };
+    let mut release = Release {
+        save,
+        live,
+        lease_id,
+        ending: Ending::Dropped,
+    };
+    if upgrade.open(stream).is_ok() {
+        release.ending = run_terminal(save, stream, live, state, keys, settings);
+    }
+    Ok(())
+}
+
+/// Gives the save back when a terminal session ends, even by a panic: a
+/// clean end frees it at once, anything else starts the grace period.
+struct Release<'a> {
+    save: &'a Path,
+    live: &'a Mutex<Live>,
+    lease_id: u64,
+    ending: Ending,
+}
+
+impl Drop for Release<'_> {
+    fn drop(&mut self) {
+        let mut live = lock_poison(self.live);
+        // The session's App turned on round-by-round raids for its player;
+        // the headless server finishes fights on its own again.
+        live.state.interactive_tactics = false;
+        let _ = persist(self.save, &mut live, true);
+        // A newer session may have taken over after the grace; leave it alone.
+        if live.terminal.is_some_and(|lease| lease.id == self.lease_id) {
+            live.terminal = match self.ending {
+                Ending::Clean => None,
+                Ending::Dropped => Some(crate::terminal::Lease {
+                    id: self.lease_id,
+                    left_at: Some(SystemClock.now_unix()),
+                }),
+            };
+        }
+    }
+}
+
+/// Frames per second the session redraws at when nothing happens.
+const TERMINAL_TICK: Duration = Duration::from_millis(250);
+/// The server pings this often; browsers answer pings on their own.
+const TERMINAL_PING: Duration = Duration::from_secs(5);
+/// No frame at all from the client for this long counts as a dropped
+/// socket, so a half-open connection cannot hold the save past the grace.
+const TERMINAL_SILENCE: Duration = Duration::from_secs(15);
+
+/// Save the server's state. Only call it while no [`Lent`] is alive: during a
+/// step the server holds the session's placeholder, not the game.
+fn persist_live(save: &Path, live: &Mutex<Live>) {
+    let _ = persist(save, &mut lock_poison(live), false);
+}
+
+fn run_terminal(
+    save: &Path,
+    stream: &mut TcpStream,
+    live: &Mutex<Live>,
+    state: GameState,
+    keys: crate::keymap::Keymap,
+    settings: crate::terminal::Settings,
+) -> Ending {
+    let app = crate::app::App::with_keymap(state, keys);
+    let Ok(mut session) = crate::terminal::Session::new(app) else {
+        return Ending::Dropped;
+    };
+    let mut incoming = ws::Reader::new();
+    let mut last_input = std::time::Instant::now();
+    let mut last_seen = std::time::Instant::now();
+    let mut last_ping = std::time::Instant::now();
+    let mut last_draw: Option<std::time::Instant> = None;
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
+    loop {
+        let mut dirty = false;
+        let frame = incoming.poll(stream);
+        if matches!(frame, Ok(Some(_))) {
+            last_seen = std::time::Instant::now();
+        }
+        match frame {
+            Ok(Some(ws::Frame::Binary(bytes))) => {
+                last_input = std::time::Instant::now();
+                let now = SystemClock.now_unix();
+                let quit = Lent::new(live, &mut session).session.input(&bytes, now);
+                persist_live(save, live);
+                if quit {
+                    let _ = ws::write_close(stream);
+                    return Ending::Clean;
+                }
+                dirty = true;
+            }
+            Ok(Some(ws::Frame::Text(text))) => {
+                if let Some((cols, rows)) = crate::terminal::parse_resize(&text) {
+                    if session.screen.resize(cols, rows).is_err() {
+                        return Ending::Dropped;
+                    }
+                    dirty = true;
+                }
+            }
+            Ok(Some(ws::Frame::Ping(payload))) => {
+                let _ = ws::write_pong(stream, &payload);
+            }
+            Ok(Some(ws::Frame::Close)) => {
+                let _ = ws::write_close(stream);
+                return Ending::Clean;
+            }
+            Ok(Some(ws::Frame::Pong | ws::Frame::Other) | None) => {}
+            Err(_) => return Ending::Dropped,
+        }
+        if last_seen.elapsed() >= TERMINAL_SILENCE {
+            return Ending::Dropped;
+        }
+        if last_ping.elapsed() >= TERMINAL_PING {
+            if ws::write_ping(stream).is_err() {
+                return Ending::Dropped;
+            }
+            last_ping = std::time::Instant::now();
+        }
+        if settings.idle_secs > 0 && last_input.elapsed() >= Duration::from_secs(settings.idle_secs)
+        {
+            let _ = ws::write_close(stream);
+            return Ending::Clean;
+        }
+        if dirty || last_draw.is_none_or(|at| at.elapsed() >= TERMINAL_TICK) {
+            let now = SystemClock.now_unix();
+            let bytes = {
+                let lent = Lent::new(live, &mut session);
+                let session = &mut *lent.session;
+                session.app.catch_up_now(now);
+                session.screen.draw(&session.app)
+            };
+            persist_live(save, live);
+            match bytes {
+                Ok(bytes) if !bytes.is_empty() => {
+                    if ws::write_binary(stream, &bytes).is_err() {
+                        return Ending::Dropped;
+                    }
+                }
+                Ok(_) => {}
+                Err(_) => return Ending::Dropped,
+            }
+            last_draw = Some(std::time::Instant::now());
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn serve_events(
     save: &Path,
@@ -1519,58 +1868,23 @@ fn serve_events(
     push: &Mutex<crate::push::Gate>,
 ) -> std::io::Result<()> {
     let now = SystemClock.now_unix();
-    let Ok(offer) = ws::protocol_offer(headers) else {
-        return write_http(
-            stream,
-            400,
-            &error_body("invalid", "invalid websocket protocol"),
-            "",
-        );
+    let Some(upgrade) = authorize_upgrade(
+        save,
+        stream,
+        "/v1/events",
+        headers,
+        authorization,
+        auth,
+        now,
+    )?
+    else {
+        return Ok(());
     };
-    let authorization = match (authorization, offer.token) {
-        (Some(_), Some(_)) => {
-            return write_http(
-                stream,
-                400,
-                &error_body("invalid", "send the token in one place"),
-                "",
-            );
-        }
-        (None, Some(token)) => Some(format!("Bearer {token}")),
-        (header, None) => header.map(str::to_string),
-    };
-    let gate = {
-        let mut auth = lock_poison(auth);
-        auth.allow(save, "/v1/events", authorization.as_deref(), now)
-    };
-    if let Err((status, value)) = gate {
-        let extra = match status {
-            401 => "WWW-Authenticate: Bearer\r\n",
-            _ => "",
-        };
-        return write_http(stream, status, &value, extra);
-    }
     let cursor = match parse_cursor(path) {
         Ok(cursor) => cursor,
         Err((status, value)) => return write_http(stream, status, &value, ""),
     };
-    if !ws::is_upgrade(headers) || !ws::websocket_version_ok(headers) {
-        return write_http(
-            stream,
-            400,
-            &error_body("invalid", "websocket upgrade required"),
-            "",
-        );
-    }
-    let Some(key) = ws::websocket_key(headers) else {
-        return write_http(
-            stream,
-            400,
-            &error_body("invalid", "websocket upgrade required"),
-            "",
-        );
-    };
-    ws::write_opening(stream, &key, offer.v1.then_some(ws::PROTOCOL))?;
+    upgrade.open(stream)?;
     let mut cursor = cursor;
     let mut announced_update = None;
     if pump_events(save, stream, live, push, &mut cursor, now).is_err() {
@@ -1592,7 +1906,7 @@ fn serve_events(
                     return Ok(());
                 }
             }
-            Ok(Some(ws::Frame::Pong | ws::Frame::Other) | None) => {}
+            Ok(Some(ws::Frame::Pong | ws::Frame::Binary(_) | ws::Frame::Other) | None) => {}
             Err(_) => return Ok(()),
         }
         let latest = lock_poison(live)
@@ -1687,7 +2001,14 @@ pub fn run(args: &[String]) -> Result<(), ServeError> {
     let mut server = Server::open(ServeOptions { bind, save })?
         .with_auth(auth)
         .with_push(crate::push::Settings::from_config(&cfg))
-        .with_oidc(crate::oidc::Settings::from_config(&cfg));
+        .with_oidc(crate::oidc::Settings::from_config(&cfg))
+        .with_terminal(
+            crate::terminal::Settings {
+                idle_secs: cfg.serve_terminal_idle_secs,
+                ..crate::terminal::Settings::default()
+            },
+            cfg.keys.clone(),
+        );
     lock_poison(&server.live).config_dir = dir.clone();
     if args.iter().any(|arg| arg == "--update-check") {
         let settings = crate::update::settings(&cfg, args);
@@ -2979,6 +3300,139 @@ mod tests {
         assert_eq!(types, vec!["build", "raid"]);
     }
 
+    fn bearer() -> String {
+        format!("Bearer {TEST_TOKEN}")
+    }
+
+    /// Terminal output from binary frames until `want` shows up or 3s pass.
+    fn read_terminal_until(stream: &mut TcpStream, want: &str) -> String {
+        let mut out = Vec::new();
+        let mut incoming = crate::ws::Reader::new();
+        stream
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(3)
+            && !String::from_utf8_lossy(&out).contains(want)
+        {
+            match incoming.poll(stream) {
+                Ok(Some(crate::ws::Frame::Binary(bytes))) => out.extend(bytes),
+                Ok(Some(_) | None) => {}
+                Err(err)
+                    if err.kind() == std::io::ErrorKind::WouldBlock
+                        || err.kind() == std::io::ErrorKind::TimedOut => {}
+                Err(_) => break,
+            }
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    #[test]
+    fn terminal_input_reaches_the_tui_and_resize_sets_the_frame_size() {
+        let save = unique_save();
+        let addr = spawn_run(ephemeral(save.clone()));
+        let (mut stream, status, _) = ws_open(addr, "/v1/terminal", Some(&bearer()));
+        assert_eq!(status, 101);
+        let first = read_terminal_until(&mut stream, "HOSHI");
+        assert!(first.contains("HOSHI"), "{first}");
+        crate::ws::write_text(&mut stream, br#"{"type":"resize","cols":120,"rows":40}"#).unwrap();
+        // Crossterm moves the cursor as ESC[row;colH, so row 40 only exists at the new size.
+        let resized = read_terminal_until(&mut stream, "\x1b[40;");
+        assert!(resized.contains("\x1b[40;"), "{resized:?}");
+        crate::ws::write_binary(&mut stream, b"2").unwrap();
+        let colony = read_terminal_until(&mut stream, "Colony");
+        assert!(colony.contains("Colony"), "{colony:?}");
+        crate::ws::write_binary(&mut stream, b"q").unwrap();
+        let _ = std::fs::remove_file(&save);
+        let _ = std::fs::remove_file(save_lock_path(&save));
+    }
+
+    #[test]
+    fn terminal_actions_reach_the_save_on_disk_while_attached() {
+        let save = unique_save();
+        let addr = spawn_run(ephemeral(save.clone()));
+        let (mut stream, status, _) = ws_open(addr, "/v1/terminal", Some(&bearer()));
+        assert_eq!(status, 101);
+        let _ = read_terminal_until(&mut stream, "HOSHI");
+        // Colony › Buildings, then Enter queues the selected building.
+        crate::ws::write_binary(&mut stream, b"2").unwrap();
+        let _ = read_terminal_until(&mut stream, "Buildings");
+        crate::ws::write_binary(&mut stream, b"\r").unwrap();
+        // Poll the file: a redraw already in flight says nothing about the key.
+        let start = std::time::Instant::now();
+        let queued = loop {
+            let on_disk = open_storage(&save)
+                .unwrap()
+                .load(BalanceConfig::default())
+                .unwrap();
+            if !on_disk.build_queue.is_empty() || start.elapsed() > Duration::from_secs(3) {
+                break on_disk.build_queue.len();
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert_eq!(queued, 1, "the save holds the queued build");
+        crate::ws::write_binary(&mut stream, b"q").unwrap();
+        let _ = std::fs::remove_file(&save);
+        let _ = std::fs::remove_file(save_lock_path(&save));
+    }
+
+    #[test]
+    fn a_second_writer_is_refused_while_a_terminal_is_attached() {
+        let save = unique_save();
+        let addr = spawn_run(ephemeral(save.clone()));
+        let (mut stream, status, _) = ws_open(addr, "/v1/terminal", Some(&bearer()));
+        assert_eq!(status, 101);
+        let _ = read_terminal_until(&mut stream, "HOSHI");
+        let (_second, status, _) = ws_open(addr, "/v1/terminal", Some(&bearer()));
+        assert_eq!(status, 409);
+        let (status, body) = post_json(
+            addr,
+            "/v1/build",
+            r#"{"planet":"1:1:1","building":"metal_mine"}"#,
+        );
+        assert_eq!(status, 409, "{body}");
+        assert!(body.contains(crate::terminal::HELD), "{body}");
+        let (status, body) = get_path_auth(addr, "/v1/state", Some(&bearer())).unwrap();
+        assert_eq!(status, 200, "{body}");
+        crate::ws::write_binary(&mut stream, b"q").unwrap();
+        let _ = std::fs::remove_file(&save);
+        let _ = std::fs::remove_file(save_lock_path(&save));
+    }
+
+    #[test]
+    fn a_dropped_terminal_leaves_a_clean_save_and_is_taken_over_after_the_grace() {
+        let save = unique_save();
+        let server = ephemeral(save.clone()).with_terminal(
+            crate::terminal::Settings {
+                grace_secs: 1,
+                idle_secs: 60,
+            },
+            crate::keymap::Keymap::default(),
+        );
+        let addr = spawn_run(server);
+        let (mut stream, status, _) = ws_open(addr, "/v1/terminal", Some(&bearer()));
+        assert_eq!(status, 101);
+        let _ = read_terminal_until(&mut stream, "HOSHI");
+        // Start an action, then drop the socket without a close frame.
+        crate::ws::write_binary(&mut stream, b"2\r").unwrap();
+        drop(stream);
+        let (_early, status, _) = ws_open(addr, "/v1/terminal", Some(&bearer()));
+        assert_eq!(status, 409, "the dropped session still holds the save");
+        std::thread::sleep(Duration::from_millis(2_100));
+        let (mut again, status, _) = ws_open(addr, "/v1/terminal", Some(&bearer()));
+        assert_eq!(status, 101);
+        let redraw = read_terminal_until(&mut again, "HOSHI");
+        assert!(
+            redraw.contains("\x1b[2J"),
+            "a takeover repaints in full: {redraw:?}"
+        );
+        crate::ws::write_binary(&mut again, b"q").unwrap();
+        let reloaded = open_storage(&save).unwrap().load(BalanceConfig::default());
+        assert!(reloaded.is_ok(), "{reloaded:?}");
+        let _ = std::fs::remove_file(&save);
+        let _ = std::fs::remove_file(save_lock_path(&save));
+    }
+
     #[test]
     fn unknown_http_path_does_not_catch_up_or_write() {
         let save = unique_save();
@@ -3039,6 +3493,10 @@ mod tests {
             last_save_tick: state.last_tick_unix,
             saved_next_id: state.history.next_id,
             state,
+            terminal: None,
+            terminal_settings: crate::terminal::Settings::default(),
+            terminal_keys: crate::keymap::Keymap::default(),
+            next_terminal_id: 1,
         };
         let before_tick = live.state.last_tick_unix;
         let before_queue = live.state.build_queue.len();

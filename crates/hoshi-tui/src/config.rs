@@ -62,6 +62,8 @@ pub struct UserConfig {
     pub serve_rate_limit: u32,
     /// Sliding window in seconds for serve rate limits.
     pub serve_rate_window_secs: u64,
+    /// A browser terminal with no input for this long is closed.
+    pub serve_terminal_idle_secs: u64,
     /// Player opt-in for out-of-session web push. Off by default.
     pub serve_push: bool,
     /// Operator VAPID private key. Runtime config, never the save.
@@ -134,6 +136,7 @@ impl Default for UserConfig {
             serve_token_file: String::new(),
             serve_rate_limit: crate::serve::DEFAULT_RATE_LIMIT,
             serve_rate_window_secs: crate::serve::DEFAULT_RATE_WINDOW_SECS,
+            serve_terminal_idle_secs: crate::terminal::DEFAULT_IDLE_SECS,
             serve_push: false,
             serve_vapid_private: String::new(),
             serve_vapid_subject: String::new(),
@@ -315,6 +318,11 @@ impl UserConfig {
                         cfg.serve_rate_window_secs = n;
                     }
                 }
+                "serve_terminal_idle_secs" => {
+                    if let Ok(n) = value.parse() {
+                        cfg.serve_terminal_idle_secs = n;
+                    }
+                }
                 "serve_push" => cfg.serve_push = value == "true",
                 "serve_vapid_private" => {
                     cfg.serve_vapid_private = value.trim_matches('"').to_string()
@@ -367,7 +375,7 @@ impl UserConfig {
             _ => String::new(),
         };
         let text = format!(
-            "reduced_motion = {}\nno_animation = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\narena = {}\nself_play = {}\ncheats = {}\nrivals = {}\nseason = {}\ndemo = {}\ngovernance = {}\nchisei = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}\ntutorial = {}\nreset_tutorial = {}\nnotify = {}\nnotify_build = {}\nnotify_raid = {}\nnotify_fleet = {}\ncommentary = {}\ncommentary_model_url = \"{}\"\nadvisor_model_url = \"{}\"\nadvisor_model_name = \"{}\"\nadvisor_allow_lan = {}\ncockpit_layout = \"{}\"\ncockpit_overview = \"{}\"\ncockpit_economy = \"{}\"\ncockpit_war = \"{}\"\ndetail_panel = {}\nserve_bind = \"{}\"\nserve_save = \"{}\"\nserve_token = \"{}\"\nserve_token_file = \"{}\"\nserve_rate_limit = {}\nserve_rate_window_secs = {}\nserve_push = {}\nserve_vapid_private = \"{}\"\nserve_vapid_subject = \"{}\"\nserve_oidc = {}\nserve_oidc_issuer = \"{}\"\nserve_oidc_client_id = \"{}\"\nserve_oidc_authorization = \"{}\"\nserve_oidc_token = \"{}\"\n{quiet}{}\n",
+            "reduced_motion = {}\nno_animation = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\narena = {}\nself_play = {}\ncheats = {}\nrivals = {}\nseason = {}\ndemo = {}\ngovernance = {}\nchisei = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}\ntutorial = {}\nreset_tutorial = {}\nnotify = {}\nnotify_build = {}\nnotify_raid = {}\nnotify_fleet = {}\ncommentary = {}\ncommentary_model_url = \"{}\"\nadvisor_model_url = \"{}\"\nadvisor_model_name = \"{}\"\nadvisor_allow_lan = {}\ncockpit_layout = \"{}\"\ncockpit_overview = \"{}\"\ncockpit_economy = \"{}\"\ncockpit_war = \"{}\"\ndetail_panel = {}\nserve_bind = \"{}\"\nserve_save = \"{}\"\nserve_token = \"{}\"\nserve_token_file = \"{}\"\nserve_rate_limit = {}\nserve_rate_window_secs = {}\nserve_terminal_idle_secs = {}\nserve_push = {}\nserve_vapid_private = \"{}\"\nserve_vapid_subject = \"{}\"\nserve_oidc = {}\nserve_oidc_issuer = \"{}\"\nserve_oidc_client_id = \"{}\"\nserve_oidc_authorization = \"{}\"\nserve_oidc_token = \"{}\"\n{quiet}{}\n",
             self.reduced_motion,
             self.no_animation,
             self.high_contrast,
@@ -406,6 +414,7 @@ impl UserConfig {
             self.serve_token_file.replace('"', ""),
             self.serve_rate_limit,
             self.serve_rate_window_secs,
+            self.serve_terminal_idle_secs,
             self.serve_push,
             self.serve_vapid_private.replace('"', ""),
             self.serve_vapid_subject.replace('"', ""),
