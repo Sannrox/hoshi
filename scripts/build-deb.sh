@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Package a built hoshi binary as a Debian/Ubuntu .deb.
-# Usage: scripts/build-deb.sh vX.Y.Z[~nightly.STAMP.SHA] amd64|arm64 BINARY OUT_DIR
+# Usage: scripts/build-deb.sh vX.Y.Z[~nightly.STAMP.gSHA] amd64|arm64 BINARY OUT_DIR
 # Runs on the build host; the libc6 floor is the host's glibc version.
 # "~" sorts a nightly before the X.Y.Z release in dpkg version order.
 
@@ -10,9 +10,11 @@ TAG="${1:-}"
 ARCH="${2:-}"
 BIN="${3:-}"
 OUT="${4:-}"
-if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(~nightly\.[0-9]+\.[0-9a-f]+)?$ ]] \
+# Nightly tags come from .github/workflows/nightly.yml; the "g" keeps the
+# short SHA a valid semver identifier even when it is all digits.
+if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(~nightly\.[0-9]+\.g[0-9a-f]+)?$ ]] \
   || [[ ! "${ARCH}" =~ ^(amd64|arm64)$ ]] || [ ! -f "${BIN}" ] || [ -z "${OUT}" ]; then
-  printf 'usage: %s vX.Y.Z[~nightly.STAMP.SHA] amd64|arm64 BINARY OUT_DIR\n' "$0" >&2
+  printf 'usage: %s vX.Y.Z[~nightly.STAMP.gSHA] amd64|arm64 BINARY OUT_DIR\n' "$0" >&2
   exit 2
 fi
 
