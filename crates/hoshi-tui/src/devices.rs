@@ -190,6 +190,62 @@ impl Devices {
         Ok((device, secret))
     }
 
+    /// Live sessions for the operator: metadata only, never the secret or its hash.
+    pub fn listing(&self, now: u64) -> Vec<serde_json::Value> {
+        self.list
+            .iter()
+            .filter(|device| device.expires_at > now)
+            .map(|device| {
+                serde_json::json!({
+                    "id": device.id,
+                    "label": device.label,
+                    "device_type": device.device_type,
+                    "os": device.os,
+                    "browser": device.browser,
+                    "ip": device.ip,
+                    "created_at": device.created_at,
+                    "last_used_at": device.last_used_at,
+                    "expires_at": device.expires_at,
+                })
+            })
+            .collect()
+    }
+
+    /// Ids of live sessions (push delivery skips the others).
+    pub fn live_ids(&self, now: u64) -> Vec<String> {
+        self.list
+            .iter()
+            .filter(|device| device.expires_at > now)
+            .map(|device| device.id.clone())
+            .collect()
+    }
+
+    /// Whether `id` is still a live session (open sockets check this).
+    pub fn holds(&self, id: &str, now: u64) -> bool {
+        self.list
+            .iter()
+            .any(|device| device.id == id && device.expires_at > now)
+    }
+
+    /// End one session. `Ok(false)` when there is no such session. Nothing
+    /// changes in memory unless the file was written, so a revoke that
+    /// returned `Ok` survives a restart.
+    pub fn revoke(&mut self, id: &str) -> std::io::Result<bool> {
+        if !self.list.iter().any(|device| device.id == id) {
+            return Ok(false);
+        }
+        let next: Vec<Device> = self
+            .list
+            .iter()
+            .filter(|device| device.id != id)
+            .cloned()
+            .collect();
+        store(&self.path, &next)?;
+        self.list = next;
+        self.unsaved = false;
+        Ok(true)
+    }
+
     /// Id of the live session holding `secret`, extended by this use. Expired
     /// sessions are refused and pruned. A failed write keeps the session
     /// usable and is retried on the next call.
@@ -408,6 +464,26 @@ mod tests {
         assert_eq!(reopened.list.len(), 1);
         assert!(reopened.authenticate(&secret, 2_000).is_some());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn revoke_survives_reload_and_listing_hides_secrets() {
+        let save = unique_save();
+        let mut devices = Devices::open(&save).unwrap();
+        let (kept, kept_secret) = devices.create(None, phone(), 1_000).unwrap();
+        let (gone, gone_secret) = devices.create(None, phone(), 1_000).unwrap();
+        let listing = serde_json::to_string(&devices.listing(1_000)).unwrap();
+        assert!(listing.contains(&kept.id) && listing.contains("Safari on iOS"));
+        assert!(!listing.contains(&kept_secret) && !listing.contains(&digest(&kept_secret)));
+        assert!(!listing.contains("secret"), "{listing}");
+
+        assert!(devices.revoke(&gone.id).unwrap());
+        assert!(!devices.revoke(&gone.id).unwrap());
+        assert!(!devices.holds(&gone.id, 1_000));
+        let mut reopened = Devices::open(&save).unwrap();
+        assert_eq!(reopened.authenticate(&gone_secret, 2_000), None);
+        assert_eq!(reopened.authenticate(&kept_secret, 2_000), Some(kept.id));
+        let _ = std::fs::remove_file(store_path(&save));
     }
 
     #[test]

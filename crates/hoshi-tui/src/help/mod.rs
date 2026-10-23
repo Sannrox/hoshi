@@ -68,7 +68,7 @@ impl Topic {
     fn environment(self) -> &'static str {
         match self.area {
             "serve" => {
-                "HOSHI_SAVE, HOSHI_BALANCE, HOSHI_SERVE_TOKEN, HOSHI_SERVE_TOKEN_FILE, HOSHI_SERVE_PUSH, HOSHI_SERVE_VAPID_PRIVATE, HOSHI_SERVE_VAPID_SUBJECT, HOSHI_SERVE_OIDC, HOSHI_SERVE_OIDC_ISSUER, HOSHI_SERVE_OIDC_CLIENT_ID, HOSHI_SERVE_OIDC_AUTHORIZATION, HOSHI_SERVE_OIDC_TOKEN"
+                "HOSHI_SAVE, HOSHI_BALANCE, HOSHI_SERVE_TOKEN, HOSHI_SERVE_TOKEN_FILE, HOSHI_SERVE_ADMIN_TOKEN, HOSHI_SERVE_PUSH, HOSHI_SERVE_VAPID_PRIVATE, HOSHI_SERVE_VAPID_SUBJECT, HOSHI_SERVE_OIDC, HOSHI_SERVE_OIDC_ISSUER, HOSHI_SERVE_OIDC_CLIENT_ID, HOSHI_SERVE_OIDC_AUTHORIZATION, HOSHI_SERVE_OIDC_TOKEN"
             }
             "install" => "HOSHI_VERSION, HOSHI_CHANNEL, HOSHI_OFFLINE, HOSHI_SKIP_VERSION_CHECK",
             "tui" => "HOSHI_SAVE, HOSHI_BALANCE, HOSHI_PORTRAIT_PROTOCOL, NO_COLOR",
@@ -147,6 +147,15 @@ const EXTRA: &[Topic] = &[
         summary: "Serve a versioned HTTP and WebSocket API for one save.",
         usage: "serve [--save PATH] [--bind ADDRESS:PORT] [--config DIR] [--update-check] [--offline]",
         example: "serve --save game.sqlite",
+        area: "serve",
+        planned: false,
+        command_prefix: true,
+    },
+    Topic {
+        name: "devices",
+        summary: "List or revoke browsers paired with a running hoshi serve.",
+        usage: "devices [revoke ID] [--url URL] [--config DIR]",
+        example: "devices revoke Q2xpZW50MDE",
         area: "serve",
         planned: false,
         command_prefix: true,
