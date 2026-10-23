@@ -4,7 +4,8 @@ Cheats are off by default. Enable **cheats** in title Settings, set `cheats = tr
 in the config beside your save, or launch with `--cheats`. The deterministic
 CLI harness also enables them. Enabling alone does not modify a save.
 
-In the overview, press backtick to open the console. Remap `cheat_console` in
+On any play screen (the bridge included), press backtick to open the console;
+with cheats off it says "cheats are disabled". Remap `cheat_console` in
 keybindings if needed. Type one command and press Enter; Escape closes it.
 The CLI uses the same core action:
 
