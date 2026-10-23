@@ -2113,6 +2113,17 @@ impl GameState {
         ship_duration(self.config.ships.get(kind).duration_secs(), speed)
     }
 
+    /// Per-unit defence build time in the shared yard, with the best rare
+    /// shipyard-world bonus.
+    pub fn defence_time_secs(&self, kind: DefenceKind) -> u64 {
+        let speed = self
+            .owned_coords()
+            .into_iter()
+            .filter_map(|coord| self.rare_bonus_at(coord).map(|row| row.shipyard_speed))
+            .fold(0.0_f64, f64::max);
+        ship_duration(self.config.defences.get(kind).duration_secs(), speed)
+    }
+
     /// Duration if this world were the shipyard, including its rare speed bonus.
     pub fn ship_time_secs_on(&self, coord: Coord, kind: ShipKind) -> u64 {
         let speed = self
@@ -5785,12 +5796,7 @@ impl GameState {
 
     fn yard_time_secs(&self, job: &ShipJob) -> u64 {
         if let Some(kind) = job.defence {
-            let speed = self
-                .owned_coords()
-                .into_iter()
-                .filter_map(|coord| self.rare_bonus_at(coord).map(|row| row.shipyard_speed))
-                .fold(0.0_f64, f64::max);
-            ship_duration(self.config.defences.get(kind).duration_secs(), speed)
+            self.defence_time_secs(kind)
         } else if let Some(kind) = job.ship {
             self.ship_time_secs(kind)
         } else {
