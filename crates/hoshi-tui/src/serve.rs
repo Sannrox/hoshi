@@ -129,7 +129,8 @@ pub struct Auth {
     hits: HashMap<(Caller, String), Vec<u64>>,
 }
 
-/// Who a request authenticated as, for per-caller rate limits.
+/// Who a request authenticated as: rate limits are per caller, and a device
+/// session can end itself.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Caller {
     Token(usize),
@@ -241,7 +242,7 @@ impl Auth {
         action: &str,
         credential: Option<&Credential>,
         now: u64,
-    ) -> Result<(), (u16, Value)> {
+    ) -> Result<Caller, (u16, Value)> {
         let unauthorized = || (401, error_body("unauthorized", "unauthorized"));
         let (presented, cookie) = match credential {
             Some(Credential::Header(raw)) => (bearer(Some(raw)).ok_or_else(unauthorized)?, false),
@@ -272,18 +273,50 @@ impl Auth {
                 (Caller::Device(id), false)
             }
         };
-        if action == "/v1/admin/support-report" && !admin {
+        if action.starts_with("/v1/admin/") && !admin {
             return Err((403, error_body("unauthorized", "admin scope required")));
         }
         let window = self.window_secs;
         let limit = self.limit;
-        let hits = self.hits.entry((caller, action.to_string())).or_default();
+        let hits = self
+            .hits
+            .entry((caller.clone(), action.to_string()))
+            .or_default();
         hits.retain(|at| now.saturating_sub(*at) < window);
         if hits.len() as u32 >= limit {
             return Err((429, error_body("rate_limited", "rate limited")));
         }
         hits.push(now);
-        Ok(())
+        Ok(caller)
+    }
+
+    /// Live device sessions of this save, for the operator.
+    fn device_list(&self, now: u64) -> Vec<Value> {
+        self.devices
+            .as_ref()
+            .map(|devices| devices.listing(now))
+            .unwrap_or_default()
+    }
+
+    /// End one device session; `Ok(false)` when there is none by that id.
+    fn revoke_device(&mut self, id: &str) -> std::io::Result<bool> {
+        match self.devices.as_mut() {
+            Some(devices) => devices.revoke(id),
+            None => Ok(false),
+        }
+    }
+
+    fn live_device_ids(&self, now: u64) -> Vec<String> {
+        self.devices
+            .as_ref()
+            .map(|devices| devices.live_ids(now))
+            .unwrap_or_default()
+    }
+
+    fn device_live(&self, id: &str, now: u64) -> bool {
+        self.devices
+            .as_ref()
+            .is_some_and(|devices| devices.holds(id, now))
     }
 
     /// Bind a new secret to this process save. Never written to SQLite.
@@ -566,6 +599,7 @@ impl Server {
             let save = Arc::clone(&save);
             let live = Arc::clone(&live);
             let push = Arc::clone(&push);
+            let auth = Arc::clone(&auth);
             let stop = Arc::clone(&stop);
             let worker = Inflight(Arc::clone(&inflight));
             let _ = std::thread::Builder::new()
@@ -590,7 +624,10 @@ impl Server {
                             lock_poison(push.as_ref()).poll(&live.state, now);
                             let _ = persist(save.as_path(), &mut live, false);
                         }
-                        let outbox = lock_poison(push.as_ref()).take_outbox();
+                        // Snapshot first so the auth and push locks never nest.
+                        let devices = lock_poison(auth.as_ref()).live_device_ids(now);
+                        let outbox = lock_poison(push.as_ref())
+                            .take_outbox(|id| devices.iter().any(|live| live == id));
                         if !outbox.is_empty()
                             && let Some(outboxes) = &outboxes
                             && outboxes.try_send(outbox).is_err()
@@ -692,7 +729,12 @@ pub fn first_positional(args: &[String]) -> Option<&str> {
     let mut i = 1;
     while i < args.len() {
         let a = args[i].as_str();
-        if a == "--save" || a == "--balance" || a == "--bind" || a == "--config" || a == "--ui-dir"
+        if a == "--save"
+            || a == "--balance"
+            || a == "--bind"
+            || a == "--config"
+            || a == "--ui-dir"
+            || a == "--url"
         {
             i += 2;
             continue;
@@ -1024,7 +1066,7 @@ pub fn handle(
     }
     let credential = authorization.map(|header| Credential::Header(header.into()));
     if path.starts_with("/v1")
-        && let Err(err) = auth.allow(save, path, credential.as_ref(), now)
+        && let Err(err) = auth.allow(save, path, credential.as_ref(), now).map(|_| ())
     {
         return err;
     }
@@ -1182,6 +1224,99 @@ fn serve_ui(
         stream.write_all(&asset.body)?;
     }
     Ok(())
+}
+
+/// Answer a refused `/v1` gate, counting rate-limit hits.
+fn refuse(
+    stream: &mut TcpStream,
+    live: &Mutex<Live>,
+    (status, value, retry_after): (u16, Value, u64),
+) -> std::io::Result<()> {
+    crate::diagnostics::log(
+        "warn",
+        if status == 429 {
+            "server rate limit exceeded"
+        } else {
+            "server authentication failed"
+        },
+    );
+    if status == 429 {
+        lock_poison(live).stats.rate_limit_hits += 1;
+    }
+    let extra = match status {
+        401 => "WWW-Authenticate: Bearer\r\n".to_string(),
+        429 => format!("Retry-After: {retry_after}\r\n"),
+        _ => String::new(),
+    };
+    write_http(stream, status, &value, &extra)
+}
+
+/// Device management (ADR 0016). `GET /v1/admin/devices` and
+/// `DELETE /v1/admin/devices/{id}` need the admin token (checked by the
+/// gate); `DELETE /v1/devices/self` ends the caller's own session and clears
+/// its cookie. Revoked sessions are refused at once, including on open sockets.
+fn serve_devices(
+    stream: &mut TcpStream,
+    method: &str,
+    route: &str,
+    caller: &Caller,
+    auth: &Mutex<Auth>,
+    now: u64,
+) -> std::io::Result<()> {
+    let not_allowed = |stream: &mut TcpStream| {
+        write_http(
+            stream,
+            405,
+            &error_body("invalid", "method not allowed"),
+            "",
+        )
+    };
+    if route == "/v1/admin/devices" {
+        if method != "GET" {
+            return not_allowed(stream);
+        }
+        let devices = lock_poison(auth).device_list(now);
+        return write_http(
+            stream,
+            200,
+            &json!({"ok": true, "devices": devices}),
+            "Cache-Control: no-store\r\n",
+        );
+    }
+    if method != "DELETE" {
+        return not_allowed(stream);
+    }
+    let (id, extra) = match (route.strip_prefix("/v1/admin/devices/"), caller) {
+        (Some(id), _) => (id, String::new()),
+        (None, Caller::Device(id)) => (
+            id.as_str(),
+            format!("Set-Cookie: {SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax\r\n"),
+        ),
+        (None, Caller::Token(_)) => {
+            return write_http(
+                stream,
+                400,
+                &error_body("invalid", "not a device session"),
+                "",
+            );
+        }
+    };
+    match lock_poison(auth).revoke_device(id) {
+        Ok(true) => write_http(stream, 200, &json!({"ok": true, "revoked": id}), &extra),
+        Ok(false) => write_http(stream, 404, &error_body("invalid", "no such device"), ""),
+        Err(_) => write_http(
+            stream,
+            500,
+            &error_body("internal", "device sessions could not be saved"),
+            "",
+        ),
+    }
+}
+
+/// A socket opened with a device session ends once that session is revoked
+/// or expires.
+fn device_revoked(auth: &Mutex<Auth>, device: Option<&str>) -> bool {
+    device.is_some_and(|id| !lock_poison(auth).device_live(id, SystemClock.now_unix()))
 }
 
 /// Network sends run on their own thread, without the game or gate lock, so a
@@ -1375,28 +1510,19 @@ fn serve_one(
     let gate = {
         let mut auth = lock_poison(auth);
         match auth.allow(save, route, credential.as_ref(), now) {
-            Ok(()) => Ok(auth.window_secs),
+            Ok(caller) => Ok(caller),
             Err((status, value)) => Err((status, value, auth.window_secs)),
         }
     };
-    if let Err((status, value, retry_after)) = gate {
-        crate::diagnostics::log(
-            "warn",
-            if status == 429 {
-                "server rate limit exceeded"
-            } else {
-                "server authentication failed"
-            },
-        );
-        if status == 429 {
-            lock_poison(live).stats.rate_limit_hits += 1;
-        }
-        let extra = match status {
-            401 => "WWW-Authenticate: Bearer\r\n".to_string(),
-            429 => format!("Retry-After: {retry_after}\r\n"),
-            _ => String::new(),
-        };
-        return write_http(&mut stream, status, &value, &extra);
+    let caller = match gate {
+        Ok(caller) => caller,
+        Err(refused) => return refuse(&mut stream, live, refused),
+    };
+    if route == "/v1/admin/devices"
+        || route.starts_with("/v1/admin/devices/")
+        || route == "/v1/devices/self"
+    {
+        return serve_devices(&mut stream, method, route, &caller, auth, now);
     }
     if route == "/v1/bug" {
         let config_dir = lock_poison(live).config_dir.clone();
@@ -1466,7 +1592,7 @@ fn serve_one(
         );
     }
     if route == "/v1/push/key" || route == "/v1/push/subscription" {
-        return serve_push(&mut stream, method, route, &body, push);
+        return serve_push(&mut stream, method, route, &body, &caller, push);
     }
     if route == "/v1/version" {
         if method != "GET" {
@@ -1513,6 +1639,7 @@ fn serve_push(
     method: &str,
     route: &str,
     body: &[u8],
+    caller: &Caller,
     push: &Mutex<crate::push::Gate>,
 ) -> std::io::Result<()> {
     use crate::push::Refused;
@@ -1526,7 +1653,14 @@ fn serve_push(
         }
         ("/v1/push/subscription", "POST") => {
             match serde_json::from_slice::<crate::push::Subscription>(body) {
-                Ok(sub) => gate.subscribe(sub).map(|()| json!({"ok": true})),
+                Ok(sub) => {
+                    let device = match caller {
+                        Caller::Device(id) => Some(id.clone()),
+                        Caller::Token(_) => None,
+                    };
+                    gate.subscribe(crate::push::Subscription { device, ..sub })
+                        .map(|()| json!({"ok": true}))
+                }
                 Err(_) => Err(Refused::Invalid),
             }
         }
@@ -1602,6 +1736,7 @@ fn serve_support_report(
                 credential,
                 SystemClock.now_unix(),
             )
+            .map(|_| ())
         }
     };
     if let Err((status, body)) = gate {
@@ -1737,6 +1872,8 @@ fn serve_oidc(
 struct Upgrade {
     key: String,
     v1: bool,
+    /// The device session that opened the socket, if any.
+    device: Option<String>,
 }
 
 impl Upgrade {
@@ -1791,6 +1928,10 @@ fn authorize_upgrade(
         return Ok(None);
     }
     let gate = lock_poison(auth).allow(save, route, credential.as_ref(), now);
+    let device = match &gate {
+        Ok(Caller::Device(id)) => Some(id.clone()),
+        _ => None,
+    };
     if let Err((status, value)) = gate {
         let extra = match status {
             401 => "WWW-Authenticate: Bearer\r\n",
@@ -1810,7 +1951,11 @@ fn authorize_upgrade(
         )?;
         return Ok(None);
     };
-    Ok(Some(Upgrade { key, v1: offer.v1 }))
+    Ok(Some(Upgrade {
+        key,
+        v1: offer.v1,
+        device,
+    }))
 }
 
 /// `Origin` names the host the request was sent to (`Host`), any scheme.
@@ -1899,7 +2044,16 @@ fn serve_terminal(
         ending: Ending::Dropped,
     };
     if upgrade.open(stream).is_ok() {
-        release.ending = run_terminal(save, stream, live, state, keys, settings);
+        release.ending = run_terminal(
+            save,
+            stream,
+            live,
+            state,
+            keys,
+            settings,
+            auth,
+            upgrade.device.as_deref(),
+        );
     }
     Ok(())
 }
@@ -1947,6 +2101,7 @@ fn persist_live(save: &Path, live: &Mutex<Live>) {
     let _ = persist(save, &mut lock_poison(live), false);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_terminal(
     save: &Path,
     stream: &mut TcpStream,
@@ -1954,6 +2109,8 @@ fn run_terminal(
     state: GameState,
     keys: crate::keymap::Keymap,
     settings: crate::terminal::Settings,
+    auth: &Mutex<Auth>,
+    device: Option<&str>,
 ) -> Ending {
     let app = crate::app::App::with_keymap(state, keys);
     let Ok(mut session) = crate::terminal::Session::new(app) else {
@@ -1968,6 +2125,12 @@ fn run_terminal(
     loop {
         let mut dirty = false;
         let frame = incoming.poll(stream);
+        // Checked between reading a frame and applying it, so nothing a
+        // revoked device sent after the revoke reaches the game.
+        if device_revoked(auth, device) {
+            let _ = ws::write_close(stream);
+            return Ending::Clean;
+        }
         if matches!(frame, Ok(Some(_))) {
             last_seen = std::time::Instant::now();
         }
@@ -2004,6 +2167,7 @@ fn run_terminal(
         if last_seen.elapsed() >= TERMINAL_SILENCE {
             return Ending::Dropped;
         }
+
         if last_ping.elapsed() >= TERMINAL_PING {
             if ws::write_ping(stream).is_err() {
                 return Ending::Dropped;
@@ -2060,6 +2224,7 @@ fn serve_events(
         Err((status, value)) => return write_http(stream, status, &value, ""),
     };
     upgrade.open(stream)?;
+    let device = upgrade.device.as_deref();
     let mut cursor = cursor;
     let mut announced_update = None;
     if pump_events(save, stream, live, push, &mut cursor, now).is_err() {
@@ -2083,6 +2248,10 @@ fn serve_events(
             }
             Ok(Some(ws::Frame::Pong | ws::Frame::Binary(_) | ws::Frame::Other) | None) => {}
             Err(_) => return Ok(()),
+        }
+        if device_revoked(auth, device) {
+            let _ = ws::write_close(stream);
+            return Ok(());
         }
         let latest = lock_poison(live)
             .updates
@@ -2217,6 +2386,120 @@ pub fn run(args: &[String]) -> Result<(), ServeError> {
     );
     let _ = std::io::stdout().flush();
     server.run()
+}
+
+/// `hoshi devices [revoke ID] [--url URL] [--config DIR]`: list or revoke
+/// paired devices through the running server's admin routes. The server is
+/// `--url`, else `serve_bind`; the admin token comes from
+/// `HOSHI_SERVE_ADMIN_TOKEN` or `serve_admin_token`. Prints the JSON reply.
+pub fn run_devices(args: &[String]) -> Result<(), ServeError> {
+    let invalid = |message: String| ServeError {
+        message,
+        exit: crate::cli::EXIT_INVALID,
+    };
+    let mut url = None;
+    let mut config_dir = None;
+    let mut words = Vec::new();
+    let mut rest = args.iter().skip(1);
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--url" => url = Some(rest.next().ok_or_else(|| invalid("missing --url".into()))?),
+            "--config" => {
+                config_dir = Some(PathBuf::from(
+                    rest.next()
+                        .ok_or_else(|| invalid("missing --config".into()))?,
+                ));
+            }
+            flag if flag.starts_with('-') => return Err(invalid(format!("unknown flag {flag}"))),
+            word => words.push(word),
+        }
+    }
+    let (method, path) = match words.as_slice() {
+        ["devices"] => ("GET", "/v1/admin/devices".to_string()),
+        ["devices", "revoke", id] => ("DELETE", format!("/v1/admin/devices/{id}")),
+        _ => {
+            return Err(invalid(
+                "usage: hoshi devices [revoke ID] [--url URL]".into(),
+            ));
+        }
+    };
+    let cfg =
+        crate::config::UserConfig::load(&config_dir.unwrap_or_else(hoshi_core::default_save_dir));
+    let token = std::env::var("HOSHI_SERVE_ADMIN_TOKEN")
+        .ok()
+        .filter(|token| !token.is_empty())
+        .unwrap_or(cfg.serve_admin_token);
+    if token.is_empty() {
+        return Err(invalid(
+            "no admin token: set HOSHI_SERVE_ADMIN_TOKEN or serve_admin_token".into(),
+        ));
+    }
+    let base = match url {
+        Some(url) => url.clone(),
+        None => format!(
+            "http://{}",
+            concrete_socket(resolve_bind(None, &cfg.serve_bind)?)
+        ),
+    };
+    let (status, body) = admin_request(&base, method, &path, &token)?;
+    println!("{body}");
+    if (200..300).contains(&status) {
+        Ok(())
+    } else {
+        Err(ServeError {
+            message: format!("server answered {status}"),
+            exit: if status == 404 {
+                crate::cli::EXIT_INVALID
+            } else {
+                crate::cli::EXIT_REFUSED
+            },
+        })
+    }
+}
+
+/// One plain-HTTP request to a running `hoshi serve` at `base`
+/// (`http://host:port[/prefix]`).
+fn admin_request(
+    base: &str,
+    method: &str,
+    path: &str,
+    token: &str,
+) -> Result<(u16, String), ServeError> {
+    let fail = |message: String| ServeError {
+        message,
+        exit: crate::cli::EXIT_INTERNAL,
+    };
+    let rest = base.strip_prefix("http://").ok_or_else(|| ServeError {
+        message: "--url must be http://HOST:PORT; use a local or tailnet address".into(),
+        exit: crate::cli::EXIT_INVALID,
+    })?;
+    let (authority, prefix) = rest.split_once('/').unwrap_or((rest, ""));
+    let prefix = prefix.trim_end_matches('/');
+    let target = if prefix.is_empty() {
+        path.to_string()
+    } else {
+        format!("/{prefix}{path}")
+    };
+    let mut stream = TcpStream::connect(authority)
+        .map_err(|err| fail(format!("cannot reach hoshi serve at {base}: {err}")))?;
+    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+    write!(
+        stream,
+        "{method} {target} HTTP/1.1\r\nHost: {authority}\r\nAuthorization: Bearer {token}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )?;
+    let mut reply = String::new();
+    stream.read_to_string(&mut reply)?;
+    let status = reply
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse().ok())
+        .ok_or_else(|| fail("no HTTP status from the server".into()))?;
+    let body = reply
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .unwrap_or("");
+    Ok((status, body.to_string()))
 }
 
 pub fn config_dir_for_save(path: &Path) -> PathBuf {
@@ -3682,6 +3965,146 @@ mod tests {
             .unwrap_or(0);
         let body = buf.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("");
         (status, body.to_string())
+    }
+
+    #[test]
+    fn admin_lists_and_revokes_devices_and_closes_their_sockets() {
+        use crate::devices::{Client, Devices};
+        let save = unique_save();
+        let now = SystemClock.now_unix();
+        let mut devices = Devices::open(&save).unwrap();
+        let phone = Client::from_request(Some("Mozilla/5.0 (iPhone) Safari/604.1"), None);
+        let (lost, lost_secret) = devices.create(Some("lost"), phone, now).unwrap();
+        let (_, kept_secret) = devices
+            .create(None, Client::from_request(None, None), now)
+            .unwrap();
+        let auth = Auth::single(&save, TEST_TOKEN)
+            .with_admin_token(&save, "admin-fixture")
+            .with_devices(Devices::open(&save).unwrap());
+        let addr = spawn_run(ephemeral(save.clone()).with_auth(auth));
+        let base = format!("http://{addr}");
+
+        let (status, body) =
+            admin_request(&base, "GET", "/v1/admin/devices", "admin-fixture").unwrap();
+        assert_eq!(status, 200, "{body}");
+        let listed: Value = serde_json::from_str(&body).unwrap();
+        let row = listed["devices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == lost.id.as_str())
+            .unwrap();
+        assert_eq!(
+            (row["label"].as_str(), row["device_type"].as_str()),
+            (Some("lost"), Some("mobile"))
+        );
+        assert!(
+            !body.contains(&lost_secret) && !body.contains("sha256"),
+            "{body}"
+        );
+        let as_device = format!("Bearer {kept_secret}");
+        assert_eq!(
+            admin_request(&base, "GET", "/v1/admin/devices", &kept_secret)
+                .unwrap()
+                .0,
+            403
+        );
+
+        let lost_bearer = format!("Bearer {lost_secret}");
+        let (mut socket, status, _) = ws_open(addr, "/v1/events", Some(&lost_bearer));
+        assert_eq!(status, 101);
+        let (mut terminal, status, _) = ws_open(addr, "/v1/terminal", Some(&lost_bearer));
+        assert_eq!(status, 101);
+        let path = format!("/v1/admin/devices/{}", lost.id);
+        assert_eq!(
+            admin_request(&base, "DELETE", &path, "admin-fixture")
+                .unwrap()
+                .0,
+            200
+        );
+        assert_eq!(
+            admin_request(&base, "DELETE", &path, "admin-fixture")
+                .unwrap()
+                .0,
+            404
+        );
+        assert!(
+            socket_closes(&mut socket),
+            "revoked event socket stayed open"
+        );
+        assert!(socket_closes(&mut terminal), "revoked terminal stayed open");
+        assert_eq!(
+            get_path_auth(addr, "/v1/state", Some(&lost_bearer))
+                .unwrap()
+                .0,
+            401
+        );
+        assert_eq!(
+            get_path_auth(addr, "/v1/state", Some(&as_device))
+                .unwrap()
+                .0,
+            200
+        );
+        let _ = std::fs::remove_file(crate::devices::store_path(&save));
+    }
+
+    /// True once the server closes the socket (close frame or EOF) within 3 s.
+    fn socket_closes(stream: &mut TcpStream) -> bool {
+        let mut incoming = crate::ws::Reader::new();
+        stream
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(3) {
+            match incoming.poll(stream) {
+                Ok(Some(crate::ws::Frame::Close)) => return true,
+                Ok(_) => {}
+                Err(err)
+                    if err.kind() == std::io::ErrorKind::WouldBlock
+                        || err.kind() == std::io::ErrorKind::TimedOut => {}
+                Err(_) => return true,
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn device_signs_itself_out_and_clears_its_cookie() {
+        use crate::devices::{Client, Devices};
+        let save = unique_save();
+        let mut devices = Devices::open(&save).unwrap();
+        let (_, secret) = devices
+            .create(
+                None,
+                Client::from_request(None, None),
+                SystemClock.now_unix(),
+            )
+            .unwrap();
+        let auth = Auth::single(&save, TEST_TOKEN).with_devices(Devices::open(&save).unwrap());
+        let addr = spawn_run(ephemeral(save.clone()).with_auth(auth));
+        let cookie =
+            format!("Cookie: {SESSION_COOKIE}={secret}\r\nContent-Type: application/json\r\n");
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        write!(
+            stream,
+            "DELETE /v1/devices/self HTTP/1.1\r\nHost: localhost\r\n{cookie}Content-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        let (status, headers) = read_http_headers(&mut stream);
+        assert_eq!(status, 200, "{headers}");
+        let set_cookie = header_line(&headers, "set-cookie").unwrap_or_default();
+        assert!(
+            set_cookie.starts_with(&format!("{SESSION_COOKIE}=;"))
+                && set_cookie.contains("Max-Age=0"),
+            "{headers}"
+        );
+        assert_eq!(send_raw(addr, "GET", "/v1/state", &cookie, "").0, 401);
+        // An operator token is not a device session.
+        assert_eq!(send_json(addr, "DELETE", "/v1/devices/self", "").0, 400);
+        let _ = std::fs::remove_file(crate::devices::store_path(&save));
     }
 
     #[test]
