@@ -75,12 +75,12 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu qemu-user-static
       - name: Build
         if: matrix.cross != 'true'
-        run: cargo build --locked --release --target ${{ matrix.target }} -p hoshi --bin hoshi
+        run: cargo build --locked --release --target ${{ matrix.target }} -p hoshi --bin hoshi --features ui
       - name: Build (cross)
         if: matrix.cross == 'true'
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-        run: cargo build --locked --release --target ${{ matrix.target }} -p hoshi --bin hoshi
+        run: cargo build --locked --release --target ${{ matrix.target }} -p hoshi --bin hoshi --features ui
       - name: Smoke --version
         shell: bash
         env:

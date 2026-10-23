@@ -29,9 +29,12 @@ mod serve;
 mod terminal;
 mod title;
 mod ui;
+#[cfg(test)]
+mod ui_pin;
 mod update;
 mod update_command;
 mod update_ui;
+mod web_ui;
 mod webpush;
 mod ws;
 

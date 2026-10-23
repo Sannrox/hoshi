@@ -17,6 +17,9 @@ commentary-model = ["hoshi-core/commentary-model"]
 advisor-model = ["hoshi-core/advisor-model"]
 mikura = ["hoshi-core/mikura"]
 chisei = ["hoshi-core/chisei"]
+# Embed the hoshi-web release pinned in hoshi-web.pin and serve it at /ui/.
+# The build downloads it once and refuses a checksum mismatch.
+ui = ["dep:zip"]
 
 [dependencies]
 hoshi-core = { workspace = true }
@@ -39,6 +42,10 @@ tar = "0.4"
 p256 = { version = "0.13", default-features = false, features = ["ecdh", "ecdsa", "std"] }
 hkdf = "0.12"
 aes-gcm = "0.10"
+
+[build-dependencies]
+sha2 = "0.10"
+zip = { version = "9", default-features = false, features = ["deflate"], optional = true }
 
 [dev-dependencies]
 hoshi-core = { workspace = true }

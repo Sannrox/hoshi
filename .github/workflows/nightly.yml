@@ -84,7 +84,7 @@ jobs:
       - name: Build
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-        run: cargo build --locked --release --target ${{ matrix.target }} -p hoshi --bin hoshi
+        run: cargo build --locked --release --target ${{ matrix.target }} -p hoshi --bin hoshi --features ui
       - name: Smoke --version
         run: |
           set -euo pipefail

@@ -17,6 +17,29 @@ hoshi --save PATH serve --bind 127.0.0.1:0
 `--bind 127.0.0.1:0` asks the OS for an ephemeral port. The process prints one
 JSON line with the bound address, then serves until it exits.
 
+## Web client
+
+Release binaries are built with `--features ui` and serve the hoshi-web client
+at `/ui/` on the same origin as `/v1`, with no files on disk. `GET /` redirects
+to `ui/` (a relative `Location`, so a proxy that mounts hoshi under a sub-path
+keeps working). Unknown paths under `/ui/` without a file extension return
+`index.html` for client routing; deeper paths redirect (relative) back up to
+a route directly under `ui/`, because the page links `./assets/...` and its
+service worker caches one page for every route. A missing file with an
+extension is `404`.
+Every client response carries `Content-Security-Policy: default-src 'self';
+style-src 'self' 'unsafe-inline'; base-uri 'self'; frame-ancestors 'none'`:
+no inline or remote script, while the terminal view may generate its styles.
+Files under `assets/` are cached as immutable; everything else is revalidated.
+
+The bundle is one hoshi-web release, pinned in `crates/hoshi-tui/hoshi-web.pin`
+as `<tag> <sha256-of-zip>`. A `--features ui` build downloads it once and
+refuses a checksum mismatch; bumping the client is a one-line pin change.
+Builds without `ui` download nothing, and `/` and `/ui/` return `404`.
+
+`--ui-dir PATH` serves a client build from a directory instead, for working on
+the client. It is never a default.
+
 ## Config
 
 `config.toml` next to the save (or `--config DIR`):
