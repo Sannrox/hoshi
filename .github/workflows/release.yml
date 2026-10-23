@@ -17,7 +17,7 @@ jobs:
     name: Tag matches crate version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Check tag
         run: bash scripts/check-release-tag.sh "${GITHUB_REF_NAME}"
 
@@ -60,14 +60,14 @@ jobs:
             native: "true"
             linux_state: "false"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: 1.97.1
           targets: ${{ matrix.target }}
       - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: release-${{ matrix.target }}
       - name: Cross linker (Linux aarch64)
@@ -125,7 +125,7 @@ jobs:
           sudo apt-get install -y "./${deb}"
           /usr/bin/hoshi --version | grep -F "hoshi ${GITHUB_REF_NAME#v}"
           sudo apt-get remove -y hoshi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.artifact }}
           path: |
@@ -137,8 +137,8 @@ jobs:
     needs: [verify-tag, build]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
           merge-multiple: true
