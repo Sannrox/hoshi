@@ -490,12 +490,18 @@ impl App {
         tabs.push(Span::styled("  h/l branch", t.muted()));
         let specs = self.overview_techs();
         let mut groups = Vec::new();
-        let mut last_tier = None;
+        let mut last_group = None;
         let mut rows = Vec::new();
         for (i, spec) in specs.iter().enumerate() {
-            if last_tier != Some(spec.tier) {
-                groups.push((i, format!("tier {}", spec.tier)));
-                last_tier = Some(spec.tier);
+            // Keystones close a branch and open its victory path.
+            let group = if spec.keystone {
+                "keystone ★ victory path".to_string()
+            } else {
+                format!("tier {}", spec.tier)
+            };
+            if last_group.as_ref() != Some(&group) {
+                groups.push((i, group.clone()));
+                last_group = Some(group);
             }
             let level = self.state.tech_level(&spec.id);
             let next = self.state.next_research_level(&spec.id);

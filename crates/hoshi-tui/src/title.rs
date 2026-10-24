@@ -1902,12 +1902,21 @@ impl Title {
                             SlotStatus::Newer { .. } => ("NEWER", Intent::Warning),
                             _ => ("CORRUPT", Intent::Danger),
                         };
+                        // A save held by another process cannot be read, but
+                        // its file time still says when it was last written.
+                        let dash = || Line::styled("—", t.faint());
+                        let played = file_age(&slot.path, self.now_unix).map_or_else(dash, |ago| {
+                            Line::styled(
+                                format!("{} ago", crate::ui::spans::duration(ago)),
+                                t.muted(),
+                            )
+                        });
                         vec![
                             Line::from(name),
-                            Line::default(),
-                            Line::default(),
-                            Line::default(),
-                            Line::default(),
+                            dash(),
+                            dash(),
+                            dash(),
+                            played,
                             chip(text, intent),
                         ]
                     }
@@ -2160,11 +2169,16 @@ impl Title {
                         last_seasonal = Some(seasonal);
                     }
                     let mark = if i == self.selected { ">" } else { " " };
-                    lines.push(Line::from(format!(
-                        "{mark} {}  {}",
-                        slot_label(slot),
-                        self.slot_status_line(&slot.status, self.now_unix)
-                    )));
+                    let mut status = self.slot_status_line(&slot.status, self.now_unix);
+                    if matches!(slot.status, SlotStatus::Locked)
+                        && let Some(ago) = file_age(&slot.path, self.now_unix)
+                    {
+                        status.push_str(&format!(
+                            "  last written {} ago",
+                            crate::ui::spans::duration(ago)
+                        ));
+                    }
+                    lines.push(Line::from(format!("{mark} {}  {status}", slot_label(slot))));
                 }
                 if let Some(from) = &self.rename_from {
                     lines.push(Line::from(format!("rename {from} -> {}", self.rename_to)));
@@ -2624,6 +2638,16 @@ pub fn classify_slot(path: &Path) -> SlotStatus {
         Err(SaveError::Corrupt(msg)) => SlotStatus::Corrupt(msg.to_string()),
         Err(e) => SlotStatus::Corrupt(e.to_string()),
     }
+}
+
+/// Seconds since a save file was last written, read from the file system
+/// so it works for a save another process holds.
+fn file_age(path: &Path, now_unix: u64) -> Option<u64> {
+    let at = std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()?;
+    let secs = at.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    Some(now_unix.saturating_sub(secs))
 }
 
 fn newer_message(kind: &str, found: u32) -> String {
@@ -3317,6 +3341,10 @@ mod tests {
         assert!(text.contains("newer hoshi"), "{text}");
         assert!(text.contains("corrupt"), "{text}");
         assert!(text.contains("harness save"), "{text}");
+        // The locked row still says when its file was last written.
+        let wide = render(&title, 140, 30);
+        let busy_row = wide.lines().find(|line| line.contains("busy")).unwrap();
+        assert!(busy_row.contains("last written"), "{busy_row}");
 
         let busy = title.slots.iter().find(|s| s.name == "busy").unwrap();
         assert_eq!(title.try_play(&busy.clone()), TitleAction::None);

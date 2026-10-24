@@ -68,7 +68,9 @@ pub struct RequirementLine {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShipTravel {
     pub speed: f64,
+    /// Deuterium one ship burns per `fuel_distance` at full speed.
     pub fuel_per_unit: f64,
+    pub fuel_distance: f64,
     pub cargo: f64,
     pub outbound_secs: Option<u64>,
     pub fuel_cost: Option<f64>,
@@ -349,6 +351,7 @@ impl GameState {
             ship: Some(ShipTravel {
                 speed: stats.speed,
                 fuel_per_unit: stats.fuel,
+                fuel_distance: self.config.flight.fuel_distance,
                 cargo: stats.cargo,
                 outbound_secs: travel.map(|(s, _)| s),
                 fuel_cost: travel.map(|(_, f)| f),
