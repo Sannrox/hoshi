@@ -1,6 +1,7 @@
 # ADR 0005: Shared shard hosted on Chisei
 
-- Status: Partially superseded by [0017](0017-local-tui-may-join-a-chisei-shard.md)
+- Status: Partially superseded by [0017](0017-local-tui-may-join-a-chisei-shard.md);
+  raid snapshot timing amended by [0019](0019-shard-raids-are-missions-with-flight.md)
 - Date: 2026-10-12
 - Partially supersedes: [0004](0004-no-shared-universe.md)
 - Follows: [0002](0002-terminal-idle-game-with-event-bridge.md)
@@ -51,6 +52,8 @@ and markings on objects.
      no per-second loop over every empire.
    - **Raids are asynchronous against a snapshot** of the target taken after
      honest catch-up. No lockstep live combat.
+     [0019](0019-shard-raids-are-missions-with-flight.md) takes that snapshot
+     at mission action time, not as an instant parked-fleet fight.
    - **Shards are bounded:** one seed and a capped player list per shard.
      There is no seamless universe.
 4. **Each player is a tenant or space in Chisei**, and their objects carry
