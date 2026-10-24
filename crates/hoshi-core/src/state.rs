@@ -3583,7 +3583,7 @@ impl GameState {
         self.duration_secs(kind, self.projected_level(kind))
     }
 
-    fn available_building_level(&self, kind: BuildingKind) -> u32 {
+    pub(crate) fn available_building_level(&self, kind: BuildingKind) -> u32 {
         if self.dismantling(self.home) == Some(kind) {
             return 0;
         }
