@@ -49,7 +49,6 @@ mod production;
 mod reactor;
 mod research;
 mod rivals;
-mod save;
 mod scenario;
 mod season;
 mod self_play;
@@ -58,7 +57,6 @@ mod ships;
 mod simulate;
 mod species;
 mod state;
-mod storage;
 mod story;
 mod tactics;
 mod tutorial;
@@ -90,11 +88,12 @@ pub use blueprint::{
 };
 pub use buildings::{BuildError, BuildJob, BuildJobKind, BuildingKind, Buildings};
 pub use chains::{ChainConfig, GoodKind, GoodSpec, Recipe, component_kind};
-pub use cheats::{CheatAudit, CheatError};
+pub use cheats::{CheatAudit, CheatError, CheatState};
 pub use classification::{
     COMPARTMENT_FLEET, COMPARTMENT_INTEL, COMPARTMENT_PLANET, COMPARTMENT_POLICY, Classification,
-    ClassificationBoard, ClassificationError, ClassifiedKind, Clearance, LeakIncident, Marking,
-    SharingAgreement, join_compartments, parse_compartment, split_compartments,
+    ClassificationBoard, ClassificationError, ClassifiedKind, ClassifiedRef, Clearance,
+    LeakIncident, Marking, SharingAgreement, join_compartments, parse_compartment,
+    split_compartments,
 };
 pub use clock::{Clock, FakeClock, SystemClock};
 pub use combat::{
@@ -222,13 +221,6 @@ pub use research::{
 pub use rivals::{
     RivalBoard, RivalCatalog, RivalEmpire, RivalError, RivalIntel, RivalPersonality, RivalSettings,
 };
-pub use save::{
-    CareerGlance, DiagnosticEvent, SCHEMA_VERSION, SaveDiagnostics, SaveError, SaveGlance,
-    SaveLock, backup_save, default_save_dir, default_save_path, inspect_career,
-    inspect_diagnostics, inspect_save, load_or_new, load_or_new_with_seed, load_state, lock_save,
-    lock_save_migrations, open_save, resolve_save_path, save_is_locked, save_lock_path,
-    save_schema, save_state,
-};
 pub use scenario::{Baseline, Outcome, PlannedAction, Scenario, ScenarioError};
 pub use season::{
     SEASON_SYSTEMS, SeasonCatalog, SeasonError, SeasonRuleset, SeasonRun, SeasonWindow,
@@ -253,11 +245,6 @@ pub use simulate::{
 };
 pub use species::{Flagship, SpeciesCatalog, SpeciesError, SpeciesRun, SpeciesSpec};
 pub use state::{GameEvent, GameState, LogisticsGlance, ResourceKind, Resources};
-#[cfg(feature = "chisei")]
-pub use storage::ChiseiStorage;
-#[cfg(feature = "mikura")]
-pub use storage::MikuraStorage;
-pub use storage::{BackendKind, SqliteStorage, Storage, open_storage};
 pub use story::{PendingStory, StoryCatalog, StoryChoice, StoryError, StoryEvent};
 pub use tactics::{
     Admiral, AdmiralTrait, FleetTactics, Formation, PendingTactical, Stance, TacticalPlan,

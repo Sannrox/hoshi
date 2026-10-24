@@ -352,7 +352,7 @@ pub struct GameState {
     pub generator_version: u32,
     /// When true, `tick --advance` may move the clock. Wall-clock saves stay false.
     pub deterministic: bool,
-    pub(crate) cheats: crate::cheats::CheatState,
+    pub cheats: crate::cheats::CheatState,
     pub wonder: Option<WonderJob>,
     pub completed_wonders: Vec<String>,
     pub outposts: Vec<Outpost>,
@@ -1034,7 +1034,7 @@ impl GameState {
         self.next_admiral_id = next_id;
     }
 
-    pub(crate) fn sync_admirals_from_leaders(&mut self) {
+    pub fn sync_admirals_from_leaders(&mut self) {
         let assigned = self
             .assignments
             .iter()
@@ -5875,7 +5875,7 @@ impl GameState {
         self.evaluate_frontier(at);
     }
 
-    pub(crate) fn sync_raid_schedule_after_standing(&mut self, at: u64) {
+    pub fn sync_raid_schedule_after_standing(&mut self, at: u64) {
         if !self.config.raid.enabled {
             return;
         }
@@ -9809,31 +9809,6 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
             "{:?}",
             state.events
         );
-    }
-
-    #[test]
-    fn reloading_the_save_does_not_change_a_pending_expedition() {
-        let mut original = expedition_state(0);
-        original
-            .launch_expedition(scout_fleet(), 10, 100, 0)
-            .unwrap();
-        let mut conn = crate::open_save(std::path::Path::new(":memory:")).unwrap();
-        crate::save_state(&mut conn, &original).unwrap();
-        let mut loaded = crate::load_state(&conn, original.config.clone()).unwrap();
-        assert_eq!(
-            loaded.missions[0].expedition_seed,
-            original.missions[0].expedition_seed
-        );
-        let outbound = original.missions[0].outbound_secs;
-        let hold = original.missions[0].hold_secs;
-        original.rng_seed = 0xDEAD_BEEF_DEAD_BEEF;
-        original.catch_up(outbound + hold + outbound);
-        loaded.catch_up(outbound + hold + outbound);
-        assert_eq!(original.events, loaded.events);
-        assert_eq!(original.fleet, loaded.fleet);
-        close(original.resources.iron, loaded.resources.iron);
-        close(original.resources.silicon, loaded.resources.silicon);
-        close(original.resources.deuterium, loaded.resources.deuterium);
     }
 
     #[test]

@@ -15,14 +15,15 @@ default = []
 bridge = ["dep:hoshi-bridge"]
 commentary-model = ["hoshi-core/commentary-model"]
 advisor-model = ["hoshi-core/advisor-model"]
-mikura = ["hoshi-core/mikura"]
-chisei = ["hoshi-core/chisei"]
+mikura = ["hoshi-storage/mikura"]
+chisei = ["hoshi-storage/chisei"]
 # Embed the hoshi-web release pinned in hoshi-web.pin and serve it at /ui/.
 # The build downloads it once and refuses a checksum mismatch.
 ui = ["dep:zip"]
 
 [dependencies]
 hoshi-core = { workspace = true }
+hoshi-storage = { workspace = true }
 hoshi-bridge = { workspace = true, optional = true }
 ratatui = "0.29"
 serde_json = "1.0.152"
@@ -50,6 +51,7 @@ zip = { version = "9", default-features = false, features = ["deflate"], optiona
 
 [dev-dependencies]
 hoshi-core = { workspace = true }
+hoshi-storage = { workspace = true }
 serde_yaml = "0.9"
 
 [target.'cfg(unix)'.dev-dependencies]

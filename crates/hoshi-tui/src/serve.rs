@@ -1,9 +1,7 @@
 //! `hoshi serve`: remote view of one local save, including HTTP `/v1` actions.
 
-use hoshi_core::{
-    BalanceConfig, Clock, GameState, HistoryEvent, HistoryKind, SaveError, SaveLock, SystemClock,
-    lock_save, open_storage, resolve_save_path,
-};
+use hoshi_core::{BalanceConfig, Clock, GameState, HistoryEvent, HistoryKind, SystemClock};
+use hoshi_storage::{SaveError, SaveLock, lock_save, open_storage, resolve_save_path};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -2714,7 +2712,7 @@ pub fn run(args: &[String]) -> Result<(), ServeError> {
         if cli_save.is_some() {
             config_dir_for_save(&hint)
         } else {
-            hoshi_core::default_save_dir()
+            hoshi_storage::default_save_dir()
         }
     });
     let cfg = crate::config::UserConfig::load(&dir);
@@ -2883,8 +2881,9 @@ fn admin_target(
             word => words.push(word),
         }
     }
-    let cfg =
-        crate::config::UserConfig::load(&config_dir.unwrap_or_else(hoshi_core::default_save_dir));
+    let cfg = crate::config::UserConfig::load(
+        &config_dir.unwrap_or_else(hoshi_storage::default_save_dir),
+    );
     let token = std::env::var("HOSHI_SERVE_ADMIN_TOKEN")
         .ok()
         .filter(|token| !token.is_empty())
@@ -2993,7 +2992,7 @@ pub fn config_dir_for_save(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hoshi_core::{lock_save, save_lock_path};
+    use hoshi_storage::{lock_save, save_lock_path};
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -3348,7 +3347,7 @@ mod tests {
             json!(CONTRACT_VERSIONS.to_vec())
         );
         assert_eq!(value["version"], crate::update::running_version());
-        assert_eq!(value["save_schema"], hoshi_core::SCHEMA_VERSION);
+        assert_eq!(value["save_schema"], hoshi_storage::SCHEMA_VERSION);
         assert_eq!(value["latest"], Value::Null);
         assert_eq!(get_path(addr, "/v1/version").unwrap().0, 401);
         let (status, body) =
@@ -3775,10 +3774,10 @@ mod tests {
         let save_http = unique_save();
         for path in [&save_cli, &save_http] {
             seed_save(path);
-            let mut conn = hoshi_core::open_save(path).unwrap();
-            let mut state = hoshi_core::load_state(&conn, BalanceConfig::default()).unwrap();
+            let mut conn = hoshi_storage::open_save(path).unwrap();
+            let mut state = hoshi_storage::load_state(&conn, BalanceConfig::default()).unwrap();
             state.next_raid_at = None;
-            hoshi_core::save_state(&mut conn, &state).unwrap();
+            hoshi_storage::save_state(&mut conn, &state).unwrap();
         }
         for (building, expected_exit) in [("metal_mine", 0), ("unknown", 2), ("fission_reactor", 3)]
         {
@@ -3803,15 +3802,15 @@ mod tests {
         let save_http = unique_save();
         for path in [&save_cli, &save_http] {
             seed_save(path);
-            let mut conn = hoshi_core::open_save(path).unwrap();
-            let mut state = hoshi_core::load_state(&conn, BalanceConfig::default()).unwrap();
+            let mut conn = hoshi_storage::open_save(path).unwrap();
+            let mut state = hoshi_storage::load_state(&conn, BalanceConfig::default()).unwrap();
             state.next_raid_at = None;
             state.buildings.shipyard = 1;
             // Deuterium stays under its cap so the trade into it has room.
             state.resources = hoshi_core::Resources::from_parts(50_000.0, 50_000.0, 1_000.0);
             // Spot trades move goods in the home cargo fleet.
             state.fleet.add(hoshi_core::ShipKind::LargeCargo, 2);
-            hoshi_core::save_state(&mut conn, &state).unwrap();
+            hoshi_storage::save_state(&mut conn, &state).unwrap();
         }
         for (unit, count, planet, expected_exit) in [
             ("light_cannon", 3, "home", 0),

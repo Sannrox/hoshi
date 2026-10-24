@@ -8,12 +8,14 @@
 runs in the terminal, meant to be played while waiting for coding agents. The
 design is recorded in [ADR 0002](docs/decisions/0002-terminal-idle-game-with-event-bridge.md).
 
-- `crates/hoshi-core`: game rules, state, timers, offline progression and the
-  save backends (SQLite default; optional Mikura / Chisei). No terminal or network code.
+- `crates/hoshi-core`: game rules, state, timers and offline progression. No
+  terminal, network, or database code.
+- `crates/hoshi-storage`: save backends (SQLite default; optional Mikura /
+  Chisei). The TUI persists through this crate; core never opens a database.
 - `crates/hoshi-tui`: the ratatui binary. Renders state and sends commands to
   core; holds no rules.
 - `crates/hoshi-bridge`: turns outside events (GitHub, agent activity) into
-  game events for core.
+  game events. Resolves feed paths itself; no workspace crate dependency.
 - `crates/hoshi-author`: offline `hoshi-author` CLI that drafts story events
   into `content/drafts/`. The game never depends on it or generates events at
   runtime.
@@ -27,15 +29,15 @@ fictional). `CLAUDE.md` only points here; this file is canonical.
 
 ## Dependencies and Ownership
 
-- **hoshi-core is the authority** for rules and state. The TUI and the bridge
-  call core APIs; they never write the save directly.
+- **hoshi-core is the authority** for rules and state. The TUI calls core APIs
+  and persists through `hoshi-storage`. The bridge never writes the save.
 - **Time is injected.** Core takes a clock so ticks and offline catch-up are
   deterministic in tests.
-- External crates: ratatui and crossterm for the TUI, rusqlite (bundled) for
-  the default save. Optional `mikura` (git tag `v0.2.0`) is a second backend
-  behind `--features mikura`. Optional `chisei` (API pin 1.3.0, off in
-  `config.toml`) is a third backend behind `--features chisei`. The bridge uses the `gh` CLI or webhooks; it
-  never stores tokens.
+- External crates: ratatui and crossterm for the TUI, rusqlite (bundled) in
+  `hoshi-storage` for the default save. Optional `mikura` (git tag `v0.2.0`) is
+  a second backend behind `--features mikura`. Optional `chisei` (API pin
+  1.3.0, off in `config.toml`) is a third backend behind `--features chisei`.
+  The bridge uses the `gh` CLI or webhooks; it never stores tokens.
 
 Record cross-repository predecessors in the Issue's `## GitHub dependencies`
 section as full `<owner>/<repo>#<n>` references.

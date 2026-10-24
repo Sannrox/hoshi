@@ -12,7 +12,7 @@ fn second_cli_gets_locked_while_the_lock_is_held() {
     let save =
         std::env::temp_dir().join(format!("hoshi-lock-{}-{nanos}.sqlite", std::process::id()));
     let bin = env!("CARGO_BIN_EXE_hoshi");
-    let holder = hoshi_core::lock_save(&save).expect("holder lock");
+    let holder = hoshi_storage::lock_save(&save).expect("holder lock");
     let output = Command::new(bin)
         .args(["--save", save.to_str().unwrap(), "--seed", "1", "state"])
         .output()

@@ -1,6 +1,6 @@
 # ADR 0006: Persistence through a Storage trait
 
-- Status: Accepted
+- Status: Accepted (amended by [0018](0018-hoshi-storage-crate.md))
 - Date: 2026-10-13
 - Follows: [0002](0002-terminal-idle-game-with-event-bridge.md)
 - Source: [#25](https://github.com/Sannrox/hoshi/issues/25)

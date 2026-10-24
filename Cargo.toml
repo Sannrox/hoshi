@@ -1,12 +1,14 @@
 [workspace]
 members = [
     "crates/hoshi-core",
+    "crates/hoshi-storage",
     "crates/hoshi-tui",
     "crates/hoshi-bridge",
     "crates/hoshi-author",
 ]
 default-members = [
     "crates/hoshi-core",
+    "crates/hoshi-storage",
     "crates/hoshi-tui",
     "crates/hoshi-bridge",
     "crates/hoshi-author",
@@ -23,6 +25,7 @@ publish = false
 [workspace.dependencies]
 hoshi-core = { version = "0.1.0", path = "crates/hoshi-core" }
 hoshi-bridge = { version = "0.1.0", path = "crates/hoshi-bridge" }
+hoshi-storage = { version = "0.1.0", path = "crates/hoshi-storage" }
 
 # Dependencies build without debug info in dev and test builds: backtraces
 # and debuggers keep full detail for workspace crates, and build directories

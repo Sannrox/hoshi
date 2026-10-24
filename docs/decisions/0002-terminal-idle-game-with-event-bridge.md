@@ -1,6 +1,6 @@
 # ADR 0002: Real-time idle game in the terminal with an agent/GitHub event bridge
 
-- Status: Accepted
+- Status: Accepted (crate list amended by [0018](0018-hoshi-storage-crate.md))
 - Date: 2026-10-10
 - Supersedes: —
 

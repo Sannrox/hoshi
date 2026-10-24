@@ -1,8 +1,9 @@
 # Install
 
 The playable crate is `hoshi` (the binary lives in `crates/hoshi-tui`).
-`cargo install --git … hoshi` is the cargo path. `hoshi-core` stays unpublished
-while an optional git-pinned backend remains in its manifest. This repository's
+`cargo install --git … hoshi` is the cargo path. `hoshi-core` and
+`hoshi-storage` stay unpublished; the optional git-pinned Mikura backend lives
+in `hoshi-storage`. This repository's
 release workflow publishes GitHub Release binaries, Ubuntu `.deb` packages and the Homebrew formula;
 it does not upload crates.
 

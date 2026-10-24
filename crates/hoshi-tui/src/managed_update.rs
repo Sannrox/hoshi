@@ -335,7 +335,7 @@ pub fn check_saves(dir: &Path, target_schema: u32) -> Result<Vec<PathBuf>, Updat
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        if hoshi_core::BackendKind::from_path(&path) != hoshi_core::BackendKind::Sqlite {
+        if hoshi_storage::BackendKind::from_path(&path) != hoshi_storage::BackendKind::Sqlite {
             return Err(invalid(
                 "back up and check optional-backend saves manually before updating",
             ));
@@ -354,7 +354,8 @@ pub fn check_saves(dir: &Path, target_schema: u32) -> Result<Vec<PathBuf>, Updat
         if file.read(&mut header)? < 16 || &header != b"SQLite format 3\0" {
             continue;
         }
-        let schema = hoshi_core::save_schema(&path).map_err(|error| invalid(error.to_string()))?;
+        let schema =
+            hoshi_storage::save_schema(&path).map_err(|error| invalid(error.to_string()))?;
         if schema > target_schema {
             return Err(invalid(format!(
                 "save schema {schema} exceeds target schema {target_schema}; restore a matching backup first"
@@ -386,7 +387,7 @@ pub fn backup_saves(dir: &Path, saves: &[PathBuf], now: u64) -> Result<(), Updat
         let name = save
             .file_name()
             .ok_or_else(|| invalid("invalid save name"))?;
-        hoshi_core::backup_save(save, &staging.join(name))
+        hoshi_storage::backup_save(save, &staging.join(name))
             .map_err(|error| invalid(error.to_string()))?;
     }
     sync_dir(&staging)?;
@@ -424,7 +425,7 @@ mod tests {
             version_output: format!("hoshi {version}"),
             published_at: 100,
             note: None,
-            save_schema: hoshi_core::SCHEMA_VERSION,
+            save_schema: hoshi_storage::SCHEMA_VERSION,
             cli_contract: 2,
             server_contracts: vec!["v1".into()],
             assets: BTreeMap::from([(
@@ -509,26 +510,26 @@ mod tests {
         let saves = dir.join("saves");
         std::fs::create_dir(&saves).unwrap();
         let custom = saves.join("empire.save");
-        drop(hoshi_core::open_save(&custom).unwrap());
+        drop(hoshi_storage::open_save(&custom).unwrap());
         let uppercase = saves.join("EMPIRE.SQLITE");
         std::fs::copy(&custom, &uppercase).unwrap();
-        let discovered = check_saves(&saves, hoshi_core::SCHEMA_VERSION).unwrap();
+        let discovered = check_saves(&saves, hoshi_storage::SCHEMA_VERSION).unwrap();
         assert_eq!(discovered.len(), 2);
-        let gate = hoshi_core::lock_save_migrations(&saves).unwrap();
+        let gate = hoshi_storage::lock_save_migrations(&saves).unwrap();
         let new_save = saves.join("new.sqlite");
         assert!(matches!(
-            hoshi_core::open_save(&new_save),
-            Err(hoshi_core::SaveError::Locked)
+            hoshi_storage::open_save(&new_save),
+            Err(hoshi_storage::SaveError::Locked)
         ));
         assert!(!new_save.exists());
-        drop(hoshi_core::open_save(&custom).unwrap());
+        drop(hoshi_storage::open_save(&custom).unwrap());
         drop(gate);
-        drop(hoshi_core::open_save(&custom).unwrap());
+        drop(hoshi_storage::open_save(&custom).unwrap());
         let linked = saves.join("linked.sqlite");
         std::os::unix::fs::symlink(&custom, &linked).unwrap();
-        assert!(check_saves(&saves, hoshi_core::SCHEMA_VERSION).is_err());
+        assert!(check_saves(&saves, hoshi_storage::SCHEMA_VERSION).is_err());
         std::fs::remove_file(linked).unwrap();
-        assert!(check_saves(&saves, hoshi_core::SCHEMA_VERSION - 1).is_err());
+        assert!(check_saves(&saves, hoshi_storage::SCHEMA_VERSION - 1).is_err());
         backup_saves(&saves, &discovered, 100).unwrap();
         let completed = std::fs::read_dir(saves.join("update-backups"))
             .unwrap()
@@ -536,11 +537,11 @@ mod tests {
             .find(|entry| entry.file_type().unwrap().is_dir())
             .unwrap();
         assert_eq!(
-            hoshi_core::save_schema(&completed.path().join("empire.save")).unwrap(),
-            hoshi_core::SCHEMA_VERSION
+            hoshi_storage::save_schema(&completed.path().join("empire.save")).unwrap(),
+            hoshi_storage::SCHEMA_VERSION
         );
         std::fs::write(saves.join("other.MIKURA"), "optional backend").unwrap();
-        assert!(check_saves(&saves, hoshi_core::SCHEMA_VERSION).is_err());
+        assert!(check_saves(&saves, hoshi_storage::SCHEMA_VERSION).is_err());
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

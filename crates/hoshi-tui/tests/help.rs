@@ -11,7 +11,7 @@ fn human_help_never_opens_the_save() {
             .unwrap()
             .as_nanos()
     ));
-    let lock = hoshi_core::lock_save(&path).unwrap();
+    let lock = hoshi_storage::lock_save(&path).unwrap();
     for args in [
         vec!["--help"],
         vec!["-h"],
@@ -36,7 +36,7 @@ fn human_help_never_opens_the_save() {
         assert!(!path.exists(), "help created a save");
     }
     drop(lock);
-    let _ = std::fs::remove_file(hoshi_core::save_lock_path(&path));
+    let _ = std::fs::remove_file(hoshi_storage::save_lock_path(&path));
 }
 
 #[cfg(unix)]

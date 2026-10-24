@@ -58,7 +58,7 @@ with tempfile.TemporaryDirectory() as temporary:
         'version_output': args.version_output,
         'published_at': int(subprocess.check_output(['git', 'show', '-s', '--format=%ct', 'HEAD']).strip()),
         'note': args.note or None,
-        'save_schema': constant('crates/hoshi-core/src/save.rs', 'SCHEMA_VERSION'),
+        'save_schema': constant('crates/hoshi-storage/src/save.rs', 'SCHEMA_VERSION'),
         'cli_contract': constant('crates/hoshi-tui/src/cli.rs', 'SCHEMA_VERSION'),
         'server_contracts': ['v1'],
         'assets': assets,

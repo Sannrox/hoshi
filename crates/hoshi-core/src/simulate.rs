@@ -968,78 +968,7 @@ mod energy_tests {
     }
 
     #[test]
-    fn restored_solar_upgrades_cannot_exceed_a_reduced_cap() {
-        for with_dismantle in [false, true] {
-            let config = BalanceConfig::default();
-            let mut state = GameState::with_config(0, config.clone());
-            state.config.raid = crate::RaidConfig::inactive();
-            state.next_raid_at = None;
-            state.buildings = crate::Buildings::default();
-            let cap = state.max_solar_level(state.home).unwrap();
-            state.buildings.solar_plant = cap;
-            state.resources = crate::Resources::from_parts(10_000.0, 10_000.0, 0.0);
-            let before = state.resources;
-            state.config.solar_plant.max_level_base = 100;
-            state.enqueue_build(BuildingKind::SolarPlant, 0).unwrap();
-            let at = state.build_queue[0].completes_at.unwrap();
-            if with_dismantle {
-                state.enqueue_build(BuildingKind::SolarPlant, 0).unwrap();
-                state
-                    .enqueue_dismantle_as(
-                        state.home,
-                        BuildingKind::SolarPlant,
-                        0,
-                        crate::Actor::Player,
-                    )
-                    .unwrap();
-            }
-            let coord = crate::Coord {
-                position: 8,
-                ..state.home
-            };
-            state.colonies.push(Colony {
-                coord,
-                kind: state.home_kind,
-                size: state.home_size,
-                resources: state.resources,
-                buildings: state.buildings,
-                fleet: Fleet::default(),
-                defences: crate::DefenceGrid::default(),
-                build_queue: state.build_queue.clone(),
-                rare: None,
-                goods: BTreeMap::new(),
-            });
-            let mut conn = crate::open_save(std::path::Path::new(":memory:")).unwrap();
-            crate::save_state(&mut conn, &state).unwrap();
-            let mut loaded = crate::load_state(&conn, config).unwrap();
-            loaded.config.raid = crate::RaidConfig::inactive();
-            loaded.next_raid_at = None;
-            loaded.catch_up(at);
-            assert_eq!(loaded.buildings.solar_plant, cap);
-            assert_eq!(loaded.colonies[0].buildings.solar_plant, cap);
-            if with_dismantle {
-                assert_eq!(loaded.build_queue.len(), 1);
-                assert_eq!(loaded.colonies[0].build_queue.len(), 1);
-                assert_eq!(loaded.build_queue[0].from_level, cap);
-                assert_eq!(loaded.colonies[0].build_queue[0].from_level, cap);
-            } else {
-                assert!(loaded.build_queue.is_empty());
-                assert!(loaded.colonies[0].build_queue.is_empty());
-            }
-            assert_eq!(loaded.resources.iron, before.iron);
-            assert_eq!(loaded.resources.silicon, before.silicon);
-            assert_eq!(loaded.colonies[0].resources.iron, before.iron);
-            assert_eq!(loaded.colonies[0].resources.silicon, before.silicon);
-            if with_dismantle {
-                loaded.catch_up(at + 86_400);
-                assert_eq!(loaded.buildings.solar_plant, cap - 1);
-                assert_eq!(loaded.colonies[0].buildings.solar_plant, cap - 1);
-            }
-        }
-    }
-
-    #[test]
-    fn solar_cap_checks_queued_levels_and_preserves_existing_levels_on_load() {
+    fn solar_cap_checks_queued_levels() {
         let mut state = GameState::new(0);
         let cap = state.max_solar_level(state.home).unwrap();
         state.buildings.solar_plant = cap - 1;
@@ -1050,12 +979,6 @@ mod energy_tests {
             state.enqueue_build(BuildingKind::SolarPlant, 0),
             Err(BuildError::SolarCap { cap })
         );
-        state.buildings.solar_plant = cap + 2;
-        state.build_queue.clear();
-        let mut conn = crate::open_save(std::path::Path::new(":memory:")).unwrap();
-        crate::save_state(&mut conn, &state).unwrap();
-        let loaded = crate::load_state(&conn, state.config.clone()).unwrap();
-        assert_eq!(loaded.buildings.solar_plant, cap + 2);
     }
 }
 

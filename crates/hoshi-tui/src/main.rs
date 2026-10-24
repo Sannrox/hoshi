@@ -41,9 +41,12 @@ mod ws;
 
 use app::{Action, App};
 use hoshi_core::{
-    BackendKind, BalanceConfig, Clock, GameState, Prestige, RivalCatalog, RivalSettings, SaveError,
-    SeasonCatalog, SpeciesCatalog, SystemClock, default_save_dir, encode_galaxy_seed, inspect_save,
-    lock_save, open_storage, parse_galaxy_seed, resolve_save_path, simulate_greedy,
+    BalanceConfig, Clock, GameState, Prestige, RivalCatalog, RivalSettings, SeasonCatalog,
+    SpeciesCatalog, SystemClock, encode_galaxy_seed, parse_galaxy_seed, simulate_greedy,
+};
+use hoshi_storage::{
+    BackendKind, SaveError, default_save_dir, inspect_save, lock_save, open_storage,
+    resolve_save_path,
 };
 use portraits::{PortraitView, Protocol, detect_protocol};
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
@@ -1236,7 +1239,7 @@ fn parse_path_flag(args: impl IntoIterator<Item = impl AsRef<str>>, flag: &str) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hoshi_core::resolve_save_path;
+    use hoshi_storage::resolve_save_path;
     use std::path::Path;
 
     #[test]

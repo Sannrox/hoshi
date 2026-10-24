@@ -1,10 +1,10 @@
 //! Persistence behind a trait. Game rules never open a database.
 
-use crate::balance::BalanceConfig;
-use crate::save::{
-    SaveError, load_or_new, load_or_new_with_seed, load_state, open_save, save_state,
-};
-use crate::state::GameState;
+mod save;
+pub use save::*;
+
+use hoshi_core::BalanceConfig;
+use hoshi_core::GameState;
 use rusqlite::Connection;
 use std::ffi::OsStr;
 use std::path::Path;
@@ -58,7 +58,7 @@ pub trait Storage {
     ) -> Result<GameState, SaveError> {
         if self.is_empty()? {
             let mut state = GameState::with_config(now_unix, config);
-            state.tutorial = crate::TutorialBoard::start();
+            state.tutorial = hoshi_core::TutorialBoard::start();
             self.save(&state)?;
             Ok(state)
         } else {
@@ -161,13 +161,13 @@ pub fn open_storage(path: &Path) -> Result<Box<dyn Storage>, SaveError> {
     }
 }
 
-pub(crate) fn inspect_backend_save(path: &Path) -> Result<crate::SaveGlance, SaveError> {
+pub(crate) fn inspect_backend_save(path: &Path) -> Result<SaveGlance, SaveError> {
     if crate::save_is_locked(path) {
         return Err(SaveError::Locked);
     }
     let state = load_backend_state(path)?;
-    Ok(crate::SaveGlance {
-        schema: crate::SCHEMA_VERSION,
+    Ok(SaveGlance {
+        schema: SCHEMA_VERSION,
         last_tick_unix: state.last_tick_unix,
         deterministic: state.deterministic,
         modified: state.is_modified(),
@@ -188,7 +188,7 @@ pub(crate) fn inspect_backend_save(path: &Path) -> Result<crate::SaveGlance, Sav
     })
 }
 
-pub(crate) fn inspect_backend_career(path: &Path) -> Result<crate::CareerGlance, SaveError> {
+pub(crate) fn inspect_backend_career(path: &Path) -> Result<CareerGlance, SaveError> {
     if crate::save_is_locked(path) {
         return Err(SaveError::Locked);
     }
@@ -218,12 +218,12 @@ pub(crate) fn inspect_backend_career(path: &Path) -> Result<crate::CareerGlance,
     let wonder_ids: std::collections::BTreeSet<String> =
         state.completed_wonders.iter().cloned().collect();
     let current_wonders = wonder_ids.len() as u32;
-    let building_levels = crate::BuildingKind::ALL
+    let building_levels = hoshi_core::BuildingKind::ALL
         .iter()
         .map(|&kind| state.buildings.get(kind))
         .fold(0u32, u32::saturating_add);
     let research_levels = state.tech_levels.values().copied().sum();
-    Ok(crate::CareerGlance {
+    Ok(CareerGlance {
         unlocks: state.achievements.clone(),
         playtime_secs,
         battles: u32::try_from(state.combat_logs.len()).unwrap_or(u32::MAX),
@@ -314,9 +314,9 @@ pub(crate) fn cleanup_sqlite(path: &Path) {
 
 #[cfg(test)]
 pub(crate) fn assert_storage_contract(store: &mut dyn Storage) {
-    use crate::clock::{Clock, FakeClock};
-    use crate::fleets::Coord;
-    use crate::ships::ShipKind;
+    use hoshi_core::Coord;
+    use hoshi_core::ShipKind;
+    use hoshi_core::{Clock, FakeClock};
 
     let mut cfg = BalanceConfig::default();
     cfg.raid.enabled = false;
@@ -328,31 +328,31 @@ pub(crate) fn assert_storage_contract(store: &mut dyn Storage) {
     let loaded = store.load(cfg.clone()).unwrap();
     assert_eq!(loaded, original, "round-trip");
 
-    original.colonies.push(crate::Colony {
+    original.colonies.push(hoshi_core::Colony {
         coord: Coord {
             galaxy: 1,
             system: 1,
             position: 8,
         },
-        kind: crate::PlanetType::Rocky,
+        kind: hoshi_core::PlanetType::Rocky,
         size: 8,
         rare: None,
-        resources: crate::Resources::ZERO,
-        buildings: crate::Buildings::default(),
+        resources: hoshi_core::Resources::ZERO,
+        buildings: hoshi_core::Buildings::default(),
         build_queue: Vec::new(),
-        fleet: crate::Fleet::default(),
-        defences: crate::DefenceGrid::default(),
+        fleet: hoshi_core::Fleet::default(),
+        defences: hoshi_core::DefenceGrid::default(),
         goods: std::collections::BTreeMap::new(),
     });
-    original.outposts.push(crate::Outpost {
+    original.outposts.push(hoshi_core::Outpost {
         coord: Coord {
             galaxy: 1,
             system: 2,
             position: 4,
         },
-        kind: crate::PlanetType::Rocky,
+        kind: hoshi_core::PlanetType::Rocky,
         size: 10,
-        defences: crate::Fleet::default(),
+        defences: hoshi_core::Fleet::default(),
         garrison: 40,
         rare: None,
         last_rebuild_at: now,

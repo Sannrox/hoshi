@@ -309,7 +309,7 @@ fn pick_rare(seed: &mut u64, cfg: &OutpostConfig, chance: f64) -> Option<String>
 }
 
 impl GameState {
-    pub(crate) fn seed_frontier(&mut self) {
+    pub fn seed_frontier(&mut self) {
         let cfg = self.config.frontier.clone();
         self.frontier.worlds = generate_frontier(
             self.galaxy_seed,

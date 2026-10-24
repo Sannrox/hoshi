@@ -1,6 +1,7 @@
 //! Direct-launch `--continue` uses documented exit codes.
 
-use hoshi_core::{BalanceConfig, GameState, SCHEMA_VERSION, lock_save, open_save, save_state};
+use hoshi_core::{BalanceConfig, GameState};
+use hoshi_storage::{SCHEMA_VERSION, lock_save, open_save, save_state};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};

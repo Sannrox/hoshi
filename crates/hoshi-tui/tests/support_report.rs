@@ -1,4 +1,5 @@
-use hoshi_core::{BalanceConfig, GameState, open_save, save_state};
+use hoshi_core::{BalanceConfig, GameState};
+use hoshi_storage::{open_save, save_state};
 use std::io::Read;
 use std::process::Command;
 
@@ -80,7 +81,7 @@ fn local_report_archive_redacts_and_save_inclusion_is_explicit() {
                 let snapshot = dir.join("attached.sqlite");
                 std::fs::write(&snapshot, bytes).unwrap();
                 let read = open_save(&snapshot).unwrap();
-                let loaded = hoshi_core::load_state(&read, BalanceConfig::default()).unwrap();
+                let loaded = hoshi_storage::load_state(&read, BalanceConfig::default()).unwrap();
                 assert_eq!(loaded.galaxy_seed, state.galaxy_seed);
                 continue;
             }

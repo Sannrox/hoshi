@@ -9,9 +9,11 @@ use crate::cli;
 #[cfg(feature = "chisei")]
 use hoshi_core::{
     Actor, AuditEntry, BalanceConfig, BuildingKind, Coord, Fleet, GameState, GovernanceLedger,
-    Intent, InvasionApproval, PolicyBlock, ShipKind, Storage, apply, check_move, propose, spend_of,
+    Intent, InvasionApproval, PolicyBlock, ShipKind, apply, check_move, propose, spend_of,
     take_budget,
 };
+#[cfg(feature = "chisei")]
+use hoshi_storage::Storage;
 #[cfg(feature = "chisei")]
 use serde_json::json;
 #[cfg(feature = "chisei")]
@@ -470,7 +472,7 @@ struct Considered {
 
 #[cfg(feature = "chisei")]
 struct Governed {
-    store: hoshi_core::ChiseiStorage,
+    store: hoshi_storage::ChiseiStorage,
     state: GameState,
     ledger: GovernanceLedger,
     audit: Vec<AuditEntry>,
@@ -480,7 +482,7 @@ struct Governed {
 #[cfg(feature = "chisei")]
 impl Governed {
     fn open(path: &Path, seed: u64) -> Result<Self, String> {
-        let mut store = hoshi_core::ChiseiStorage::open(path).map_err(|e| e.to_string())?;
+        let mut store = hoshi_storage::ChiseiStorage::open(path).map_err(|e| e.to_string())?;
         let state = setup_empire(seed);
         store.save(&state).map_err(|e| e.to_string())?;
         Ok(Self {

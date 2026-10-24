@@ -34,7 +34,7 @@ pub fn build(
         crate::update::channel(),
         install_method(),
         crate::cli::SCHEMA_VERSION,
-        hoshi_core::SCHEMA_VERSION,
+        hoshi_storage::SCHEMA_VERSION,
         update_status(dir)
     );
     let size = ratatui::crossterm::terminal::size()
@@ -76,7 +76,7 @@ pub fn build(
     text.push_str("\n## Save\n\nPath: <save>\n");
     if save.is_file() {
         let size = save.metadata().map_err(|error| error.to_string())?.len();
-        match hoshi_core::inspect_diagnostics(save, 0, false)
+        match hoshi_storage::inspect_diagnostics(save, 0, false)
             .and_then(|diagnostics| diagnostics.glance)
         {
             Ok(glance) => {
@@ -84,7 +84,7 @@ pub fn build(
             }
             Err(error) => text.push_str(&format!("Summary unavailable: {error}\n")),
         }
-        match hoshi_core::inspect_diagnostics(save, log_lines, include_save) {
+        match hoshi_storage::inspect_diagnostics(save, log_lines, include_save) {
             Ok(diagnostics) => {
                 if let Some(bytes) = diagnostics.sqlite_snapshot {
                     text.push_str(&format!(
@@ -477,8 +477,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
             _ => report_args.push(word.clone()),
         }
     }
-    let save =
-        hoshi_core::resolve_save_path(save.as_deref(), std::env::var_os("HOSHI_SAVE").as_deref());
+    let save = hoshi_storage::resolve_save_path(
+        save.as_deref(),
+        std::env::var_os("HOSHI_SAVE").as_deref(),
+    );
     let options = Options::parse(&report_args)?;
     let report = build(
         &save,

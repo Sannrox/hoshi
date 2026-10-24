@@ -106,7 +106,42 @@ impl Default for BridgeConfig {
 
 /// Feed file next to the save, never the cwd.
 pub fn default_feed_path() -> PathBuf {
-    feed_path_for_save(&hoshi_core::default_save_path())
+    feed_path_for_save(&default_save_path())
+}
+
+/// Flag, then `HOSHI_SAVE`, then the per-user data directory. Never the cwd.
+fn resolve_save_path(flag: Option<&Path>, env_value: Option<&std::ffi::OsStr>) -> PathBuf {
+    if let Some(path) = flag {
+        return path.to_path_buf();
+    }
+    if let Some(path) = env_value {
+        return PathBuf::from(path);
+    }
+    default_save_path()
+}
+
+fn default_save_path() -> PathBuf {
+    default_save_dir().join("save.sqlite")
+}
+
+fn default_save_dir() -> PathBuf {
+    let mut dir = user_data_dir();
+    dir.push("hoshi");
+    dir
+}
+
+fn user_data_dir() -> PathBuf {
+    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
+        return PathBuf::from(xdg);
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        if cfg!(target_os = "macos") {
+            return home.join("Library/Application Support");
+        }
+        return home.join(".local/share");
+    }
+    std::env::temp_dir()
 }
 
 /// `feed.jsonl` in the same directory as `save`.
@@ -632,7 +667,7 @@ pub fn post_event(feed: &Path, event: &ActivityEvent) -> Result<(), FeedError> {
 
 /// `hoshi post <type> <source> [payload-json] [--feed PATH] [--save PATH] [--ts UNIX]`
 pub fn run_post(args: &[String]) -> Result<(), FeedError> {
-    let mut feed = feed_path_for_save(&hoshi_core::resolve_save_path(
+    let mut feed = feed_path_for_save(&resolve_save_path(
         None,
         std::env::var_os("HOSHI_SAVE").as_deref(),
     ));
@@ -1008,7 +1043,7 @@ mod tests {
             PathBuf::from("/tmp/player/feed.jsonl")
         );
         assert_eq!(
-            feed_path_for_save(&hoshi_core::resolve_save_path(
+            feed_path_for_save(&resolve_save_path(
                 None,
                 Some(std::ffi::OsStr::new("/tmp/custom/save.sqlite")),
             )),

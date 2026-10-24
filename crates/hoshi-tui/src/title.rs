@@ -8,11 +8,14 @@ use crate::ui::chrome::{Dialog, Navbar, StatusBar};
 use crate::ui::table::{Column, DataTable};
 use crate::ui::{Depth, Intent, Surface, Theme};
 use hoshi_core::{
-    AchievementCondition, AchievementConfig, BalanceConfig, CareerGlance, Prestige, PrestigeConfig,
-    PrestigeError, RivalCatalog, RivalSettings, SaveError, SaveGlance, SeasonCatalog,
-    SpeciesCatalog, SpeciesSpec, advisor_endpoint_allowed, encode_galaxy_seed, inspect_career,
-    inspect_save, lock_save, open_storage, parse_galaxy_seed, preview_galaxy, probe_model_endpoint,
-    save_is_locked, season_slot_name,
+    AchievementCondition, AchievementConfig, BalanceConfig, Prestige, PrestigeConfig,
+    PrestigeError, RivalCatalog, RivalSettings, SeasonCatalog, SpeciesCatalog, SpeciesSpec,
+    advisor_endpoint_allowed, encode_galaxy_seed, parse_galaxy_seed, preview_galaxy,
+    probe_model_endpoint, season_slot_name,
+};
+use hoshi_storage::{
+    CareerGlance, SaveError, SaveGlance, inspect_career, inspect_save, lock_save, open_storage,
+    save_is_locked,
 };
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
@@ -2902,9 +2905,11 @@ pub fn research_levels(state: &hoshi_core::GameState) -> u32 {
 mod tests {
     use super::*;
     use hoshi_core::{
-        BalanceConfig, GameState, Prestige, RivalCatalog, RivalSettings, SCHEMA_VERSION,
-        SeasonCatalog, SpeciesCatalog, load_state, lock_save, open_save, save_is_locked,
-        save_state,
+        BalanceConfig, GameState, Prestige, RivalCatalog, RivalSettings, SeasonCatalog,
+        SpeciesCatalog,
+    };
+    use hoshi_storage::{
+        SCHEMA_VERSION, load_state, lock_save, open_save, save_is_locked, save_state,
     };
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;

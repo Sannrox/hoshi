@@ -1,13 +1,13 @@
 //! Optional in-process Chisei-shaped backend. No network.
 
 use super::{Storage, cleanup_sqlite};
-use crate::balance::BalanceConfig;
-use crate::fleets::Coord;
-use crate::intent::{Intent, IntentError, Proposal, apply, propose};
-use crate::ontology::{CHISEI_API_VERSION, ONTOLOGY_PACKAGE, bundled_ontology, validate_ontology};
 use crate::save::{SaveError, load_state, open_save, save_state};
-use crate::ships::{Fleet, ShipKind};
-use crate::state::GameState;
+use hoshi_core::BalanceConfig;
+use hoshi_core::Coord;
+use hoshi_core::GameState;
+use hoshi_core::{CHISEI_API_VERSION, ONTOLOGY_PACKAGE, bundled_ontology, validate_ontology};
+use hoshi_core::{Fleet, ShipKind};
+use hoshi_core::{Intent, IntentError, Proposal, apply, propose};
 use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -675,12 +675,11 @@ pub(crate) fn unique_chisei(tag: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::buildings::BuildingKind;
-    use crate::clock::{Clock, FakeClock};
-    use crate::leaders::Actor;
-    use crate::storage::assert_storage_contract;
+    use crate::assert_storage_contract;
+    use hoshi_core::Actor;
+    use hoshi_core::BuildingKind;
+    use hoshi_core::{Clock, FakeClock};
     use std::collections::BTreeSet;
-    use std::time::Instant;
 
     fn cleanup_dir(path: &Path) {
         let _ = std::fs::remove_dir_all(path);
@@ -728,7 +727,7 @@ mod tests {
         let mut cfg = BalanceConfig::default();
         cfg.raid.enabled = false;
         let mut state = GameState::with_config(1_000, cfg);
-        state.spy_reports.push(crate::SpyReport {
+        state.spy_reports.push(hoshi_core::SpyReport {
             id: 9,
             target: Coord::HOME,
             created_at: 1_000,
@@ -753,19 +752,19 @@ mod tests {
         });
         state
             .classify(
-                crate::Actor::Player,
-                crate::ClassifiedKind::Report,
+                hoshi_core::Actor::Player,
+                hoshi_core::ClassifiedKind::Report,
                 "9",
-                crate::Classification::Secret,
-                [crate::COMPARTMENT_INTEL.into()],
+                hoshi_core::Classification::Secret,
+                [hoshi_core::COMPARTMENT_INTEL.into()],
             )
             .unwrap();
         store.save(&state).unwrap();
         assert_eq!(
             state
-                .marking_of(crate::ClassifiedKind::Report, "9")
+                .marking_of(hoshi_core::ClassifiedKind::Report, "9")
                 .classification,
-            crate::Classification::Secret
+            hoshi_core::Classification::Secret
         );
         assert!(store.objects().iter().all(|o| !matches!(
             o.kind.as_str(),
@@ -1033,13 +1032,13 @@ mod tests {
         let mut state = GameState::new(100);
         store.save(&state).unwrap();
         let stale = state.clone();
-        state.set_cheats_enabled(true, crate::Actor::Player, 100);
-        let intent = crate::Intent::Cheat {
+        state.set_cheats_enabled(true, hoshi_core::Actor::Player, 100);
+        let intent = hoshi_core::Intent::Cheat {
             code: "grant iron 100".into(),
-            actor: crate::Actor::Player,
+            actor: hoshi_core::Actor::Player,
         };
-        let proposal = crate::propose(&state, &intent, 100).unwrap();
-        crate::apply(&mut state, &proposal, 100).unwrap();
+        let proposal = hoshi_core::propose(&state, &intent, 100).unwrap();
+        hoshi_core::apply(&mut state, &proposal, 100).unwrap();
         store.save(&state).unwrap();
         assert!(store.save(&stale).is_err());
         let loaded = store.load(BalanceConfig::default()).unwrap();
@@ -1113,7 +1112,20 @@ mod tests {
         cleanup_dir(&path);
     }
 
+    /// CPU time of this thread, so sibling tests do not count against the budget.
+    #[cfg(unix)]
+    fn thread_cpu_time() -> std::time::Duration {
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: `ts` is a valid out-pointer for the duration of the call.
+        unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
+        std::time::Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
+    }
+
     #[test]
+    #[cfg(unix)]
     fn apply_save_throughput_stays_under_twelve_seconds_for_fifty() {
         let path = unique_chisei("soak");
         let mut store = ChiseiStorage::open(&path).unwrap();
@@ -1124,7 +1136,7 @@ mod tests {
         state.resources.silicon = 500_000.0;
         state.resources.deuterium = 500_000.0;
         let clock = FakeClock::new(1_000);
-        let start = Instant::now();
+        let started = thread_cpu_time();
         for i in 0..50u32 {
             clock.advance(60);
             let now = clock.now_unix();
@@ -1147,10 +1159,10 @@ mod tests {
                 Err(_) => store.save(&state).unwrap(),
             }
         }
+        let elapsed = thread_cpu_time().saturating_sub(started);
         assert!(
-            start.elapsed().as_secs_f64() < 12.0,
-            "50 apply+save cycles took {:?}",
-            start.elapsed()
+            elapsed.as_secs_f64() < 12.0,
+            "50 apply+save cycles took {elapsed:?}"
         );
         drop(store);
         cleanup_dir(&path);

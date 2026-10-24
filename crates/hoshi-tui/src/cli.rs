@@ -1,12 +1,15 @@
 //! Scriptable JSON commands. Same core actions as the TUI; no extra powers.
 
 use hoshi_core::{
-    Actor, AssignmentTarget, BackendKind, BalanceConfig, Blueprint, BlueprintCatalog, BuildingKind,
+    Actor, AssignmentTarget, BalanceConfig, Blueprint, BlueprintCatalog, BuildingKind,
     Classification, ClassifiedKind, Clock, Coord, Customer, DefenceKind, FakeClock, Fleet,
     FusionMode, GameState, HistoryKind, HistoryQuery, Intent, Jurisdiction, JurisdictionKind,
     MoonFacility, OrderSide, Payload, Permission, PlanRequest, ResourceKind, RoleKind, RoundAction,
-    SCHEMA_VERSION as SAVE_SCHEMA, SaveError, Scenario, ShipKind, SpeciesCatalog, SpyReport,
-    SystemClock, TransferKind, advise, blueprint_dir, inspect_save, lock_save, open_storage,
+    Scenario, ShipKind, SpeciesCatalog, SpyReport, SystemClock, TransferKind, advise,
+    blueprint_dir,
+};
+use hoshi_storage::{
+    BackendKind, SCHEMA_VERSION as SAVE_SCHEMA, SaveError, inspect_save, lock_save, open_storage,
     resolve_save_path, save_is_locked,
 };
 use serde_json::{Value, json};
@@ -745,7 +748,7 @@ fn glance_for_feedback(save: &Path) -> Result<Value, SaveError> {
             let store = open_storage(save)?;
             let loaded = store.load(BalanceConfig::default())?;
             Ok(json!({
-                "save_schema": hoshi_core::SCHEMA_VERSION,
+                "save_schema": hoshi_storage::SCHEMA_VERSION,
                 "last_tick_unix": loaded.last_tick_unix,
                 "deterministic": loaded.deterministic,
                 "planets": 1 + loaded.colonies.len(),
@@ -5319,7 +5322,8 @@ fn parse_advance(text: &str) -> Result<u64, CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hoshi_core::{BuildError, load_state, open_save, save_state};
+    use hoshi_core::BuildError;
+    use hoshi_storage::{load_state, open_save, save_state};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]

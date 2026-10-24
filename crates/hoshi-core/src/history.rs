@@ -374,34 +374,6 @@ impl HistoryQuery {
     }
 }
 
-pub fn join_csv(parts: &[String]) -> String {
-    parts.join(",")
-}
-
-pub fn split_csv(raw: &str) -> Vec<String> {
-    if raw.is_empty() {
-        Vec::new()
-    } else {
-        raw.split(',').map(str::to_string).collect()
-    }
-}
-
-pub fn join_ids(ids: &[u64]) -> String {
-    ids.iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-pub fn split_ids(raw: &str) -> Result<Vec<u64>, ()> {
-    if raw.is_empty() {
-        return Ok(Vec::new());
-    }
-    raw.split(',')
-        .map(|part| part.parse::<u64>().map_err(|_| ()))
-        .collect()
-}
-
 fn json_string(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
     out.push('"');

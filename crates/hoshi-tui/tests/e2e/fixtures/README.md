@@ -7,7 +7,7 @@ the repository root:
 python3 scripts/gen-e2e-save-fixtures.py
 ```
 
-The script reads `SCHEMA_VERSION` from `crates/hoshi-core/src/save.rs` and
+The script reads `SCHEMA_VERSION` from `crates/hoshi-storage/src/save.rs` and
 writes:
 
 - `v1.sqlite` … `v{SCHEMA_VERSION-1}.sqlite` — one save per version we still

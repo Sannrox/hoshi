@@ -21,7 +21,7 @@ pub fn run(args: &[String]) -> Result<(), UpdateError> {
     let mut channel = update::channel().to_owned();
     let mut version = None;
     let mut install_dir = None;
-    let mut save_dir = hoshi_core::default_save_dir();
+    let mut save_dir = hoshi_storage::default_save_dir();
     let mut endpoint = None;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -90,7 +90,7 @@ pub fn run(args: &[String]) -> Result<(), UpdateError> {
         let release = managed.release(&previous)?;
         managed_update::check_saves(&save_dir, release.save_schema)?;
         confirm(yes, &format!("Roll back to {}?", release.version))?;
-        let _save_gate = hoshi_core::lock_save_migrations(&save_dir)
+        let _save_gate = hoshi_storage::lock_save_migrations(&save_dir)
             .map_err(|error| invalid(error.to_string()))?;
         managed_update::check_saves(&save_dir, release.save_schema)?;
         managed.rollback()?;
@@ -145,7 +145,7 @@ pub fn run(args: &[String]) -> Result<(), UpdateError> {
     if let Some(note) = &release.note {
         println!("{note}");
     }
-    let migrates = release.save_schema > hoshi_core::SCHEMA_VERSION;
+    let migrates = release.save_schema > hoshi_storage::SCHEMA_VERSION;
     if migrates {
         println!(
             "This release migrates saves to schema {}. Older builds may refuse them. A backup will be kept before installation.",
@@ -167,7 +167,7 @@ pub fn run(args: &[String]) -> Result<(), UpdateError> {
             }
         }
         confirm(yes, "Install this release?")?;
-        let _save_gate = hoshi_core::lock_save_migrations(&save_dir)
+        let _save_gate = hoshi_storage::lock_save_migrations(&save_dir)
             .map_err(|error| invalid(error.to_string()))?;
         let saves = managed_update::check_saves(&save_dir, release.save_schema)?;
         managed_update::backup_saves(&save_dir, &saves, SystemClock.now_unix())?;
@@ -239,8 +239,8 @@ pub fn run(args: &[String]) -> Result<(), UpdateError> {
         ));
     }
     confirm(yes, &format!("Run {}?", command.join(" ")))?;
-    let _save_gate =
-        hoshi_core::lock_save_migrations(&save_dir).map_err(|error| invalid(error.to_string()))?;
+    let _save_gate = hoshi_storage::lock_save_migrations(&save_dir)
+        .map_err(|error| invalid(error.to_string()))?;
     let saves = managed_update::check_saves(&save_dir, release.save_schema)?;
     managed_update::backup_saves(&save_dir, &saves, SystemClock.now_unix())?;
     if command[0] == "brew" {

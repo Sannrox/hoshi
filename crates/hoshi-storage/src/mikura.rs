@@ -1,11 +1,11 @@
 //! Optional Mikura backend pinned to git tag v0.2.0.
 
 use super::{Storage, decode_state_sqlite, encode_state_sqlite};
-use crate::balance::BalanceConfig;
-use crate::fleets::Coord;
 use crate::save::SaveError;
-use crate::ships::{Fleet, ShipKind};
-use crate::state::GameState;
+use hoshi_core::BalanceConfig;
+use hoshi_core::Coord;
+use hoshi_core::GameState;
+use hoshi_core::{Fleet, ShipKind};
 use mikura::{ObjectRecord, PropertyAcl, Store};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -337,11 +337,11 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), SaveError> {
 
 #[cfg(test)]
 mod tests {
+    use super::Storage;
     use super::*;
-    use crate::clock::{Clock, FakeClock};
-    use crate::fleets::Coord;
-    use crate::ships::ShipKind;
-    use crate::storage::Storage;
+    use hoshi_core::Coord;
+    use hoshi_core::ShipKind;
+    use hoshi_core::{Clock, FakeClock};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_log() -> PathBuf {
@@ -375,20 +375,20 @@ mod tests {
         let now = 50u64;
         let mut state = GameState::with_config(now, cfg.clone());
         state.fleet.add(ShipKind::SmallCargo, 2);
-        state.colonies.push(crate::Colony {
+        state.colonies.push(hoshi_core::Colony {
             coord: Coord {
                 galaxy: 1,
                 system: 1,
                 position: 8,
             },
-            kind: crate::PlanetType::Rocky,
+            kind: hoshi_core::PlanetType::Rocky,
             size: 8,
             rare: None,
-            resources: crate::Resources::ZERO,
-            buildings: crate::Buildings::default(),
+            resources: hoshi_core::Resources::ZERO,
+            buildings: hoshi_core::Buildings::default(),
             build_queue: Vec::new(),
             fleet: Fleet::default(),
-            defences: crate::DefenceGrid::default(),
+            defences: hoshi_core::DefenceGrid::default(),
             goods: std::collections::BTreeMap::new(),
         });
         store.save(&state).unwrap();

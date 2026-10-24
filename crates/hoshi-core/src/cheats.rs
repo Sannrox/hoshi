@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub(crate) struct CheatState {
+pub struct CheatState {
     pub modified: bool,
     pub enabled: bool,
     pub god_mode: bool,
@@ -13,7 +13,7 @@ pub(crate) struct CheatState {
 }
 
 impl CheatState {
-    pub(crate) fn preserves(&self, previous: &Self) -> bool {
+    pub fn preserves(&self, previous: &Self) -> bool {
         (!previous.modified || self.modified) && self.audit.starts_with(&previous.audit)
     }
 }
@@ -201,7 +201,7 @@ impl crate::GameState {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Actor, BalanceConfig, GameState, load_state, open_save, save_state};
+    use crate::{Actor, BalanceConfig, GameState};
 
     fn run(state: &mut GameState, code: &str) -> Result<(), crate::IntentError> {
         let at = state.last_tick_unix;
@@ -304,26 +304,6 @@ mod tests {
             assert!(run(&mut state, code).is_err());
             assert_eq!(state, before);
         }
-    }
-
-    // Independent SQLite connections ensure this test has no process-global files.
-    #[test]
-    fn save_round_trip_preserves_modified_and_refuses_stale_audit() {
-        let mut conn = open_save(std::path::Path::new(":memory:")).unwrap();
-        let mut state = GameState::with_config(100, BalanceConfig::default());
-        save_state(&mut conn, &state).unwrap();
-        let stale = state.clone();
-        state.set_cheats_enabled(true, Actor::Player, 100);
-        state.cheats.modified = true;
-        state.cheats.time_offset = 60;
-        state.set_cheats_enabled(false, Actor::Player, 101);
-        save_state(&mut conn, &state).unwrap();
-        assert!(save_state(&mut conn, &stale).is_err());
-        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
-        assert!(loaded.is_modified());
-        assert!(!loaded.cheats_enabled());
-        assert_eq!(loaded.effective_time(102), 162);
-        assert_eq!(loaded.cheats.audit, state.cheats.audit);
     }
 
     #[test]

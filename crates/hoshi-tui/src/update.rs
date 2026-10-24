@@ -601,7 +601,7 @@ pub fn version_body(latest: Option<Release>) -> serde_json::Value {
         "schema_version": crate::cli::SCHEMA_VERSION,
         "version": running_version(),
         "channel": channel(),
-        "save_schema": hoshi_core::SCHEMA_VERSION,
+        "save_schema": hoshi_storage::SCHEMA_VERSION,
         "cli_contract": crate::cli::SCHEMA_VERSION,
         "contract_versions": crate::serve::CONTRACT_VERSIONS,
         "installed_version": crate::managed_update::installed_version().filter(|version| version != running_version()),

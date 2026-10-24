@@ -1,8 +1,8 @@
 # Save backends
 
-hoshi-core talks to a [`Storage`](../crates/hoshi-core/src/storage.rs) trait.
-Rules never open a database. The TUI and CLI call `open_storage` and then
-`load` / `save`.
+[`hoshi-storage`](../crates/hoshi-storage/src/lib.rs) owns the [`Storage`](../crates/hoshi-storage/src/lib.rs) trait
+and the save backends. Game rules in `hoshi-core` never open a database. The
+TUI and CLI call `open_storage` and then `load` / `save`.
 
 ## SQLite (default)
 
@@ -61,7 +61,7 @@ The API pin is `1.3.0`.
 Shared contract (round-trip, atomic colony/fleet/outpost, catch-up, colonize):
 
 ```sh
-cargo test -p hoshi-core sqlite_backend_meets_storage_contract
-cargo test -p hoshi-core --features mikura
-cargo test -p hoshi-core --features chisei
+cargo test -p hoshi-storage sqlite_backend_meets_storage_contract
+cargo test -p hoshi-storage --features mikura
+cargo test -p hoshi-storage --features chisei
 ```

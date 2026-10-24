@@ -1,8 +1,7 @@
 //! `hoshi new --seed` writes a live save from a shareable code.
 
-use hoshi_core::{
-    GALAXY_GENERATOR_VERSION, encode_galaxy_seed, load_state, open_save, parse_galaxy_seed,
-};
+use hoshi_core::{GALAXY_GENERATOR_VERSION, encode_galaxy_seed, parse_galaxy_seed};
+use hoshi_storage::{load_state, open_save};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
