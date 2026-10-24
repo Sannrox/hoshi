@@ -472,7 +472,7 @@ impl Title {
                 updates.dismiss_available();
                 return TitleAction::None;
             }
-            if self.help_open && code == KeyCode::Char('c') {
+            if self.help_open && code == KeyCode::Char('v') {
                 updates.open_changelog();
                 return TitleAction::None;
             }
@@ -496,7 +496,7 @@ impl Title {
             self.open_bug(false);
             return TitleAction::None;
         }
-        if self.help_open && code == KeyCode::Char('r') {
+        if self.help_open && code == KeyCode::Char('p') {
             self.open_support();
             return TitleAction::None;
         }
@@ -2449,8 +2449,8 @@ impl Title {
                 lines.insert(0, "[Keys]   Commands".into());
                 lines
             };
-            help_lines.push("c Changelog   u dismiss update".into());
-            help_lines.push("r Support report".into());
+            help_lines.push("v Changelog   u dismiss update".into());
+            help_lines.push("p Support report".into());
             if self.config.bug_report_target != "off" {
                 help_lines.push("b Report a bug".into());
             }

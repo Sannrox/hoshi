@@ -628,7 +628,7 @@ impl App {
                 updates.dismiss_available();
                 return Action::None;
             }
-            if self.help_open && code == KeyCode::Char('c') {
+            if self.help_open && code == KeyCode::Char('v') {
                 updates.open_changelog();
                 return Action::None;
             }
@@ -646,7 +646,7 @@ impl App {
         if self.help_open && code == KeyCode::Char('b') {
             return Action::ReportBug;
         }
-        if self.help_open && code == KeyCode::Char('r') {
+        if self.help_open && code == KeyCode::Char('p') {
             return Action::SupportReport;
         }
 
@@ -3151,8 +3151,9 @@ impl App {
                 first.push_str("   [Keys]   Commands");
             }
         }
-        lines.push("c Changelog   u dismiss update".into());
-        lines.push("r Support report".into());
+        // Help-only keys stay off every global binding listed above.
+        lines.push("v Changelog   u dismiss update".into());
+        lines.push("p Support report".into());
         let t = &self.theme;
         let lines = lines
             .into_iter()
@@ -6961,6 +6962,19 @@ mod tests {
         assert!(text.contains("Status   BLOCKED"), "{text}");
         assert!(!text.contains("Status   READY"), "{text}");
         assert!(text.contains("have 0"), "{text}");
+    }
+
+    #[test]
+    fn market_max_names_the_cargo_cap_and_help_keys_do_not_clash() {
+        let mut app = detail_app();
+        app.screen = Screen::Market;
+        let text = render_text(&app, 140, 45);
+        assert!(text.contains("max · cargo 50"), "{text}");
+        app.help_open = true;
+        let help = render_text(&app, 140, 45);
+        assert!(help.contains("v Changelog"), "{help}");
+        assert!(help.contains("p Support report"), "{help}");
+        assert!(!help.contains("c Changelog"), "{help}");
     }
 
     #[test]

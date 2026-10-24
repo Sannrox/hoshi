@@ -958,6 +958,14 @@ impl App {
         let t = &self.theme;
         let market = &self.state.market;
         let fee_pct = self.state.effective_market_fee() * 100.0;
+        // A trade carries at most the free allowance or docked cargo, so
+        // `max` stops there even with more in stock.
+        let cargo = self
+            .state
+            .config
+            .market
+            .cargo_free
+            .max(self.state.cargo_capacity(self.state.fleet));
         let head = vec![Line::from(vec![
             Span::styled("AMOUNT ", t.label()),
             keycap(t, "-"),
@@ -965,7 +973,7 @@ impl App {
             keycap(t, "+"),
             Span::raw(" "),
             keycap(t, &self.keymap.primary(Binding::Toggle)),
-            Span::styled(" max", t.muted()),
+            Span::styled(format!(" max · cargo {cargo:.0}"), t.muted()),
             Span::styled("   FEE ", t.label()),
             Span::styled(format!("{fee_pct:.0}%"), t.text()),
             Span::styled("   HUB ", t.label()),

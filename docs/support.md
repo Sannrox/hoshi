@@ -1,7 +1,7 @@
 # Support reports
 
 Run `hoshi report` or select **Support report** from the title menu. In the
-Help overlay, press `r`. Review the scrollable preview, then choose whether to
+Help overlay, press `p`. Review the scrollable preview, then choose whether to
 write it. Nothing is uploaded. Attach the resulting file to a bug report after
 reviewing it yourself.
 
