@@ -234,3 +234,156 @@ deuterium = 20.0
 [[event.choices]]
 id = "skip"
 label = "Leave the mark"
+
+[[flag]]
+id = "lane_answered"
+note = "The hail is still open."
+
+[[flag]]
+id = "lane_silent"
+note = "The band stayed quiet."
+
+[[flag]]
+id = "escort_hired"
+note = "An escort is waiting on your word."
+
+[[flag]]
+id = "escort_declined"
+note = "You turned the escort away."
+
+[[flag]]
+id = "toll_paid"
+
+[[flag]]
+id = "toll_refused"
+
+[[flag]]
+id = "stayed_dark"
+
+[[flag]]
+id = "lit_sensors"
+
+[[flag]]
+id = "lane_closed"
+
+[[event]]
+id = "lane_contact"
+title = "Hail on the lane"
+text = "A ship on the lane asks for an answer. Silence is also a choice."
+weight = 1
+timeout_secs = 86400
+timeout_choice = "silence"
+min_elapsed_secs = 0
+forbids = [
+    "lane_answered",
+    "lane_silent",
+    "escort_hired",
+    "escort_declined",
+    "toll_paid",
+    "toll_refused",
+    "stayed_dark",
+    "lit_sensors",
+    "lane_closed",
+]
+
+[[event.choices]]
+id = "answer"
+label = "Answer"
+sets = ["lane_answered"]
+
+[[event.choices]]
+id = "silence"
+label = "Stay silent"
+sets = ["lane_silent"]
+
+[[event]]
+id = "lane_escort"
+title = "Escort for hire"
+text = "The ship that hailed you offers an escort. Iron pays them. Declining sends them off."
+weight = 1
+timeout_secs = 86400
+timeout_choice = "decline"
+min_elapsed_secs = 0
+requires = ["lane_answered"]
+forbids = [
+    "lane_silent",
+    "escort_hired",
+    "escort_declined",
+    "toll_paid",
+    "toll_refused",
+    "stayed_dark",
+    "lit_sensors",
+    "lane_closed",
+]
+
+[[event.choices]]
+id = "hire"
+label = "Hire the escort"
+iron = -80.0
+sets = ["escort_hired"]
+
+[[event.choices]]
+id = "decline"
+label = "Decline"
+sets = ["escort_declined"]
+
+[[event]]
+id = "lane_toll"
+title = "Toll on the lane"
+text = "The lane asks for fuel. Paying closes it. Refusing closes it and brings a raid."
+weight = 1
+timeout_secs = 86400
+timeout_choice = "pay"
+min_elapsed_secs = 0
+requires_any = ["escort_hired", "escort_declined"]
+forbids = [
+    "lane_silent",
+    "toll_paid",
+    "toll_refused",
+    "stayed_dark",
+    "lit_sensors",
+    "lane_closed",
+]
+
+[[event.choices]]
+id = "pay"
+label = "Pay the toll"
+deuterium = -40.0
+sets = ["toll_paid", "lane_closed"]
+
+[[event.choices]]
+id = "refuse"
+label = "Refuse"
+sets = ["toll_refused", "lane_closed"]
+schedule_raid = true
+
+[[event]]
+id = "lane_quiet"
+title = "Quiet band"
+text = "The lane stays dark. Staying dark closes it. Lighting sensors closes it and brings a raid."
+weight = 1
+timeout_secs = 86400
+timeout_choice = "stay"
+min_elapsed_secs = 0
+requires = ["lane_silent"]
+forbids = [
+    "lane_answered",
+    "escort_hired",
+    "escort_declined",
+    "toll_paid",
+    "toll_refused",
+    "stayed_dark",
+    "lit_sensors",
+    "lane_closed",
+]
+
+[[event.choices]]
+id = "stay"
+label = "Stay dark"
+sets = ["stayed_dark", "lane_closed"]
+
+[[event.choices]]
+id = "light"
+label = "Light sensors"
+sets = ["lit_sensors", "lane_closed"]
+schedule_raid = true

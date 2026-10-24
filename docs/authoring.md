@@ -50,3 +50,11 @@ instead. The game binary ignores this config.
 4. Playtest the new ids in a throwaway save (`docs/playtest.md`).
 5. Leave `content/drafts/` out of the commit unless you are documenting a
    skeleton; generated `*.toml` drafts are gitignored.
+
+## Flags
+
+A choice may `sets` flag ids. An event may `requires` every listed flag,
+`requires_any` one of them, and `forbids` any of them. A `[[flag]]` row may
+attach a `note` to an id a choice sets. The bridge shows the latest of those
+notes until the next arc event is pending or `lane_closed` is set. The
+original events leave these keys empty and stay in the weighted draw.

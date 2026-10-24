@@ -2,7 +2,7 @@
 
 use crate::ships::ShipKind;
 use serde::Deserialize;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
 
 const DEFAULT_STORY: &str = include_str!("../data/story.toml");
@@ -19,6 +19,9 @@ pub enum StoryError {
     BadTimeout(String),
     NoPending,
     UnknownChoice(String),
+    DuplicateFlag { event: String, flag: String },
+    UnsetFlag { event: String, flag: String },
+    ArcOverlap { left: String, right: String },
 }
 
 impl fmt::Display for StoryError {
@@ -40,6 +43,21 @@ impl fmt::Display for StoryError {
             StoryError::BadTimeout(id) => write!(f, "story: {id} timeout_secs must be positive"),
             StoryError::NoPending => write!(f, "story: no pending event"),
             StoryError::UnknownChoice(id) => write!(f, "story: unknown choice {id}"),
+            StoryError::DuplicateFlag { event, flag } => {
+                write!(f, "story: {event} lists flag {flag} twice")
+            }
+            StoryError::UnsetFlag { event, flag } => {
+                write!(
+                    f,
+                    "story: {event} requires flag {flag}, which no choice sets"
+                )
+            }
+            StoryError::ArcOverlap { left, right } => {
+                write!(
+                    f,
+                    "story: arc events {left} and {right} can both be eligible"
+                )
+            }
         }
     }
 }
@@ -68,6 +86,8 @@ pub struct StoryChoice {
     pub crystal_price: f64,
     pub deuterium_price: f64,
     pub standing: BTreeMap<String, f64>,
+    /// Flags this choice writes. Empty for the original events.
+    pub sets: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -81,12 +101,45 @@ pub struct StoryEvent {
     pub min_elapsed_secs: u64,
     pub min_fighters: u32,
     pub choices: Vec<StoryChoice>,
+    /// Every flag must already be set.
+    pub requires: Vec<String>,
+    /// At least one flag must already be set. Empty means no such gate.
+    pub requires_any: Vec<String>,
+    /// Any one of these flags keeps the event out.
+    pub forbids: Vec<String>,
 }
 
 impl StoryEvent {
     pub fn choice(&self, id: &str) -> Option<&StoryChoice> {
         self.choices.iter().find(|c| c.id == id)
     }
+
+    /// An arc event is one the flag gates can pick on their own.
+    pub fn is_arc(&self) -> bool {
+        !self.requires.is_empty() || !self.requires_any.is_empty() || !self.forbids.is_empty()
+    }
+
+    pub fn allows(&self, flags: &BTreeSet<String>) -> bool {
+        if self.forbids.iter().any(|flag| flags.contains(flag)) {
+            return false;
+        }
+        if self.requires.iter().any(|flag| !flags.contains(flag)) {
+            return false;
+        }
+        if !self.requires_any.is_empty()
+            && !self.requires_any.iter().any(|flag| flags.contains(flag))
+        {
+            return false;
+        }
+        true
+    }
+}
+
+/// Optional bridge copy for a flag a choice can set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoryFlag {
+    pub id: String,
+    pub note: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -94,11 +147,26 @@ pub struct StoryCatalog {
     pub first_delay_secs: u64,
     pub cooldown_secs: u64,
     events: Vec<StoryEvent>,
+    flags: Vec<StoryFlag>,
 }
 
 impl StoryCatalog {
     pub fn parse(toml: &str) -> Result<Self, StoryError> {
         let file: File = toml::from_str(toml).map_err(|e| StoryError::Parse(e.to_string()))?;
+        let mut flag_ids = HashSet::new();
+        let mut flags = Vec::new();
+        for raw in file.flag {
+            if raw.id.is_empty() || !flag_ids.insert(raw.id.clone()) {
+                return Err(StoryError::DuplicateFlag {
+                    event: "catalog".into(),
+                    flag: raw.id,
+                });
+            }
+            flags.push(StoryFlag {
+                id: raw.id,
+                note: raw.note,
+            });
+        }
         let mut seen = HashSet::new();
         let mut events = Vec::new();
         for raw in file.event {
@@ -107,11 +175,24 @@ impl StoryCatalog {
             }
             events.push(raw.into_event()?);
         }
+        check_flags(&events, &flags)?;
         Ok(Self {
             first_delay_secs: file.first_delay_secs,
             cooldown_secs: file.cooldown_secs,
             events,
+            flags,
         })
+    }
+
+    /// Latest note among set flags, in catalog order. Empty when none is set.
+    pub fn flag_note<'a>(&'a self, flags: &BTreeSet<String>) -> Option<&'a str> {
+        let mut note = None;
+        for flag in &self.flags {
+            if !flag.note.is_empty() && flags.contains(&flag.id) {
+                note = Some(flag.note.as_str());
+            }
+        }
+        note
     }
 
     pub fn get(&self, id: &str) -> Option<&StoryEvent> {
@@ -136,8 +217,79 @@ impl StoryCatalog {
             first_delay_secs: 1,
             cooldown_secs: 1,
             events: Vec::new(),
+            flags: Vec::new(),
         }
     }
+}
+
+fn check_flags(events: &[StoryEvent], notes: &[StoryFlag]) -> Result<(), StoryError> {
+    let mut set_by: HashSet<&str> = HashSet::new();
+    for event in events {
+        for choice in &event.choices {
+            for flag in &choice.sets {
+                set_by.insert(flag.as_str());
+            }
+        }
+    }
+    for event in events {
+        for flag in event.requires.iter().chain(event.requires_any.iter()) {
+            if !set_by.contains(flag.as_str()) {
+                return Err(StoryError::UnsetFlag {
+                    event: event.id.clone(),
+                    flag: flag.clone(),
+                });
+            }
+        }
+    }
+    for note in notes {
+        if !set_by.contains(note.id.as_str()) {
+            return Err(StoryError::UnsetFlag {
+                event: "catalog".into(),
+                flag: note.id.clone(),
+            });
+        }
+    }
+    let arcs: Vec<&StoryEvent> = events.iter().filter(|event| event.is_arc()).collect();
+    let mut universe: Vec<&str> = Vec::new();
+    for event in &arcs {
+        for flag in event
+            .requires
+            .iter()
+            .chain(event.requires_any.iter())
+            .chain(event.forbids.iter())
+        {
+            if !universe.contains(&flag.as_str()) {
+                universe.push(flag.as_str());
+            }
+        }
+    }
+    if universe.len() > 20 {
+        return Err(StoryError::Parse(
+            "too many arc flags to check every subset".into(),
+        ));
+    }
+    let subsets = 1usize << universe.len();
+    for mask in 0..subsets {
+        let mut set = BTreeSet::new();
+        for (bit, flag) in universe.iter().enumerate() {
+            if mask & (1 << bit) != 0 {
+                set.insert((*flag).to_string());
+            }
+        }
+        let mut hit: Vec<&str> = Vec::new();
+        for event in &arcs {
+            if event.allows(&set) {
+                hit.push(event.id.as_str());
+            }
+        }
+        if hit.len() > 1 {
+            return Err(StoryError::ArcOverlap {
+                left: hit[0].to_string(),
+                right: hit[1].to_string(),
+            });
+        }
+    }
+    Ok(())
 }
 
 impl Default for StoryCatalog {
@@ -151,7 +303,17 @@ struct File {
     first_delay_secs: u64,
     cooldown_secs: u64,
     #[serde(default)]
+    flag: Vec<FileFlag>,
+    #[serde(default)]
     event: Vec<FileEvent>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileFlag {
+    id: String,
+    #[serde(default)]
+    note: String,
 }
 
 #[derive(Deserialize)]
@@ -169,6 +331,12 @@ struct FileEvent {
     min_fighters: u32,
     #[serde(default)]
     choices: Vec<FileChoice>,
+    #[serde(default)]
+    requires: Vec<String>,
+    #[serde(default)]
+    requires_any: Vec<String>,
+    #[serde(default)]
+    forbids: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -194,6 +362,8 @@ struct FileChoice {
     deuterium_price: f64,
     #[serde(default)]
     standing: BTreeMap<String, f64>,
+    #[serde(default)]
+    sets: Vec<String>,
 }
 
 impl FileEvent {
@@ -207,6 +377,9 @@ impl FileEvent {
         if self.timeout_secs == 0 {
             return Err(StoryError::BadTimeout(self.id));
         }
+        unique_flags(&self.id, &self.requires)?;
+        unique_flags(&self.id, &self.requires_any)?;
+        unique_flags(&self.id, &self.forbids)?;
         let mut choice_ids = HashSet::new();
         let mut choices = Vec::new();
         for raw in self.choices {
@@ -216,6 +389,7 @@ impl FileEvent {
                     choice: raw.id,
                 });
             }
+            unique_flags(&self.id, &raw.sets)?;
             let mut ships = Vec::new();
             for (key, count) in raw.ships {
                 let kind = ShipKind::from_key(&key).ok_or_else(|| StoryError::UnknownShip {
@@ -236,6 +410,7 @@ impl FileEvent {
                 crystal_price: raw.crystal_price,
                 deuterium_price: raw.deuterium_price,
                 standing: raw.standing,
+                sets: raw.sets,
             });
         }
         if !choice_ids.contains(&self.timeout_choice) {
@@ -254,8 +429,24 @@ impl FileEvent {
             min_elapsed_secs: self.min_elapsed_secs,
             min_fighters: self.min_fighters,
             choices,
+            requires: self.requires,
+            requires_any: self.requires_any,
+            forbids: self.forbids,
         })
     }
+}
+
+fn unique_flags(event: &str, flags: &[String]) -> Result<(), StoryError> {
+    let mut seen = HashSet::new();
+    for flag in flags {
+        if flag.is_empty() || !seen.insert(flag.as_str()) {
+            return Err(StoryError::DuplicateFlag {
+                event: event.to_string(),
+                flag: flag.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -266,6 +457,7 @@ mod tests {
     fn bundled_catalog_has_at_least_ten_events() {
         let cat = StoryCatalog::default();
         assert!(cat.len() >= 10, "{}", cat.len());
+        let mut arcs = Vec::new();
         for event in cat.iter() {
             assert!(event.choice(&event.timeout_choice).is_some());
             assert!(!event.choices.is_empty());
@@ -274,7 +466,18 @@ mod tests {
                 "shipped story.toml must not include author drafts ({})",
                 event.id
             );
+            if event.is_arc() {
+                arcs.push(event.id.as_str());
+            } else {
+                assert!(event.requires.is_empty());
+                assert!(event.requires_any.is_empty());
+                assert!(event.forbids.is_empty());
+            }
         }
+        assert_eq!(
+            arcs,
+            ["lane_contact", "lane_escort", "lane_toll", "lane_quiet"]
+        );
     }
 
     #[test]
@@ -316,6 +519,85 @@ label = "a"
         assert!(matches!(
             StoryCatalog::parse(missing),
             Err(StoryError::UnknownTimeout { .. })
+        ));
+    }
+
+    #[test]
+    fn loader_rejects_an_unknown_required_flag_and_a_repeated_flag() {
+        let unknown = r#"
+first_delay_secs = 1
+cooldown_secs = 1
+[[event]]
+id = "a"
+title = "a"
+text = "a"
+weight = 1
+timeout_secs = 1
+timeout_choice = "go"
+requires = ["never_set"]
+[[event.choices]]
+id = "go"
+label = "go"
+sets = ["other"]
+"#;
+        assert!(matches!(
+            StoryCatalog::parse(unknown),
+            Err(StoryError::UnsetFlag { .. })
+        ));
+
+        let twice = r#"
+first_delay_secs = 1
+cooldown_secs = 1
+[[event]]
+id = "a"
+title = "a"
+text = "a"
+weight = 1
+timeout_secs = 1
+timeout_choice = "go"
+[[event.choices]]
+id = "go"
+label = "go"
+sets = ["same", "same"]
+"#;
+        assert!(matches!(
+            StoryCatalog::parse(twice),
+            Err(StoryError::DuplicateFlag { .. })
+        ));
+    }
+
+    #[test]
+    fn loader_rejects_two_arc_events_eligible_together() {
+        let overlap = r#"
+first_delay_secs = 1
+cooldown_secs = 1
+[[event]]
+id = "left"
+title = "left"
+text = "left"
+weight = 1
+timeout_secs = 1
+timeout_choice = "go"
+requires = ["shared"]
+[[event.choices]]
+id = "go"
+label = "go"
+sets = ["shared"]
+[[event]]
+id = "right"
+title = "right"
+text = "right"
+weight = 1
+timeout_secs = 1
+timeout_choice = "go"
+requires = ["shared"]
+[[event.choices]]
+id = "go"
+label = "go"
+"#;
+        assert!(matches!(
+            StoryCatalog::parse(overlap),
+            Err(StoryError::ArcOverlap { .. })
         ));
     }
 }

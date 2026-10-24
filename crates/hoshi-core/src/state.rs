@@ -35,7 +35,7 @@ use crate::research::{
 };
 use crate::ships::{Fleet, ShipError, ShipJob, ShipKind, ShipStats};
 use crate::wonders::{WonderError, WonderJob};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 const EVENT_LOG_CAP: usize = 32;
 const LOGISTICS_LOG_CAP: usize = 48;
@@ -358,6 +358,8 @@ pub struct GameState {
     pub outposts: Vec<Outpost>,
     pub prestige: Prestige,
     pub story_pending: Option<crate::PendingStory>,
+    /// Flags written by story choices. Older saves load this empty.
+    pub story_flags: BTreeSet<String>,
     pub last_story_at: u64,
     pub market: crate::MarketState,
     pub last_market_at: u64,
@@ -491,6 +493,7 @@ impl GameState {
             outposts,
             prestige: Prestige::new(now_unix),
             story_pending: None,
+            story_flags: BTreeSet::new(),
             last_story_at: 0,
             market: crate::MarketState::from_config(&config.market),
             last_market_at: 0,
@@ -5453,7 +5456,7 @@ impl GameState {
         let fighters = self.fleet.get(ShipKind::LightFighter);
         let mut soonest: Option<u64> = None;
         for event in self.config.story.iter() {
-            if fighters < event.min_fighters {
+            if fighters < event.min_fighters || !event.allows(&self.story_flags) {
                 continue;
             }
             let ready = gate.max(started.saturating_add(event.min_elapsed_secs));
@@ -5507,35 +5510,66 @@ impl GameState {
         }
         let fighters = self.fleet.get(ShipKind::LightFighter);
         let elapsed = now.saturating_sub(started);
-        let eligible: Vec<(String, u32, u64)> = self
+        let eligible: Vec<&crate::StoryEvent> = self
             .config
             .story
             .iter()
-            .filter(|e| elapsed >= e.min_elapsed_secs && fighters >= e.min_fighters)
-            .map(|e| (e.id.clone(), e.weight, e.timeout_secs))
+            .filter(|event| {
+                elapsed >= event.min_elapsed_secs
+                    && fighters >= event.min_fighters
+                    && event.allows(&self.story_flags)
+            })
             .collect();
         if eligible.is_empty() {
             return;
         }
-        let total: u64 = eligible.iter().map(|(_, w, _)| u64::from(*w)).sum();
-        if total == 0 {
-            return;
-        }
-        let mut pick = next_u64(&mut self.rng_seed) % total;
-        let mut chosen = &eligible[0];
-        for row in &eligible {
-            let w = u64::from(row.1);
-            if pick < w {
-                chosen = row;
-                break;
+        let arcs: Vec<&crate::StoryEvent> = eligible
+            .iter()
+            .copied()
+            .filter(|event| event.is_arc())
+            .collect();
+        let chosen = if arcs.len() == 1 {
+            arcs[0]
+        } else {
+            let total: u64 = eligible.iter().map(|event| u64::from(event.weight)).sum();
+            if total == 0 {
+                return;
             }
-            pick -= w;
-        }
+            let mut pick = next_u64(&mut self.rng_seed) % total;
+            let mut chosen = eligible[0];
+            for event in &eligible {
+                let weight = u64::from(event.weight);
+                if pick < weight {
+                    chosen = event;
+                    break;
+                }
+                pick -= weight;
+            }
+            chosen
+        };
         self.story_pending = Some(crate::PendingStory {
-            event_id: chosen.0.clone(),
+            event_id: chosen.id.clone(),
             offered_at: now,
-            timeout_at: now.saturating_add(chosen.2),
+            timeout_at: now.saturating_add(chosen.timeout_secs),
         });
+    }
+
+    /// Note from the latest set flag, until the next arc event is pending or
+    /// `lane_closed` is set.
+    pub fn story_bridge_note(&self) -> Option<&str> {
+        if self.story_flags.contains("lane_closed") {
+            return None;
+        }
+        let arc_pending = self.story_pending.as_ref().is_some_and(|pending| {
+            self.config
+                .story
+                .get(&pending.event_id)
+                .is_some_and(|event| event.is_arc())
+        });
+        if arc_pending {
+            return None;
+        }
+        self.config.story.flag_note(&self.story_flags)
     }
 
     /// Resolve the pending event with `choice_id`. Offline timeouts use the event's default.
@@ -5939,6 +5973,9 @@ impl GameState {
         }
         for (faction, delta) in choice.standing {
             self.adjust_standing(&faction, delta, "story", at);
+        }
+        for flag in choice.sets {
+            self.story_flags.insert(flag);
         }
         self.last_story_at = at;
         self.story_pending = None;
@@ -11289,6 +11326,181 @@ label = "Pass"
                 .any(|e| e.text == "story: Alpha → Take it"),
             "{:?}",
             state.events
+        );
+    }
+
+    fn arc_game() -> GameState {
+        let mut cfg = test_config();
+        cfg.story = crate::StoryCatalog::default();
+        cfg.raid.enabled = false;
+        cfg.market.enabled = false;
+        cfg.diplomacy.enabled = false;
+        GameState::with_config(0, cfg)
+    }
+
+    #[test]
+    fn answering_the_hail_offers_the_escort_and_leaves_the_stockpile() {
+        let mut state = arc_game();
+        state.catch_up(1_800);
+        assert_eq!(
+            state.story_pending.as_ref().map(|p| p.event_id.as_str()),
+            Some("lane_contact")
+        );
+        let before = state.resources;
+        state.choose_story("answer", 1_800).unwrap();
+        assert_eq!(state.resources, before);
+        assert!(state.story_flags.contains("lane_answered"));
+        assert_eq!(state.story_bridge_note(), Some("The hail is still open."));
+        assert!(
+            state
+                .events
+                .iter()
+                .any(|event| event.text == "story: Hail on the lane → Answer"),
+            "{:?}",
+            state.events
+        );
+        state.catch_up(1_800 + 3_600);
+        assert_eq!(
+            state.story_pending.as_ref().map(|p| p.event_id.as_str()),
+            Some("lane_escort")
+        );
+        assert!(state.story_bridge_note().is_none());
+        state.resources.iron = 200.0;
+        state.choose_story("hire", 5_400).unwrap();
+        assert_eq!(state.resources.iron, 120.0);
+        assert!(state.story_flags.contains("escort_hired"));
+        assert_eq!(
+            state.story_bridge_note(),
+            Some("An escort is waiting on your word.")
+        );
+    }
+
+    #[test]
+    fn silence_offers_the_quiet_band_next() {
+        let mut state = arc_game();
+        state.catch_up(1_800);
+        state.choose_story("silence", 1_800).unwrap();
+        assert!(state.story_flags.contains("lane_silent"));
+        state.catch_up(1_800 + 3_600);
+        assert_eq!(
+            state.story_pending.as_ref().map(|p| p.event_id.as_str()),
+            Some("lane_quiet")
+        );
+    }
+
+    #[test]
+    fn a_story_timeout_writes_the_timeout_flags() {
+        let mut state = arc_game();
+        state.catch_up(1_800);
+        state.catch_up(1_800 + 86_400);
+        assert!(state.story_flags.contains("lane_silent"));
+        assert!(!state.story_flags.contains("lane_answered"));
+        state.catch_up(1_800 + 86_400 + 3_600);
+        assert_eq!(
+            state.story_pending.as_ref().map(|p| p.event_id.as_str()),
+            Some("lane_quiet")
+        );
+    }
+
+    #[test]
+    fn lane_closed_stops_further_arc_offers() {
+        let mut state = arc_game();
+        state.catch_up(1_800);
+        state.choose_story("answer", 1_800).unwrap();
+        state.catch_up(5_400);
+        state.choose_story("decline", 5_400).unwrap();
+        state.catch_up(9_000);
+        state.resources.deuterium = 100.0;
+        state.choose_story("pay", 9_000).unwrap();
+        assert_eq!(state.resources.deuterium, 60.0);
+        assert!(state.story_flags.contains("lane_closed"));
+        assert!(state.story_bridge_note().is_none());
+        state.catch_up(12_600);
+        let pending = state.story_pending.as_ref().expect("weighted offer");
+        assert!(
+            !pending.event_id.starts_with("lane_"),
+            "{}",
+            pending.event_id
+        );
+    }
+
+    #[test]
+    fn catch_up_and_step_ticks_keep_the_same_flags() {
+        let mut cfg = test_config();
+        cfg.raid.enabled = false;
+        cfg.market.enabled = false;
+        cfg.diplomacy.enabled = false;
+        cfg.story = crate::StoryCatalog::parse(
+            r#"
+first_delay_secs = 5
+cooldown_secs = 5
+[[flag]]
+id = "opened"
+note = "Opened."
+[[flag]]
+id = "closed"
+[[event]]
+id = "hail"
+title = "Hail"
+text = "Hail."
+weight = 1
+timeout_secs = 5
+timeout_choice = "quiet"
+forbids = ["opened", "closed"]
+[[event.choices]]
+id = "speak"
+label = "Speak"
+sets = ["opened"]
+[[event.choices]]
+id = "quiet"
+label = "Quiet"
+sets = ["closed"]
+[[event]]
+id = "later"
+title = "Later"
+text = "Later."
+weight = 1
+timeout_secs = 5
+timeout_choice = "done"
+requires = ["opened"]
+forbids = ["closed"]
+[[event.choices]]
+id = "done"
+label = "Done"
+sets = ["closed"]
+[[event]]
+id = "pool"
+title = "Pool"
+text = "Pool."
+weight = 1
+timeout_secs = 5
+timeout_choice = "skip"
+[[event.choices]]
+id = "skip"
+label = "Skip"
+"#,
+        )
+        .unwrap();
+        let mut gap = GameState::with_config(0, cfg.clone());
+        gap.rng_seed = 3;
+        let mut step = GameState::with_config(0, cfg);
+        step.rng_seed = 3;
+        gap.catch_up(5);
+        for t in 1..=5 {
+            step.catch_up(t);
+        }
+        gap.choose_story("speak", 5).unwrap();
+        step.choose_story("speak", 5).unwrap();
+        gap.catch_up(10);
+        for t in 6..=10 {
+            step.catch_up(t);
+        }
+        assert_eq!(gap.story_flags, step.story_flags);
+        assert!(gap.story_flags.contains("opened"));
+        assert_eq!(gap.story_pending, step.story_pending);
+        assert_eq!(
+            gap.story_pending.as_ref().map(|p| p.event_id.as_str()),
+            Some("later")
         );
     }
 
