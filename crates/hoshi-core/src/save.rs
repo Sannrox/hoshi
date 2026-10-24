@@ -3084,13 +3084,24 @@ fn open_lock_file(path: &Path) -> Result<File, SaveError> {
     #[cfg(unix)]
     {
         let fd = std::os::unix::io::AsRawFd::as_raw_fd(&file);
-        let rc = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
-        if rc != 0 {
-            return Err(SaveError::Locked);
+        // A child process spawned by another thread shares our descriptors
+        // until it execs, so a lock this process just released can stay held
+        // for a moment. Try again briefly; a real holder (a running game)
+        // still answers Locked once the window has passed.
+        let deadline = std::time::Instant::now() + LOCK_SETTLE;
+        while unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            if std::time::Instant::now() >= deadline {
+                return Err(SaveError::Locked);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }
     Ok(file)
 }
+
+/// How long a busy save lock is retried before it counts as held.
+#[cfg(unix)]
+const LOCK_SETTLE: std::time::Duration = std::time::Duration::from_millis(250);
 
 fn lock_open_error(err: std::io::Error) -> SaveError {
     if is_sharing_violation(&err) {
@@ -10653,6 +10664,40 @@ mod tests {
         migrate(&conn).unwrap();
         let old = load_state(&conn, BalanceConfig::default()).unwrap();
         assert_eq!(old.combat_logs.last().unwrap().raid_defence, None);
+    }
+
+    /// #317: another thread spawning children kept a released save lock
+    /// held for a moment, so the next command failed with "save is locked".
+    #[test]
+    #[cfg(unix)]
+    fn a_released_lock_is_taken_while_other_threads_spawn_processes() {
+        let path = std::env::temp_dir().join(format!(
+            "hoshi-settle-{}-{}.sqlite",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let spawning = std::sync::Arc::clone(&stop);
+        let spawner = std::thread::spawn(move || {
+            while !spawning.load(std::sync::atomic::Ordering::Relaxed) {
+                let _ = std::process::Command::new("/bin/sh")
+                    .args(["-c", "true"])
+                    .status();
+            }
+        });
+        let refused = (0..2_000).filter(|_| lock_save(&path).is_err()).count();
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        spawner.join().unwrap();
+        let _ = std::fs::remove_file(save_lock_path(&path));
+        assert_eq!(refused, 0);
+        // A real holder is still refused.
+        let held = lock_save(&path).unwrap();
+        assert!(matches!(lock_save(&path), Err(SaveError::Locked)));
+        drop(held);
+        let _ = std::fs::remove_file(save_lock_path(&path));
     }
 
     #[test]
