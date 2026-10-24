@@ -369,11 +369,21 @@ pub fn alerts(state: &GameState) -> Vec<Alert> {
         });
     }
     // Undefended stays true between raids, not only inside the warning window.
-    if state.next_raid_in_secs().is_some() && state.defences.is_empty() {
+    // Docked ships with weapons fight a raid too, so they count as defence.
+    let armed = hoshi_core::ShipKind::ALL
+        .iter()
+        .any(|&kind| state.fleet.get(kind) > 0 && state.config.ships.get(kind).attack > 0.0);
+    if state.next_raid_in_secs().is_some() && state.defences.is_empty() && !armed {
+        let ships = state.fleet.total();
+        let detail = match ships {
+            0 => format!("no ships · 0 defences at {home}"),
+            1 => format!("1 unarmed ship · 0 defences at {home}"),
+            n => format!("{n} unarmed ships · 0 defences at {home}"),
+        };
         rows.push(Alert {
             kind: AlertKind::Defence,
             text: "Home undefended".into(),
-            detail: format!("{} ships · 0 defences at {home}", state.fleet.total()),
+            detail,
             jump: Target::Planet(home),
         });
     }

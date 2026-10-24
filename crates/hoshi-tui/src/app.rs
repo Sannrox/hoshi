@@ -4641,6 +4641,20 @@ mod tests {
     }
 
     #[test]
+    fn docked_fighters_count_as_home_defence() {
+        let mut state = GameState::new(1_000);
+        state.next_raid_at = Some(1_000 + 7 * 3_600);
+        state.fleet.add(ShipKind::EspionageProbe, 2);
+        let mut app = App::new(state);
+        app.screen = Screen::Cockpit;
+        let text = render_text(&app, 140, 45);
+        assert!(text.contains("2 unarmed ships"), "{text}");
+        app.state.fleet.add(ShipKind::LightFighter, 3);
+        let text = render_text(&app, 140, 45);
+        assert!(!text.contains("Home undefended"), "{text}");
+    }
+
+    #[test]
     fn the_header_shows_a_raid_hours_ahead_and_undefended_stays() {
         let mut state = GameState::new(1_000);
         state.next_raid_at = Some(1_000 + 7 * 3_600);
