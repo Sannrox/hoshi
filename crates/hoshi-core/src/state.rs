@@ -8371,7 +8371,7 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
-        assert!(err.to_string().contains("missing metal 40"));
+        assert!(err.to_string().contains("missing iron 40"));
         assert!(state.build_queue.is_empty());
     }
 

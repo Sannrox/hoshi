@@ -8,7 +8,7 @@ alone for hours.
 
 1. **First launch.** Open the title screen, start a new game, skip or keep the
    opening hint. The overview shows mines ticking.
-2. **First build.** On the planet screen, queue a metal mine upgrade. Confirm it
+2. **First build.** On the planet screen, queue an iron mine upgrade. Confirm it
    completes after an offline gap (quit, wait, continue) or with
    `hoshi --save PATH --seed N tick --advance 30m` on a harness save.
 3. **First research.** Build a research lab, start energy research from the

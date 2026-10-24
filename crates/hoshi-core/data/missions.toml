@@ -4,7 +4,7 @@
 [[mission]]
 id = "upgrade_mine"
 name = "Upgrade a mine"
-description = "Complete a metal, crystal or deuterium mine upgrade."
+description = "Complete an iron, silicon or deuterium mine upgrade."
 kind = "upgrade_mine"
 weight = 4
 target = 1

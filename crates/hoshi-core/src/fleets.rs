@@ -283,7 +283,7 @@ impl fmt::Display for FleetError {
             }
             FleetError::InsufficientCargo { missing } => write!(
                 f,
-                "not enough cargo (missing metal {:.0}, crystal {:.0}, deuterium {:.0})",
+                "not enough cargo (missing iron {:.0}, silicon {:.0}, deuterium {:.0})",
                 missing.iron, missing.silicon, missing.deuterium
             ),
             FleetError::UnknownPlanet => write!(f, "unknown planet"),

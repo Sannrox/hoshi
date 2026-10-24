@@ -563,7 +563,7 @@ condition = { kind = "building_level", id = "not_a_mine", level = 1 }
             state
                 .events
                 .iter()
-                .filter(|e| e.text == "achievement: First cut")
+                .filter(|e| e.text == "achievement: Iron cut")
                 .count(),
             1
         );
@@ -573,7 +573,7 @@ condition = { kind = "building_level", id = "not_a_mine", level = 1 }
             state
                 .events
                 .iter()
-                .filter(|e| e.text == "achievement: First cut")
+                .filter(|e| e.text == "achievement: Iron cut")
                 .count(),
             1
         );

@@ -353,7 +353,7 @@ impl fmt::Display for ShipError {
             ShipError::ZeroCount => write!(f, "ship batch count must be at least 1"),
             ShipError::InsufficientResources { missing, cost } => write!(
                 f,
-                "not enough resources (missing metal {:.0}, crystal {:.0}, deuterium {:.0}; cost metal {:.0}, crystal {:.0}, deuterium {:.0})",
+                "not enough resources (missing iron {:.0}, silicon {:.0}, deuterium {:.0}; cost iron {:.0}, silicon {:.0}, deuterium {:.0})",
                 missing.iron,
                 missing.silicon,
                 missing.deuterium,

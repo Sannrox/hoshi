@@ -69,7 +69,7 @@ ships = { light_fighter = -2 }
 [[event]]
 id = "comet_ice"
 title = "Comet ice"
-text = "A dirty snowball crosses the inner system. Scooping it is free crystal. Ignoring it costs nothing."
+text = "A dirty snowball crosses the inner system. Scooping it is free silicon. Ignoring it costs nothing."
 weight = 11
 timeout_secs = 86400
 timeout_choice = "leave"
@@ -144,7 +144,7 @@ label = "Stay dark"
 [[event]]
 id = "ancient_probe"
 title = "Ancient probe"
-text = "A dead probe is full of cracked wafers. Strip the crystal, or log the find and leave it."
+text = "A dead probe is full of cracked wafers. Strip the silicon, or log the find and leave it."
 weight = 7
 timeout_secs = 86400
 timeout_choice = "log"
@@ -183,7 +183,7 @@ label = "Wait it out"
 [[event]]
 id = "scrap_field"
 title = "Scrap field"
-text = "Old hull plates tumble in a debris belt. Hauling them is free metal. Leaving them is quieter."
+text = "Old hull plates tumble in a debris belt. Hauling them is free iron. Leaving them is quieter."
 weight = 11
 timeout_secs = 86400
 timeout_choice = "ignore"

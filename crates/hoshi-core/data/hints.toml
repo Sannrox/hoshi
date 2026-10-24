@@ -3,7 +3,7 @@ id = "opening"
 trigger = "opening"
 screen = "planet"
 title = "Welcome"
-body = "This is the bridge. Mines tick while you work elsewhere; start by upgrading the metal mine on the planet screen. Tab cycles screens. Skip the tutorial with s, or dismiss a hint with x."
+body = "This is the bridge. Mines tick while you work elsewhere; start by upgrading the iron mine on the planet screen. Tab cycles screens. Skip the tutorial with s, or dismiss a hint with x."
 
 [[hints]]
 id = "first_mine"
@@ -31,7 +31,7 @@ id = "storage_high"
 trigger = "storage_high"
 screen = "planet"
 title = "Storage is nearly full"
-body = "Production stops at the cap. Upgrade metal storage, or spend the stockpile on the next building."
+body = "Production stops at the cap. Upgrade iron storage, or spend the stockpile on the next building."
 
 [[hints]]
 id = "research_done"

@@ -3,14 +3,14 @@
 
 [[achievements]]
 id = "first_cut"
-title = "First cut"
-description = "Raise a metal mine to level 2."
+title = "Iron cut"
+description = "Raise an iron mine to level 2."
 condition = { kind = "building_level", id = "metal_mine", level = 2 }
 
 [[achievements]]
 id = "crystal_cut"
-title = "Crystal cut"
-description = "Raise a crystal mine to level 2."
+title = "Silicon cut"
+description = "Raise a silicon mine to level 2."
 condition = { kind = "building_level", id = "crystal_mine", level = 2 }
 
 [[achievements]]

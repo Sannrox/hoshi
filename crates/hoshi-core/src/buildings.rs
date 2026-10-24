@@ -83,14 +83,14 @@ impl BuildingKind {
 impl fmt::Display for BuildingKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            BuildingKind::MetalMine => "metal mine",
-            BuildingKind::CrystalMine => "crystal mine",
+            BuildingKind::MetalMine => "iron mine",
+            BuildingKind::CrystalMine => "silicon mine",
             BuildingKind::DeuteriumSynthesizer => "deuterium synthesizer",
             BuildingKind::SolarPlant => "solar plant",
             BuildingKind::FissionReactor => "fission reactor",
             BuildingKind::FusionPlant => "fusion plant",
-            BuildingKind::MetalStorage => "metal storage",
-            BuildingKind::CrystalStorage => "crystal storage",
+            BuildingKind::MetalStorage => "iron storage",
+            BuildingKind::CrystalStorage => "silicon storage",
             BuildingKind::DeuteriumStorage => "deuterium storage",
             BuildingKind::RoboticsFactory => "robotics factory",
             BuildingKind::ResearchLab => "research lab",
@@ -248,7 +248,7 @@ impl fmt::Display for BuildError {
             BuildError::InsufficientResources { missing, cost } => {
                 write!(
                     f,
-                    "not enough resources (missing metal {:.0}, crystal {:.0}, deuterium {:.0}; cost metal {:.0}, crystal {:.0}, deuterium {:.0})",
+                    "not enough resources (missing iron {:.0}, silicon {:.0}, deuterium {:.0}; cost iron {:.0}, silicon {:.0}, deuterium {:.0})",
                     missing.iron,
                     missing.silicon,
                     missing.deuterium,

@@ -1067,7 +1067,7 @@ impl GameState {
             self.push_event(
                 now,
                 format!(
-                    "market: fill {:.1} {} @ {:.3} metal in {}",
+                    "market: fill {:.1} {} @ {:.3} iron in {}",
                     qty,
                     buy.good.label(),
                     price,
