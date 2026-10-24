@@ -5,7 +5,10 @@ path or set `chisei = true` in `config.toml`. The local game stays SQLite.
 hoshi-storage does not open a network connection; this is an in-process object
 graph plus the same SQLite `GameState` codec as the default save. A live shared
 shard is still a Chisei-hosted deployment ([ADR 0005](decisions/0005-shared-shard-on-chisei.md),
-[ADR 0007](decisions/0007-optional-chisei-backend.md)).
+[ADR 0007](decisions/0007-optional-chisei-backend.md)). Join is a
+title-screen client of that host
+([ADR 0017](decisions/0017-local-tui-may-join-a-chisei-shard.md));
+this backend is still in-process and is not that client.
 
 Pinned product/API version: **1.3.0** (`CHISEI_API_VERSION` in hoshi-core).
 Ontology package: **hoshi-ontology/v1**, `schema_version: 1`, at

@@ -4,7 +4,10 @@
 universe. The TUI and CLI keep the same rules; this process holds the save
 lock and answers health checks so a later HTTP contract can talk to that save
 ([ADR 0004](decisions/0004-no-shared-universe.md),
-[ADR 0005](decisions/0005-shared-shard-on-chisei.md)).
+[ADR 0005](decisions/0005-shared-shard-on-chisei.md)). Join is a
+title-screen client of the Chisei shard
+([ADR 0017](decisions/0017-local-tui-may-join-a-chisei-shard.md)); serve is
+still one save.
 
 Off unless you start it.
 

@@ -1,9 +1,13 @@
 # ADR 0007: Optional in-process Chisei backend
 
-- Status: Accepted
+- Status: Accepted (TUI-client rejection superseded by 0017)
 - Date: 2026-10-13
 - Follows: [0005](0005-shared-shard-on-chisei.md), [0006](0006-storage-trait.md)
 - Source: [#65](https://github.com/Sannrox/hoshi/issues/65)
+
+The rejected alternative “Network client in the TUI” is superseded by
+[0017](0017-local-tui-may-join-a-chisei-shard.md). The in-process backend
+and the no-sockets-in-hoshi-core rule stay.
 
 ## Context
 
@@ -51,3 +55,5 @@ hoshi-core.
 - **Replace SQLite.** Local play and existing saves stay on the default
   backend.
 - **Network client in the TUI.** The local binary is not a shard client.
+  Superseded by [0017](0017-local-tui-may-join-a-chisei-shard.md): the TUI
+  may join a Chisei shard; sockets stay out of hoshi-core.
