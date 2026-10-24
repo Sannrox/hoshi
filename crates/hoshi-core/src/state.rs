@@ -4807,6 +4807,7 @@ impl GameState {
             self.finish_home_raid(done_at, report)
         } else {
             let parked = self.fleet;
+            let defences_before = self.defences;
             let hangar = def_stats[ShipKind::LightFighter.index()];
             let seed = self.rng_seed;
             let mut defence_config = self.config.defences.clone();
@@ -4833,9 +4834,23 @@ impl GameState {
             self.apply_raid_standing(battle.winner, done_at);
             self.note_raid_incident(battle.winner, plunder, done_at);
             self.note_raid_outcome(battle.winner);
+            let offline = if battle.winner == CombatWinner::Attacker {
+                self.scar_home_mine(done_at)
+            } else {
+                None
+            };
+            let defence_losses =
+                offline.map(|_| defence_loss_label(defences_before, self.defences));
             self.push_event(
                 done_at,
-                format_layered_raid(pirates, parked, &battle, plunder),
+                format_layered_raid(
+                    pirates,
+                    parked,
+                    &battle,
+                    plunder,
+                    offline,
+                    defence_losses.as_deref(),
+                ),
             );
             let report = CombatReport {
                 rounds: battle.orbital_rounds,
@@ -4885,7 +4900,12 @@ impl GameState {
         self.note_raid_incident(report.winner, plunder, done_at);
         self.note_raid_outcome(report.winner);
         self.grant_admiral_xp(report.winner);
-        self.push_event(done_at, format_raid_report(&report, plunder));
+        let offline = if report.winner == CombatWinner::Attacker {
+            self.scar_home_mine(done_at)
+        } else {
+            None
+        };
+        self.push_event(done_at, format_raid_report(&report, plunder, offline));
         self.schedule_next_raid(done_at, report, plunder, None)
     }
 
@@ -4994,6 +5014,12 @@ impl GameState {
             |f| f.raid_loss_delta
         };
         self.apply_faction_delta("pirates", delta_fn, "raid", done_at);
+    }
+
+    /// Light fighters the next home raid will send. This is the scheduler's
+    /// fleet, not a sensor report, so the count is exact.
+    pub fn scheduled_raid_ships(&self) -> u32 {
+        self.pirate_fleet().total()
     }
 
     fn pirate_fleet(&self) -> Fleet {
@@ -7165,23 +7191,49 @@ fn format_outpost_invade(report: &crate::CombatReport, dest: Coord) -> String {
     }
 }
 
-fn format_raid_report(report: &crate::CombatReport, plunder: Resources) -> String {
-    format!(
-        "raid: pirates {} vs {}. {} rounds. lost {}. pirates lost {}. plunder {}. winner {}",
-        report.attacker_before.label(),
-        report.defender_before.label(),
-        report.rounds,
-        report
-            .defender_before
-            .losses_to(report.defender_after)
-            .label(),
-        report
-            .attacker_before
-            .losses_to(report.attacker_after)
-            .label(),
-        plunder.brief(),
-        report.winner.as_key(),
-    )
+fn format_raid_report(
+    report: &crate::CombatReport,
+    plunder: Resources,
+    offline: Option<BuildingKind>,
+) -> String {
+    let ours = report
+        .defender_before
+        .losses_to(report.defender_after)
+        .label();
+    let theirs = report
+        .attacker_before
+        .losses_to(report.attacker_after)
+        .label();
+    match offline {
+        Some(kind) => format!(
+            "raid: {kind} offline. lost {ours}. pirates lost {theirs}. defences lost none. plunder {}. winner {}",
+            plunder.brief(),
+            report.winner.as_key(),
+        ),
+        None => format!(
+            "raid: pirates {} vs {}. {} rounds. lost {ours}. pirates lost {theirs}. plunder {}. winner {}",
+            report.attacker_before.label(),
+            report.defender_before.label(),
+            report.rounds,
+            plunder.brief(),
+            report.winner.as_key(),
+        ),
+    }
+}
+
+fn defence_loss_label(before: crate::DefenceGrid, after: crate::DefenceGrid) -> String {
+    let parts: Vec<String> = DefenceKind::ALL
+        .iter()
+        .filter_map(|&kind| {
+            let n = before.get(kind).saturating_sub(after.get(kind));
+            (n > 0).then(|| format!("{n} {kind}"))
+        })
+        .collect();
+    if parts.is_empty() {
+        "none".into()
+    } else {
+        parts.join(", ")
+    }
 }
 
 fn format_layered_raid(
@@ -7189,6 +7241,8 @@ fn format_layered_raid(
     parked: Fleet,
     battle: &PlanetBattle,
     plunder: Resources,
+    offline: Option<BuildingKind>,
+    defence_losses: Option<&str>,
 ) -> String {
     let intercept = if battle.intercept_in > 0 {
         format!(
@@ -7214,8 +7268,14 @@ fn format_layered_raid(
         ),
         None => "ground none".into(),
     };
+    let lead = offline
+        .map(|kind| format!("{kind} offline. "))
+        .unwrap_or_default();
+    let defs = defence_losses
+        .map(|label| format!("defences lost {label}. "))
+        .unwrap_or_default();
     format!(
-        "raid: pirates {} vs {}. {intercept}orbital stations {}->{} hangar {}->{} {} rounds. {dome}. batteries {}->{}. {ground}. lost {}. pirates lost {}. rebuilt {}. winner {}. plunder {}",
+        "raid: {lead}pirates {} vs {}. {intercept}orbital stations {}->{} hangar {}->{} {} rounds. {dome}. batteries {}->{}. {ground}. lost {}. pirates lost {}. rebuilt {}. winner {}. {defs}plunder {}",
         pirates.label(),
         parked.label(),
         battle.stations_before,
@@ -9034,6 +9094,274 @@ modifiers = []
         assert_eq!(again.fleet, bridged.fleet);
         assert_eq!(again.events, bridged.events);
         assert_eq!(again.rng_seed, bridged.rng_seed);
+    }
+
+    fn quiet_home() -> GameState {
+        let mut state = GameState::new(0);
+        state.config.story = crate::StoryCatalog::empty();
+        state.config.market.enabled = false;
+        state.config.diplomacy.enabled = false;
+        state
+    }
+
+    fn raid_text(state: &GameState) -> String {
+        state
+            .events
+            .iter()
+            .find(|event| event.text.starts_with("raid:"))
+            .expect("raid report")
+            .text
+            .clone()
+    }
+
+    fn repair_orders(state: &GameState) -> Vec<&crate::maintenance::WorkOrder> {
+        state
+            .maintenance
+            .orders
+            .iter()
+            .filter(|order| order.kind == crate::maintenance::WorkKind::Repair)
+            .collect()
+    }
+
+    #[test]
+    fn lost_raid_scars_the_iron_mine_and_a_second_loss_keeps_one_order() {
+        let mut state = quiet_home();
+        state.buildings.crystal_mine = 9;
+        state.buildings.metal_mine = 2;
+        state.resources = Resources::from_parts(9_000.0, 9_000.0, 9_000.0);
+        let stock = state.plunderable();
+        let share = state.config.raid.plunder_share;
+        let cap = state.config.raid.plunder_cap;
+        let before = state.resources;
+        let health = state.building_health(state.home, BuildingKind::MetalMine);
+        state.trigger_raid(0);
+        assert_eq!(
+            state.combat_logs.last().unwrap().report.winner,
+            CombatWinner::Attacker
+        );
+        assert_eq!(
+            state.building_health(state.home, BuildingKind::MetalMine),
+            0.0
+        );
+        assert_ne!(health, 0.0);
+        let orders = repair_orders(&state);
+        assert_eq!(orders.len(), 1);
+        let order = orders[0];
+        let cfg = state.maintenance_config();
+        assert_eq!(order.ends_at, order.started_at + cfg.offline_secs);
+        assert_eq!(order.iron, 0.0);
+        assert_eq!(order.silicon, 0.0);
+        assert!(cfg.iron_cost > 0.0);
+        let asset = state
+            .maintenance
+            .assets
+            .iter()
+            .find(|asset| asset.id == order.asset_id)
+            .unwrap();
+        assert!(asset.key.ends_with(":metal_mine"), "{}", asset.key);
+        assert_eq!(asset.offline_until, Some(order.ends_at));
+        let text = raid_text(&state);
+        let mine = text.find("iron mine offline").expect(&text);
+        let lost = text.find("lost ").expect(&text);
+        let defences = text.find("defences lost").expect(&text);
+        let plunder_at = text.find("plunder").expect(&text);
+        assert!(
+            mine < lost && lost < defences && defences < plunder_at,
+            "{text}"
+        );
+        let taken = state.combat_logs.last().unwrap().raid_plunder.unwrap();
+        let hold: f64 = ShipKind::ALL
+            .iter()
+            .map(|&kind| {
+                f64::from(
+                    state
+                        .combat_logs
+                        .last()
+                        .unwrap()
+                        .report
+                        .attacker_after
+                        .get(kind),
+                ) * state.config.ships.get(kind).cargo
+            })
+            .sum();
+        let expected =
+            crate::combat::fill_hold(crate::combat::plunder_from(stock, share, cap), hold);
+        assert_eq!(taken, expected);
+        assert_eq!(state.resources, before.saturating_sub(taken));
+        let id = order.id;
+        state.trigger_raid(1);
+        assert_eq!(repair_orders(&state).len(), 1);
+        assert_eq!(repair_orders(&state)[0].id, id);
+        assert_eq!(
+            state.building_health(state.home, BuildingKind::MetalMine),
+            0.0
+        );
+    }
+
+    #[test]
+    fn repairing_the_raid_scar_restores_health() {
+        let mut state = quiet_home();
+        state.trigger_raid(0);
+        assert_eq!(
+            state.building_health(state.home, BuildingKind::MetalMine),
+            0.0
+        );
+        let asset_id = repair_orders(&state)[0].asset_id;
+        let ends = repair_orders(&state)[0].ends_at;
+        assert_eq!(repair_orders(&state)[0].iron, 0.0);
+        assert_eq!(repair_orders(&state)[0].silicon, 0.0);
+        state.resources.iron = 0.0;
+        state.resources.silicon = 0.0;
+        state.catch_up(ends);
+        assert!(
+            state
+                .maintenance
+                .orders
+                .iter()
+                .all(|order| order.asset_id != asset_id),
+            "{:?}",
+            state.maintenance.orders
+        );
+        assert!(state.building_health(state.home, BuildingKind::MetalMine) > 0.0);
+    }
+
+    #[test]
+    fn a_won_raid_leaves_mine_health_unchanged() {
+        let mut state = quiet_home();
+        state.config.raid.strength_factor = 0.0;
+        state.config.raid.min_ships = 1;
+        state.fleet.add(ShipKind::LightFighter, 30);
+        let before = state.building_health(state.home, BuildingKind::MetalMine);
+        let report = state.trigger_raid(0);
+        assert_eq!(report.winner, CombatWinner::Defender);
+        assert_eq!(
+            state.building_health(state.home, BuildingKind::MetalMine),
+            before
+        );
+        assert!(repair_orders(&state).is_empty());
+        assert!(
+            !raid_text(&state).contains("offline"),
+            "{}",
+            raid_text(&state)
+        );
+    }
+
+    #[test]
+    fn lost_raid_scars_silicon_then_deuterium_and_skips_a_colony_mine() {
+        let mut silicon = quiet_home();
+        silicon.buildings.metal_mine = 0;
+        silicon.buildings.crystal_mine = 1;
+        silicon.buildings.deuterium_synthesizer = 8;
+        let colony = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 4,
+        };
+        silicon.colonies.push(crate::Colony {
+            coord: colony,
+            kind: crate::PlanetType::Rocky,
+            size: 100,
+            resources: Resources::ZERO,
+            buildings: Buildings {
+                metal_mine: 9,
+                ..Buildings::default()
+            },
+            fleet: Fleet::default(),
+            defences: crate::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            rare: None,
+            goods: BTreeMap::new(),
+        });
+        silicon.trigger_raid(0);
+        let asset = silicon
+            .maintenance
+            .assets
+            .iter()
+            .find(|asset| asset.id == repair_orders(&silicon)[0].asset_id)
+            .unwrap();
+        assert!(asset.key.ends_with(":crystal_mine"), "{}", asset.key);
+        assert_eq!(asset.coord, silicon.home);
+        assert!(silicon.building_health(colony, BuildingKind::MetalMine) > 0.0);
+
+        let mut deuterium = quiet_home();
+        deuterium.buildings.metal_mine = 0;
+        deuterium.buildings.crystal_mine = 0;
+        deuterium.buildings.deuterium_synthesizer = 1;
+        deuterium.trigger_raid(0);
+        let asset = deuterium
+            .maintenance
+            .assets
+            .iter()
+            .find(|asset| asset.id == repair_orders(&deuterium)[0].asset_id)
+            .unwrap();
+        assert!(
+            asset.key.ends_with(":deuterium_synthesizer"),
+            "{}",
+            asset.key
+        );
+
+        let mut bare = quiet_home();
+        bare.buildings.metal_mine = 0;
+        bare.buildings.crystal_mine = 0;
+        bare.buildings.deuterium_synthesizer = 0;
+        bare.trigger_raid(0);
+        assert!(repair_orders(&bare).is_empty());
+        assert!(!raid_text(&bare).contains("offline"));
+    }
+
+    #[test]
+    fn offline_gap_and_steps_scar_the_same_mine() {
+        let mut gap = quiet_home();
+        gap.next_raid_at = Some(40);
+        let mut step = gap.clone();
+        gap.catch_up(40);
+        for now in 1..=40 {
+            step.catch_up(now);
+        }
+        assert_eq!(gap.building_health(gap.home, BuildingKind::MetalMine), 0.0);
+        assert_eq!(
+            step.building_health(step.home, BuildingKind::MetalMine),
+            gap.building_health(gap.home, BuildingKind::MetalMine)
+        );
+        assert_eq!(step.maintenance.orders, gap.maintenance.orders);
+        close(step.resources.iron, gap.resources.iron);
+        close(step.resources.silicon, gap.resources.silicon);
+        close(step.resources.rare_earths, gap.resources.rare_earths);
+        assert_eq!(raid_text(&step), raid_text(&gap));
+    }
+
+    #[test]
+    fn stored_stance_is_what_the_raid_resolver_uses() {
+        let fighters = |stance: &str| {
+            let mut state = quiet_home();
+            state.config.raid.strength_factor = 0.0;
+            state.config.raid.min_ships = 12;
+            state.fleet.add(ShipKind::LightFighter, 12);
+            state.rng_seed = 7;
+            state.set_stance(stance).unwrap();
+            state
+        };
+        let mut neutral = fighters("neutral");
+        let mut plain = quiet_home();
+        plain.config.raid.strength_factor = 0.0;
+        plain.config.raid.min_ships = 12;
+        plain.fleet.add(ShipKind::LightFighter, 12);
+        plain.rng_seed = 7;
+        let neutral_report = neutral.trigger_raid(0);
+        let plain_report = plain.trigger_raid(0);
+        assert_eq!(neutral_report.rounds, plain_report.rounds);
+        assert_eq!(neutral_report.attacker_after, plain_report.attacker_after);
+        assert_eq!(neutral_report.defender_after, plain_report.defender_after);
+        assert_eq!(neutral.fleet_tactics.stance.as_key(), "neutral");
+        let mut running = fighters("hit_and_run");
+        let running_report = running.trigger_raid(0);
+        assert!(
+            running_report.rounds < neutral_report.rounds,
+            "hit_and_run {} vs neutral {}",
+            running_report.rounds,
+            neutral_report.rounds
+        );
+        assert_eq!(running.fleet_tactics.stance.as_key(), "hit_and_run");
     }
 
     #[test]

@@ -861,12 +861,13 @@ impl GameState {
         }
     }
 
-    fn fail_asset(&mut self, id: u64, at: u64, cfg: &MaintenanceConfig) {
-        let Some(idx) = self.maintenance.assets.iter().position(|a| a.id == id) else {
-            return;
-        };
+    /// Open the repair a maintenance failure already uses. Returns the asset
+    /// key when a new order was created. An asset that already has an order
+    /// is left alone.
+    fn open_failure(&mut self, id: u64, at: u64, cfg: &MaintenanceConfig) -> Option<String> {
+        let idx = self.maintenance.assets.iter().position(|a| a.id == id)?;
         if self.maintenance.orders.iter().any(|o| o.asset_id == id) {
-            return;
+            return None;
         }
         let key = self.maintenance.assets[idx].key.clone();
         if key.ends_with(":fission_reactor")
@@ -901,8 +902,52 @@ impl GameState {
             outcome: "offline".into(),
             ..crate::HistoryDraft::default()
         });
+        Some(key)
+    }
+
+    fn fail_asset(&mut self, id: u64, at: u64, cfg: &MaintenanceConfig) {
+        let Some(key) = self.open_failure(id, at, cfg) else {
+            return;
+        };
         self.push_event(at, format!("asset {key} failed"));
         self.note_failure_incident(&key, at);
+    }
+
+    /// After a lost home raid, take the iron mine offline, otherwise the
+    /// silicon mine, otherwise the deuterium synthesizer. Downtime matches a
+    /// wear failure. The repair order bills no parts: the scarred iron mine
+    /// is the only source of the iron a wear bill charges, and charging it
+    /// leaves that mine offline for good. Wear failures still use
+    /// `iron_cost` and `silicon_cost`. A second loss while the order is open
+    /// does not open another. Colonies are not scarred.
+    pub(crate) fn scar_home_mine(&mut self, at: u64) -> Option<BuildingKind> {
+        self.sync_maintenance_assets(at);
+        let kind = [
+            BuildingKind::MetalMine,
+            BuildingKind::CrystalMine,
+            BuildingKind::DeuteriumSynthesizer,
+        ]
+        .into_iter()
+        .find(|&kind| self.buildings.get(kind) > 0)?;
+        let key = format!("building:{}:{}", self.home, kind.as_key());
+        let id = self
+            .maintenance
+            .assets
+            .iter()
+            .find(|asset| asset.key == key)?
+            .id;
+        let cfg = self.maintenance_config();
+        self.open_failure(id, at, &cfg)?;
+        if let Some(order) = self
+            .maintenance
+            .orders
+            .iter_mut()
+            .find(|order| order.asset_id == id)
+        {
+            order.iron = 0.0;
+            order.silicon = 0.0;
+        }
+        Some(kind)
     }
 }
 

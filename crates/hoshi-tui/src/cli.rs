@@ -6174,7 +6174,11 @@ mod tests {
             ],
         );
         assert_eq!(exit, EXIT_OK, "{ok}");
-        let (tick, exit) = run_on(&save, &["tick", "--advance", "4h"]);
+        // The first lost raid scars the iron mine until t = 5h. Four hours
+        // ends while it is still offline, with about 34 iron. Seven hours is
+        // the first whole hour after the repair that covers this build's 90
+        // iron, and it lands before the next raid.
+        let (tick, exit) = run_on(&save, &["tick", "--advance", "7h"]);
         assert_eq!(exit, EXIT_OK, "{tick}");
         let (queued, exit) = run_on(
             &save,

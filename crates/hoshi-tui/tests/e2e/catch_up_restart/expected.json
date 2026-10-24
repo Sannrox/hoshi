@@ -92,7 +92,15 @@
     },
     {
       "at": 3600,
-      "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder Fe0 Si10 D0. winner attacker"
+      "text": "raid: iron mine offline. lost none. pirates lost none. defences lost none. plunder Fe0 Si10 D0. winner attacker"
+    },
+    {
+      "at": 7200,
+      "text": "stall: missing rare earths at 1:1:1"
+    },
+    {
+      "at": 7200,
+      "text": "stall: missing magnets at 1:1:1"
     },
     {
       "at": 32400,
@@ -104,7 +112,7 @@
     },
     {
       "at": 32400,
-      "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder Fe25 Si25 D0. winner attacker"
+      "text": "raid: iron mine offline. lost none. pirates lost none. defences lost none. plunder Fe25 Si25 D0. winner attacker"
     },
     {
       "at": 61200,
@@ -116,7 +124,7 @@
     },
     {
       "at": 61200,
-      "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder Fe25 Si25 D0. winner attacker"
+      "text": "raid: iron mine offline. lost none. pirates lost none. defences lost none. plunder Fe25 Si25 D0. winner attacker"
     },
     {
       "at": 88200,
@@ -132,7 +140,7 @@
     },
     {
       "at": 90000,
-      "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder Fe25 Si25 D0. winner attacker"
+      "text": "raid: iron mine offline. lost none. pirates lost none. defences lost none. plunder Fe25 Si25 D0. winner attacker"
     },
     {
       "at": 118800,
@@ -144,7 +152,7 @@
     },
     {
       "at": 118800,
-      "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder Fe25 Si25 D0. winner attacker"
+      "text": "raid: iron mine offline. lost none. pirates lost none. defences lost none. plunder Fe25 Si25 D0. winner attacker"
     },
     {
       "at": 140400,
@@ -156,7 +164,7 @@
     },
     {
       "at": 140400,
-      "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder Fe25 Si25 D0. winner attacker"
+      "text": "raid: iron mine offline. lost none. pirates lost none. defences lost none. plunder Fe25 Si25 D0. winner attacker"
     },
     {
       "at": 162000,
@@ -168,11 +176,11 @@
     },
     {
       "at": 162000,
-      "text": "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder Fe25 Si25 D0. winner attacker"
+      "text": "raid: iron mine offline. lost none. pirates lost none. defences lost none. plunder Fe25 Si25 D0. winner attacker"
     }
   ],
   "finance": {
-    "cash": 4151.479580321239,
+    "cash": 2525.1672930687814,
     "debt": 0.0,
     "pending": 0
   },
@@ -341,8 +349,8 @@
   "rates": {
     "deuterium": 0.0,
     "helium_3": 0.0,
-    "iron": 49.027027499999804,
-    "rare_earths": 5.323003920367853,
+    "iron": 49.5,
+    "rare_earths": 5.405887390905434,
     "silicon": 21.78979000000004,
     "water_ice": 0.0
   },
@@ -389,9 +397,9 @@
   "resources": {
     "deuterium": 0.0,
     "helium_3": 0.0,
-    "iron": 2713.3236600000005,
-    "rare_earths": 261.96641876328187,
-    "silicon": 1410.70496,
+    "iron": 1338.424035,
+    "rare_earths": 28.99345983374171,
+    "silicon": 1357.613081951491,
     "water_ice": 0.0
   },
   "rivals": {

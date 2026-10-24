@@ -70,6 +70,20 @@ enum HistoryPane {
 /// cannot open the away summary on ordinary frames.
 pub const MIN_WAKE_SECS: u64 = 60;
 const AWAY_EVENTS_PER_PAGE: usize = 4;
+
+/// The newest lost-raid report leads the away dialog. Older reports stay in
+/// the paged event list, in their original order.
+fn away_event_split(events: &[String]) -> (Option<&str>, Vec<&str>) {
+    let lead_at = events.iter().rposition(|event| event.contains(" offline."));
+    let lead = lead_at.map(|index| events[index].as_str());
+    let listed = events
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| Some(*index) != lead_at)
+        .map(|(_, event)| event.as_str())
+        .collect();
+    (lead, listed)
+}
 const MIN_TRADE_AMOUNT: f64 = 10.0;
 const MAX_TRADE_AMOUNT: f64 = 1_000_000.0;
 /// Largest shipyard batch one Enter queues as a single job.
@@ -719,7 +733,10 @@ impl App {
         }
         if self.away.is_some() && !self.away_hidden {
             if self.keymap.matches(Binding::Toggle, code) {
-                let events = self.away.as_ref().map_or(0, |away| away.events.len());
+                let events = self
+                    .away
+                    .as_ref()
+                    .map_or(0, |away| away_event_split(&away.events).1.len());
                 let pages = events.div_ceil(AWAY_EVENTS_PER_PAGE).max(1);
                 self.away_event_page = (self.away_event_page + 1) % pages;
                 return Action::None;
@@ -1976,6 +1993,10 @@ impl App {
         let ledger = &away.ledger;
         let total = ledger.total();
         let mut lines = Vec::new();
+        let (lead, listed) = away_event_split(&away.events);
+        if let Some(event) = lead {
+            lines.push(Line::styled(event.to_string(), t.intent(Intent::Danger)));
+        }
         let plundered = resource_list(total.plundered);
         if !plundered.is_empty() {
             lines.push(Line::styled(
@@ -2046,20 +2067,14 @@ impl App {
             }
         }
         let toggle = self.keymap.primary(Binding::Toggle);
-        if !away.events.is_empty() {
+        if !listed.is_empty() {
             lines.push(Line::default());
             lines.push(ui::panels::section(t, "events"));
             let skip = self.away_event_page * AWAY_EVENTS_PER_PAGE;
-            for event in away
-                .events
-                .iter()
-                .rev()
-                .skip(skip)
-                .take(AWAY_EVENTS_PER_PAGE)
-            {
-                lines.push(Line::styled(event.clone(), t.muted()));
+            let total = listed.len();
+            for event in listed.iter().rev().skip(skip).take(AWAY_EVENTS_PER_PAGE) {
+                lines.push(Line::styled((*event).to_string(), t.muted()));
             }
-            let total = away.events.len();
             if total > AWAY_EVENTS_PER_PAGE {
                 let last = (skip + AWAY_EVENTS_PER_PAGE).min(total);
                 lines.push(Line::styled(
@@ -4729,6 +4744,78 @@ mod tests {
             events,
             ..AwaySummary::default()
         }
+    }
+
+    #[test]
+    fn away_dialog_leads_with_the_offline_mine() {
+        let mut state = GameState::new(0);
+        state.config.story = hoshi_core::StoryCatalog::empty();
+        state.config.market.enabled = false;
+        state.config.diplomacy.enabled = false;
+        state.resources = Resources::from_parts(9_000.0, 9_000.0, 9_000.0);
+        state.next_raid_at = Some(1);
+        let before = crate::title::snapshot_away(&state);
+        let ledger = state.catch_up_ledger(1);
+        let summary = crate::title::summarize_away(&before, ledger, &state);
+        let mut app = App::new(GameState::new(1_000));
+        app.set_away(summary);
+        let text = render_text(&app, 160, 40);
+        let mine = text.find("iron mine offline").expect(&text);
+        let lost = text.find("lost ").expect(&text);
+        let defences = text.find("defences lost").expect(&text);
+        let plunder = text.find("plunder").expect(&text);
+        let header = text.find("Pirates plundered").expect(&text);
+        assert!(
+            mine < lost && lost < defences && defences < plunder && plunder < header,
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn away_dialog_promotes_only_the_newest_offline_report() {
+        let mut summary = plundered_summary();
+        summary.events = (1..=4)
+            .map(|n| format!("story {n}"))
+            .chain(std::iter::once(
+                "raid: silicon mine offline. lost 1. defences lost none. plunder Fe2 Si0 D0. winner attacker".to_string(),
+            ))
+            .collect();
+        let mut app = App::new(GameState::new(1_000));
+        app.set_away(summary);
+        let text = render_text(&app, 160, 40);
+        let header = text.find("Pirates plundered").expect(&text);
+        let lead = text.find("silicon mine offline").expect(&text);
+        assert!(lead < header, "{text}");
+        assert_eq!(text[..header].matches("offline.").count(), 1, "{text}");
+        assert!(text.contains("story 4"), "{text}");
+        app.handle_key(KeyCode::Char(' '), 1_000);
+        let text = render_text(&app, 160, 40);
+        assert!(text.contains("story 4"), "{text}");
+        assert!(!text.contains("5-4 of 4"), "{text}");
+
+        let mut older = plundered_summary();
+        older.events = std::iter::once(
+            "raid: iron mine offline. lost none. defences lost none. plunder Fe1 Si0 D0. winner attacker".to_string(),
+        )
+        .chain((1..=4).map(|n| format!("story {n}")))
+        .chain(std::iter::once(
+            "raid: silicon mine offline. lost 1. defences lost none. plunder Fe2 Si0 D0. winner attacker".to_string(),
+        ))
+        .collect();
+        let mut app = App::new(GameState::new(1_000));
+        app.set_away(older);
+        let text = render_text(&app, 160, 40);
+        let header = text.find("Pirates plundered").expect(&text);
+        assert!(
+            text.find("silicon mine offline").unwrap() < header,
+            "{text}"
+        );
+        assert_eq!(text[..header].matches("offline.").count(), 1, "{text}");
+        assert!(!text[..header].contains("iron mine"), "{text}");
+        app.handle_key(KeyCode::Char(' '), 1_000);
+        let text = render_text(&app, 160, 40);
+        assert!(text.contains("iron mine offline"), "{text}");
+        assert!(text.contains("5-5 of 5"), "{text}");
     }
 
     #[test]

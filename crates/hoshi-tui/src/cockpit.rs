@@ -346,10 +346,15 @@ pub fn alerts(state: &GameState) -> Vec<Alert> {
     let mut rows = Vec::new();
     let home = state.home;
     if let Some(secs) = state.raid_countdown_secs() {
+        let ships = state.scheduled_raid_ships();
         rows.push(Alert {
             kind: AlertKind::Raid,
             text: format!("Incoming raid  T-{}", countdown(secs)),
-            detail: format!("pirates → {home}"),
+            detail: format!(
+                "{ships} attackers · formation {} · stance {} · pirates → {home}",
+                state.fleet_tactics.formation.as_key(),
+                state.fleet_tactics.stance.as_key()
+            ),
             jump: Target::Planet(home),
             decision: None,
         });
@@ -1701,6 +1706,28 @@ mod tests {
         state.catch_up(1_800 + 3_600);
         let rows = alerts(&state);
         assert!(rows.iter().all(|row| row.text != "The hail is still open."));
+    }
+
+    #[test]
+    fn raid_warning_names_the_scheduled_fleet_and_the_stance() {
+        let mut state = GameState::new(1_000);
+        state.next_raid_at = Some(1_120);
+        state.set_formation("wedge").unwrap();
+        state.set_stance("aggressive").unwrap();
+        let ships = state.scheduled_raid_ships();
+        assert!(ships > 0);
+        let rows = alerts(&state);
+        let raid = rows
+            .iter()
+            .find(|row| row.text.contains("Incoming raid"))
+            .expect("warning");
+        assert!(
+            raid.detail.contains(&format!("{ships} attackers")),
+            "{}",
+            raid.detail
+        );
+        assert!(raid.detail.contains("stance aggressive"), "{}", raid.detail);
+        assert!(raid.detail.contains("formation wedge"), "{}", raid.detail);
     }
 
     #[test]
