@@ -6993,6 +6993,22 @@ mod tests {
     }
 
     #[test]
+    fn maintenance_and_staff_give_units_and_roles() {
+        let mut app = detail_app();
+        app.state.catch_up(1_000 + 3_600);
+        app.open(Screen::Maintenance);
+        let maint = render_text(&app, 160, 48);
+        assert!(maint.contains("NEXT READING IN"), "{maint}");
+        assert!(maint.contains("% of sink"), "{maint}");
+        assert!(maint.contains("failure chance"), "{maint}");
+        assert!(!maint.contains("fail p"), "{maint}");
+        app.open(Screen::Staff);
+        let staff = render_text(&app, 160, 48);
+        assert!(staff.contains("−5% output"), "{staff}");
+        assert!(staff.contains("governor: scales"), "{staff}");
+    }
+
+    #[test]
     fn detail_overlay_opens_at_80x24() {
         let mut app = detail_app();
         app.screen = Screen::Planet;
