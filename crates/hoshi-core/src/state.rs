@@ -3743,7 +3743,9 @@ impl GameState {
         self.duration_secs(kind, self.projected_level(kind))
     }
 
-    pub(crate) fn available_building_level(&self, kind: BuildingKind) -> u32 {
+    /// The home level of `kind` that queue gates check: the lowest level it
+    /// passes through while queued downgrades run, and 0 while dismantling.
+    pub fn available_building_level(&self, kind: BuildingKind) -> u32 {
         if self.dismantling(self.home) == Some(kind) {
             return 0;
         }
