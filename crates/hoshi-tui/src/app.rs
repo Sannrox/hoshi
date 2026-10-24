@@ -4451,6 +4451,62 @@ mod tests {
             .collect()
     }
 
+    /// #295: the bridge timeline mashed history columns into phrases like
+    /// "other player request spend" and "build simulation complete".
+    #[test]
+    fn bridge_timeline_reads_as_sentences() {
+        let mut state = GameState::new(0);
+        state.next_raid_at = None;
+        state.resources = Resources::from_parts(9_000.0, 9_000.0, 1_000.0);
+        state.enqueue_build(BuildingKind::MetalMine, 0).unwrap();
+        state.catch_up(3_600);
+        let mut app = App::new(state);
+        app.screen = Screen::Cockpit;
+        let text = render_text(&app, 140, 45);
+        assert!(text.contains("queued metal mine at 1:1:1"), "{text}");
+        assert!(text.contains("metal mine reached lv 2"), "{text}");
+        let row = |kind, action: &str, objects: &[&str], outcome: &str| hoshi_core::HistoryEvent {
+            kind,
+            action: action.into(),
+            objects: objects.iter().map(|o| (*o).to_string()).collect(),
+            outcome: outcome.into(),
+            ..app.state.history.events[0].clone()
+        };
+        let dismantled = row(
+            HistoryKind::Build,
+            "dismantle_complete",
+            &["metal_mine"],
+            "salvage",
+        );
+        assert_eq!(
+            crate::cockpit::timeline_text(&dismantled),
+            "metal mine dismantled"
+        );
+        let held = row(
+            HistoryKind::Other,
+            "request_spend",
+            &["spend:12", "industry"],
+            "held",
+        );
+        assert_eq!(
+            crate::cockpit::timeline_text(&held),
+            "industry spending held"
+        );
+        let assigned = row(
+            HistoryKind::Other,
+            "assign_leader",
+            &["leader:3", "1:1:1"],
+            "mission:4",
+        );
+        assert_eq!(
+            crate::cockpit::timeline_text(&assigned),
+            "assign leader: 1:1:1"
+        );
+        for token in ["simulation", "other player", "build simulation"] {
+            assert!(!text.contains(token), "{token} in {text}");
+        }
+    }
+
     #[test]
     fn hub_screens_show_no_raw_ids_or_timestamps() {
         let state = played_state();
