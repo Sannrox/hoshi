@@ -2891,14 +2891,19 @@ impl App {
         self.overview_techs().get(index).map(|spec| spec.id.clone())
     }
 
+    /// Visible techs of the current branch by tier, with the branch's
+    /// keystone last so it gets its own group on the Research screen.
     fn overview_techs(&self) -> Vec<&hoshi_core::TechSpec> {
-        self.state
+        let mut techs: Vec<_> = self
+            .state
             .config
             .techs
             .branch_techs(self.tree_branch)
             .into_iter()
             .filter(|spec| self.state.tech_node_state(&spec.id) != TechNodeState::Hidden)
-            .collect()
+            .collect();
+        techs.sort_by_key(|spec| spec.keystone);
+        techs
     }
 
     fn visible_tree_branches(&self) -> Vec<TechBranch> {
@@ -3270,7 +3275,7 @@ impl App {
         )));
         if let Some(output) = self.state.energy_produced_at(coord) {
             rows.push(Line::from(format!(
-                "Energy {output:.1}/{:.1}  balance {:+.1}  solar flux {:.0}%  cap {}",
+                "Energy {output:.1}/{:.1}  balance {:+.1}  solar flux {:.0}%  solar plant cap lv{}",
                 self.state.energy_consumed_at(coord),
                 self.state.energy_balance_at(coord).unwrap_or(0.0),
                 self.state.config.orbits.solar_flux(coord) * 100.0,
@@ -4848,6 +4853,17 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn keystones_get_their_own_research_group() {
+        let mut state = GameState::new(1_000);
+        state.buildings.research_lab = 1;
+        let app = App::new(state);
+        let specs = app.overview_techs();
+        assert!(specs.last().is_some_and(|spec| spec.keystone));
+        let text = render_text(&app, 160, 48);
+        assert!(text.contains("KEYSTONE ★ VICTORY PATH"), "{text}");
     }
 
     #[test]

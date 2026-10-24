@@ -61,11 +61,14 @@ pub fn lines(detail: &Detail) -> Vec<String> {
     }
     if let Some(ship) = &detail.ship {
         rows.push(format!(
-            "speed {:.0}  fuel {:.1}/u  cargo {:.0}",
-            ship.speed, ship.fuel_per_unit, ship.cargo
+            "speed {:.0}  fuel {:.1} D/ship per {} distance  cargo {:.0}",
+            ship.speed,
+            ship.fuel_per_unit,
+            crate::ui::spans::compact(ship.fuel_distance),
+            ship.cargo
         ));
         if let (Some(secs), Some(fuel)) = (ship.outbound_secs, ship.fuel_cost) {
-            rows.push(format!("travel {secs}s  fuel {fuel:.1}"));
+            rows.push(format!("travel {secs}s  fuel {fuel:.1} D"));
         }
     }
     rows
@@ -283,7 +286,11 @@ pub fn inspector(
             ),
             (
                 "fuel".to_string(),
-                Line::from(format!("{:.1}/u", ship.fuel_per_unit)),
+                Line::from(format!(
+                    "{:.1} D/ship per {}",
+                    ship.fuel_per_unit,
+                    compact(ship.fuel_distance)
+                )),
             ),
             (
                 "cargo".to_string(),
@@ -293,7 +300,7 @@ pub fn inspector(
         if let (Some(secs), Some(fuel)) = (ship.outbound_secs, ship.fuel_cost) {
             rows.push((
                 "trip".into(),
-                Line::from(format!("{}  fuel {fuel:.1}", duration(secs))),
+                Line::from(format!("{}  fuel {fuel:.1} D", duration(secs))),
             ));
         }
         out.extend(PropertyList { theme: t, rows }.lines());
