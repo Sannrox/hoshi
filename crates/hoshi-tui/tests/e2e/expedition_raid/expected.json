@@ -103,7 +103,7 @@
     },
     {
       "at": 3600,
-      "text": "raid: pirates 900 light fighter vs 5 light fighter. 1 rounds. lost 5 light fighter. pirates lost none. plunder Fe553 Si285 D4750. winner attacker"
+      "text": "raid: iron mine offline. lost 5 light fighter. pirates lost none. defences lost none. plunder Fe553 Si285 D4750. winner attacker"
     },
     {
       "at": 3600,
@@ -119,11 +119,11 @@
     },
     {
       "at": 32400,
-      "text": "raid: pirates 900 light fighter vs 5 light fighter. 1 rounds. lost 5 light fighter. pirates lost none. plunder Fe408 Si231 D2375. winner attacker"
+      "text": "raid: iron mine offline. lost 5 light fighter. pirates lost none. defences lost none. plunder Fe342 Si231 D2375. winner attacker"
     }
   ],
   "finance": {
-    "cash": 779.3708485179409,
+    "cash": 535.031786309173,
     "debt": 0.0,
     "pending": 0
   },
@@ -200,7 +200,7 @@
   ],
   "maintenance": {
     "assets": 3,
-    "orders": 0,
+    "orders": 1,
     "readings": 36
   },
   "missions": [],
@@ -280,8 +280,8 @@
   "rates": {
     "deuterium": 0.0,
     "helium_3": 0.0,
-    "iron": 32.92277999999999,
-    "rare_earths": 2.4770939320804786,
+    "iron": 0.0,
+    "rare_earths": -3.2922779999999996,
     "silicon": 21.94852000000003,
     "water_ice": 0.0
   },
@@ -328,8 +328,8 @@
   "resources": {
     "deuterium": 2875.0,
     "helium_3": 0.0,
-    "iron": 1007.1911199999998,
-    "rare_earths": 54.762892153699454,
+    "iron": 842.480695,
+    "rare_earths": 14.350224638756517,
     "silicon": 796.5440799999999,
     "water_ice": 0.0
   },
