@@ -50,8 +50,11 @@ A live shard (not this in-process backend) wraps those moves in
 `ShardSession`: the host clock is the only time source, a client timestamp is
 ignored, each identity is rate limited, intents carry an idempotency id, and
 bridge pulses need an HMAC-SHA256 the host keys. Unsigned or altered pulses
-are rejected. Player raids catch up both empires, then resolve against that
-snapshot with the same fleet combat as local play. A young defender is
+are rejected. Player raids today catch up both empires, then resolve instantly against
+that snapshot with the same fleet combat as local play.
+[ADR 0019](decisions/0019-shard-raids-are-missions-with-flight.md) moves
+raids to missions with flight; `ShardSession::raid` still resolves at
+admit time until that follow-up. A young defender is
 protected; an attacker has a per-identity attack cap; plunder uses the
 defender's share then cap. A tenant read is `ShardSession::view`: own
 planets, fleets, and stock, plus spy intel that has already arrived, never
