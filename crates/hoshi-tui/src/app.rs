@@ -4478,8 +4478,8 @@ mod tests {
         let mut app = App::new(state);
         app.screen = Screen::Cockpit;
         let text = render_text(&app, 140, 45);
-        assert!(text.contains("queued metal mine at 1:1:1"), "{text}");
-        assert!(text.contains("metal mine reached lv 2"), "{text}");
+        assert!(text.contains("queued iron mine at 1:1:1"), "{text}");
+        assert!(text.contains("iron mine reached lv 2"), "{text}");
         let row = |kind, action: &str, objects: &[&str], outcome: &str| hoshi_core::HistoryEvent {
             kind,
             action: action.into(),
@@ -4494,8 +4494,8 @@ mod tests {
             "salvage",
         );
         assert_eq!(
-            crate::cockpit::timeline_text(&dismantled),
-            "metal mine dismantled"
+            crate::cockpit::timeline_text(&app.state, &dismantled),
+            "iron mine dismantled"
         );
         let held = row(
             HistoryKind::Other,
@@ -4504,7 +4504,7 @@ mod tests {
             "held",
         );
         assert_eq!(
-            crate::cockpit::timeline_text(&held),
+            crate::cockpit::timeline_text(&app.state, &held),
             "industry spending held"
         );
         let assigned = row(
@@ -4514,7 +4514,7 @@ mod tests {
             "mission:4",
         );
         assert_eq!(
-            crate::cockpit::timeline_text(&assigned),
+            crate::cockpit::timeline_text(&app.state, &assigned),
             "assign leader: 1:1:1"
         );
         for token in ["simulation", "other player", "build simulation"] {
@@ -5401,7 +5401,7 @@ mod tests {
         assert_eq!(app.state.colonies[0].build_queue.len(), 1);
         let text = render_text(&app, 100, 32);
         assert!(text.contains("Planet 1:1:2"), "{text}");
-        assert!(text.contains("metal mine"), "{text}");
+        assert!(text.contains("iron mine"), "{text}");
         app.handle_key(KeyCode::Char('['), 1_000);
         assert_eq!(app.selected_coord(), Coord::HOME);
     }
@@ -5542,14 +5542,14 @@ mod tests {
         assert_eq!(app.screen, Screen::Achievements);
         let text = render_text(&app, 100, 32);
         assert!(text.contains("Bridge / Feats"), "{text}");
-        assert!(text.contains("First cut"), "{text}");
+        assert!(text.contains("Iron cut"), "{text}");
         assert!(text.contains("EARNED"), "{text}");
         assert!(text.contains("Hidden feat"), "{text}");
         assert!(
             text.contains("1/5") || text.contains("Solar array"),
             "{text}"
         );
-        assert!(text.contains("achievement: First cut"), "{text}");
+        assert!(text.contains("achievement: Iron cut"), "{text}");
     }
 
     #[test]
@@ -5966,7 +5966,7 @@ mod tests {
         let text = render_text(&app, 100, 32);
         assert!(text.contains("Empire / Laws"), "{text}");
         assert!(text.contains("Emission cap"), "{text}");
-        assert!(text.contains("Metal levy"), "{text}");
+        assert!(text.contains("Iron levy"), "{text}");
         app.handle_key(KeyCode::Enter, 1_000);
         assert!(
             app.state
@@ -6926,9 +6926,9 @@ mod tests {
             &app,
             160,
             48,
-            &["LV 1 → 2", "metal mine", "COST", "iron", "energy draw"],
+            &["LV 1 → 2", "iron mine", "COST", "iron", "energy draw"],
         );
-        assert_detail_on(&app, 120, 40, &["LV 1 → 2", "metal mine", "READY"]);
+        assert_detail_on(&app, 120, 40, &["LV 1 → 2", "iron mine", "READY"]);
         app.screen = Screen::Overview;
         app.selected = app
             .overview_techs()
@@ -7001,7 +7001,7 @@ mod tests {
         let mut app = detail_app();
         app.screen = Screen::Achievements;
         let feats = render_text(&app, 160, 48);
-        assert!(feats.contains("Raise a metal mine to level 2."), "{feats}");
+        assert!(feats.contains("Raise an iron mine to level 2."), "{feats}");
         assert!(feats.contains("starting buildings"), "{feats}");
         app.screen = Screen::Prestige;
         let legacy = render_text(&app, 160, 48);
@@ -7065,7 +7065,7 @@ mod tests {
         app.handle_key(KeyCode::Char('d'), 1_000);
         let text = render_text(&app, 80, 24);
         assert!(text.contains("Detail"), "{text}");
-        assert!(text.contains("metal mine"), "{text}");
+        assert!(text.contains("iron mine"), "{text}");
         app.handle_key(KeyCode::Char('d'), 1_000);
         let closed = render_text(&app, 80, 24);
         assert!(!closed.contains("energy draw"), "{closed}");

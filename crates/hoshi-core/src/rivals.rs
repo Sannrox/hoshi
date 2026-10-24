@@ -626,7 +626,7 @@ impl GameState {
             self.push_event(
                 at,
                 format!(
-                    "rival {}: raid won, took {:.0} metal",
+                    "rival {}: raid won, took {:.0} iron",
                     self.rivals.empires[index].id, loot.iron
                 ),
             );

@@ -292,7 +292,7 @@ impl GameState {
             (run.brew_metal, run.brew_secs)
         };
         if self.resources.iron + 1e-9 < cost {
-            return Err(SpeciesError::Unavailable("not enough metal"));
+            return Err(SpeciesError::Unavailable("not enough iron"));
         }
         self.resources.iron -= cost;
         let run = self

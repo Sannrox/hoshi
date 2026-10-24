@@ -3669,7 +3669,7 @@ mod tests {
         title.handle_key(KeyCode::Enter);
         let text = render(&title, 80, 24);
         assert!(text.contains("Achievements and stats"), "{text}");
-        assert!(text.contains("First cut"), "{text}");
+        assert!(text.contains("Iron cut"), "{text}");
         assert!(text.contains("Lab open"), "{text}");
         assert!(text.contains("160s"), "{text}");
         assert!(text.contains("wonders 1"), "{text}");

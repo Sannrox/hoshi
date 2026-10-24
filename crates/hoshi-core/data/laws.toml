@@ -58,9 +58,9 @@ expected = [{ metric = "output", per_unit = 0.05 }]
 
 [[templates]]
 id = "tax_rate"
-title = "Metal levy"
+title = "Iron levy"
 jurisdiction = "empire"
-param_name = "metal_per_hour"
+param_name = "iron_per_hour"
 min = 0.0
 max = 200.0
 default = 20.0

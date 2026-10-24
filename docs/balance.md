@@ -26,7 +26,7 @@ factors must be `> 0`, bases `>= 0`, build and ship queues at least 1.
 
 `[chains]` is the recipe graph. Empty recipe lists keep the legacy mine-to-stockpile path. With recipes, each mine extracts declared deposits and then processes goods in listed order; list every producer before the recipes that consume its outputs. Extractors need a deposit (no mass from nothing). Process recipes must not create mass. Every non-raw input has to be produced by some recipe. Cycles that feed an output back into its own inputs are rejected. Duplicate input or output names that alias the same construction stockpile (`frames`/`metal`, `electronics`/`crystal`, `deuterium`) are rejected.
 
-Construction stockpiles are iron, silicon, rare earths, water ice, helium-3 and deuterium (also named frames, electronics and fuel). Three tanks hold them: metal storage for iron and rare earths, crystal storage for silicon, deuterium storage for water ice, helium-3 and fuel. Intermediate goods live in the save `goods` table. Building costs may use `frames`, `electronics` and `fuel`; ship costs may use `frames`, `electronics` and `propellant` (`fuel` on a ship is still flight consumption).
+Construction stockpiles are iron, silicon, rare earths, water ice, helium-3 and deuterium (also named frames, electronics and fuel). Three tanks hold them: iron storage (`metal_storage`) for iron and rare earths, silicon storage (`crystal_storage`) for silicon, deuterium storage for water ice, helium-3 and fuel. Intermediate goods live in the save `goods` table. Building costs may use `frames`, `electronics` and `fuel`; ship costs may use `frames`, `electronics` and `propellant` (`fuel` on a ship is still flight consumption).
 
 `[chains.deposits.<type>]` is richness by planet type. `deposit_jitter` (in `[0, 1)`) spreads that richness from the galaxy seed and coord. The planet screen lists the resulting deposits.
 
@@ -70,7 +70,7 @@ is how often expected vs actual is sampled.
 | `keystone_secs` | Each playable branch keystone must complete within this many seconds under a research-greedy run. |
 | `min_flight_secs` | The fastest ship's flight to a neighbouring slot takes at least this many seconds. |
 
-Defaults: first upgrade in 5 minutes, at least one metal mine level per day
+Defaults: first upgrade in 5 minutes, at least one iron mine level per day
 for the first 7 days, bridge pulses must not multiply stored metal by more
 than 8, and each branch keystone within 14 days.
 
@@ -203,7 +203,7 @@ and requires a level-2 lab. Cost and time grow by 1.8 per level. Electrical outp
 starts at 60 and grows by 1.1, independent of orbit and planet modifiers.
 
 Rocky and ice deposits yield uranium ore (richness 0.30 and 0.05); gas giants
-have none. Metal mines extract ore at 0.05 per recipe unit. Fabrication in the reactor complex consumes
+have none. Iron mines extract ore at 0.05 per recipe unit. Fabrication in the reactor complex consumes
 0.05 ore for 0.005 reactor fuel, adds 8 electrical draw per reactor level, and 0.6
 recipe heat. Delivered electricity consumes 0.01 fuel per energy-hour and leaves
 the same mass of spent fuel. Each reactor level provides 30 units of on-site

@@ -49,7 +49,7 @@ impl fmt::Display for LeaderError {
             }
             LeaderError::CannotAfford { missing } => write!(
                 f,
-                "not enough resources (missing metal {:.0}, crystal {:.0}, deuterium {:.0})",
+                "not enough resources (missing iron {:.0}, silicon {:.0}, deuterium {:.0})",
                 missing.iron, missing.silicon, missing.deuterium
             ),
             LeaderError::Unassigned(id) => write!(f, "leader #{id} has no assignment"),

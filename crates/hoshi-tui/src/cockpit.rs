@@ -1098,7 +1098,7 @@ fn timeline_lines(state: &GameState, height: usize, t: &Theme) -> Vec<Line<'stat
             let ago = now.saturating_sub(event.at);
             let style = timeline_style(event.kind, t);
             entries.push(Line::from(Span::styled(
-                format!("{} ago {}", duration(ago), timeline_text(event)),
+                format!("{} ago {}", duration(ago), timeline_text(state, event)),
                 style,
             )));
         }
@@ -1127,19 +1127,21 @@ fn internal_id(text: &str) -> bool {
 
 /// One history row as a short sentence about what happened, without the
 /// internal kind and actor tokens the History table shows as columns.
-pub(crate) fn timeline_text(event: &hoshi_core::HistoryEvent) -> String {
+pub(crate) fn timeline_text(state: &GameState, event: &hoshi_core::HistoryEvent) -> String {
+    // Ids read as player names (`metal_mine` → `iron mine`); prefixed and
+    // coordinate refs pass through unchanged for the filters below.
     let obj = |i: usize| {
         event
             .objects
             .get(i)
-            .map(|o| o.replace('_', " "))
+            .map(|o| state.display_name(o))
             .unwrap_or_default()
     };
     // The building, spend centre or other subject; producers put it last.
     let last = event
         .objects
         .last()
-        .map(|o| o.replace('_', " "))
+        .map(|o| state.display_name(o))
         .unwrap_or_default();
     let outcome = event.outcome.replace('_', " ");
     match (event.kind, event.action.as_str()) {

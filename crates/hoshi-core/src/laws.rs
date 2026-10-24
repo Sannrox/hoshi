@@ -1447,7 +1447,7 @@ mod tests {
         let drained = before - state.resources.iron;
         assert!(
             (drained - 100.0).abs() < 1.0,
-            "drained {drained} metal now {}",
+            "drained {drained} iron now {}",
             state.resources.iron
         );
         let revenue = state

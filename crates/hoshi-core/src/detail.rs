@@ -904,7 +904,7 @@ mod tests {
         assert_eq!(state.object_label("1:1:1"), "1:1:1");
         assert_eq!(
             state.object_label("building:1:1:1:metal_mine"),
-            "metal mine at 1:1:1"
+            "iron mine at 1:1:1"
         );
         assert_eq!(state.object_label("rare_earths"), "rare earths");
         // The tier and the tech share the id `logistics`.
@@ -1027,7 +1027,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert_eq!(detail.name, "metal mine");
+        assert_eq!(detail.name, "iron mine");
         assert_eq!(detail.costs.len(), 3);
         assert!(
             detail
