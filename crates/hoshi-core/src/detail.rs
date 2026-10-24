@@ -288,7 +288,7 @@ impl GameState {
                 .modifiers
                 .iter()
                 .map(|m| DeltaLine {
-                    label: format!("{:?}", m.kind).to_ascii_lowercase(),
+                    label: m.kind.label().to_string(),
                     from: format!("{:.2}", m.per_level * f64::from(level)),
                     to: format!("{:.2}", m.per_level * f64::from(level.saturating_add(1))),
                 })
@@ -465,15 +465,66 @@ impl GameState {
         })
     }
 
-    /// Player-facing name for an id from the data files: a tech's name, a
-    /// resource's label (`helium_3` → `helium-3`), otherwise the id in words
+    /// Player-facing name for an id from the data files: a tech, wonder or
+    /// ladder tier name, a building name, a resource's label (`helium_3` →
+    /// `helium-3`), otherwise the id in words
     /// (`iron_ore` → `iron ore`). Ids never reach the screen as snake_case.
     pub fn display_name(&self, id: &str) -> String {
         if let Some(tech) = self.config.techs.get(id) {
             return tech.name.clone();
         }
+        if let Some(wonder) = self.config.wonders.iter().find(|w| w.id == id) {
+            return wonder.name.clone();
+        }
+        if let Some(tier) = self.config.ladder.tiers.iter().find(|t| t.id == id) {
+            return tier.name.clone();
+        }
+        if let Some(kind) = BuildingKind::from_key(id) {
+            return kind.to_string();
+        }
         ResourceKind::from_key(id)
             .map_or_else(|| id.replace('_', " "), |kind| kind.label().to_string())
+    }
+
+    /// Player-facing form of a history object: prefixed references such as
+    /// `tier:water_propellant`, `incident:1` or `building:1:1:1:metal_mine`
+    /// read as `Water propellant`, `incident #1`, `metal mine at 1:1:1`.
+    /// Coordinates and plain words pass through [`Self::display_name`].
+    pub fn object_label(&self, object: &str) -> String {
+        if object.split(':').all(|part| part.parse::<u32>().is_ok()) {
+            return object.to_string();
+        }
+        let Some((prefix, rest)) = object.split_once(':') else {
+            return self.display_name(object);
+        };
+        match prefix {
+            // Ids can repeat across tables (a tier and a tech are both
+            // `logistics`), so a typed prefix looks in its own table first.
+            "tier" => self.ladder_tier_name(rest),
+            "wonder" => self
+                .config
+                .wonders
+                .iter()
+                .find(|w| w.id == rest)
+                .map_or_else(|| self.display_name(rest), |w| w.name.clone()),
+            "research" | "tech" => self.display_name(rest),
+            "building" | "defence" => match rest.rsplit_once(':') {
+                Some((coord, id)) => format!("{} at {coord}", self.display_name(id)),
+                None => self.display_name(rest),
+            },
+            _ if rest.parse::<u64>().is_ok() => format!("{} #{rest}", prefix.replace('_', " ")),
+            _ => format!("{} {}", prefix.replace('_', " "), self.display_name(rest)),
+        }
+    }
+
+    /// A ladder tier's name, looked up in the tier table alone.
+    pub fn ladder_tier_name(&self, id: &str) -> String {
+        self.config
+            .ladder
+            .tiers
+            .iter()
+            .find(|t| t.id == id)
+            .map_or_else(|| self.display_name(id), |t| t.name.clone())
     }
 
     /// A prerequisite gap with the tech's display name.
@@ -840,6 +891,32 @@ mod tests {
             .describe(DetailSubject::Coord(state.home), None)
             .unwrap();
         assert!(home.description.contains(" size "), "{}", home.description);
+    }
+
+    #[test]
+    fn object_labels_read_as_names_not_ids() {
+        let state = GameState::new(0);
+        let tier = &state.config.ladder.tiers[0];
+        assert_eq!(state.object_label(&format!("tier:{}", tier.id)), tier.name);
+        assert_eq!(state.object_label("incident:1"), "incident #1");
+        assert_eq!(state.object_label("1:1:1"), "1:1:1");
+        assert_eq!(
+            state.object_label("building:1:1:1:metal_mine"),
+            "metal mine at 1:1:1"
+        );
+        assert_eq!(state.object_label("rare_earths"), "rare earths");
+        // The tier and the tech share the id `logistics`.
+        if let Some(tier) = state
+            .config
+            .ladder
+            .tiers
+            .iter()
+            .find(|t| t.id == "logistics")
+        {
+            assert_eq!(state.object_label("tier:logistics"), tier.name);
+        }
+        let wonder = &state.config.wonders[0];
+        assert_eq!(state.display_name(&wonder.id), wonder.name);
     }
 
     fn quiet() -> BalanceConfig {

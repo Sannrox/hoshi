@@ -785,8 +785,11 @@ impl App {
             ),
             None => callout_lines(t, Intent::Success, "Next  ladder complete", ""),
         };
-        let current = ladder.current.as_deref().unwrap_or("none");
-        let mut facts = vec![("ladder", current.to_string())];
+        let current = ladder
+            .current
+            .as_deref()
+            .map_or_else(|| "none".into(), |id| self.state.ladder_tier_name(id));
+        let mut facts = vec![("ladder", current)];
         match &self.state.victory {
             Some(record) => facts.push((
                 "won via",
@@ -887,6 +890,7 @@ impl App {
                     .filter(|step| step.limited_by != hoshi_core::LimitingFactor::None)
                     .count()
                 {
+                    0 if limited == "none" => "clear".into(),
                     0 => humanize(limited),
                     n => format!("{n} stalled"),
                 },
@@ -1685,7 +1689,7 @@ impl App {
                             event
                                 .objects
                                 .iter()
-                                .map(|id| self.state.display_name(id))
+                                .map(|id| self.state.object_label(id))
                                 .collect::<Vec<_>>()
                                 .join(", ")
                         ),
@@ -1860,11 +1864,14 @@ impl App {
         if rows.len() > tiers {
             groups.push((tiers, "rules".into()));
         } else {
+            let tech = self.state.display_name("logistics_rules");
             foot = callout_lines(
                 t,
                 Intent::Primary,
                 "No rules yet",
-                "Unlock logistics_rules, then hoshi automation add from the CLI. Enter dry-runs.",
+                &format!(
+                    "Research {tech}, then hoshi automation add from the CLI. Enter dry-runs."
+                ),
             );
         }
         ListView {
@@ -2296,7 +2303,7 @@ impl App {
                 };
                 vec![
                     Line::styled(format!("#{}", asset.id), t.label()),
-                    Line::styled(asset.key.clone(), t.text()),
+                    Line::styled(self.state.asset_label(asset), t.text()),
                     Line::styled(format!("{:.2}", asset.condition), t.intent(cond_intent)),
                     Line::styled(format!("{:.1}", asset.hours_use), t.muted()),
                     self.chip(&status, status_intent, status == "online"),
@@ -2491,7 +2498,7 @@ impl App {
                 let assignment = self.state.assignment_of(leader.id);
                 let role = assignment.map(|row| row.role.as_key()).unwrap_or("idle");
                 let target = assignment
-                    .map(|row| row.target.as_key())
+                    .map(|row| row.target.label())
                     .unwrap_or_else(|| "—".into());
                 let mut state = vec![match assignment {
                     Some(row) if row.ready(now) => tag(t, "READY", Intent::Success, false),

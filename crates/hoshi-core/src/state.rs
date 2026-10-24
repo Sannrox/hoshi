@@ -5363,9 +5363,11 @@ impl GameState {
         for step in &report.steps {
             let line = match &step.limited_by {
                 LimitingFactor::FullBuffer { good } => {
+                    let good = self.display_name(good);
                     format!("stall: full storage ({good}) at {}", step.planet)
                 }
                 LimitingFactor::Input { good } => {
+                    let good = self.display_name(good);
                     format!("stall: missing {good} at {}", step.planet)
                 }
                 LimitingFactor::Energy => {
@@ -5378,6 +5380,7 @@ impl GameState {
                     format!("stall: pollution overflow at {}", step.planet)
                 }
                 LimitingFactor::Transport { good, from, .. } => {
+                    let good = self.display_name(good);
                     format!("stall: awaiting {good} from {from} at {}", step.planet)
                 }
                 LimitingFactor::None => continue,
@@ -5390,9 +5393,11 @@ impl GameState {
                     lines.push(format!("stall: energy deficit at {}", self.home));
                 }
                 LimitingFactor::FullBuffer { good } => {
+                    let good = self.display_name(good);
                     lines.push(format!("stall: full storage ({good}) at {}", self.home));
                 }
                 LimitingFactor::Input { good } => {
+                    let good = self.display_name(good);
                     lines.push(format!("stall: missing {good} at {}", self.home));
                 }
                 _ => {}

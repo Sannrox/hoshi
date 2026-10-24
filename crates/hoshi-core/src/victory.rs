@@ -244,12 +244,13 @@ impl GameState {
             "scout the pirate homeworld".into()
         };
         let wonder_done = self.completed_wonders.iter().any(|id| id == &cfg.wonder_id);
+        let wonder = self.display_name(&cfg.wonder_id);
         let wonder_next = if wonder_done {
-            format!("{} complete", cfg.wonder_id)
+            format!("{wonder} complete")
         } else if self.wonder.as_ref().is_some_and(|j| j.id == cfg.wonder_id) {
-            format!("finish {}", cfg.wonder_id)
+            format!("finish {wonder}")
         } else {
-            format!("start {}", cfg.wonder_id)
+            format!("start {wonder}")
         };
         let allied = self.all_factions_allied();
         let diplomacy_next = if allied {

@@ -29,6 +29,29 @@ pub enum ModifierKind {
     PollutionSink,
 }
 
+impl ModifierKind {
+    /// Player-facing name for an effect row.
+    pub fn label(self) -> &'static str {
+        match self {
+            ModifierKind::WeaponDamage => "weapon damage",
+            ModifierKind::ShieldStrength => "shield strength",
+            ModifierKind::Armour => "armour",
+            ModifierKind::FleetSlots => "fleet slots",
+            ModifierKind::ExpeditionSlots => "expedition slots",
+            ModifierKind::Espionage => "espionage level",
+            ModifierKind::DriveSpeed => "drive speed",
+            ModifierKind::ColonySlots => "colony slots",
+            ModifierKind::Logistics => "logistics",
+            ModifierKind::MetalOutput => "iron output",
+            ModifierKind::CrystalOutput => "silicon output",
+            ModifierKind::DeuteriumOutput => "deuterium output",
+            ModifierKind::EnergyOutput => "energy output",
+            ModifierKind::HeatSink => "heat sink",
+            ModifierKind::PollutionSink => "pollution sink",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct TechModifier {
     pub kind: ModifierKind,

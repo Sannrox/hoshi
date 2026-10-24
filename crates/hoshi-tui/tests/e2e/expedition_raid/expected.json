@@ -365,7 +365,7 @@
         "ready": false
       },
       "wonder": {
-        "next": "start dyson_ring",
+        "next": "start Dyson ring",
         "ratio": 0.0,
         "ready": false
       }
