@@ -6978,6 +6978,21 @@ mod tests {
     }
 
     #[test]
+    fn feats_and_legacy_say_what_items_need_and_give() {
+        let mut app = detail_app();
+        app.screen = Screen::Achievements;
+        let feats = render_text(&app, 160, 48);
+        assert!(feats.contains("Raise a metal mine to level 2."), "{feats}");
+        assert!(feats.contains("starting buildings"), "{feats}");
+        app.screen = Screen::Prestige;
+        let legacy = render_text(&app, 160, 48);
+        assert!(legacy.contains("needs score 80"), "{legacy}");
+        assert!(legacy.contains("+8% production"), "{legacy}");
+        assert!(legacy.contains("legacy points"), "{legacy}");
+        assert!(!legacy.contains(" locked "), "{legacy}");
+    }
+
+    #[test]
     fn detail_overlay_opens_at_80x24() {
         let mut app = detail_app();
         app.screen = Screen::Planet;

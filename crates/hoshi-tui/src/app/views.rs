@@ -20,6 +20,37 @@ pub(super) struct TableView {
     pub selected: Option<usize>,
 }
 
+/// What one legacy bonus gives a new run, from its config fields.
+fn bonus_effect(spec: &hoshi_core::PrestigeBonusSpec) -> String {
+    let mut parts = Vec::new();
+    let start = [
+        (spec.starting_metal, "Fe"),
+        (spec.starting_crystal, "Si"),
+        (spec.starting_deuterium, "D"),
+    ]
+    .into_iter()
+    .filter(|(amount, _)| *amount > 0.0)
+    .map(|(amount, sym)| format!("{sym} {amount:.0}"))
+    .collect::<Vec<_>>();
+    if !start.is_empty() {
+        parts.push(format!("start with {}", start.join(" ")));
+    }
+    if spec.production > 0.0 {
+        parts.push(format!("+{:.0}% production", spec.production * 100.0));
+    }
+    if spec.research > 0.0 {
+        parts.push(format!("+{:.0}% research speed", spec.research * 100.0));
+    }
+    if spec.queue_slots > 0 {
+        parts.push(format!("+{} build queue slot", spec.queue_slots));
+    }
+    if parts.is_empty() {
+        "no effect".into()
+    } else {
+        parts.join(", ")
+    }
+}
+
 /// Turns a snake_case key into words with a capital first letter.
 pub(super) fn humanize(key: &str) -> String {
     let words = key.replace(['_', '-'], " ");
@@ -547,15 +578,31 @@ impl App {
     fn prestige_view(&self) -> ListView {
         let t = &self.theme;
         let preview = self.state.prestige_preview();
+        let cfg = &self.state.config.prestige;
+        let points = self.state.prestige.currency;
         let strip = vec![
             metric(t, "RUN", preview.run.index.to_string(), Intent::Neutral, ""),
-            metric(t, "SCORE", preview.score.to_string(), Intent::Neutral, ""),
-            metric(t, "EARNED", preview.earned.to_string(), Intent::Neutral, ""),
-            if preview.eligible {
-                metric(t, "STATUS", "ready", Intent::Success, "")
-            } else {
-                metric(t, "STATUS", "locked", Intent::Warning, "")
-            },
+            metric(
+                t,
+                "SCORE",
+                preview.score.to_string(),
+                Intent::Neutral,
+                "levels + colonies + wonders",
+            ),
+            metric(
+                t,
+                "EARNED",
+                preview.earned.to_string(),
+                Intent::Neutral,
+                format!("points on reset, 1 per {}", cfg.points_per_currency.max(1)),
+            ),
+            metric(
+                t,
+                "POINTS",
+                points.to_string(),
+                Intent::Neutral,
+                "legacy points to spend",
+            ),
         ];
         let mut head = Vec::new();
         if self.confirming_prestige {
@@ -586,14 +633,34 @@ impl App {
             } else {
                 self.chip("locked", Intent::Warning, true)
             },
+            Line::styled(
+                if preview.eligible {
+                    format!("start over with {} more points", preview.earned)
+                } else {
+                    format!(
+                        "needs score {} (now {}), a wonder or a victory",
+                        cfg.min_score, preview.score
+                    )
+                },
+                t.muted(),
+            ),
         ]];
-        for spec in &self.state.config.prestige.bonuses {
+        for spec in &cfg.bonuses {
             let owned = self.state.prestige.owned_count(&spec.id);
             rows.push(vec![
                 Line::styled(spec.name.clone(), t.text()),
                 Line::styled(spec.cost.to_string(), t.text()),
                 Line::styled(owned.to_string(), t.text()),
-                Line::default(),
+                if points >= spec.cost {
+                    self.chip("ready", Intent::Success, false)
+                } else {
+                    self.chip(
+                        &format!("need {}", spec.cost - points),
+                        Intent::Warning,
+                        true,
+                    )
+                },
+                Line::styled(bonus_effect(spec), t.muted()),
             ]);
         }
         ListView {
@@ -604,7 +671,8 @@ impl App {
                     Column::left("item", 24),
                     Column::right("cost", 5),
                     Column::right("owned", 5),
-                    Column::fill("status"),
+                    Column::left("status", 10),
+                    Column::fill("effect"),
                 ],
                 rows,
                 groups: Vec::new(),
@@ -629,6 +697,10 @@ impl App {
         ];
         spans.extend(bar(t, frac, 20, Intent::Success));
         let mut head = vec![Line::from(spans)];
+        head.push(Line::styled(
+            "Progress counts what this save already has, including starting buildings and faction standing.",
+            t.muted(),
+        ));
         // Achievements stop on a modified save; say so instead of showing
         // targets that were passed but never earned.
         let blocked = self.state.is_modified();
@@ -650,12 +722,14 @@ impl App {
                         Line::styled(spec.listed_title(true).to_string(), t.text()),
                         self.progress_cell(1.0, "complete".into(), Intent::Success),
                         self.chip("earned", Intent::Success, false),
+                        Line::styled(spec.description.clone(), t.muted()),
                     ]
                 } else if spec.hidden {
                     vec![
                         Line::styled("Hidden feat", t.faint()),
                         Line::styled("—", t.faint()),
                         self.chip("hidden", Intent::Neutral, true),
+                        Line::styled("revealed when earned", t.faint()),
                     ]
                 } else {
                     let current = spec.condition.current(&self.state);
@@ -673,6 +747,7 @@ impl App {
                         } else {
                             self.chip("open", Intent::Neutral, true)
                         },
+                        Line::styled(spec.description.clone(), t.muted()),
                     ]
                 }
             })
@@ -681,9 +756,10 @@ impl App {
             head,
             table: Some(TableView {
                 columns: vec![
-                    Column::left("feat", 26),
-                    Column::left("progress", 24),
-                    Column::fill("state"),
+                    Column::left("feat", 22),
+                    Column::left("progress", 20),
+                    Column::left("state", 9),
+                    Column::fill("needs"),
                 ],
                 rows,
                 groups: Vec::new(),
