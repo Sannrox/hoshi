@@ -648,7 +648,9 @@ mod tests {
             &dir,
             11,
             vec![greedy, crash, timeout, invalid, malformed, tick],
-            80,
+            // Well under the timeout bot's 2 s sleep, but long enough that a
+            // busy machine starting sh does not turn a crash into a timeout.
+            1_000,
         );
         let value = run(&spec).expect("arena");
         let rows = value["bots"].as_array().unwrap();

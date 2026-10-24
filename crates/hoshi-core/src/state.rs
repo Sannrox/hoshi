@@ -7831,7 +7831,20 @@ mod tests {
         }
     }
 
+    /// CPU time spent by the calling thread so far.
+    #[cfg(unix)]
+    fn thread_cpu_time() -> std::time::Duration {
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: `ts` is a valid out-pointer for the duration of the call.
+        unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
+        std::time::Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
+    }
+
     #[test]
+    #[cfg(unix)]
     fn catch_up_seven_days_on_a_large_empire_finishes_under_one_second() {
         let mut cfg = test_config();
         cfg.metal_storage.base = 50_000_000.0;
@@ -7872,9 +7885,11 @@ mod tests {
                 )
                 .unwrap();
         }
-        let started = std::time::Instant::now();
+        // CPU time of this thread, so other builds on the machine do not
+        // count against the budget the way wall-clock time would.
+        let started = thread_cpu_time();
         state.catch_up(7 * 24 * 3600);
-        let elapsed = started.elapsed();
+        let elapsed = thread_cpu_time().saturating_sub(started);
         // Minutes-long hops make each route's arrival and return separate
         // events (about 1,700 steps here). Release holds the real budget;
         // the debug figure only catches order-of-magnitude regressions.
