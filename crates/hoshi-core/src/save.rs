@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 51;
+pub const SCHEMA_VERSION: u32 = 52;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -168,6 +168,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM tech_levels;
          DELETE FROM exclusive_picks;
          DELETE FROM research;
+         DELETE FROM research_queue;
          DELETE FROM ships;
          DELETE FROM ship_queue;
          DELETE FROM mission_ships;
@@ -337,6 +338,21 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 job.paid.deuterium,
                 job.started_at as i64,
                 job.completes_at as i64,
+            ],
+        )?;
+    }
+    for (position, job) in state.research_queue.iter().enumerate() {
+        tx.execute(
+            "INSERT INTO research_queue (
+                position, tech, from_level, paid_metal, paid_crystal, paid_deuterium
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                position as i64,
+                job.tech,
+                job.from_level,
+                job.paid.iron,
+                job.paid.silicon,
+                job.paid.deuterium,
             ],
         )?;
     }
@@ -1631,6 +1647,24 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             })
         }
     };
+
+    let mut stmt = conn.prepare(
+        "SELECT tech, from_level, paid_metal, paid_crystal, paid_deuterium
+         FROM research_queue ORDER BY position",
+    )?;
+    state.research_queue = stmt
+        .query_map([], |row| {
+            Ok(ResearchJob {
+                tech: row.get(0)?,
+                from_level: row.get(1)?,
+                paid: Resources::from_parts(row.get(2)?, row.get(3)?, row.get(4)?),
+                credits: 0.0,
+                started_at: 0,
+                completes_at: 0,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
 
     let mut fleet = Fleet::default();
     let mut stmt = conn.prepare("SELECT kind, count FROM ships WHERE planet_id = 1")?;
@@ -3145,6 +3179,7 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "tech_levels" => "SELECT COUNT(*) FROM tech_levels",
         "exclusive_picks" => "SELECT COUNT(*) FROM exclusive_picks",
         "research" => "SELECT COUNT(*) FROM research",
+        "research_queue" => "SELECT COUNT(*) FROM research_queue",
         "ships" => "SELECT COUNT(*) FROM ships",
         "ship_queue" => "SELECT COUNT(*) FROM ship_queue",
         "missions" => "SELECT COUNT(*) FROM missions",
@@ -3262,6 +3297,7 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "tech_levels")?
         + count_rows(conn, "exclusive_picks")?
         + count_rows(conn, "research")?
+        + count_rows(conn, "research_queue")?
         + count_rows(conn, "ships")?
         + count_rows(conn, "ship_queue")?
         + count_rows(conn, "missions")?
@@ -3529,6 +3565,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 51 {
         migrate_v51(conn)?;
+    }
+    if found < 52 {
+        migrate_v52(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -4639,6 +4678,22 @@ fn migrate_v50(conn: &Connection) -> Result<(), SaveError> {
             water_ice REAL NOT NULL CHECK (water_ice >= 0),
             helium_3 REAL NOT NULL CHECK (helium_3 >= 0),
             deuterium REAL NOT NULL CHECK (deuterium >= 0)
+        );",
+    )?;
+    Ok(())
+}
+
+/// v52: paid research entries waiting for the lab, in order. A missing row
+/// set is an empty queue, so older saves load unchanged.
+fn migrate_v52(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS research_queue (
+            position INTEGER PRIMARY KEY,
+            tech TEXT NOT NULL,
+            from_level INTEGER NOT NULL CHECK (from_level >= 0),
+            paid_metal REAL NOT NULL CHECK (paid_metal >= 0),
+            paid_crystal REAL NOT NULL CHECK (paid_crystal >= 0),
+            paid_deuterium REAL NOT NULL CHECK (paid_deuterium >= 0)
         );",
     )?;
     Ok(())
@@ -7933,6 +7988,9 @@ fn persist_job_credits(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Res
     if let Some(job) = &state.research {
         write("research", 0, None, job.credits)?;
     }
+    for (idx, job) in state.research_queue.iter().enumerate() {
+        write("research_queue", idx, None, job.credits)?;
+    }
     for (idx, job) in state.ship_queue.iter().enumerate() {
         write("ship", idx, None, job.credits)?;
     }
@@ -8815,6 +8873,11 @@ fn apply_job_credits(conn: &Connection, state: &mut GameState) -> Result<(), Sav
                     job.credits = credits;
                 }
             }
+            "research_queue" => {
+                if let Some(job) = state.research_queue.get_mut(idx) {
+                    job.credits = credits;
+                }
+            }
             "ship" => {
                 if let Some(job) = state.ship_queue.get_mut(idx) {
                     job.credits = credits;
@@ -9170,6 +9233,7 @@ mod tests {
             .enqueue_build(BuildingKind::SolarPlant, 1_700_000_000)
             .unwrap();
         state.start_research("computer", 1_700_000_000).unwrap();
+        state.queue_research("energy", 1_700_000_000).unwrap();
         state.buildings.shipyard = 1;
         state.tech_levels.insert("combustion_drive".into(), 1);
         state
@@ -9264,6 +9328,24 @@ mod tests {
         save_state(&mut conn, &original).unwrap();
         let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
         assert_eq!(loaded, original);
+    }
+
+    #[test]
+    fn migrate_v52_adds_an_empty_research_queue_to_previous_save() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let mut state = GameState::new(100);
+        state.buildings.research_lab = 1;
+        state.resources.silicon = 10_000.0;
+        state.resources.deuterium = 10_000.0;
+        state.start_research("energy", 100).unwrap();
+        save_state(&mut conn, &state).unwrap();
+        conn.execute_batch("DROP TABLE research_queue; PRAGMA user_version = 51;")
+            .unwrap();
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap();
+        let loaded = load_state(&conn, state.config.clone()).unwrap();
+        assert!(loaded.research_queue.is_empty());
+        assert_eq!(loaded.research, state.research);
     }
 
     /// Per-second stepping through a raid is pinned by

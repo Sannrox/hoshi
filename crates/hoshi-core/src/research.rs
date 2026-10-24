@@ -419,6 +419,7 @@ pub enum ResearchError {
     Hidden { id: String },
     Complete { id: String },
     NeedsApproval { id: u64 },
+    QueueFull { cap: usize },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -462,6 +463,9 @@ impl fmt::Display for ResearchError {
             ResearchError::UnknownTech { id } => write!(f, "unknown technology {id}"),
             ResearchError::Busy { current } => {
                 write!(f, "already researching {current}")
+            }
+            ResearchError::QueueFull { cap } => {
+                write!(f, "research queue is full ({cap} entries)")
             }
             ResearchError::InsufficientResources { missing, cost } => write!(
                 f,

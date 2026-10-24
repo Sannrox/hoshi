@@ -204,7 +204,7 @@ pub fn spend_of(state: &GameState, intent: &Intent, _now: u64) -> f64 {
             .config
             .techs
             .get(tech)
-            .map(|spec| stock_of(spec.cost(state.tech_level(tech))))
+            .map(|spec| stock_of(spec.cost(state.next_research_level(tech))))
             .unwrap_or(0.0),
         Intent::Launch {
             ships,
