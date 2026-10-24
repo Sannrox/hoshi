@@ -108,11 +108,14 @@ pub fn signed(v: f64) -> String {
 /// `500`, `12.5k`, `3.2M` for tight cells.
 pub fn compact(v: f64) -> String {
     let a = v.abs();
-    if a >= 1e6 {
+    // Thresholds sit where rounding would print the next unit's digits, so
+    // 9_999.6 reads `10k` like 10_000, 999_600 reads `1.0M` (not `1000k`)
+    // and 999.6 reads `1.0k` (not `1000`).
+    if a >= 999_500.0 {
         format!("{:.1}M", v / 1e6)
-    } else if a >= 1e4 {
+    } else if a >= 9_950.0 {
         format!("{:.0}k", v / 1e3)
-    } else if a >= 1e3 {
+    } else if a >= 999.5 {
         format!("{:.1}k", v / 1e3)
     } else {
         format!("{v:.0}")
@@ -122,6 +125,17 @@ pub fn compact(v: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compact_keeps_one_format_across_rounding_edges() {
+        assert_eq!(compact(9_999.6), "10k");
+        assert_eq!(compact(10_000.0), "10k");
+        assert_eq!(compact(9_940.0), "9.9k");
+        assert_eq!(compact(999_600.0), "1.0M");
+        assert_eq!(compact(-9_999.6), "-10k");
+        assert_eq!(compact(999.4), "999");
+        assert_eq!(compact(999.6), "1.0k");
+    }
 
     fn text(spans: &[Span<'_>]) -> String {
         spans.iter().map(|s| s.content.as_ref()).collect()

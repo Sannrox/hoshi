@@ -28,7 +28,7 @@ pub fn lines(detail: &Detail) -> Vec<String> {
         }
     }
     if let Some(draw) = detail.energy_draw {
-        rows.push(format!("energy {draw:+.0}"));
+        rows.push(format!("energy {}", energy_text(draw)));
     }
     if let Some(heat) = detail.heat {
         rows.push(format!("heat {heat:.0}"));
@@ -71,6 +71,17 @@ pub fn lines(detail: &Detail) -> Vec<String> {
     rows
 }
 
+/// Extra energy an upgrade draws, worded so a cost never reads as output.
+fn energy_text(draw: f64) -> String {
+    if draw > 0.0 {
+        format!("draws {draw:.0} more")
+    } else if draw < 0.0 {
+        format!("frees {:.0}", -draw)
+    } else {
+        "no change".into()
+    }
+}
+
 pub fn paragraph(detail: &Detail) -> Vec<Line<'static>> {
     lines(detail).into_iter().map(Line::from).collect()
 }
@@ -105,10 +116,7 @@ pub fn inspector(
         props.push(("Time".into(), Line::styled(duration(secs), t.text())));
     }
     if let Some(draw) = detail.energy_draw {
-        props.push((
-            "Energy".into(),
-            Line::styled(format!("{draw:+.0}"), t.text()),
-        ));
+        props.push(("Energy".into(), Line::styled(energy_text(draw), t.text())));
     }
     if let Some(heat) = detail.heat {
         props.push(("Heat".into(), Line::styled(format!("{heat:.0}"), t.text())));

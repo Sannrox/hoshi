@@ -55,7 +55,7 @@ impl UpdateUi {
                     update::changelog_since(update::CHANGELOG, previous, update::running_version());
                 let changes = if config.collapse_changelog || changes.is_empty() {
                     format!(
-                        "Updated to v{}. Press ? then c for Changelog.",
+                        "Updated to v{}. Press ? then v for Changelog.",
                         update::running_version()
                     )
                 } else {
