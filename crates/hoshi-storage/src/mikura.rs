@@ -342,17 +342,9 @@ mod tests {
     use hoshi_core::Coord;
     use hoshi_core::ShipKind;
     use hoshi_core::{Clock, FakeClock};
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_log() -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        std::env::temp_dir().join(format!(
-            "hoshi-mikura-objects-{}-{nanos}.mikura",
-            std::process::id()
-        ))
+        crate::unique_temp_path("hoshi-mikura-objects", "mikura")
     }
 
     fn cleanup(path: &Path) {

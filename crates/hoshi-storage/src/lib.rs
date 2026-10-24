@@ -8,6 +8,27 @@ use hoshi_core::GameState;
 use rusqlite::Connection;
 use std::ffi::OsStr;
 use std::path::Path;
+#[cfg(any(test, feature = "mikura"))]
+use std::path::PathBuf;
+#[cfg(any(test, feature = "mikura"))]
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(any(test, feature = "mikura"))]
+use std::time::{SystemTime, UNIX_EPOCH};
+
+#[cfg(any(test, feature = "mikura"))]
+static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Temp path unique within this process. Pid plus nanos collides when two
+/// threads call in the same nanosecond (Mikura encode/decode blobs).
+#[cfg(any(test, feature = "mikura"))]
+pub(crate) fn unique_temp_path(stem: &str, ext: &str) -> PathBuf {
+    let n = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!("{stem}-{}-{nanos}-{n}.{ext}", std::process::id()))
+}
 
 #[cfg(feature = "mikura")]
 mod mikura;
@@ -285,15 +306,10 @@ pub(crate) fn decode_state_sqlite(
 }
 
 #[cfg(feature = "mikura")]
-fn blob_path(tag: &str) -> std::path::PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    std::env::temp_dir().join(format!(
-        "hoshi-storage-blob-{tag}-{}-{nanos}.sqlite",
-        std::process::id()
-    ))
+fn blob_path(tag: &str) -> PathBuf {
+    let path = unique_temp_path(&format!("hoshi-storage-blob-{tag}"), "sqlite");
+    cleanup_sqlite(&path);
+    path
 }
 
 #[cfg(any(test, feature = "mikura", feature = "chisei"))]
@@ -405,17 +421,9 @@ pub(crate) fn assert_storage_contract(store: &mut dyn Storage) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn unique_sqlite(tag: &str) -> std::path::PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        std::env::temp_dir().join(format!(
-            "hoshi-storage-{tag}-{}-{nanos}.sqlite",
-            std::process::id()
-        ))
+    fn unique_sqlite(tag: &str) -> PathBuf {
+        unique_temp_path(&format!("hoshi-storage-{tag}"), "sqlite")
     }
 
     #[test]
@@ -468,17 +476,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn unique_temp_path_differs_on_the_same_thread() {
+        let a = unique_temp_path("hoshi-storage-seq", "sqlite");
+        let b = unique_temp_path("hoshi-storage-seq", "sqlite");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn unique_temp_path_differs_across_threads() {
+        let a = std::thread::spawn(|| unique_temp_path("hoshi-storage-thr", "sqlite"));
+        let b = std::thread::spawn(|| unique_temp_path("hoshi-storage-thr", "sqlite"));
+        assert_ne!(a.join().unwrap(), b.join().unwrap());
+    }
+
     #[cfg(feature = "mikura")]
     #[test]
     fn mikura_backend_meets_storage_contract() {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let path = std::env::temp_dir().join(format!(
-            "hoshi-storage-mikura-{}-{nanos}.mikura",
-            std::process::id()
-        ));
+        let path = unique_temp_path("hoshi-storage-mikura", "mikura");
         let mut store = MikuraStorage::open(&path).unwrap();
         assert_storage_contract(&mut store);
         drop(store);
