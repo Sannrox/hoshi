@@ -51,6 +51,25 @@ fn bonus_effect(spec: &hoshi_core::PrestigeBonusSpec) -> String {
     }
 }
 
+/// A leader trait as its name and what it changes: `Steady +10% output`.
+fn trait_effect(spec: &hoshi_core::TraitSpec) -> String {
+    let effects = [
+        (spec.production, "output"),
+        (spec.attack, "attack"),
+        (spec.shield, "shields"),
+        (spec.policy, "policy"),
+    ]
+    .into_iter()
+    .filter(|(factor, _)| (factor - 1.0).abs() > 1e-9)
+    .map(|(factor, what)| format!("{:+.0}% {what}", (factor - 1.0) * 100.0))
+    .collect::<Vec<_>>();
+    if effects.is_empty() {
+        format!("{} (no bonus)", spec.name)
+    } else {
+        format!("{} {}", spec.name, effects.join(" "))
+    }
+}
+
 /// Turns a snake_case key into words with a capital first letter.
 pub(super) fn humanize(key: &str) -> String {
     let words = key.replace(['_', '-'], " ");
@@ -2282,8 +2301,15 @@ impl App {
             ("assets", snap.assets.len().to_string()),
             ("orders", snap.orders.len().to_string()),
             ("readings", snap.readings.len().to_string()),
-            ("telemetry", duration(snap.next_at.saturating_sub(now))),
+            (
+                "next reading in",
+                duration(snap.next_at.saturating_sub(now)),
+            ),
         ])];
+        head.push(Line::styled(
+            "condition falls with run time; a service order takes the asset offline and restores it",
+            t.muted(),
+        ));
         let mut foot = Vec::new();
         if snap.assets.is_empty() {
             head.push(Line::default());
@@ -2300,6 +2326,7 @@ impl App {
             };
         }
         if let Some(asset) = snap.assets.get(self.selected) {
+            foot.push(section(t, &self.state.asset_label(asset)));
             if let Some(pred) = snap
                 .predictions
                 .iter()
@@ -2308,8 +2335,8 @@ impl App {
             {
                 foot.push(Line::styled(
                     format!(
-                        "fail p {:.3} over {}",
-                        pred.probability,
+                        "failure chance {:.1}% within {}",
+                        pred.probability * 100.0,
                         duration(pred.horizon_secs)
                     ),
                     t.muted(),
@@ -2320,15 +2347,21 @@ impl App {
                     hoshi_core::fail_p_per_hour(&cfg, asset.hours_use, asset.condition, false),
                 );
                 foot.push(Line::styled(
-                    format!("fail p {p:.3} over {}", duration(cfg.horizon_secs)),
+                    format!(
+                        "failure chance {:.1}% within {}",
+                        p * 100.0,
+                        duration(cfg.horizon_secs)
+                    ),
                     t.muted(),
                 ));
             }
             if let Some(reading) = snap.readings.iter().rev().find(|r| r.asset_id == asset.id) {
                 foot.push(Line::styled(
                     format!(
-                        "temp {:.2}  vib {:.2}  power {:.2}",
-                        reading.temperature, reading.vibration, reading.power
+                        "last reading: heat {:.0}% of sink  wear {:.0}%  power {:.0}% of rated",
+                        reading.temperature * 100.0,
+                        reading.vibration * 100.0,
+                        reading.power * 100.0
                     ),
                     t.muted(),
                 ));
@@ -2380,8 +2413,11 @@ impl App {
                 vec![
                     Line::styled(format!("#{}", asset.id), t.label()),
                     Line::styled(self.state.asset_label(asset), t.text()),
-                    Line::styled(format!("{:.2}", asset.condition), t.intent(cond_intent)),
-                    Line::styled(format!("{:.1}", asset.hours_use), t.muted()),
+                    Line::styled(
+                        format!("{:.0}%", asset.condition * 100.0),
+                        t.intent(cond_intent),
+                    ),
+                    Line::styled(format!("{:.1}h", asset.hours_use), t.muted()),
                     self.chip(&status, status_intent, status == "online"),
                 ]
             })
@@ -2391,9 +2427,9 @@ impl App {
             table: Some(TableView {
                 columns: vec![
                     Column::right("id", 4),
-                    Column::left("asset", 16),
-                    Column::right("cond", 5),
-                    Column::right("hours", 6),
+                    Column::left("asset", 24),
+                    Column::right("condition", 9),
+                    Column::right("run time", 8),
                     Column::fill("status"),
                 ],
                 rows,
@@ -2546,13 +2582,23 @@ impl App {
     fn staff_view(&self) -> ListView {
         let t = &self.theme;
         let now = self.state.last_tick_unix;
-        let mut head = vec![self.props(&[
-            ("leaders", self.state.leaders.len().to_string()),
-            (
-                "empty governor",
-                format!("{:.0}%", self.state.config.leaders.empty_governor * 100.0),
+        let mut head = vec![
+            self.props(&[
+                ("leaders", self.state.leaders.len().to_string()),
+                (
+                    "planet without governor",
+                    format!(
+                        "−{:.0}% output",
+                        self.state.config.leaders.empty_governor * 100.0
+                    ),
+                ),
+            ]),
+            Line::styled(
+                "governor: scales one planet's output by trait · admiral: leads the home fleet in battle \
+                 · minister: holds policy clearance",
+                t.muted(),
             ),
-        ])];
+        ];
         if self.state.leaders.is_empty() {
             head.push(Line::default());
             head.extend(callout_lines(
@@ -2592,7 +2638,14 @@ impl App {
                 }
                 vec![
                     Line::styled(format!("#{} {}", leader.id, leader.name), t.text()),
-                    Line::styled(leader.trait_id.replace('_', " "), t.muted()),
+                    Line::styled(
+                        self.state
+                            .config
+                            .leaders
+                            .trait_by_id(&leader.trait_id)
+                            .map_or_else(|| "no trait".into(), trait_effect),
+                        t.muted(),
+                    ),
                     self.chip(
                         role,
                         if assignment.is_some() {
@@ -2612,7 +2665,8 @@ impl App {
             table: Some(TableView {
                 columns: vec![
                     Column::left("leader", 20),
-                    Column::left("trait", 12),
+                    // Fits the longest shipped trait: `Stalwart -5% attack +10% shields`.
+                    Column::left("trait", 32),
                     Column::left("role", 10),
                     Column::left("target", 14),
                     Column::fill("state"),
