@@ -5709,6 +5709,30 @@ mod tests {
         assert!(small.contains("pirate activity"), "{small}");
     }
 
+    /// #300: a recipe whose output store is full must say so on the
+    /// production screen, with its real (zero) rate and a stalled count.
+    #[test]
+    fn a_full_output_store_shows_as_a_stalled_chain() {
+        let mut state = GameState::new_live_galaxy(0, BalanceConfig::default(), 7);
+        state.next_raid_at = None;
+        state.catch_up(3_600);
+        state.story_pending = None;
+        state.resources.iron = state.storage_cap(ResourceKind::Iron);
+        state.resources.silicon = state.storage_cap(ResourceKind::Silicon);
+        let mut app = App::new(state);
+        app.open(Screen::Production);
+        let text = render_text(&app, 140, 45);
+        let frames = text
+            .lines()
+            .find(|line| line.contains("Forge frames"))
+            .unwrap_or_default();
+        assert!(
+            frames.contains("frames 0.0") && frames.contains("BUFFER"),
+            "{frames}"
+        );
+        assert!(text.contains("2 stalled"), "{text}");
+    }
+
     #[test]
     fn victory_overlay_enter_keeps_playing() {
         let mut app = App::new(GameState::new(1_000));
