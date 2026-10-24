@@ -1,7 +1,8 @@
 # ADR 0005: Shared shard hosted on Chisei
 
 - Status: Partially superseded by [0017](0017-local-tui-may-join-a-chisei-shard.md);
-  raid snapshot timing amended by [0019](0019-shard-raids-are-missions-with-flight.md)
+  raid snapshot timing amended by [0019](0019-shard-raids-are-missions-with-flight.md);
+  tenant identity in [0020](0020-shard-identity-is-a-host-tenant.md)
 - Date: 2026-10-12
 - Partially supersedes: [0004](0004-no-shared-universe.md)
 - Follows: [0002](0002-terminal-idle-game-with-event-bridge.md)
@@ -60,6 +61,9 @@ and markings on objects.
    markings. Reads go through Chisei's policy, so hidden state (RNG,
    pirate timers, unrevealed map, other players' intel) is never returned
    to a player who is not cleared for it.
+   [0020](0020-shard-identity-is-a-host-tenant.md) is that tenant identity:
+   issued by the host, never stored in the local save, serialised per
+   identity for Actions.
 
 This satisfies the "second product" condition of 0004: the shard is a
 Chisei workload and showcase, not a mode of the local binary.
@@ -77,10 +81,10 @@ opened to more than one player:
 | `tick --advance` | Not exposed as an Action on a shard |
 | Hidden fields in state | Markings and policy filter every read |
 | Duplicate request after disconnect | Idempotent Action ids |
-| Two sessions on one account | Per-player serialisation of Actions |
+| Two sessions on one account | Per-player serialisation of Actions ([0020](0020-shard-identity-is-a-host-tenant.md)) |
 | Raid an offline player | Snapshot after server catch-up |
 | Forge bridge activity | Bridge events not trusted for shard score, or capped and governed |
-| Multi-accounting | Tenant identity from the platform issuer; rate limits per identity |
+| Multi-accounting | Tenant identity from the platform issuer ([0020](0020-shard-identity-is-a-host-tenant.md)); rate limits per identity |
 
 ## Consequences
 
