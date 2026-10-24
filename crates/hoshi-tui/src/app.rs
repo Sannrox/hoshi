@@ -5689,6 +5689,26 @@ mod tests {
         assert!(app.state.incident_snapshot().open.is_empty());
     }
 
+    /// #299: a lost raid opened and closed its incident in one tick, and
+    /// the screen showed nothing behind its counters.
+    #[test]
+    fn incidents_keep_a_recent_raid_and_explain_reviews() {
+        let mut state = GameState::new(1_000);
+        state.resources = Resources::from_parts(2_000.0, 2_000.0, 0.0);
+        state.trigger_raid(1_000);
+        let mut app = App::new(state);
+        app.open(Screen::Incidents);
+        let text = render_text(&app, 140, 45);
+        assert!(text.contains("RECENTLY RESOLVED"), "{text}");
+        assert!(text.contains("#1 Raid"), "{text}");
+        assert!(text.contains("pirate activity"), "{text}");
+        assert!(text.contains("hoshi incidents review"), "{text}");
+        let small = render_text(&app, 80, 24);
+        assert!(small.contains("#1 Raid"), "{small}");
+        assert!(small.contains("hoshi incidents review ID"), "{small}");
+        assert!(small.contains("pirate activity"), "{small}");
+    }
+
     #[test]
     fn victory_overlay_enter_keeps_playing() {
         let mut app = App::new(GameState::new(1_000));
