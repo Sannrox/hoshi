@@ -601,6 +601,7 @@ dependencies = [
  "hkdf",
  "hoshi-bridge",
  "hoshi-core",
+ "libc",
  "p256",
  "pulldown-cmark",
  "qrcode",

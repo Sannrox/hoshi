@@ -6794,7 +6794,20 @@ mod tests {
         assert!(text.contains("confirm") || text.contains("drill"), "{text}");
     }
 
+    /// CPU time spent by the calling thread so far.
+    #[cfg(unix)]
+    fn thread_cpu_time() -> std::time::Duration {
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: `ts` is a valid out-pointer for the duration of the call.
+        unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
+        std::time::Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
+    }
+
     #[test]
+    #[cfg(unix)]
     fn cockpit_late_game_render_stays_under_budget() {
         let mut state = GameState::new(1_000);
         state.resources.iron = 80_000.0;
@@ -6826,13 +6839,14 @@ mod tests {
         }
         let mut app = App::new(state);
         app.handle_key(KeyCode::Char('c'), 1_000);
-        // Keep scheduler preemption from turning another agent's compile into
-        // a render regression. Every sample still renders the complete frame.
+        // Thread CPU time, so another agent's compile on the same machine
+        // cannot turn into a render regression. Every sample still renders
+        // the complete frame.
         let elapsed = (0..3)
             .map(|_| {
-                let started = std::time::Instant::now();
+                let started = thread_cpu_time();
                 let _ = render_text(&app, 160, 48);
-                started.elapsed()
+                thread_cpu_time() - started
             })
             .min()
             .unwrap();

@@ -9,6 +9,12 @@ fn published_launcher_is_executable_and_follows_each_atomic_pointer() {
         .unwrap()
         .as_nanos();
     let root = std::env::temp_dir().join(format!("hoshi-launcher-{}-{nonce}", std::process::id()));
+    // Install the launcher once, like the updater's atomic rename. Copying
+    // over an executable that has already run rewrites it in place, and
+    // macOS may kill the next exec of that file for a stale code signature.
+    std::fs::create_dir_all(root.join("bin")).unwrap();
+    std::fs::write(root.join("update.lock"), "").unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_hoshi"), root.join("bin/hoshi")).unwrap();
     for version in ["0.1.0", "0.2.0"] {
         let release = root.join("releases").join(version);
         std::fs::create_dir_all(&release).unwrap();
@@ -16,16 +22,18 @@ fn published_launcher_is_executable_and_follows_each_atomic_pointer() {
         std::fs::write(&binary, format!("#!/bin/sh\nprintf '{version}\\n'\n")).unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
         std::fs::write(root.join("current"), format!("{version}\n\n")).unwrap();
-        std::fs::create_dir_all(root.join("bin")).unwrap();
-        std::fs::write(root.join("update.lock"), "").unwrap();
-        std::fs::copy(env!("CARGO_BIN_EXE_hoshi"), root.join("bin/hoshi")).unwrap();
         let path = root.join("bin/hoshi");
         assert_eq!(
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o755
         );
         let output = Command::new(path).output().unwrap();
-        assert!(output.status.success());
+        assert!(
+            output.status.success(),
+            "launching {version} exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
         assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), version);
     }
     let binary = root.join("releases/0.2.0/hoshi");

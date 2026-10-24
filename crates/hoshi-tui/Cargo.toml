@@ -52,6 +52,9 @@ zip = { version = "9", default-features = false, features = ["deflate"], optiona
 hoshi-core = { workspace = true }
 serde_yaml = "0.9"
 
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
+
 [[bin]]
 name = "hoshi"
 path = "src/main.rs"
