@@ -662,14 +662,7 @@ fn esc(text: &str) -> String {
 
 #[cfg(test)]
 pub(crate) fn unique_chisei(tag: &str) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    std::env::temp_dir().join(format!(
-        "hoshi-storage-{tag}-{}-{nanos}.chisei",
-        std::process::id()
-    ))
+    crate::unique_temp_path(&format!("hoshi-storage-{tag}"), "chisei")
 }
 
 #[cfg(test)]
