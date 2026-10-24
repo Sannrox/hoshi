@@ -171,6 +171,15 @@ pub enum AssignmentTarget {
 }
 
 impl AssignmentTarget {
+    /// Player-facing form: `home fleet`, `planet 1:1:1`, `empire`.
+    pub fn label(self) -> String {
+        match self {
+            AssignmentTarget::HomeFleet => "home fleet".into(),
+            AssignmentTarget::Planet(coord) => format!("planet {coord}"),
+            AssignmentTarget::Empire => "empire".into(),
+        }
+    }
+
     pub fn as_key(self) -> String {
         match self {
             AssignmentTarget::HomeFleet => "fleet:home".into(),

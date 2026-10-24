@@ -314,6 +314,21 @@ fn output_factor(asset: &Asset, now: u64) -> f64 {
 }
 
 impl GameState {
+    /// Player-facing name for a maintenance asset: `metal mine at 1:1:1`,
+    /// `light cannon at 1:1:1`, `vehicle 3`. The key stays the stable id.
+    pub fn asset_label(&self, asset: &Asset) -> String {
+        let id = asset.key.rsplit(':').next().unwrap_or(&asset.key);
+        match asset.kind {
+            AssetKind::Building => format!("{} at {}", self.display_name(id), asset.coord),
+            AssetKind::Defence => {
+                let name = crate::DefenceKind::from_key(id)
+                    .map_or_else(|| id.replace('_', " "), |kind| kind.to_string());
+                format!("{name} at {}", asset.coord)
+            }
+            AssetKind::Vehicle => format!("vehicle {id}"),
+        }
+    }
+
     pub fn maintenance_config(&self) -> MaintenanceConfig {
         MaintenanceConfig::bundled()
     }
