@@ -56,7 +56,15 @@ pub struct DataTable<'a> {
 
 impl DataTable<'_> {
     const GAP: u16 = 2;
+    /// Cells a fill column keeps before fixed name columns may grow.
+    const FILL_FLOOR: u16 = 16;
 
+    /// Column widths for `total` cells. Fixed columns keep their width
+    /// unless spare room lets a cut cell show in full. Each fill column is
+    /// first promised up to [`Self::FILL_FLOOR`] cells of its content; then
+    /// columns grow to fit their content from left to right, so the name
+    /// column on the left is served before a status on the right; whatever
+    /// is left goes to the fill columns.
     fn widths(&self, total: u16) -> Vec<u16> {
         let fixed: u16 = self
             .columns
@@ -65,11 +73,70 @@ impl DataTable<'_> {
             .sum::<u16>()
             .saturating_add(Self::GAP * self.columns.len().saturating_sub(1) as u16)
             .saturating_add(1);
-        let rest = total.saturating_sub(fixed);
-        self.columns
+        let mut spare = total.saturating_sub(fixed);
+        let need: Vec<u16> = (0..self.columns.len())
+            .map(|i| {
+                self.rows
+                    .iter()
+                    .filter_map(|row| row.get(i))
+                    .map(|line| u16::try_from(line.width()).unwrap_or(u16::MAX))
+                    .max()
+                    .unwrap_or(0)
+            })
+            .collect();
+        let mut widths: Vec<u16> = self.columns.iter().map(|c| c.width).collect();
+        for (i, column) in self.columns.iter().enumerate() {
+            if column.width == 0 {
+                let floor = need[i].min(Self::FILL_FLOOR).min(spare);
+                widths[i] = floor;
+                spare -= floor;
+            }
+        }
+        let grows = |column: &Column| column.width == 0 || column.align == Align::Left;
+        let grow_pass = |widths: &mut Vec<u16>, spare: &mut u16| {
+            for (i, column) in self.columns.iter().enumerate() {
+                if grows(column) {
+                    let grow = need[i].saturating_sub(widths[i]).min(*spare);
+                    widths[i] += grow;
+                    *spare -= grow;
+                }
+            }
+        };
+        grow_pass(&mut widths, &mut spare);
+        // Still short: fixed text columns wider than their content and header
+        // give the slack back (number columns keep their alignment), then the
+        // growth pass runs once more.
+        let deficit: u16 = self
+            .columns
             .iter()
-            .map(|c| if c.width == 0 { rest } else { c.width })
-            .collect()
+            .enumerate()
+            .filter(|(_, c)| grows(c))
+            .map(|(i, _)| need[i].saturating_sub(widths[i]))
+            .sum();
+        if deficit > 0 {
+            let mut reclaim = deficit;
+            for (i, column) in self.columns.iter().enumerate() {
+                if column.width > 0 && column.align == Align::Left && reclaim > 0 {
+                    let header = u16::try_from(column.title.chars().count()).unwrap_or(u16::MAX);
+                    let keep = need[i].max(header);
+                    let give = widths[i].saturating_sub(keep).min(reclaim);
+                    widths[i] -= give;
+                    spare += give;
+                    reclaim -= give;
+                }
+            }
+            grow_pass(&mut widths, &mut spare);
+        }
+        let fills = self.columns.iter().filter(|c| c.width == 0).count() as u16;
+        if let Some(share) = spare.checked_div(fills) {
+            for (i, column) in self.columns.iter().enumerate() {
+                if column.width == 0 {
+                    // One fill column (the usual case) takes all that is left.
+                    widths[i] += share;
+                }
+            }
+        }
+        widths
     }
 
     /// First visible row so the selection stays on screen, roughly centred.
@@ -212,6 +279,33 @@ mod tests {
             surface: Surface::Raised,
             groups: Vec::new(),
         }
+    }
+
+    #[test]
+    fn spare_width_shows_a_long_name_before_padding_the_fill_column() {
+        let theme = Theme::default();
+        let mut t = table(&theme, None, 1);
+        t.rows[0][0] = Line::from("deuterium synthesizer");
+        // 8 + 5 fixed, two gaps of 2 and a lead cell make 18; 40 leaves 22.
+        // The fill keeps its 2, the name grows by 13, the fill gets the rest.
+        assert_eq!(t.widths(40), vec![21, 5, 9]);
+        // Too narrow to grow: the fill column keeps its content first.
+        assert_eq!(t.widths(20), vec![8, 5, 2]);
+        // A long status is only promised the floor before the name grows.
+        t.rows[0][2] = Line::from("need robotics factory level 1");
+        assert_eq!(t.widths(50), vec![21, 5, 19]);
+        // A fill name on the left is served before a fixed status grows.
+        t.columns = vec![Column::fill("tech"), Column::left("status", 4)];
+        t.rows[0] = vec![
+            Line::from("deuterium-helium-3 fusion"),
+            Line::from("need lab 1"),
+        ];
+        // 34 - 7 leaves 27: the name takes its 25, the status the last 2.
+        assert_eq!(t.widths(34), vec![25, 6]);
+        // A fixed column wider than its content gives slack to a cut fill.
+        t.columns = vec![Column::left("next", 14), Column::fill("tribute")];
+        t.rows[0] = vec![Line::from("Truce 25"), Line::from("200 Fe → +5")];
+        assert_eq!(t.widths(25), vec![11, 11]);
     }
 
     #[test]
