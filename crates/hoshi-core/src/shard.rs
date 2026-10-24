@@ -5,6 +5,7 @@
 //! `propose` / `apply` path as the CLI.
 
 use crate::activity::{ActivityApply, ActivityPulse};
+use crate::classification::ClassifiedKind;
 use crate::clock::Clock;
 use crate::combat::{
     CombatReport, CombatWinner, plunder_from, rapid_fire_table, resolve_combat, stats_from_catalog,
@@ -96,6 +97,82 @@ pub struct ShardMission {
     pub phase_ends_at: u64,
 }
 
+/// Pirate outposts and open expedition sites. Sites stay empty until that
+/// catalog exists. These lists are the shard map, not each save's private
+/// outpost table.
+#[derive(Debug, Clone, Copy)]
+pub struct ShardSites<'a> {
+    pub outposts: &'a [Coord],
+    pub sites: &'a [Coord],
+}
+
+impl ShardSites<'static> {
+    /// No pirate outposts and no open sites.
+    pub fn none() -> Self {
+        Self {
+            outposts: &[],
+            sites: &[],
+        }
+    }
+}
+
+/// One coord the tenant may see. `tag` is `you`, `occupied`, or `empty`.
+/// Another tenant's name and stockpile are not on this row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShardSlot {
+    pub coord: Coord,
+    pub tag: String,
+}
+
+/// Who holds a coord on the shard map. At most one kind.
+///
+/// `You` beats `Tenant`, then a pirate `Outpost`, then an open `Site`.
+/// Pirate outposts and sites are the lists the host passes. They are not
+/// read from each save's private outpost table. A conquered outpost is a
+/// colony, so it is `You` or `Tenant`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Occupancy {
+    You,
+    Tenant,
+    Outpost,
+    Site,
+    Empty,
+}
+
+impl Occupancy {
+    pub fn as_key(self) -> &'static str {
+        match self {
+            Occupancy::You => "you",
+            Occupancy::Tenant => "tenant",
+            Occupancy::Outpost => "outpost",
+            Occupancy::Site => "site",
+            Occupancy::Empty => "empty",
+        }
+    }
+
+    /// Tenant-view label. A taken slot that is not yours is `occupied`.
+    pub fn view_tag(self) -> &'static str {
+        match self {
+            Occupancy::You => "you",
+            Occupancy::Empty => "empty",
+            Occupancy::Tenant | Occupancy::Outpost | Occupancy::Site => "occupied",
+        }
+    }
+
+    /// Join may place a home only on `Empty`.
+    pub fn join_slot(self) -> bool {
+        matches!(self, Occupancy::Empty)
+    }
+
+    /// Colonize, and a snapshot raid aimed at a planet, refuse these.
+    pub fn blocks_planet_dest(self) -> bool {
+        matches!(
+            self,
+            Occupancy::Tenant | Occupancy::Outpost | Occupancy::Site
+        )
+    }
+}
+
 /// Per-tenant read. Hidden simulation and other empires stay off this type.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShardView {
@@ -107,6 +184,32 @@ pub struct ShardView {
     pub missions: Vec<ShardMission>,
     pub resources: Resources,
     pub intel: Vec<IntelFact>,
+    /// Coords the player's clearance can see, tagged `you`, `occupied`, or `empty`.
+    pub occupancy: Vec<ShardSlot>,
+}
+
+impl ShardView {
+    /// JSON the host can hand to a tenant. Occupancy tags do not carry
+    /// another tenant's identity or stockpile.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "identity": self.identity,
+            "at": self.at,
+            "home": self.home.to_string(),
+            "occupancy": self.occupancy.iter().map(|slot| {
+                serde_json::json!({
+                    "coord": slot.coord.to_string(),
+                    "tag": slot.tag,
+                })
+            }).collect::<Vec<_>>(),
+            "resources": {
+                "iron": self.resources.iron,
+                "silicon": self.resources.silicon,
+                "deuterium": self.resources.deuterium,
+            },
+            "planets": self.planets.iter().map(|planet| planet.coord.to_string()).collect::<Vec<_>>(),
+        })
+    }
 }
 
 /// Why a shard refused a command, a bridge pulse, a raid, or a tenant read.
@@ -131,6 +234,13 @@ pub enum ShardError {
         identity: String,
         retry_after_secs: u64,
     },
+    /// Colonize or a planet raid dest is `Tenant`, `Outpost`, or `Site`.
+    Occupied {
+        coord: Coord,
+        kind: Occupancy,
+    },
+    /// `submit` cannot see the shard map. Colonize goes through [`ShardSession::colonize`].
+    ColonizeNeedsMap,
 }
 
 impl fmt::Display for ShardError {
@@ -161,6 +271,12 @@ impl fmt::Display for ShardError {
                 f,
                 "attack cap for {identity}, retry after {retry_after_secs}s"
             ),
+            ShardError::Occupied { coord, kind } => {
+                write!(f, "{coord} is {}", kind.as_key())
+            }
+            ShardError::ColonizeNeedsMap => {
+                write!(f, "colonize needs the shard map")
+            }
         }
     }
 }
@@ -204,7 +320,9 @@ impl<C: Clock> ShardSession<C> {
     /// Catch up and apply `cmd.intent` at the shard clock.
     ///
     /// `cmd.client_now_unix` is accepted so a caller can send a wall clock
-    /// and is never read.
+    /// and is never read. `Intent::Colonize` is refused: this method has one
+    /// empire, so it cannot see another tenant, a pirate outpost, or a site.
+    /// Hosts call [`Self::colonize`].
     pub fn submit(&mut self, state: &mut GameState, cmd: ShardCommand) -> Result<(), ShardError> {
         state
             .require_fair_play()
@@ -213,6 +331,9 @@ impl<C: Clock> ShardSession<C> {
             return Err(ShardError::Intent(crate::IntentError::Cheat(
                 crate::CheatError::Forbidden,
             )));
+        }
+        if matches!(cmd.intent, Intent::Colonize { .. }) {
+            return Err(ShardError::ColonizeNeedsMap);
         }
         if cmd.identity.is_empty() {
             return Err(ShardError::EmptyIdentity);
@@ -321,15 +442,105 @@ impl<C: Clock> ShardSession<C> {
         Ok(ShardRaidResult { report, plunder })
     }
 
+    /// Snapshot raid aimed at a planet coord.
+    ///
+    /// `Tenant`, `Outpost`, and `Site` are refused before combat, so fleets
+    /// stay put. `Empty` and `You` continue into [`Self::raid`].
+    pub fn raid_planet(
+        &mut self,
+        attacker: &mut GameState,
+        defender: &mut GameState,
+        dest: Coord,
+        empires: &BTreeMap<String, GameState>,
+        sites: ShardSites<'_>,
+        cmd: ShardRaid,
+    ) -> Result<ShardRaidResult, ShardError> {
+        let kind = occupancy(&cmd.attacker_id, empires, sites, dest);
+        if kind.blocks_planet_dest() {
+            return Err(ShardError::Occupied { coord: dest, kind });
+        }
+        self.raid(attacker, defender, cmd)
+    }
+
+    /// Colonize `dest` for `identity` when occupancy allows it.
+    ///
+    /// Refusal happens before `propose` / `apply`, so a taken coord does not
+    /// launch a colony ship. An empty coord uses the same colonize intent as
+    /// local play. The check does not reserve the dest: a second colonize of
+    /// that still-empty coord also launches, and each empire settles its own
+    /// mission. Join is not this method: a host calls [`occupancy`] and
+    /// [`Occupancy::join_slot`] before placing a home.
+    pub fn colonize(
+        &mut self,
+        identity: &str,
+        empires: &mut BTreeMap<String, GameState>,
+        sites: ShardSites<'_>,
+        dest: Coord,
+        speed_percent: u8,
+        idempotency_id: &str,
+    ) -> Result<(), ShardError> {
+        if identity.is_empty() {
+            return Err(ShardError::EmptyIdentity);
+        }
+        if idempotency_id.is_empty() {
+            return Err(ShardError::EmptyIdempotency);
+        }
+        if !empires.contains_key(identity) {
+            return Err(ShardError::UnknownIdentity {
+                identity: identity.to_string(),
+            });
+        }
+        let seen_key = (identity.to_string(), idempotency_id.to_string());
+        if self.seen.contains(&seen_key) {
+            return Ok(());
+        }
+        {
+            let state = empires
+                .get_mut(identity)
+                .ok_or_else(|| ShardError::UnknownIdentity {
+                    identity: identity.to_string(),
+                })?;
+            state
+                .require_fair_play()
+                .map_err(|e| ShardError::Intent(IntentError::Cheat(e)))?;
+        }
+        let now = self.clock.now_unix();
+        for state in empires.values_mut() {
+            state.catch_up(now);
+        }
+        let kind = occupancy(identity, empires, sites, dest);
+        if kind.blocks_planet_dest() {
+            return Err(ShardError::Occupied { coord: dest, kind });
+        }
+        self.admit(identity, now)?;
+        let state = empires
+            .get_mut(identity)
+            .ok_or_else(|| ShardError::UnknownIdentity {
+                identity: identity.to_string(),
+            })?;
+        let intent = Intent::Colonize {
+            dest,
+            speed_percent,
+        };
+        let proposal = propose(state, &intent, now).map_err(ShardError::Intent)?;
+        apply(state, &proposal, now).map_err(ShardError::Intent)?;
+        self.seen.insert(seen_key);
+        Ok(())
+    }
+
     /// Catch every empire up at the host clock, then return `identity`'s view.
     ///
     /// The view is a whitelist: own planets, fleets, and stock, plus spy intel
-    /// that has already arrived. It has no RNG, pirate timer, or other
-    /// tenant's parked fleet and stockpile. Local play does not call this.
+    /// that has already arrived, plus occupancy tags for coords the player
+    /// clearance allows. It has no RNG, pirate timer, or other tenant's
+    /// parked fleet and stockpile. Local play does not call this.
+    /// `sites` is the shard's pirate outposts and open expedition sites.
+    /// The site list stays empty until those sites exist.
     pub fn view(
         &self,
         identity: &str,
         empires: &mut BTreeMap<String, GameState>,
+        sites: ShardSites<'_>,
     ) -> Result<ShardView, ShardError> {
         if identity.is_empty() {
             return Err(ShardError::EmptyIdentity);
@@ -348,8 +559,8 @@ impl<C: Clock> ShardSession<C> {
             }
             state.catch_up(now);
         }
-        match empires.get(identity) {
-            Some(own) => Ok(shard_view(identity, own)),
+        match shard_view(identity, empires, sites) {
+            Some(view) => Ok(view),
             None => Err(ShardError::UnknownIdentity {
                 identity: identity.to_string(),
             }),
@@ -405,7 +616,55 @@ impl<C: Clock> ShardSession<C> {
     }
 }
 
-fn shard_view(identity: &str, own: &GameState) -> ShardView {
+/// Kind at `coord` for `viewer`. Hosts call this before join and colonize.
+///
+/// This is the map at the call. A colony mission in flight does not hold
+/// the coord, so two ships may still launch at one `Empty` slot. Arrival
+/// order is a later check, when a colony exists and this function returns
+/// `You` or `Tenant`.
+pub fn occupancy(
+    viewer: &str,
+    empires: &BTreeMap<String, GameState>,
+    sites: ShardSites<'_>,
+    coord: Coord,
+) -> Occupancy {
+    if empires
+        .get(viewer)
+        .is_some_and(|own| tenant_holds(own, coord))
+    {
+        return Occupancy::You;
+    }
+    for (id, state) in empires {
+        if id == viewer {
+            continue;
+        }
+        if tenant_holds(state, coord) {
+            return Occupancy::Tenant;
+        }
+    }
+    if sites.outposts.contains(&coord) {
+        return Occupancy::Outpost;
+    }
+    if sites.sites.contains(&coord) {
+        return Occupancy::Site;
+    }
+    Occupancy::Empty
+}
+
+fn tenant_holds(state: &GameState, coord: Coord) -> bool {
+    state.home == coord || state.colonies.iter().any(|colony| colony.coord == coord)
+}
+
+fn shard_view(
+    identity: &str,
+    empires: &BTreeMap<String, GameState>,
+    sites: ShardSites<'_>,
+) -> Option<ShardView> {
+    if !empires.contains_key(identity) {
+        return None;
+    }
+    let occupancy_rows = occupancy_slots(identity, empires, sites);
+    let own = empires.get(identity)?;
     let mut planets = Vec::with_capacity(1 + own.colonies.len());
     planets.push(ShardPlanet {
         coord: own.home,
@@ -419,7 +678,7 @@ fn shard_view(identity: &str, own: &GameState) -> ShardView {
             fleet: colony.fleet,
         });
     }
-    ShardView {
+    Some(ShardView {
         identity: identity.to_string(),
         at: own.last_tick_unix,
         home: own.home,
@@ -439,7 +698,50 @@ fn shard_view(identity: &str, own: &GameState) -> ShardView {
             .collect(),
         resources: own.resources,
         intel: own.intel_facts_for(Actor::Player, own.last_tick_unix),
+        occupancy: occupancy_rows,
+    })
+}
+
+fn occupancy_slots(
+    viewer: &str,
+    empires: &BTreeMap<String, GameState>,
+    sites: ShardSites<'_>,
+) -> Vec<ShardSlot> {
+    let (home, end) = match empires.get(viewer) {
+        Some(own) => (own.home, own.config.expedition.dest_position),
+        None => return Vec::new(),
+    };
+    let mut coords = BTreeSet::new();
+    for position in 1..end {
+        coords.insert(Coord {
+            galaxy: home.galaxy,
+            system: home.system,
+            position,
+        });
     }
+    for state in empires.values() {
+        coords.insert(state.home);
+        for colony in &state.colonies {
+            coords.insert(colony.coord);
+        }
+    }
+    coords.extend(sites.outposts.iter().copied());
+    coords.extend(sites.sites.iter().copied());
+    coords
+        .into_iter()
+        .filter(|coord| {
+            empires.get(viewer).is_some_and(|own| {
+                own.can_see(Actor::Player, ClassifiedKind::Fact, &coord.to_string())
+            })
+        })
+        .map(|coord| {
+            let kind = occupancy(viewer, empires, sites, coord);
+            ShardSlot {
+                coord,
+                tag: kind.view_tag().to_string(),
+            }
+        })
+        .collect()
 }
 
 fn empty_report(attacker: Fleet, defender: Fleet) -> CombatReport {
@@ -990,7 +1292,9 @@ mod tests {
         let mut a = tenant_a(1_000);
         a.spy_reports.push(spy_on_b(1_000, 1_000));
         let mut empires = two_empires(a, tenant_b(1_000));
-        let view = shard.view("tenant-a", &mut empires).unwrap();
+        let view = shard
+            .view("tenant-a", &mut empires, ShardSites::none())
+            .unwrap();
         assert_eq!(view.identity, "tenant-a");
         assert_eq!(view.home, Coord::HOME);
         assert_eq!(view.resources.iron, 111.0);
@@ -1025,7 +1329,9 @@ mod tests {
         let mut a = tenant_a(1_000);
         a.spy_reports.push(spy_on_b(1_000, 1_000 + 50_000));
         let mut empires = two_empires(a, tenant_b(1_000));
-        let view = shard.view("tenant-a", &mut empires).unwrap();
+        let view = shard
+            .view("tenant-a", &mut empires, ShardSites::none())
+            .unwrap();
         assert!(
             view.intel
                 .iter()
@@ -1040,7 +1346,9 @@ mod tests {
         let b = tenant_b(1_000);
         shard.clock.advance(3_600);
         let mut empires = two_empires(a, b);
-        let view = shard.view("tenant-a", &mut empires).unwrap();
+        let view = shard
+            .view("tenant-a", &mut empires, ShardSites::none())
+            .unwrap();
         assert_eq!(view.at, 4_600);
         assert_eq!(empires["tenant-a"].last_tick_unix, 4_600);
         assert_eq!(empires["tenant-b"].last_tick_unix, 4_600);
@@ -1057,14 +1365,382 @@ mod tests {
         let shard = session(1_000);
         let mut empires = two_empires(tenant_a(1_000), tenant_b(1_000));
         assert_eq!(
-            shard.view("", &mut empires).unwrap_err(),
+            shard
+                .view("", &mut empires, ShardSites::none())
+                .unwrap_err(),
             ShardError::EmptyIdentity
         );
         assert_eq!(
-            shard.view("tenant-z", &mut empires).unwrap_err(),
+            shard
+                .view("tenant-z", &mut empires, ShardSites::none())
+                .unwrap_err(),
             ShardError::UnknownIdentity {
                 identity: "tenant-z".into()
             }
+        );
+    }
+
+    fn pirate_coord() -> Coord {
+        Coord {
+            galaxy: 4,
+            system: 4,
+            position: 4,
+        }
+    }
+
+    fn site_coord() -> Coord {
+        Coord {
+            galaxy: 5,
+            system: 5,
+            position: 5,
+        }
+    }
+
+    fn empty_slot() -> Coord {
+        Coord {
+            galaxy: 1,
+            system: 1,
+            position: 14,
+        }
+    }
+
+    fn with_colony(mut state: GameState, coord: Coord) -> GameState {
+        state.colonies.push(crate::Colony {
+            coord,
+            kind: crate::PlanetType::Rocky,
+            size: 8,
+            resources: Resources::ZERO,
+            buildings: crate::Buildings::default(),
+            fleet: Fleet::default(),
+            defences: crate::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            rare: None,
+            goods: BTreeMap::new(),
+        });
+        state
+    }
+
+    #[test]
+    fn occupancy_names_you_and_tenant_and_skips_outposts_and_sites_for_join() {
+        let colony = Coord {
+            galaxy: 1,
+            system: 2,
+            position: 2,
+        };
+        let a = with_colony(tenant_a(1_000), colony);
+        let empires = two_empires(a, tenant_b(1_000));
+        let outposts = [pirate_coord()];
+        let sites = [site_coord()];
+        assert_eq!(
+            occupancy(
+                "tenant-a",
+                &empires,
+                ShardSites {
+                    outposts: &outposts,
+                    sites: &sites
+                },
+                Coord::HOME
+            ),
+            Occupancy::You
+        );
+        assert_eq!(
+            occupancy(
+                "tenant-b",
+                &empires,
+                ShardSites {
+                    outposts: &outposts,
+                    sites: &sites
+                },
+                Coord::HOME
+            ),
+            Occupancy::Tenant
+        );
+        assert_eq!(
+            occupancy(
+                "tenant-a",
+                &empires,
+                ShardSites {
+                    outposts: &outposts,
+                    sites: &sites
+                },
+                colony
+            ),
+            Occupancy::You
+        );
+        assert_eq!(
+            occupancy(
+                "tenant-b",
+                &empires,
+                ShardSites {
+                    outposts: &outposts,
+                    sites: &sites
+                },
+                colony
+            ),
+            Occupancy::Tenant
+        );
+        assert_eq!(
+            occupancy(
+                "tenant-a",
+                &empires,
+                ShardSites {
+                    outposts: &outposts,
+                    sites: &sites
+                },
+                B_HOME
+            ),
+            Occupancy::Tenant
+        );
+        assert_eq!(
+            occupancy(
+                "tenant-b",
+                &empires,
+                ShardSites {
+                    outposts: &outposts,
+                    sites: &sites
+                },
+                B_HOME
+            ),
+            Occupancy::You
+        );
+        assert_eq!(
+            occupancy(
+                "tenant-a",
+                &empires,
+                ShardSites {
+                    outposts: &[B_HOME],
+                    sites: &sites,
+                },
+                B_HOME,
+            ),
+            Occupancy::Tenant,
+            "a tenant home stays a tenant when the host also lists that coord"
+        );
+        for viewer in ["tenant-a", "tenant-b"] {
+            let kind = occupancy(
+                viewer,
+                &empires,
+                ShardSites {
+                    outposts: &outposts,
+                    sites: &sites,
+                },
+                pirate_coord(),
+            );
+            assert_eq!(kind, Occupancy::Outpost);
+            assert!(!kind.join_slot());
+            let kind = occupancy(
+                viewer,
+                &empires,
+                ShardSites {
+                    outposts: &outposts,
+                    sites: &sites,
+                },
+                site_coord(),
+            );
+            assert_eq!(kind, Occupancy::Site);
+            assert!(!kind.join_slot());
+        }
+        let before_sites = occupancy(
+            "tenant-a",
+            &empires,
+            ShardSites {
+                outposts: &outposts,
+                sites: &[],
+            },
+            site_coord(),
+        );
+        assert_eq!(before_sites, Occupancy::Empty);
+        assert!(before_sites.join_slot());
+        let empty = occupancy(
+            "tenant-a",
+            &empires,
+            ShardSites {
+                outposts: &outposts,
+                sites: &sites,
+            },
+            empty_slot(),
+        );
+        assert_eq!(empty, Occupancy::Empty);
+        assert!(empty.join_slot());
+    }
+
+    #[test]
+    fn colonize_refuses_taken_coords_and_still_launches_to_empty() {
+        let mut shard = session(1_000);
+        let mut a = test_state(1_000);
+        a.resources.deuterium = 10_000.0;
+        a.fleet.add(ShipKind::ColonyShip, 1);
+        let mut empires = two_empires(a, tenant_b(1_000));
+        let outposts = [pirate_coord()];
+        let sites = [site_coord()];
+        let refused = [
+            (B_HOME, "b-home", Occupancy::Tenant),
+            (pirate_coord(), "outpost", Occupancy::Outpost),
+            (site_coord(), "site", Occupancy::Site),
+        ];
+        for (dest, id, kind) in refused {
+            let err = shard
+                .colonize(
+                    "tenant-a",
+                    &mut empires,
+                    ShardSites {
+                        outposts: &outposts,
+                        sites: &sites,
+                    },
+                    dest,
+                    100,
+                    id,
+                )
+                .unwrap_err();
+            assert_eq!(err, ShardError::Occupied { coord: dest, kind });
+            assert_eq!(empires["tenant-a"].fleet.get(ShipKind::ColonyShip), 1);
+            assert!(empires["tenant-a"].missions.is_empty());
+        }
+        shard
+            .colonize(
+                "tenant-a",
+                &mut empires,
+                ShardSites {
+                    outposts: &outposts,
+                    sites: &sites,
+                },
+                empty_slot(),
+                100,
+                "empty",
+            )
+            .unwrap();
+        assert_eq!(empires["tenant-a"].missions.len(), 1);
+        let mission = &empires["tenant-a"].missions[0];
+        assert!(mission.colonize);
+        assert_eq!(mission.dest, empty_slot());
+        assert_eq!(empires["tenant-a"].fleet.get(ShipKind::ColonyShip), 0);
+    }
+
+    #[test]
+    fn submit_refuses_colonize_without_the_shard_map() {
+        let mut shard = session(1_000);
+        let mut state = test_state(1_000);
+        state.resources.deuterium = 10_000.0;
+        state.fleet.add(ShipKind::ColonyShip, 1);
+        let before = state.clone();
+        let err = shard
+            .submit(
+                &mut state,
+                ShardCommand {
+                    identity: "tenant-a".into(),
+                    idempotency_id: "col".into(),
+                    intent: Intent::Colonize {
+                        dest: empty_slot(),
+                        speed_percent: 100,
+                    },
+                    client_now_unix: None,
+                },
+            )
+            .unwrap_err();
+        assert_eq!(err, ShardError::ColonizeNeedsMap);
+        assert_eq!(state, before);
+    }
+
+    #[test]
+    fn planet_raid_dest_refuses_tenant_outpost_and_site() {
+        let mut shard = raid_session(1_000, 0, 3);
+        let mut attacker = armed(1_000, 20);
+        let mut defender = armed(1_000, 1);
+        defender.home = B_HOME;
+        let atk = attacker.fleet.get(ShipKind::LightFighter);
+        let def = defender.fleet.get(ShipKind::LightFighter);
+        let mut empires = BTreeMap::new();
+        empires.insert("a".into(), attacker.clone());
+        empires.insert("b".into(), defender.clone());
+        let outposts = [pirate_coord()];
+        let sites = [site_coord()];
+        for (dest, id, kind) in [
+            (B_HOME, "home", Occupancy::Tenant),
+            (pirate_coord(), "outpost", Occupancy::Outpost),
+            (site_coord(), "site", Occupancy::Site),
+        ] {
+            let err = shard
+                .raid_planet(
+                    &mut attacker,
+                    &mut defender,
+                    dest,
+                    &empires,
+                    ShardSites {
+                        outposts: &outposts,
+                        sites: &sites,
+                    },
+                    raid_cmd("a", "b", id),
+                )
+                .unwrap_err();
+            assert_eq!(err, ShardError::Occupied { coord: dest, kind });
+            assert_eq!(attacker.fleet.get(ShipKind::LightFighter), atk);
+            assert_eq!(defender.fleet.get(ShipKind::LightFighter), def);
+        }
+        let result = shard
+            .raid_planet(
+                &mut attacker,
+                &mut defender,
+                empty_slot(),
+                &empires,
+                ShardSites {
+                    outposts: &outposts,
+                    sites: &sites,
+                },
+                raid_cmd("a", "b", "empty"),
+            )
+            .unwrap();
+        assert_eq!(result.report.winner, CombatWinner::Attacker);
+        assert!(defender.fleet.get(ShipKind::LightFighter) < def);
+    }
+
+    #[test]
+    fn tenant_view_json_tags_occupancy_without_the_other_identity() {
+        let shard = session(1_000);
+        let mut empires = two_empires(tenant_a(1_000), tenant_b(1_000));
+        let view = shard
+            .view(
+                "tenant-a",
+                &mut empires,
+                ShardSites {
+                    outposts: &[pirate_coord()],
+                    sites: &[site_coord()],
+                },
+            )
+            .unwrap();
+        let json = view.to_json();
+        let text = serde_json::to_string(&json).unwrap();
+        assert!(!text.contains("tenant-b"), "{text}");
+        assert!(!text.contains("888777"), "{text}");
+        let slots = json["occupancy"].as_array().unwrap();
+        assert!(
+            slots
+                .iter()
+                .any(|slot| slot["coord"] == "1:1:1" && slot["tag"] == "you")
+        );
+        assert!(
+            slots
+                .iter()
+                .any(|slot| { slot["coord"] == B_HOME.to_string() && slot["tag"] == "occupied" })
+        );
+        assert!(slots.iter().any(|slot| slot["tag"] == "empty"));
+        assert!(slots.iter().any(|slot| {
+            slot["coord"] == pirate_coord().to_string() && slot["tag"] == "occupied"
+        }));
+        assert!(slots.iter().any(|slot| {
+            slot["coord"] == site_coord().to_string() && slot["tag"] == "occupied"
+        }));
+        for slot in slots {
+            let obj = slot.as_object().unwrap();
+            assert_eq!(obj.len(), 2);
+            assert!(obj.contains_key("coord"));
+            assert!(obj.contains_key("tag"));
+        }
+        let planets = json["planets"].as_array().unwrap();
+        let other_home = B_HOME.to_string();
+        assert!(
+            planets
+                .iter()
+                .all(|coord| coord.as_str() != Some(other_home.as_str()))
         );
     }
 }

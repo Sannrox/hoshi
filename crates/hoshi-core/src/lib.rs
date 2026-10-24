@@ -230,8 +230,8 @@ pub use self_play::{
     SelfPlayCell, SelfPlayConfig, SelfPlayReport, path_bot_relpaths, run_self_play,
 };
 pub use shard::{
-    ShardCommand, ShardConfig, ShardError, ShardMission, ShardPlanet, ShardRaid, ShardRaidResult,
-    ShardSession, ShardView, SignedBridgeEvent,
+    Occupancy, ShardCommand, ShardConfig, ShardError, ShardMission, ShardPlanet, ShardRaid,
+    ShardRaidResult, ShardSession, ShardSites, ShardSlot, ShardView, SignedBridgeEvent, occupancy,
 };
 pub use ships::{
     Fleet, SHIP_KINDS, ShipCatalog, ShipCatalogError, ShipError, ShipJob, ShipKind, ShipSpec,
