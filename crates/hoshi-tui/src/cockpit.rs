@@ -1088,13 +1088,7 @@ fn timeline_lines(state: &GameState, height: usize, t: &Theme) -> Vec<Line<'stat
             let ago = now.saturating_sub(event.at);
             let style = timeline_style(event.kind, t);
             entries.push(Line::from(Span::styled(
-                format!(
-                    "{} ago {} {} {}",
-                    duration(ago),
-                    event.kind.as_key(),
-                    event.actor,
-                    event.action.replace('_', " ")
-                ),
+                format!("{} ago {}", duration(ago), timeline_text(event)),
                 style,
             )));
         }
@@ -1113,6 +1107,67 @@ fn timeline_lines(state: &GameState, height: usize, t: &Theme) -> Vec<Line<'stat
         entries.insert(0, line);
     }
     entries
+}
+
+/// `leader:3`, `contract:7`: a save id, not something to read. Coordinates
+/// (`1:2:3`) are all numbers and stay.
+fn internal_id(text: &str) -> bool {
+    text.contains(':') && !text.split(':').all(|part| part.parse::<u32>().is_ok())
+}
+
+/// One history row as a short sentence about what happened, without the
+/// internal kind and actor tokens the History table shows as columns.
+pub(crate) fn timeline_text(event: &hoshi_core::HistoryEvent) -> String {
+    let obj = |i: usize| {
+        event
+            .objects
+            .get(i)
+            .map(|o| o.replace('_', " "))
+            .unwrap_or_default()
+    };
+    // The building, spend centre or other subject; producers put it last.
+    let last = event
+        .objects
+        .last()
+        .map(|o| o.replace('_', " "))
+        .unwrap_or_default();
+    let outcome = event.outcome.replace('_', " ");
+    match (event.kind, event.action.as_str()) {
+        (HistoryKind::Build, "queue") => format!("queued {} at {}", obj(1), obj(0)),
+        (HistoryKind::Build, "complete") => format!("{} reached {outcome}", obj(1)),
+        (HistoryKind::Build, "dismantle") => format!("queued dismantling {last}"),
+        (HistoryKind::Build, "dismantle_start") => format!("dismantling {last}"),
+        (HistoryKind::Build, "dismantle_complete") => format!("{last} dismantled"),
+        (HistoryKind::Research, "start") => format!("started {} research", obj(0)),
+        (HistoryKind::Research, "complete") => format!("{} research reached {outcome}", obj(0)),
+        (HistoryKind::Ship, "queue") => format!("queued {}", obj(0)),
+        (HistoryKind::Ship, "complete") => format!("{} built", obj(0)),
+        (HistoryKind::Combat, "fight") => match event.objects.first().map(String::as_str) {
+            Some("attacker") => format!("fight: attackers won ({outcome})"),
+            Some("defender") => format!("fight: defenders held ({outcome})"),
+            _ => format!("fight: draw ({outcome})"),
+        },
+        (_, "request_spend") => format!("{last} spending {outcome}"),
+        (_, "open_incident") => format!("incident opened: {} ({outcome})", obj(1)),
+        _ => {
+            // Internal ids (`leader:3`, `spend:12`) stay off the bridge;
+            // coordinates (`1:2:3`) and plain names stay.
+            let objects: Vec<String> = event
+                .objects
+                .iter()
+                .filter(|o| !internal_id(o))
+                .map(|o| o.replace('_', " "))
+                .collect();
+            let mut text = event.action.replace('_', " ");
+            if !objects.is_empty() {
+                text = format!("{text}: {}", objects.join(", "));
+            }
+            if !outcome.is_empty() && !internal_id(&event.outcome) {
+                text = format!("{text} ({outcome})");
+            }
+            text
+        }
+    }
 }
 
 fn bridge_line(state: &GameState, t: &Theme) -> Option<Line<'static>> {
