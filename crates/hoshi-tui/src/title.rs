@@ -2425,7 +2425,13 @@ impl Title {
                 Constraint::Min(40),
             ])
             .areas(below);
-            frame.render_widget(Paragraph::new(menu_lines).style(t.text()), menu);
+            // The status line shares this narrow column; wrap it rather than cut it.
+            frame.render_widget(
+                Paragraph::new(menu_lines)
+                    .style(t.text())
+                    .wrap(ratatui::widgets::Wrap { trim: false }),
+                menu,
+            );
             frame.render_widget(
                 Paragraph::new(crate::ui::panels::section(&t, "saves")),
                 saves,

@@ -608,9 +608,15 @@ fn render_bridge(
         },
         left,
     );
+    let alerts_area = pad(Tile::inner(left));
     frame.render_widget(
-        Paragraph::new(callout_lines(alert_rows, alert_index, t)),
-        pad(Tile::inner(left)),
+        Paragraph::new(callout_lines(
+            alert_rows,
+            alert_index,
+            usize::from(alerts_area.width),
+            t,
+        )),
+        alerts_area,
     );
     if has_map {
         render_panel(
@@ -655,7 +661,9 @@ fn pad(area: Rect) -> Rect {
     }
 }
 
-fn callout_lines(rows: &[Alert], selected: usize, t: &Theme) -> Vec<Line<'static>> {
+/// Alert callouts for a panel `width` cells wide. A detail that does not fit
+/// wraps onto more indented lines instead of being cut.
+fn callout_lines(rows: &[Alert], selected: usize, width: usize, t: &Theme) -> Vec<Line<'static>> {
     if rows.is_empty() {
         return vec![Line::styled("all quiet", t.muted())];
     }
@@ -669,18 +677,43 @@ fn callout_lines(rows: &[Alert], selected: usize, t: &Theme) -> Vec<Line<'static
         } else {
             Line::from(row.text.clone())
         };
+        // The callout indents its detail by two cells.
+        let mut detail = wrap_words(&row.detail, width.saturating_sub(2).max(8)).into_iter();
         out.extend(
             Callout {
                 theme: t,
                 intent: row.kind.intent(),
                 title,
-                detail: Some(Line::from(row.detail.clone())),
+                detail: detail.next().map(Line::from),
             }
             .lines(),
         );
+        out.extend(detail.map(|rest| Line::styled(format!("  {rest}"), t.muted())));
         out.push(Line::default());
     }
     out
+}
+
+/// Greedy word wrap to `width` display cells (as the table measures them);
+/// a word longer than a line stays whole.
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let cells = |s: &str| Span::raw(s.to_string()).width();
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let fits = cells(&line) + 1 + cells(word) <= width;
+        if !line.is_empty() && !fits {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
 }
 
 fn upcoming_lines(state: &GameState, width: usize, t: &Theme) -> Vec<Line<'static>> {
@@ -1539,6 +1572,16 @@ fn cargo_label(stock: Resources) -> String {
 mod tests {
     use super::*;
     use hoshi_core::GameState;
+
+    #[test]
+    fn alert_details_wrap_at_word_boundaries_instead_of_cutting() {
+        let lines = wrap_words("production slows at 1:1:1 · build a solar plant", 26);
+        assert_eq!(
+            lines,
+            vec!["production slows at 1:1:1", "· build a solar plant"]
+        );
+        assert_eq!(wrap_words("short", 26), vec!["short"]);
+    }
 
     #[test]
     fn presets_parse_and_skip_unknown_tokens() {
