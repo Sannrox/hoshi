@@ -308,13 +308,19 @@ impl GameState {
         fleet.add(kind, 1);
         let travel =
             travel_dest.and_then(|dest| self.flight_from(self.home, dest, fleet, 100).ok());
-        let requirements: Vec<RequirementLine> = self
-            .missing_ship_prereqs(kind)
-            .into_iter()
-            .map(|gap| RequirementLine {
-                text: self.prereq_text(&gap),
-                met: false,
-            })
+        // Every prerequisite, met and unmet, like buildings and research.
+        let requirements: Vec<RequirementLine> = std::iter::once(self.shipyard_line(spec.shipyard))
+            .chain(spec.prereq_techs.iter().map(|pre| {
+                let actual = self.tech_level(&pre.id);
+                RequirementLine {
+                    text: format!(
+                        "{} {} (have {actual})",
+                        self.display_name(&pre.id),
+                        pre.level
+                    ),
+                    met: actual >= pre.level,
+                }
+            }))
             .collect();
         Detail {
             name: spec.name.clone(),
@@ -363,10 +369,20 @@ impl GameState {
             duration_secs: Some(spec.duration_secs()),
             afford: Some(afford_eta(self, cost)),
             deltas: Vec::new(),
-            requirements: Vec::new(),
+            requirements: vec![self.shipyard_line(spec.shipyard)],
             unlocks: Vec::new(),
             exclusive_warning: None,
             ship: None,
+        }
+    }
+
+    /// The shipyard level a ship or defence needs, against the level the
+    /// queue gate uses (0 while the shipyard is being dismantled).
+    fn shipyard_line(&self, required: u32) -> RequirementLine {
+        let actual = self.available_building_level(BuildingKind::Shipyard);
+        RequirementLine {
+            text: format!("{} {required} (have {actual})", BuildingKind::Shipyard),
+            met: actual >= required,
         }
     }
 
@@ -800,6 +816,44 @@ mod tests {
         cfg.raid.enabled = false;
         cfg.market.enabled = false;
         cfg
+    }
+
+    /// #297: a ship's inspector listed only its unmet research, and never
+    /// the shipyard the row was waiting for.
+    #[test]
+    fn ship_and_defence_list_every_prerequisite_met_or_not() {
+        let mut state = GameState::new(0);
+        let ship = state
+            .describe(DetailSubject::Ship(ShipKind::SmallCargo), None)
+            .unwrap();
+        let spec = state.config.ships.get(ShipKind::SmallCargo).clone();
+        assert_eq!(
+            ship.requirements.len(),
+            1 + spec.prereq_techs.len(),
+            "{:?}",
+            ship.requirements
+        );
+        assert!(
+            ship.requirements
+                .iter()
+                .any(|r| !r.met && r.text == format!("shipyard {} (have 0)", spec.shipyard))
+        );
+        assert!(ship.requirements.iter().skip(1).all(|r| !r.met));
+
+        state.buildings.shipyard = spec.shipyard;
+        let ship = state
+            .describe(DetailSubject::Ship(ShipKind::SmallCargo), None)
+            .unwrap();
+        assert!(ship.requirements[0].met, "{:?}", ship.requirements);
+        assert_eq!(ship.requirements.len(), 1 + spec.prereq_techs.len());
+
+        let cannon = state
+            .describe(
+                DetailSubject::Defence(crate::DefenceKind::LightCannon),
+                None,
+            )
+            .unwrap();
+        assert_eq!(cannon.requirements.len(), 1);
     }
 
     #[test]
