@@ -323,6 +323,9 @@ pub struct GameState {
     /// Exclusive group id → chosen tech id. Survives cancel; wiped on prestige.
     pub exclusive_picks: BTreeMap<String, String>,
     pub research: Option<ResearchJob>,
+    /// Paid techs waiting for the lab, in order. Each starts when the one
+    /// before it finishes; `started_at`/`completes_at` are set then.
+    pub research_queue: Vec<ResearchJob>,
     pub fleet: Fleet,
     pub ship_queue: Vec<ShipJob>,
     pub defences: crate::DefenceGrid,
@@ -455,6 +458,7 @@ impl GameState {
             tech_levels: BTreeMap::new(),
             exclusive_picks: BTreeMap::new(),
             research: None,
+            research_queue: Vec::new(),
             fleet: Fleet::default(),
             ship_queue: Vec::new(),
             defences: crate::DefenceGrid::default(),
@@ -899,6 +903,7 @@ impl GameState {
                     ..crate::HistoryDraft::default()
                 });
                 self.note_daily(DailyAction::ResearchComplete, done_at);
+                self.start_queued_research(done_at);
             }
             if ship_at == Some(done_at) {
                 self.complete_one_ship(done_at);
@@ -1782,6 +1787,55 @@ impl GameState {
         Ok(job.paid)
     }
 
+    /// The level `tech` would be researched from if picked now: its current
+    /// level plus every running or queued job for it. Prices and durations
+    /// shown for a pick use this level.
+    pub fn next_research_level(&self, tech: &str) -> u32 {
+        let pending = self
+            .research
+            .iter()
+            .chain(&self.research_queue)
+            .filter(|job| job.tech == tech)
+            .count();
+        self.tech_level(tech) + pending as u32
+    }
+
+    /// Whether `tech` could start from the current levels: known, visible,
+    /// not excluded, prerequisites met and below its maximum level.
+    fn check_research_start(&self, tech: &str) -> Result<(), ResearchError> {
+        let spec = self
+            .config
+            .techs
+            .get(tech)
+            .ok_or_else(|| ResearchError::UnknownTech {
+                id: tech.to_string(),
+            })?;
+        let gaps = self.research_prereq_gaps(spec);
+        if !gaps.is_empty() {
+            return Err(ResearchError::MissingPrerequisites { gaps });
+        }
+        match self.tech_node_state(tech) {
+            TechNodeState::Hidden => {
+                return Err(ResearchError::Hidden {
+                    id: tech.to_string(),
+                });
+            }
+            TechNodeState::Excluded => {
+                return Err(ResearchError::Excluded {
+                    id: tech.to_string(),
+                    group: spec.exclusive_group.clone().unwrap_or_default(),
+                });
+            }
+            _ => {}
+        }
+        if spec.max_level.is_some_and(|m| self.tech_level(tech) >= m) {
+            return Err(ResearchError::Complete {
+                id: tech.to_string(),
+            });
+        }
+        Ok(())
+    }
+
     /// Start the single research slot. Fails if another tech is already running.
     pub fn start_research(&mut self, tech: &str, now_unix: u64) -> Result<(), ResearchError> {
         self.catch_up(now_unix);
@@ -1791,8 +1845,9 @@ impl GameState {
                 current: current.tech.clone(),
             });
         }
+        self.check_research_start(tech)?;
         let from_level = self.tech_level(tech);
-        let (cost, duration, gaps) = {
+        let (cost, duration) = {
             let spec = self
                 .config
                 .techs
@@ -1805,43 +1860,8 @@ impl GameState {
                 ((spec.duration_secs(from_level) as f64) / self.research_speed())
                     .ceil()
                     .max(1.0) as u64,
-                self.research_prereq_gaps(spec),
             )
         };
-        if !gaps.is_empty() {
-            return Err(ResearchError::MissingPrerequisites { gaps });
-        }
-        match self.tech_node_state(tech) {
-            TechNodeState::Hidden => {
-                return Err(ResearchError::Hidden {
-                    id: tech.to_string(),
-                });
-            }
-            TechNodeState::Excluded => {
-                let group = self
-                    .config
-                    .techs
-                    .get(tech)
-                    .and_then(|s| s.exclusive_group.clone())
-                    .unwrap_or_default();
-                return Err(ResearchError::Excluded {
-                    id: tech.to_string(),
-                    group,
-                });
-            }
-            _ => {}
-        }
-        if self
-            .config
-            .techs
-            .get(tech)
-            .and_then(|s| s.max_level)
-            .is_some_and(|m| from_level >= m)
-        {
-            return Err(ResearchError::Complete {
-                id: tech.to_string(),
-            });
-        }
         if !self.resources.can_afford(cost) {
             return Err(ResearchError::InsufficientResources {
                 missing: self.resources.missing(cost),
@@ -1895,10 +1915,129 @@ impl GameState {
         Ok(())
     }
 
+    /// Start `tech` if the lab is idle, or pay for it now and queue it behind
+    /// the running job and earlier entries. Prerequisites, levels and
+    /// exclusive picks are checked as if every queued tech had finished, so a
+    /// chain can be queued in one visit. The queue holds as many entries as
+    /// the build queue.
+    pub fn queue_research(&mut self, tech: &str, now_unix: u64) -> Result<(), ResearchError> {
+        self.catch_up(now_unix);
+        if self.research.is_none() {
+            return self.start_research(tech, now_unix);
+        }
+        let cap = self.build_queue_cap();
+        if self.research_queue.len() >= cap {
+            return Err(ResearchError::QueueFull { cap });
+        }
+        let now = self.last_tick_unix;
+        // Judge the entry against the levels the lab will have reached.
+        let mut projected = self.clone();
+        projected.research_queue.clear();
+        for job in self.research.iter().chain(&self.research_queue) {
+            *projected.tech_levels.entry(job.tech.clone()).or_insert(0) += 1;
+        }
+        projected.research = None;
+        projected.resources = self.resources;
+        projected.check_research_start(tech)?;
+        let from_level = self.next_research_level(tech);
+        let cost = self
+            .config
+            .techs
+            .get(tech)
+            .map(|spec| spec.cost(from_level))
+            .unwrap_or(Resources::ZERO);
+        if !self.resources.can_afford(cost) {
+            return Err(ResearchError::InsufficientResources {
+                missing: self.resources.missing(cost),
+                cost,
+            });
+        }
+        let amount = self.value_resources(cost);
+        let centers = crate::finance::research_centers();
+        let pending = crate::PendingKind::Research {
+            tech: tech.to_string(),
+        };
+        if let Err(id) = self.hold_spend(&centers, amount, pending.clone(), crate::Actor::Player) {
+            return Err(ResearchError::NeedsApproval { id });
+        }
+        self.resources = self.resources.saturating_sub(cost);
+        if let Some(group) = self
+            .config
+            .techs
+            .get(tech)
+            .and_then(|s| s.exclusive_group.clone())
+        {
+            self.exclusive_picks.insert(group, tech.to_string());
+        }
+        self.research_queue.push(ResearchJob {
+            tech: tech.to_string(),
+            from_level,
+            paid: cost,
+            credits: amount,
+            started_at: 0,
+            completes_at: 0,
+        });
+        self.record_history(crate::HistoryDraft {
+            at: now,
+            kind: crate::HistoryKind::Research,
+            actor: "player".into(),
+            action: "queue".into(),
+            objects: vec![tech.to_string()],
+            inputs: cost.brief(),
+            outcome: "queued".into(),
+            ..crate::HistoryDraft::default()
+        });
+        self.commit_spend(&centers, amount, &pending, crate::Actor::Player);
+        Ok(())
+    }
+
+    /// Promote the next paid entry when the lab frees up at `at`. Its time
+    /// uses the research speed of that moment, like a job started by hand.
+    fn start_queued_research(&mut self, at: u64) {
+        if self.research.is_some() || self.research_queue.is_empty() {
+            return;
+        }
+        let mut job = self.research_queue.remove(0);
+        let level = self.tech_level(&job.tech);
+        let duration = self
+            .config
+            .techs
+            .get(&job.tech)
+            .map(|spec| {
+                ((spec.duration_secs(level) as f64) / self.research_speed())
+                    .ceil()
+                    .max(1.0) as u64
+            })
+            .unwrap_or(1);
+        job.from_level = level;
+        job.started_at = at;
+        job.completes_at = at.saturating_add(duration);
+        let tech = job.tech.clone();
+        self.research = Some(job);
+        self.record_history(crate::HistoryDraft {
+            at,
+            kind: crate::HistoryKind::Research,
+            actor: "simulation".into(),
+            action: "start".into(),
+            objects: vec![tech.clone()],
+            outcome: "started".into(),
+            cause_key: Some(format!("research:{tech}")),
+            ..crate::HistoryDraft::default()
+        });
+    }
+
     pub fn cancel_research(&mut self, now_unix: u64) -> Result<Resources, ResearchError> {
         self.catch_up(now_unix);
-        let job = self.research.take().ok_or(ResearchError::Idle)?;
-        self.history.forget_cause(&format!("research:{}", job.tech));
+        // The newest entry goes first: a queued one before the running job.
+        // Only a running job has registered a history cause.
+        let job = match self.research_queue.pop() {
+            Some(job) => job,
+            None => {
+                let job = self.research.take().ok_or(ResearchError::Idle)?;
+                self.history.forget_cause(&format!("research:{}", job.tech));
+                job
+            }
+        };
         self.resources = self.resources.saturating_add(job.paid);
         self.refund_spend(
             &crate::finance::research_centers(),
@@ -8438,6 +8577,88 @@ modifiers = []
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn queued_chain_checks_prereqs_against_projected_levels() {
+        let mut state = GameState::with_config(0, research_config());
+        assert!(matches!(
+            state.queue_research("laser", 0),
+            Err(ResearchError::MissingPrerequisites { .. })
+        ));
+        state.queue_research("energy", 0).unwrap();
+        assert!(matches!(
+            state.queue_research("laser", 0),
+            Err(ResearchError::MissingPrerequisites { .. })
+        ));
+        state.queue_research("energy", 0).unwrap();
+        state.queue_research("laser", 0).unwrap();
+        assert_eq!(state.research_queue.len(), 2);
+        // The second energy level is paid at its own price when queued.
+        assert_eq!(state.research_queue[0].from_level, 1);
+        close(state.resources.silicon, 10_000.0 - 10.0 - 20.0);
+        close(state.resources.iron, 10_000.0 - 10.0);
+
+        state.catch_up(10_000);
+        assert_eq!(state.tech_level("energy"), 2);
+        assert_eq!(state.tech_level("laser"), 1);
+        assert!(state.research.is_none());
+        assert!(state.research_queue.is_empty());
+    }
+
+    #[test]
+    fn queued_research_catches_up_the_same_in_one_gap_or_many() {
+        let fresh = || {
+            let mut state = GameState::with_config(0, research_config());
+            state.queue_research("energy", 0).unwrap();
+            state.queue_research("weapons", 0).unwrap();
+            state.queue_research("energy", 0).unwrap();
+            state
+        };
+        let mut jump = fresh();
+        jump.catch_up(2_000);
+        let mut steps = fresh();
+        for at in (50..=2_000).step_by(50) {
+            steps.catch_up(at);
+        }
+        assert_eq!(jump.tech_levels, steps.tech_levels);
+        assert_eq!(jump.research, steps.research);
+        assert_eq!(jump.research_queue, steps.research_queue);
+        // Each queued job starts the moment the one before it finishes.
+        let first = fresh().research.unwrap();
+        let job = jump.research.as_ref().unwrap();
+        assert_eq!(jump.tech_level("weapons"), 1);
+        assert_eq!(job.tech, "energy");
+        assert!(job.started_at > first.completes_at);
+        assert!(jump.research_queue.is_empty());
+    }
+
+    #[test]
+    fn cancel_refunds_the_newest_queued_entry_first() {
+        let mut state = GameState::with_config(0, research_config());
+        state.queue_research("energy", 0).unwrap();
+        state.queue_research("weapons", 0).unwrap();
+        let before = state.resources;
+        state.queue_research("energy", 0).unwrap();
+        state.cancel_research(0).unwrap();
+        assert_eq!(state.research_queue.len(), 1);
+        assert_eq!(state.research_queue[0].tech, "weapons");
+        close(state.resources.silicon, before.silicon);
+        assert_eq!(state.research.as_ref().unwrap().tech, "energy");
+    }
+
+    #[test]
+    fn research_queue_shares_the_build_queue_cap() {
+        let mut state = GameState::with_config(0, research_config());
+        state.queue_research("energy", 0).unwrap();
+        let cap = state.build_queue_cap();
+        for _ in 0..cap {
+            state.queue_research("weapons", 0).unwrap();
+        }
+        assert_eq!(
+            state.queue_research("weapons", 0),
+            Err(ResearchError::QueueFull { cap })
+        );
     }
 
     #[test]

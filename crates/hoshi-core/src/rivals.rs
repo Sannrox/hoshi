@@ -536,6 +536,7 @@ impl GameState {
         pocket.fleet = rival.fleet;
         pocket.tech_levels = rival.tech_levels.clone();
         pocket.research = rival.research.clone();
+        pocket.research_queue.clear();
         pocket.ship_queue = rival.ship_queue.clone();
         pocket.home = rival.home;
         pocket.colonies.clear();
@@ -756,7 +757,12 @@ fn pick_building(pocket: &GameState, spec: &RivalPersonality) -> BuildingKind {
         .unwrap_or(&BuildingKind::MetalMine)
 }
 
+/// Rivals research one tech at a time: a busy lab picks nothing rather than
+/// paying into the player-facing queue.
 fn pick_research(pocket: &GameState, at: u64) -> Option<String> {
+    if pocket.research.is_some() {
+        return None;
+    }
     for spec in pocket.config.techs.iter() {
         let intent = Intent::Research {
             tech: spec.id.clone(),
@@ -978,6 +984,18 @@ mod tests {
             .spawn_rivals(&RivalCatalog::default(), settings)
             .unwrap_err();
         assert!(matches!(err, RivalError::Invalid(_)));
+    }
+
+    #[test]
+    fn rival_pocket_never_inherits_the_player_research_queue() {
+        let mut state = quiet(1_000);
+        state.buildings.research_lab = 1;
+        state.resources = crate::Resources::from_parts(50_000.0, 50_000.0, 50_000.0);
+        state.queue_research("energy", 1_000).unwrap();
+        state.queue_research("energy", 1_000).unwrap();
+        let state = spawn_on(state, 60);
+        assert_eq!(state.research_queue.len(), 1);
+        assert!(state.make_pocket(0).research_queue.is_empty());
     }
 
     #[test]

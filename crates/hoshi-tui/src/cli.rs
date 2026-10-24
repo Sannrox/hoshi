@@ -93,7 +93,7 @@ crate::help::catalog_commands! {
     FusionMode { planet: Coord, mode: FusionMode, actor: Actor },
     #[help("fusion status", "Show fusion output, mode, fuel burn, start-up progress, and cooling cap.", "fusion status [PLANET]", "fusion status home")]
     FusionStatus { planet: Option<Coord> },
-    #[help("research", "Start research through the ordinary rules path.", "research TECH", "research energy")]
+    #[help("research", "Start research, or queue it behind the running job.", "research TECH", "research energy")]
     Research {
         tech: String,
     },
@@ -1179,8 +1179,14 @@ fn apply(
             Ok(ok_state(state, "queued build"))
         }
         Command::Research { tech } => {
+            let queued = state.research_queue.len();
             governed(state, Intent::Research { tech: tech.clone() }, now)?;
-            Ok(ok_state(state, "started research"))
+            let action = if state.research_queue.len() > queued {
+                "queued research"
+            } else {
+                "started research"
+            };
+            Ok(ok_state(state, action))
         }
         Command::Cancel { item } => {
             match item {
@@ -2685,6 +2691,10 @@ fn state_value(state: &GameState, actor: Actor) -> Value {
                 "from_level": j.from_level,
                 "completes_at": j.completes_at,
             })),
+            "queue": state.research_queue.iter().map(|j| json!({
+                "tech": j.tech,
+                "from_level": j.from_level,
+            })).collect::<Vec<_>>(),
             "levels": techs,
             "exclusive_picks": state.exclusive_picks,
         },

@@ -317,7 +317,8 @@
       "smuggler_network": 0,
       "trade_empire": 0,
       "weapons": 0
-    }
+    },
+    "queue": []
   },
   "resources": {
     "deuterium": 2875.0,
@@ -331,7 +332,7 @@
     "empires": [],
     "enabled": false
   },
-  "save_schema": 51,
+  "save_schema": 52,
   "schema_version": 2,
   "season": null,
   "species": null,

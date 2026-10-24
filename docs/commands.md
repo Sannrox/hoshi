@@ -1241,7 +1241,7 @@ Area: cli.
 
 ## research
 
-Start research through the ordinary rules path.
+Start research, or queue it behind the running job.
 
 ```text
 hoshi research TECH

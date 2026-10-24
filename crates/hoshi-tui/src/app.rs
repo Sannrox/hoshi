@@ -1316,9 +1316,13 @@ impl App {
                     .map(|k| k.as_key())
                     .unwrap_or("unknown");
                 let work = if self.screen == Screen::Overview {
+                    let queued = match self.state.research_queue.len() {
+                        0 => String::new(),
+                        n => format!(" +{n} queued"),
+                    };
                     match &self.state.research {
                         Some(job) => format!(
-                            "research {} → lv{} {}",
+                            "research {} → lv{} {}{queued}",
                             job.tech,
                             job.from_level + 1,
                             ui::spans::duration(
@@ -2341,7 +2345,7 @@ impl App {
                 let Some(id) = self.tech_id_at(self.selected) else {
                     return;
                 };
-                match self.state.start_research(&id, now_unix) {
+                match self.state.queue_research(&id, now_unix) {
                     Ok(()) => self.status.clear(),
                     Err(e) => self.status = e.to_string(),
                 }

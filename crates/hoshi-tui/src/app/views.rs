@@ -442,7 +442,8 @@ impl App {
                 last_tier = Some(spec.tier);
             }
             let level = self.state.tech_level(&spec.id);
-            let cost = spec.cost(level);
+            let next = self.state.next_research_level(&spec.id);
+            let cost = spec.cost(next);
             let reason = self.tech_block_reason(&spec.id, cost);
             let base = self.row_style(reason.is_some());
             let mut name = vec![
@@ -458,7 +459,7 @@ impl App {
             }
             let mut row = vec![Line::from(name)];
             row.extend(self.cost_cells(cost, self.state.resources, base));
-            row.push(Line::styled(duration(spec.duration_secs(level)), base));
+            row.push(Line::styled(duration(spec.duration_secs(next)), base));
             let node = self.state.tech_node_state(&spec.id);
             row.push(match node {
                 TechNodeState::InProgress => self.chip("in progress", Intent::Warning, false),

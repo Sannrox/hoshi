@@ -391,7 +391,7 @@ fn apply_inner(state: &mut GameState, intent: &Intent, now_unix: u64) -> Result<
             .set_fusion_mode(*planet, *mode, now_unix, *actor)
             .map_err(IntentError::Fusion),
         Intent::Research { tech } => state
-            .start_research(tech, now_unix)
+            .queue_research(tech, now_unix)
             .map_err(IntentError::Research),
         Intent::Launch {
             ships,

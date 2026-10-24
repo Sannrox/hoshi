@@ -121,7 +121,9 @@ hoshi [--save PATH] --demo demo governance --seed N [--report PATH]
 
 Planet is `home` or `galaxy:system:position`. Building and ship ids match the
 config keys (`metal_mine`, `light_fighter`). Queue item is `0`, `build:0`, or
-`research`. Mission is `attack`, `invade`, `colonize`, `expedition`, or `spy`. Ships look like
+`research`. `research` on a busy lab pays now and queues the tech behind the
+running job (as many entries as the build queue); prerequisites count queued
+levels. `cancel research` refunds the newest queued entry, then the running job. Mission is `attack`, `invade`, `colonize`, `expedition`, or `spy`. Ships look like
 `light_fighter:2`. `attack` fights an outpost's defences; `invade` lands troop
 transports and is refused while defences remain. `spy` sends espionage probes and
 writes a report that arrives after light-time; `state` lists arrived reports with

@@ -660,7 +660,12 @@ impl GameState {
                     .map(|job| (colony.coord, job.paid))
             })
             .collect();
-        let research_paid = self.research.as_ref().map(|job| job.paid);
+        let research_paid: Vec<Resources> = self
+            .research
+            .iter()
+            .chain(&self.research_queue)
+            .map(|job| job.paid)
+            .collect();
         let ship_paid: Vec<Resources> = self
             .ship_queue
             .iter()
@@ -693,7 +698,7 @@ impl GameState {
             jobs.push((CostCenter::Department(Department::Industry), amount));
             jobs.push((CostCenter::Colony(coord), amount));
         }
-        if let Some(paid) = research_paid {
+        for paid in research_paid {
             jobs.push((
                 CostCenter::Department(Department::Research),
                 self.value_resources(paid),
@@ -810,7 +815,7 @@ impl GameState {
                 .enqueue_build_as(*coord, *building, now_unix, Actor::Player)
                 .map_err(|e| FinanceError::CannotApply(e.to_string())),
             PendingKind::Research { tech } => self
-                .start_research(tech, now_unix)
+                .queue_research(tech, now_unix)
                 .map_err(|e| FinanceError::CannotApply(e.to_string())),
             PendingKind::Ships { kind, count } => self
                 .enqueue_ships(*kind, *count, now_unix)
@@ -937,6 +942,43 @@ mod tests {
         assert_eq!(state.finance.pending.len(), 1);
         assert_eq!(state.finance.pending[0].id, 1);
         assert_eq!(state.resources.iron, 50_000.0);
+    }
+
+    #[test]
+    fn approved_research_joins_the_queue_behind_a_busy_lab() {
+        let mut state = rich(1_000);
+        state.buildings.research_lab = 1;
+        state.start_research("energy", 1_000).unwrap();
+        state
+            .set_budget(
+                CostCenter::Department(Department::Research),
+                Some(1.0),
+                Actor::Player,
+                1_000,
+            )
+            .unwrap();
+        let err = state.queue_research("energy", 1_000).unwrap_err();
+        let crate::ResearchError::NeedsApproval { id } = err else {
+            panic!("{err:?}");
+        };
+        state
+            .approve_spend(id, Actor::Player, 1_000)
+            .expect("approve");
+        assert_eq!(state.research_queue.len(), 1);
+        assert!(state.finance.pending.is_empty());
+        let research = state
+            .finance
+            .budgets
+            .iter()
+            .find(|b| b.center == CostCenter::Department(Department::Research))
+            .unwrap();
+        let both = state.value_resources(state.research.as_ref().unwrap().paid)
+            + state.value_resources(state.research_queue[0].paid);
+        assert!(
+            (research.forecast - both).abs() < 1e-9,
+            "{}",
+            research.forecast
+        );
     }
 
     #[test]

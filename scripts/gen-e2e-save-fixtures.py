@@ -1344,6 +1344,14 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             batteries_before INTEGER NOT NULL CHECK (batteries_before >= 0),
             batteries_after INTEGER NOT NULL CHECK (batteries_after >= 0),
             rebuilt INTEGER NOT NULL CHECK (rebuilt >= 0))""")
+    elif version == 52:
+        conn.execute("""CREATE TABLE IF NOT EXISTS research_queue (
+            position INTEGER PRIMARY KEY,
+            tech TEXT NOT NULL,
+            from_level INTEGER NOT NULL CHECK (from_level >= 0),
+            paid_metal REAL NOT NULL CHECK (paid_metal >= 0),
+            paid_crystal REAL NOT NULL CHECK (paid_crystal >= 0),
+            paid_deuterium REAL NOT NULL CHECK (paid_deuterium >= 0))""")
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"
