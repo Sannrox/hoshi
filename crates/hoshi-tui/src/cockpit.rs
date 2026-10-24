@@ -109,6 +109,7 @@ pub enum Target {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AlertKind {
     Decision,
+    Story,
     Raid,
     Defence,
     Hostile,
@@ -121,7 +122,7 @@ impl AlertKind {
     fn intent(self) -> Intent {
         match self {
             Self::Decision | Self::Raid | Self::Defence => Intent::Danger,
-            Self::Hostile | Self::Power | Self::Storage => Intent::Warning,
+            Self::Story | Self::Hostile | Self::Power | Self::Storage => Intent::Warning,
             Self::IdleQueue => Intent::Primary,
         }
     }
@@ -129,7 +130,7 @@ impl AlertKind {
     fn severity(self) -> u8 {
         match self {
             Self::Decision | Self::Raid => 0,
-            Self::Defence => 1,
+            Self::Story | Self::Defence => 1,
             Self::Hostile => 2,
             Self::Power => 3,
             Self::IdleQueue => 4,
@@ -494,6 +495,19 @@ pub fn alerts(state: &GameState) -> Vec<Alert> {
                 ),
                 jump: Target::Planet(home),
                 decision: Some(decision),
+            },
+        );
+    }
+    if let Some(note) = state.story_bridge_note() {
+        let at = usize::from(rows.first().is_some_and(|row| row.decision.is_some()));
+        rows.insert(
+            at,
+            Alert {
+                kind: AlertKind::Story,
+                text: note.to_string(),
+                detail: "story".into(),
+                jump: Target::Planet(home),
+                decision: None,
             },
         );
     }
@@ -1666,6 +1680,27 @@ mod tests {
         assert!(rows.iter().skip(1).any(|row| row.text.contains("idle")));
         assert!(rows.iter().skip(1).any(|row| row.text.contains("storage")));
         assert!(rows.iter().skip(1).all(|row| row.decision.is_none()));
+    }
+
+    #[test]
+    fn a_story_note_sits_behind_the_decision_until_the_next_arc_is_pending() {
+        let mut state = GameState::new(0);
+        state.config.raid.enabled = false;
+        state.config.market.enabled = false;
+        state.config.diplomacy.enabled = false;
+        state.next_raid_at = None;
+        state.catch_up(1_800);
+        state.choose_story("answer", 1_800).unwrap();
+        let rows = alerts(&state);
+        assert!(rows[0].decision.is_some() || rows[0].text.contains("hail"));
+        assert!(
+            rows.iter().any(|row| row.text == "The hail is still open."),
+            "{:?}",
+            rows.iter().map(|row| row.text.as_str()).collect::<Vec<_>>()
+        );
+        state.catch_up(1_800 + 3_600);
+        let rows = alerts(&state);
+        assert!(rows.iter().all(|row| row.text != "The hail is still open."));
     }
 
     #[test]

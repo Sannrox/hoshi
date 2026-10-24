@@ -1344,6 +1344,11 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             batteries_before INTEGER NOT NULL CHECK (batteries_before >= 0),
             batteries_after INTEGER NOT NULL CHECK (batteries_after >= 0),
             rebuilt INTEGER NOT NULL CHECK (rebuilt >= 0))""")
+    elif version == 53:
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS story_flags (
+            flag TEXT PRIMARY KEY)"""
+        )
     elif version == 52:
         conn.execute("""CREATE TABLE IF NOT EXISTS research_queue (
             position INTEGER PRIMARY KEY,

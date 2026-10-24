@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 52;
+pub const SCHEMA_VERSION: u32 = 53;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -189,6 +189,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM prestige;
          DELETE FROM goods;
          DELETE FROM story_pending;
+         DELETE FROM story_flags;
          DELETE FROM market_prices;
          DELETE FROM market_history;
          DELETE FROM faction_standing;
@@ -588,6 +589,9 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 pending.timeout_at as i64,
             ],
         )?;
+    }
+    for flag in &state.story_flags {
+        tx.execute("INSERT INTO story_flags (flag) VALUES (?1)", params![flag])?;
     }
     for kind in crate::ResourceKind::QUOTED {
         tx.execute(
@@ -1936,6 +1940,12 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         None => None,
     };
 
+    let mut flag_stmt = conn.prepare("SELECT flag FROM story_flags ORDER BY flag")?;
+    let flag_rows = flag_stmt.query_map([], |row| row.get::<_, String>(0))?;
+    for flag in flag_rows {
+        state.story_flags.insert(flag?);
+    }
+
     load_market(conn, &mut state)?;
     load_diplomacy(conn, &mut state)?;
     load_spy_reports(conn, &mut state)?;
@@ -3200,6 +3210,7 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "prestige_runs" => "SELECT COUNT(*) FROM prestige_runs",
         "goods" => "SELECT COUNT(*) FROM goods",
         "story_pending" => "SELECT COUNT(*) FROM story_pending",
+        "story_flags" => "SELECT COUNT(*) FROM story_flags",
         "market_prices" => "SELECT COUNT(*) FROM market_prices",
         "market_history" => "SELECT COUNT(*) FROM market_history",
         "faction_standing" => "SELECT COUNT(*) FROM faction_standing",
@@ -3318,6 +3329,7 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "prestige_runs")?
         + count_rows(conn, "goods")?
         + count_rows(conn, "story_pending")?
+        + count_rows(conn, "story_flags")?
         + count_rows(conn, "market_prices")?
         + count_rows(conn, "market_history")?
         + count_rows(conn, "faction_standing")?
@@ -3568,6 +3580,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 52 {
         migrate_v52(conn)?;
+    }
+    if found < 53 {
+        migrate_v53(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -4678,6 +4693,16 @@ fn migrate_v50(conn: &Connection) -> Result<(), SaveError> {
             water_ice REAL NOT NULL CHECK (water_ice >= 0),
             helium_3 REAL NOT NULL CHECK (helium_3 >= 0),
             deuterium REAL NOT NULL CHECK (deuterium >= 0)
+        );",
+    )?;
+    Ok(())
+}
+
+/// v53: story flags. A missing table is an empty set, so older saves load unchanged.
+fn migrate_v53(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS story_flags (
+            flag TEXT PRIMARY KEY
         );",
     )?;
     Ok(())
@@ -9328,6 +9353,48 @@ mod tests {
         save_state(&mut conn, &original).unwrap();
         let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
         assert_eq!(loaded, original);
+    }
+
+    #[test]
+    fn migrate_v53_loads_an_empty_flag_set_and_keeps_the_old_draw() {
+        let cfg = BalanceConfig {
+            story: crate::StoryCatalog::parse(
+                r#"
+first_delay_secs = 10
+cooldown_secs = 50
+[[event]]
+id = "alpha"
+title = "Alpha"
+text = "First pick."
+weight = 1
+timeout_secs = 20
+timeout_choice = "leave"
+[[event.choices]]
+id = "leave"
+label = "Leave it"
+"#,
+            )
+            .unwrap(),
+            ..BalanceConfig::default()
+        };
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let mut state = GameState::with_config(0, cfg.clone());
+        state.rng_seed = 4;
+        save_state(&mut conn, &state).unwrap();
+        conn.execute_batch("DROP TABLE story_flags; PRAGMA user_version = 52;")
+            .unwrap();
+        migrate(&conn).unwrap();
+        let mut loaded = load_state(&conn, cfg.clone()).unwrap();
+        assert!(loaded.story_flags.is_empty());
+        let mut fresh = GameState::with_config(0, cfg);
+        fresh.rng_seed = 4;
+        loaded.catch_up(10);
+        fresh.catch_up(10);
+        assert_eq!(loaded.story_pending, fresh.story_pending);
+        assert_eq!(
+            loaded.story_pending.as_ref().map(|p| p.event_id.as_str()),
+            Some("alpha")
+        );
     }
 
     #[test]

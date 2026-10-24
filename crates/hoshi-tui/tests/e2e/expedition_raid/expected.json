@@ -123,7 +123,7 @@
     }
   ],
   "finance": {
-    "cash": 790.0540309788798,
+    "cash": 779.3708485179409,
     "debt": 0.0,
     "pending": 0
   },
@@ -337,7 +337,7 @@
     "empires": [],
     "enabled": false
   },
-  "save_schema": 52,
+  "save_schema": 53,
   "schema_version": 2,
   "season": null,
   "species": null,
