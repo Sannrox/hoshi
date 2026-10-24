@@ -154,7 +154,7 @@ impl fmt::Display for VictoryError {
 impl std::error::Error for VictoryError {}
 
 impl GameState {
-    pub(crate) fn seed_pirate_home(&mut self, now: u64) {
+    pub fn seed_pirate_home(&mut self, now: u64) {
         if let Some(existing) = self.outposts.iter().find(|o| o.homeworld) {
             self.pirate_home = existing.coord;
             return;
@@ -310,7 +310,7 @@ impl GameState {
         }
     }
 
-    pub(crate) fn maybe_declare_victory(&mut self, at: u64) {
+    pub fn maybe_declare_victory(&mut self, at: u64) {
         if !self.config.victory.enabled || self.victory.is_some() {
             return;
         }

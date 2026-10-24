@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate checked-in old-schema save fixtures for hoshi-tui e2e tests.
 
-Reads SCHEMA_VERSION from crates/hoshi-core/src/save.rs and writes one sqlite
+Reads SCHEMA_VERSION from crates/hoshi-storage/src/save.rs and writes one sqlite
 file per promised migration (v1 through current-1), plus a newer-than-supported
 save and a deterministic expedition fixture.
 
@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SAVE_RS = ROOT / "crates" / "hoshi-core" / "src" / "save.rs"
+SAVE_RS = ROOT / "crates" / "hoshi-storage" / "src" / "save.rs"
 OUT_DIR = ROOT / "crates" / "hoshi-tui" / "tests" / "e2e" / "fixtures"
 
 # Far enough in the future that a live `state` command is a catch-up no-op.

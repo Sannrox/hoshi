@@ -15,7 +15,7 @@ VERSION="${TAG#v}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
 
-SCHEMA="$(sed -n 's/^pub const SCHEMA_VERSION: u32 = \([0-9][0-9]*\);/\1/p' crates/hoshi-core/src/save.rs | head -n1)"
+SCHEMA="$(sed -n 's/^pub const SCHEMA_VERSION: u32 = \([0-9][0-9]*\);/\1/p' crates/hoshi-storage/src/save.rs | head -n1)"
 if [ -z "${SCHEMA}" ]; then
   printf 'release-notes: SCHEMA_VERSION not found\n' >&2
   exit 1

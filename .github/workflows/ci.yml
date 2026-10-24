@@ -47,10 +47,10 @@ jobs:
       matrix:
         include:
           - name: Mikura backend
-            run: cargo test --locked -p hoshi-core --features mikura
+            run: cargo test --locked -p hoshi-storage --features mikura
           - name: Chisei backend
             run: |
-              cargo test --locked -p hoshi-core --features chisei
+              cargo test --locked -p hoshi-storage --features chisei
               cargo test --locked -p hoshi --features chisei
           - name: Embedded web client
             run: cargo test --locked -p hoshi --features ui --bin hoshi -- web_ui ui_pin serve::tests::ui_ serve::tests::root_and_ui
@@ -89,8 +89,8 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - run: cargo clippy --locked -p hoshi-core --features mikura --all-targets -- -D warnings
-      - run: cargo clippy --locked -p hoshi-core --features chisei --all-targets -- -D warnings
+      - run: cargo clippy --locked -p hoshi-storage --features mikura --all-targets -- -D warnings
+      - run: cargo clippy --locked -p hoshi-storage --features chisei --all-targets -- -D warnings
       - run: cargo clippy --locked -p hoshi --features chisei --all-targets -- -D warnings
       - run: cargo clippy --locked -p hoshi --features ui --all-targets -- -D warnings
 

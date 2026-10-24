@@ -1,6 +1,6 @@
 //! Data-driven harness CLI tests. Scenario directories live beside this file.
 
-use hoshi_core::{SCHEMA_VERSION, lock_save};
+use hoshi_storage::{SCHEMA_VERSION, lock_save};
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};

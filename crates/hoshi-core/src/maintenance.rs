@@ -674,7 +674,7 @@ impl GameState {
         });
     }
 
-    pub(crate) fn sync_maintenance_assets(&mut self, at: u64) {
+    pub fn sync_maintenance_assets(&mut self, at: u64) {
         let cfg = self.maintenance_config();
         let mut wanted: Vec<(AssetKind, String, Coord)> = Vec::new();
         let mut sites: Vec<(crate::Buildings, crate::DefenceGrid, Coord)> =

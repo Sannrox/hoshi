@@ -601,6 +601,7 @@ dependencies = [
  "hkdf",
  "hoshi-bridge",
  "hoshi-core",
+ "hoshi-storage",
  "libc",
  "p256",
  "pulldown-cmark",
@@ -630,7 +631,6 @@ dependencies = [
 name = "hoshi-bridge"
 version = "0.1.0"
 dependencies = [
- "hoshi-core",
  "serde",
  "serde_json",
 ]
@@ -641,11 +641,22 @@ version = "0.1.0"
 dependencies = [
  "hmac",
  "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "toml",
+]
+
+[[package]]
+name = "hoshi-storage"
+version = "0.1.0"
+dependencies = [
+ "hoshi-core",
+ "libc",
  "mikura",
  "rusqlite",
  "serde",
  "serde_json",
- "sha2",
  "toml",
 ]
 

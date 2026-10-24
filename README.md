@@ -33,7 +33,8 @@ the game is balanced without it.
 
 | Crate | Role |
 | --- | --- |
-| `hoshi-core` | Rules, state, timers, offline progression, save backends (SQLite default; optional Mikura / Chisei) |
+| `hoshi-core` | Rules, state, timers, offline progression |
+| `hoshi-storage` | Save backends (SQLite default; optional Mikura / Chisei) |
 | `hoshi` | Playable binary (ratatui; sources in `crates/hoshi-tui`) |
 | `hoshi-bridge` | GitHub and agent events into game events |
 | `hoshi-author` | Offline drafts of story events (`content/drafts/`); never runs in the game |

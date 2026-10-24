@@ -502,7 +502,7 @@ impl GameState {
         Ok(())
     }
 
-    pub(crate) fn maybe_leak_spy(&mut self, at: u64, detected: bool) {
+    pub fn maybe_leak_spy(&mut self, at: u64, detected: bool) {
         if !detected {
             return;
         }

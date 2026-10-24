@@ -804,19 +804,11 @@ mod tests {
                 .enqueue_dismantle_as(colony_coord, BuildingKind::MetalMine, 100, Actor::Player)
                 .unwrap();
         }
-        let mut conn = crate::open_save(std::path::Path::new(":memory:")).unwrap();
-        crate::save_state(&mut conn, &state).unwrap();
-        let mut loaded = crate::load_state(&conn, state.config.clone()).unwrap();
-        assert_eq!(loaded.build_queue, state.build_queue);
-        assert_eq!(
-            loaded.colonies[0].build_queue,
-            state.colonies[0].build_queue
-        );
-        assert_eq!(loaded.production_at(colony_coord, ResourceKind::Iron), 0.0);
-        let until = loaded.build_queue[0].completes_at.unwrap();
-        loaded.catch_up(until);
-        assert_eq!(loaded.buildings.fission_reactor, 0);
-        assert_eq!(loaded.goods["reactor_fuel"], 10.0);
-        assert!(loaded.reactor_decay_heat_at(loaded.home) > 0.0);
+        assert_eq!(state.production_at(colony_coord, ResourceKind::Iron), 0.0);
+        let until = state.build_queue[0].completes_at.unwrap();
+        state.catch_up(until);
+        assert_eq!(state.buildings.fission_reactor, 0);
+        assert_eq!(state.goods["reactor_fuel"], 10.0);
+        assert!(state.reactor_decay_heat_at(state.home) > 0.0);
     }
 }

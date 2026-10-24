@@ -2,7 +2,7 @@
 
 Off until you build with `--features chisei` **and** either pass a `*.chisei`
 path or set `chisei = true` in `config.toml`. The local game stays SQLite.
-hoshi-core does not open a network connection; this is an in-process object
+hoshi-storage does not open a network connection; this is an in-process object
 graph plus the same SQLite `GameState` codec as the default save. A live shared
 shard is still a Chisei-hosted deployment ([ADR 0005](decisions/0005-shared-shard-on-chisei.md),
 [ADR 0007](decisions/0007-optional-chisei-backend.md)).
@@ -73,13 +73,13 @@ loop to finish in under twelve seconds. CLI and TUI still persist once per
 command, not per tick. Catch-up stays in memory, then one save.
 
 ```sh
-cargo test -p hoshi-core --features chisei apply_save_throughput
+cargo test -p hoshi-storage --features chisei apply_save_throughput
 ```
 
 ## Tests
 
 ```sh
-cargo test -p hoshi-core --features chisei
+cargo test -p hoshi-storage --features chisei
 ```
 
 Covers the shared storage contract from #25, object-graph rows, two-player fog

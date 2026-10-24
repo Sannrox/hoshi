@@ -1,0 +1,24 @@
+[package]
+description = "Save backends for hoshi. Game rules stay in hoshi-core."
+name = "hoshi-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[features]
+default = []
+mikura = ["dep:mikura"]
+chisei = ["dep:toml"]
+
+[dependencies]
+hoshi-core = { workspace = true }
+rusqlite = { version = "0.37", features = ["bundled", "serialize"] }
+serde = { version = "1.0.229", default-features = false, features = ["derive", "std"] }
+serde_json = "1.0.152"
+mikura = { version = "0.2.0", git = "https://github.com/Sannrox/mikura", tag = "v0.2.0", optional = true }
+toml = { version = "1.1.8", default-features = false, features = ["parse", "serde"], optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

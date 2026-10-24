@@ -274,7 +274,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             *value = value.trim().into();
         }
     }
-    let path = hoshi_core::resolve_save_path(
+    let path = hoshi_storage::resolve_save_path(
         save_path.as_deref(),
         std::env::var_os("HOSHI_SAVE").as_deref(),
     );

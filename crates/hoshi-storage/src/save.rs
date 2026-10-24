@@ -1,17 +1,17 @@
 //! SQLite save file. Schema version is `PRAGMA user_version`.
 
-use crate::activity::{ActivityChannel, ActivityTracker};
-use crate::balance::BalanceConfig;
-use crate::buildings::{BuildJob, BuildingKind, Buildings};
-use crate::fleets::{Coord, Mission, MissionPhase, TradeRoute};
-use crate::outposts::{Outpost, generate_outposts};
-use crate::planets::{Colony, PlanetType};
-use crate::prestige::{Prestige, RunStats};
-use crate::research::ResearchJob;
-use crate::ships::{Fleet, ShipJob, ShipKind};
-use crate::state::{GameEvent, GameState, Resources};
-use crate::wonders::WonderJob;
-use crate::{CombatFrame, CombatLog, CombatReport, CombatWinner, DefenceKind, GroundReport};
+use hoshi_core::BalanceConfig;
+use hoshi_core::ResearchJob;
+use hoshi_core::WonderJob;
+use hoshi_core::{ActivityChannel, ActivityTracker};
+use hoshi_core::{BuildJob, BuildingKind, Buildings};
+use hoshi_core::{Colony, PlanetType};
+use hoshi_core::{CombatFrame, CombatLog, CombatReport, CombatWinner, DefenceKind, GroundReport};
+use hoshi_core::{Coord, Mission, MissionPhase, TradeRoute};
+use hoshi_core::{Fleet, ShipJob, ShipKind};
+use hoshi_core::{GameEvent, GameState, Resources};
+use hoshi_core::{Outpost, generate_outposts};
+use hoshi_core::{Prestige, RunStats};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -474,7 +474,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
     }
     for rule in state.automation_rules.iter() {
         let (from, to, act_resource, act_amount, act_planet, act_building) = match &rule.action {
-            crate::RuleAction::Transfer {
+            hoshi_core::RuleAction::Transfer {
                 from,
                 to,
                 resource,
@@ -487,7 +487,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 None,
                 None,
             ),
-            crate::RuleAction::QueueBuild { planet, building } => (
+            hoshi_core::RuleAction::QueueBuild { planet, building } => (
                 None,
                 None,
                 None,
@@ -593,7 +593,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
     for flag in &state.story_flags {
         tx.execute("INSERT INTO story_flags (flag) VALUES (?1)", params![flag])?;
     }
-    for kind in crate::ResourceKind::QUOTED {
+    for kind in hoshi_core::ResourceKind::QUOTED {
         tx.execute(
             "INSERT INTO market_prices (kind, price) VALUES (?1, ?2)",
             params![kind.as_key(), state.market.price(kind)],
@@ -904,7 +904,7 @@ fn insert_spy_ships(
 fn insert_defences(
     conn: &Connection,
     planet_id: i64,
-    grid: crate::DefenceGrid,
+    grid: hoshi_core::DefenceGrid,
 ) -> Result<(), SaveError> {
     for kind in DefenceKind::ALL {
         let count = grid.get(kind);
@@ -919,8 +919,8 @@ fn insert_defences(
     Ok(())
 }
 
-fn read_defences(conn: &Connection, planet_id: i64) -> Result<crate::DefenceGrid, SaveError> {
-    let mut grid = crate::DefenceGrid::default();
+fn read_defences(conn: &Connection, planet_id: i64) -> Result<hoshi_core::DefenceGrid, SaveError> {
+    let mut grid = hoshi_core::DefenceGrid::default();
     let mut stmt = conn.prepare("SELECT kind, count FROM planet_defences WHERE planet_id = ?1")?;
     let rows = stmt.query_map(params![planet_id], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
@@ -1000,7 +1000,7 @@ fn insert_frontier(conn: &Connection, state: &GameState) -> Result<(), SaveError
 }
 
 fn load_frontier(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
-    state.frontier = crate::FrontierBoard::default();
+    state.frontier = hoshi_core::FrontierBoard::default();
     if table_exists(conn, "frontier_meta")
         && let Some((revealed, research, wonder, bridge)) = conn
             .query_row(
@@ -1047,9 +1047,9 @@ fn load_frontier(conn: &Connection, state: &mut GameState) -> Result<(), SaveErr
         })?;
         for row in rows {
             let (g, s, p, sector, kind, size, rare) = row?;
-            let kind = crate::PlanetType::from_key(&kind)
+            let kind = hoshi_core::PlanetType::from_key(&kind)
                 .ok_or(SaveError::Corrupt("unknown frontier planet type"))?;
-            state.frontier.worlds.push(crate::FrontierWorld {
+            state.frontier.worlds.push(hoshi_core::FrontierWorld {
                 coord: Coord {
                     galaxy: g as u16,
                     system: s as u16,
@@ -1113,7 +1113,7 @@ fn load_ladder(conn: &Connection, state: &mut GameState) -> Result<(), SaveError
         })?;
         for row in rows {
             let (id, at) = row?;
-            state.ladder.completed.push(crate::LadderCompletion {
+            state.ladder.completed.push(hoshi_core::LadderCompletion {
                 id,
                 at: unix_ts(at)?,
             });
@@ -1340,7 +1340,7 @@ fn load_rivals(conn: &Connection, state: &mut GameState) -> Result<(), SaveError
                     let building = BuildingKind::from_key(&kind)
                         .ok_or(SaveError::Corrupt("unknown building"))?;
                     build_queue.push(BuildJob {
-                        kind: crate::buildings::BuildJobKind::Build,
+                        kind: hoshi_core::BuildJobKind::Build,
                         work_left: 0.0,
                         building,
                         from_level,
@@ -1453,7 +1453,7 @@ fn load_rivals(conn: &Connection, state: &mut GameState) -> Result<(), SaveError
                     });
                 }
             }
-            empires.push(crate::RivalEmpire {
+            empires.push(hoshi_core::RivalEmpire {
                 id,
                 personality,
                 home: Coord {
@@ -1474,7 +1474,7 @@ fn load_rivals(conn: &Connection, state: &mut GameState) -> Result<(), SaveError
             });
         }
     }
-    state.rivals = crate::RivalBoard {
+    state.rivals = hoshi_core::RivalBoard {
         enabled: enabled != 0,
         tick_secs: unix_ts(tick)?,
         aggression,
@@ -1545,10 +1545,10 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     state.last_market_at = unix_ts(last_market_at)?;
     state.last_diplomacy_at = unix_ts(last_diplomacy_at)?;
     state.generator_version = u32_field(generator_version, "generator version")?;
-    if !crate::supports_galaxy_generator(state.generator_version) {
+    if !hoshi_core::supports_galaxy_generator(state.generator_version) {
         return Err(SaveError::GeneratorTooNew {
             found: state.generator_version,
-            current: crate::GALAXY_GENERATOR_VERSION,
+            current: hoshi_core::GALAXY_GENERATOR_VERSION,
         });
     }
     state.home_kind =
@@ -1870,7 +1870,9 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         Some(None) => None,
         None => {
             if state.automation_rules.iter().any(|r| r.enabled) {
-                let interval = crate::AutomationCatalog::bundled().interval_secs.max(1);
+                let interval = hoshi_core::AutomationCatalog::bundled()
+                    .interval_secs
+                    .max(1);
                 Some(state.last_tick_unix.saturating_add(interval))
             } else {
                 None
@@ -1932,7 +1934,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         )
         .optional()?
     {
-        Some((event_id, offered_at, timeout_at)) => Some(crate::PendingStory {
+        Some((event_id, offered_at, timeout_at)) => Some(hoshi_core::PendingStory {
             event_id,
             offered_at: unix_ts(offered_at)?,
             timeout_at: unix_ts(timeout_at)?,
@@ -2002,7 +2004,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
                 })
             },
         )?;
-        let mut buildings = crate::Buildings::default();
+        let mut buildings = hoshi_core::Buildings::default();
         let mut bstmt = conn.prepare("SELECT kind, level FROM buildings WHERE planet_id = ?1")?;
         let brows = bstmt.query_map(params![planet_id], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
@@ -2067,7 +2069,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         }
         state.reactor_shutdowns.insert(
             coord,
-            crate::ReactorShutdown {
+            hoshi_core::ReactorShutdown {
                 at: unix_ts(at)?,
                 thermal_power,
             },
@@ -2092,8 +2094,8 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     for row in rows {
         let (galaxy, system, position, mode, startup_left, activated, stopped_at, residual_heat) =
             row?;
-        let mode =
-            crate::FusionMode::from_key(&mode).ok_or(SaveError::Corrupt("invalid fusion mode"))?;
+        let mode = hoshi_core::FusionMode::from_key(&mode)
+            .ok_or(SaveError::Corrupt("invalid fusion mode"))?;
         if !startup_left.is_finite()
             || startup_left < 0.0
             || !residual_heat.is_finite()
@@ -2111,7 +2113,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         }
         state.fusion_plants.insert(
             coord,
-            crate::FusionPlant {
+            hoshi_core::FusionPlant {
                 mode,
                 startup_left,
                 activated,
@@ -2243,9 +2245,9 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         if let (Some(path), Some(at), Some(prestige), Some(elapsed), Some(kept)) =
             (path, at, prestige, elapsed, kept)
         {
-            let path = crate::VictoryPath::from_key(&path)
+            let path = hoshi_core::VictoryPath::from_key(&path)
                 .ok_or(SaveError::Corrupt("unknown victory path"))?;
-            state.victory = Some(crate::VictoryRecord {
+            state.victory = Some(hoshi_core::VictoryRecord {
                 path,
                 at: unix_ts(at)?,
                 prestige: u32::try_from(prestige).map_err(|_| SaveError::Corrupt("victory prestige"))?,
@@ -2276,7 +2278,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             )
             .optional()?
     {
-        state.season = Some(crate::SeasonRun {
+        state.season = Some(hoshi_core::SeasonRun {
             ruleset_id,
             window_start: unix_ts(start)?,
             window_end: unix_ts(end)?,
@@ -2284,9 +2286,9 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             prestige: prestige != 0,
         });
         state
-            .apply_loaded_season(&crate::SeasonCatalog::default())
+            .apply_loaded_season(&hoshi_core::SeasonCatalog::default())
             .map_err(|e| SaveError::Corrupt(match e {
-                crate::SeasonError::UnknownRuleset(_) => "unknown season ruleset",
+                hoshi_core::SeasonError::UnknownRuleset(_) => "unknown season ruleset",
                 _ => "invalid season overlay",
             }))?;
     }
@@ -2311,7 +2313,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             .optional()?
     {
         let flagship = match (fg, fs, fp) {
-            (Some(g), Some(s), Some(p)) => Some(crate::Flagship {
+            (Some(g), Some(s), Some(p)) => Some(hoshi_core::Flagship {
                 coord: Coord {
                     galaxy: u16_coord(g)?,
                     system: u16_coord(s)?,
@@ -2322,7 +2324,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             }),
             _ => None,
         };
-        state.species = Some(crate::SpeciesRun {
+        state.species = Some(hoshi_core::SpeciesRun {
             id,
             name: String::new(),
             portrait: String::new(),
@@ -2341,10 +2343,10 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             flagship,
         });
         state
-            .apply_loaded_species(&crate::SpeciesCatalog::default())
+            .apply_loaded_species(&hoshi_core::SpeciesCatalog::default())
             .map_err(|e| {
                 SaveError::Corrupt(match e {
-                    crate::SpeciesError::Unknown(_) => "unknown species",
+                    hoshi_core::SpeciesError::Unknown(_) => "unknown species",
                     _ => "invalid species overlay",
                 })
             })?;
@@ -2432,7 +2434,7 @@ pub fn load_or_new(
         if leftover != 0 {
             return Err(SaveError::Corrupt("missing meta row"));
         }
-        let seed = crate::new_galaxy_seed(now_unix);
+        let seed = hoshi_core::new_galaxy_seed(now_unix);
         let state = GameState::new_live_galaxy(now_unix, config, seed);
         save_state(conn, &state)?;
         return Ok(state);
@@ -2536,7 +2538,7 @@ pub struct SaveGlance {
 /// Read the on-disk SQLite schema without migrating it, including saves newer
 /// than this binary. Updaters use this before choosing an older executable.
 pub fn save_schema(path: &Path) -> Result<u32, SaveError> {
-    if crate::storage::BackendKind::from_path(path) != crate::storage::BackendKind::Sqlite {
+    if crate::BackendKind::from_path(path) != crate::BackendKind::Sqlite {
         return Err(SaveError::Backend(
             "automatic update backup supports SQLite saves only".into(),
         ));
@@ -2580,7 +2582,7 @@ pub fn inspect_diagnostics(
     limit: usize,
     include_save: bool,
 ) -> Result<SaveDiagnostics, SaveError> {
-    if crate::storage::BackendKind::from_path(path) != crate::storage::BackendKind::Sqlite {
+    if crate::BackendKind::from_path(path) != crate::BackendKind::Sqlite {
         return Err(SaveError::Backend(
             "diagnostic snapshots require a SQLite save".into(),
         ));
@@ -2630,11 +2632,11 @@ pub fn inspect_diagnostics(
 }
 
 pub fn inspect_save(path: &Path) -> Result<SaveGlance, SaveError> {
-    match crate::storage::BackendKind::from_path(path) {
-        crate::storage::BackendKind::Mikura | crate::storage::BackendKind::Chisei => {
-            return crate::storage::inspect_backend_save(path);
+    match crate::BackendKind::from_path(path) {
+        crate::BackendKind::Mikura | crate::BackendKind::Chisei => {
+            return crate::inspect_backend_save(path);
         }
-        crate::storage::BackendKind::Sqlite => {}
+        crate::BackendKind::Sqlite => {}
     }
     if save_is_locked(path) {
         return Err(SaveError::Locked);
@@ -2664,10 +2666,10 @@ fn inspect_sqlite_glance(conn: &Connection) -> Result<SaveGlance, SaveError> {
             .optional()?;
         if let Some(stored) = stored {
             let stored = u32_field(stored, "generator version")?;
-            if !crate::supports_galaxy_generator(stored) {
+            if !hoshi_core::supports_galaxy_generator(stored) {
                 return Err(SaveError::GeneratorTooNew {
                     found: stored,
-                    current: crate::GALAXY_GENERATOR_VERSION,
+                    current: hoshi_core::GALAXY_GENERATOR_VERSION,
                 });
             }
         }
@@ -2809,8 +2811,8 @@ pub struct CareerGlance {
 }
 
 impl CareerGlance {
-    pub fn meters(&self) -> crate::CareerMeters {
-        crate::CareerMeters {
+    pub fn meters(&self) -> hoshi_core::CareerMeters {
+        hoshi_core::CareerMeters {
             colonies: self.colonies,
             fleet_ships: self.fleet_ships,
             prestige_runs: self.prestige_runs,
@@ -2862,7 +2864,7 @@ impl CareerGlance {
 
     /// Eligibility for this glance alone. Do not use merged career counts:
     /// those are maxima across saves and would fabricate a reset.
-    pub fn reset_available(&self, cfg: &crate::PrestigeConfig) -> bool {
+    pub fn reset_available(&self, cfg: &hoshi_core::PrestigeConfig) -> bool {
         if self.prestige_runs > 0 || self.prestige_lifetime > 0 || !self.prestige.owned.is_empty() {
             return true;
         }
@@ -2879,11 +2881,11 @@ impl CareerGlance {
 }
 
 pub fn inspect_career(path: &Path) -> Result<CareerGlance, SaveError> {
-    match crate::storage::BackendKind::from_path(path) {
-        crate::storage::BackendKind::Mikura | crate::storage::BackendKind::Chisei => {
-            return crate::storage::inspect_backend_career(path);
+    match crate::BackendKind::from_path(path) {
+        crate::BackendKind::Mikura | crate::BackendKind::Chisei => {
+            return crate::inspect_backend_career(path);
         }
-        crate::storage::BackendKind::Sqlite => {}
+        crate::BackendKind::Sqlite => {}
     }
     if save_is_locked(path) {
         return Err(SaveError::Locked);
@@ -3166,6 +3168,37 @@ fn is_sharing_violation(err: &std::io::Error) -> bool {
         let _ = err;
         false
     }
+}
+
+fn join_csv(parts: &[String]) -> String {
+    parts.join(",")
+}
+
+fn split_csv(raw: &str) -> Vec<String> {
+    if raw.is_empty() {
+        Vec::new()
+    } else {
+        raw.split(',').map(str::to_string).collect()
+    }
+}
+
+fn join_ids(ids: &[u64]) -> String {
+    ids.iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn split_ids(raw: &str) -> Result<Vec<u64>, SaveError> {
+    if raw.is_empty() {
+        return Ok(Vec::new());
+    }
+    raw.split(',')
+        .map(|part| {
+            part.parse::<u64>()
+                .map_err(|_| SaveError::Corrupt("history parents"))
+        })
+        .collect()
 }
 
 fn unix_ts(value: i64) -> Result<u64, SaveError> {
@@ -4391,7 +4424,7 @@ fn migrate_v29(conn: &Connection) -> Result<(), SaveError> {
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM leaders", [], |row| row.get(0))?;
         if count == 0 && count_rows(conn, "admirals")? > 0 {
             let born = meta_last_tick(conn)?;
-            let life = i64::try_from(crate::LeaderConfig::default().lifespan_secs)
+            let life = i64::try_from(hoshi_core::LeaderConfig::default().lifespan_secs)
                 .map_err(|_| SaveError::Corrupt("leader lifespan"))?;
             conn.execute(
                 "INSERT INTO leaders (id, name, species, trait_id, skill_command, skill_logistics, skill_policy, xp, born_at, lifespan_secs, retired)
@@ -4771,7 +4804,7 @@ fn migrate_v48(conn: &Connection) -> Result<(), SaveError> {
     Ok(())
 }
 
-fn load_cheats(conn: &Connection) -> Result<crate::cheats::CheatState, SaveError> {
+fn load_cheats(conn: &Connection) -> Result<hoshi_core::CheatState, SaveError> {
     let data: Option<String> = conn
         .query_row("SELECT data FROM cheat_state WHERE id = 1", [], |row| {
             row.get(0)
@@ -4781,7 +4814,7 @@ fn load_cheats(conn: &Connection) -> Result<crate::cheats::CheatState, SaveError
         Some(data) => {
             serde_json::from_str(&data).map_err(|_| SaveError::Corrupt("invalid cheat state"))
         }
-        None => Ok(crate::cheats::CheatState::default()),
+        None => Ok(hoshi_core::CheatState::default()),
     }
 }
 
@@ -5353,7 +5386,7 @@ fn ensure_home_governor(conn: &Connection) -> Result<(), SaveError> {
         row.get(0)
     })?;
     let born = meta_last_tick(conn)?;
-    let life = i64::try_from(crate::LeaderConfig::default().lifespan_secs)
+    let life = i64::try_from(hoshi_core::LeaderConfig::default().lifespan_secs)
         .map_err(|_| SaveError::Corrupt("leader lifespan"))?;
     conn.execute(
         "INSERT INTO leaders (id, name, species, trait_id, skill_command, skill_logistics, skill_policy, xp, born_at, lifespan_secs, retired)
@@ -5402,11 +5435,11 @@ fn insert_daily(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<(),
 
 fn load_daily(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
     if !table_exists(conn, "daily_meta") {
-        state.daily = crate::DailyBoard::default();
+        state.daily = hoshi_core::DailyBoard::default();
         state.sync_daily(state.last_tick_unix);
         return Ok(());
     }
-    state.daily = crate::DailyBoard::default();
+    state.daily = hoshi_core::DailyBoard::default();
     if let Some((day, streak)) = conn
         .query_row(
             "SELECT day_index, streak FROM daily_meta WHERE id = 1",
@@ -5431,7 +5464,7 @@ fn load_daily(conn: &Connection, state: &mut GameState) -> Result<(), SaveError>
         })?;
         for row in rows {
             let (spec_id, progress, target, rewarded) = row?;
-            state.daily.slots.push(crate::DailySlot {
+            state.daily.slots.push(hoshi_core::DailySlot {
                 spec_id,
                 progress: u32_field(progress, "daily progress")?,
                 target: u32_field(target, "daily target")?,
@@ -5494,7 +5527,7 @@ fn load_moons(conn: &Connection, state: &mut GameState) -> Result<(), SaveError>
         })?;
         for row in rows {
             let (g, s, p, phalanx, jump_gate, jump_ready_at) = row?;
-            state.moons.push(crate::Moon {
+            state.moons.push(hoshi_core::Moon {
                 parent: Coord {
                     galaxy: u16_coord(g)?,
                     system: u16_coord(s)?,
@@ -5551,7 +5584,7 @@ fn insert_tutorial(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<
 }
 
 fn load_tutorial(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
-    state.tutorial = crate::TutorialBoard::default();
+    state.tutorial = hoshi_core::TutorialBoard::default();
     if !table_exists(conn, "tutorial_meta") {
         return Ok(());
     }
@@ -5635,9 +5668,9 @@ fn load_tactics(conn: &Connection, state: &mut GameState) -> Result<(), SaveErro
         return Ok(());
     };
     state.fleet_tactics.formation =
-        crate::Formation::from_key(&formation).ok_or(SaveError::Corrupt("fleet formation"))?;
+        hoshi_core::Formation::from_key(&formation).ok_or(SaveError::Corrupt("fleet formation"))?;
     state.fleet_tactics.stance =
-        crate::Stance::from_key(&stance).ok_or(SaveError::Corrupt("fleet stance"))?;
+        hoshi_core::Stance::from_key(&stance).ok_or(SaveError::Corrupt("fleet stance"))?;
     if !retreat.is_finite() || !(0.0..=1.0).contains(&retreat) {
         return Err(SaveError::Corrupt("retreat below"));
     }
@@ -5660,7 +5693,7 @@ fn load_tactics(conn: &Connection, state: &mut GameState) -> Result<(), SaveErro
         state.admirals.clear();
         for row in rows {
             let (id, name, trait_id, xp) = row?;
-            state.admirals.push(crate::Admiral {
+            state.admirals.push(hoshi_core::Admiral {
                 id: unix_ts(id)?,
                 name,
                 trait_id,
@@ -5771,7 +5804,7 @@ fn load_leaders(conn: &Connection, state: &mut GameState) -> Result<(), SaveErro
             row?;
         let id = unix_ts(id)?;
         max_id = max_id.max(id);
-        state.leaders.push(crate::Leader {
+        state.leaders.push(hoshi_core::Leader {
             id,
             name,
             species,
@@ -5801,11 +5834,11 @@ fn load_leaders(conn: &Connection, state: &mut GameState) -> Result<(), SaveErro
         state.assignments.clear();
         for row in rows {
             let (id, role, target, assigned, ready) = row?;
-            let role =
-                crate::RoleKind::from_key(&role).ok_or(SaveError::Corrupt("assignment role"))?;
-            let target = crate::AssignmentTarget::parse(&target)
+            let role = hoshi_core::RoleKind::from_key(&role)
+                .ok_or(SaveError::Corrupt("assignment role"))?;
+            let target = hoshi_core::AssignmentTarget::parse(&target)
                 .ok_or(SaveError::Corrupt("assignment target"))?;
-            state.assignments.push(crate::Assignment {
+            state.assignments.push(hoshi_core::Assignment {
                 leader_id: unix_ts(id)?,
                 role,
                 target,
@@ -5830,15 +5863,15 @@ fn load_leaders(conn: &Connection, state: &mut GameState) -> Result<(), SaveErro
         state.delegations.clear();
         for row in rows {
             let (id, perm, cap, spent, start) = row?;
-            let permission =
-                crate::Permission::from_key(&perm).ok_or(SaveError::Corrupt("delegation perm"))?;
+            let permission = hoshi_core::Permission::from_key(&perm)
+                .ok_or(SaveError::Corrupt("delegation perm"))?;
             if cap.is_some_and(|c| !c.is_finite() || c < 0.0) {
                 return Err(SaveError::Corrupt("delegation spend cap"));
             }
             if !spent.is_finite() || spent < 0.0 {
                 return Err(SaveError::Corrupt("delegation spent"));
             }
-            state.delegations.push(crate::Delegation {
+            state.delegations.push(hoshi_core::Delegation {
                 leader_id: unix_ts(id)?,
                 permission,
                 spend_cap: cap,
@@ -5850,7 +5883,7 @@ fn load_leaders(conn: &Connection, state: &mut GameState) -> Result<(), SaveErro
     if state.leaders.is_empty() && !state.admirals.is_empty() {
         for admiral in &state.admirals {
             max_id = max_id.max(admiral.id);
-            state.leaders.push(crate::Leader {
+            state.leaders.push(hoshi_core::Leader {
                 id: admiral.id,
                 name: admiral.name.clone(),
                 species: "human".into(),
@@ -5864,10 +5897,10 @@ fn load_leaders(conn: &Connection, state: &mut GameState) -> Result<(), SaveErro
                 retired: false,
             });
             if Some(admiral.id) == state.home_admiral_id {
-                state.assignments.push(crate::Assignment {
+                state.assignments.push(hoshi_core::Assignment {
                     leader_id: admiral.id,
-                    role: crate::RoleKind::Admiral,
-                    target: crate::AssignmentTarget::HomeFleet,
+                    role: hoshi_core::RoleKind::Admiral,
+                    target: hoshi_core::AssignmentTarget::HomeFleet,
                     assigned_at: state.last_tick_unix,
                     ready_at: state.last_tick_unix,
                 });
@@ -5961,7 +5994,7 @@ fn insert_classification(
                 key.kind.as_key(),
                 key.id,
                 marking.classification.as_key(),
-                crate::join_compartments(&marking.compartments),
+                hoshi_core::join_compartments(&marking.compartments),
             ],
         )?;
     }
@@ -5972,7 +6005,7 @@ fn insert_classification(
             params![
                 row.faction,
                 row.classification.as_key(),
-                crate::join_compartments(&row.compartments),
+                hoshi_core::join_compartments(&row.compartments),
             ],
         )?;
     }
@@ -5997,7 +6030,7 @@ fn insert_classification(
             params![
                 *leader_id as i64,
                 grant.classification.as_key(),
-                crate::join_compartments(&grant.compartments),
+                hoshi_core::join_compartments(&grant.compartments),
             ],
         )?;
     }
@@ -6040,7 +6073,7 @@ fn insert_board(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<(),
                 region.player_warehouse.helium_3,
             ],
         )?;
-        for kind in crate::ResourceKind::QUOTED {
+        for kind in hoshi_core::ResourceKind::QUOTED {
             for (i, price) in region.history(kind).iter().enumerate() {
                 tx.execute(
                     "INSERT INTO market_region_history (
@@ -6159,7 +6192,7 @@ fn load_planning(conn: &Connection, state: &mut GameState) -> Result<(), SaveErr
     state.vehicles.clear();
     for row in rows {
         let (id, name, g, s, p, free_at) = row?;
-        state.vehicles.push(crate::Vehicle {
+        state.vehicles.push(hoshi_core::Vehicle {
             id: unix_ts(id)?,
             name,
             ships: Fleet::default(),
@@ -6263,14 +6296,14 @@ fn load_planning(conn: &Connection, state: &mut GameState) -> Result<(), SaveErr
             water_ice,
             helium_3,
         ) = row?;
-        let transfer = crate::TransferKind::from_key(&transfer)
+        let transfer = hoshi_core::TransferKind::from_key(&transfer)
             .ok_or(SaveError::Corrupt("planned transfer"))?;
         let customer =
-            crate::Customer::parse(&customer).ok_or(SaveError::Corrupt("planned customer"))?;
-        state.planned.push(crate::PlannedMission {
+            hoshi_core::Customer::parse(&customer).ok_or(SaveError::Corrupt("planned customer"))?;
+        state.planned.push(hoshi_core::PlannedMission {
             id: unix_ts(id)?,
             vehicle_id: unix_ts(vehicle_id)?,
-            route: crate::Route {
+            route: hoshi_core::Route {
                 origin: Coord {
                     galaxy: u16::try_from(og).map_err(|_| SaveError::Corrupt("origin galaxy"))?,
                     system: u16::try_from(os).map_err(|_| SaveError::Corrupt("origin system"))?,
@@ -6285,7 +6318,7 @@ fn load_planning(conn: &Connection, state: &mut GameState) -> Result<(), SaveErr
             },
             transfer,
             customer,
-            window: crate::LaunchWindow {
+            window: hoshi_core::LaunchWindow {
                 opens_at: unix_ts(opens)?,
                 closes_at: unix_ts(closes)?,
             },
@@ -6293,7 +6326,7 @@ fn load_planning(conn: &Connection, state: &mut GameState) -> Result<(), SaveErr
             arrives_at: unix_ts(arrives)?,
             delta_v,
             fuel_mass,
-            payload: crate::Payload {
+            payload: hoshi_core::Payload {
                 cargo: sql_resources(metal, crystal, deuterium, rare_earths, water_ice, helium_3),
             },
         });
@@ -6338,13 +6371,16 @@ fn load_classification(conn: &Connection, state: &mut GameState) -> Result<(), S
     state.classification.objects.clear();
     for row in rows {
         let (kind, id, class, compartments) = row?;
-        let kind =
-            crate::ClassifiedKind::from_key(&kind).ok_or(SaveError::Corrupt("classified kind"))?;
-        let classification = crate::Classification::from_key(&class)
+        let kind = hoshi_core::ClassifiedKind::from_key(&kind)
+            .ok_or(SaveError::Corrupt("classified kind"))?;
+        let classification = hoshi_core::Classification::from_key(&class)
             .ok_or(SaveError::Corrupt("classified class"))?;
         state.classification.objects.insert(
-            crate::classification::ClassifiedRef::new(kind, id),
-            crate::Marking::new(classification, crate::split_compartments(&compartments)),
+            hoshi_core::ClassifiedRef::new(kind, id),
+            hoshi_core::Marking::new(
+                classification,
+                hoshi_core::split_compartments(&compartments),
+            ),
         );
     }
     drop(stmt);
@@ -6362,14 +6398,14 @@ fn load_classification(conn: &Connection, state: &mut GameState) -> Result<(), S
         state.classification.agreements.clear();
         for row in rows {
             let (faction, class, compartments) = row?;
-            let classification = crate::Classification::from_key(&class)
+            let classification = hoshi_core::Classification::from_key(&class)
                 .ok_or(SaveError::Corrupt("sharing class"))?;
             state.classification.agreements.insert(
                 faction.clone(),
-                crate::SharingAgreement {
+                hoshi_core::SharingAgreement {
                     faction,
                     classification,
-                    compartments: crate::split_compartments(&compartments),
+                    compartments: hoshi_core::split_compartments(&compartments),
                 },
             );
         }
@@ -6391,16 +6427,19 @@ fn load_classification(conn: &Connection, state: &mut GameState) -> Result<(), S
         state.classification.incidents.clear();
         for row in rows {
             let (id, at, source, kind, object_id, via) = row?;
-            let kind =
-                crate::ClassifiedKind::from_key(&kind).ok_or(SaveError::Corrupt("leak kind"))?;
-            state.classification.incidents.push(crate::LeakIncident {
-                id: unix_ts(id)?,
-                at: unix_ts(at)?,
-                source,
-                kind,
-                object_id,
-                via,
-            });
+            let kind = hoshi_core::ClassifiedKind::from_key(&kind)
+                .ok_or(SaveError::Corrupt("leak kind"))?;
+            state
+                .classification
+                .incidents
+                .push(hoshi_core::LeakIncident {
+                    id: unix_ts(id)?,
+                    at: unix_ts(at)?,
+                    source,
+                    kind,
+                    object_id,
+                    via,
+                });
         }
     }
     if table_exists(conn, "leader_clearance") {
@@ -6417,13 +6456,13 @@ fn load_classification(conn: &Connection, state: &mut GameState) -> Result<(), S
         state.classification.grants.clear();
         for row in rows {
             let (leader_id, class, compartments) = row?;
-            let classification =
-                crate::Classification::from_key(&class).ok_or(SaveError::Corrupt("grant class"))?;
+            let classification = hoshi_core::Classification::from_key(&class)
+                .ok_or(SaveError::Corrupt("grant class"))?;
             state.classification.grants.insert(
                 unix_ts(leader_id)?,
-                crate::Clearance {
+                hoshi_core::Clearance {
                     classification,
-                    compartments: crate::split_compartments(&compartments),
+                    compartments: hoshi_core::split_compartments(&compartments),
                     unrestricted: false,
                 },
             );
@@ -6495,7 +6534,7 @@ fn load_board(conn: &Connection, state: &mut GameState) -> Result<(), SaveError>
             };
             state.board.regions.insert(
                 coord,
-                crate::RegionMarket {
+                hoshi_core::RegionMarket {
                     coord,
                     npc_warehouse: sql_resources(nm, nc, nd, nr, ni, nh),
                     player_warehouse: sql_resources(pm, pc, pd, pr, pi, ph),
@@ -6533,17 +6572,17 @@ fn load_board(conn: &Connection, state: &mut GameState) -> Result<(), SaveError>
                 system: u16_coord(s)?,
                 position: u16_coord(p)?,
             };
-            let kind = crate::ResourceKind::from_key(&kind)
+            let kind = hoshi_core::ResourceKind::from_key(&kind)
                 .ok_or(SaveError::Corrupt("region market history kind"))?;
             if let Some(region) = state.board.regions.get_mut(&coord) {
                 match kind {
-                    crate::ResourceKind::Iron | crate::ResourceKind::RareEarths => {
+                    hoshi_core::ResourceKind::Iron | hoshi_core::ResourceKind::RareEarths => {
                         region.metal_hist.push(price)
                     }
-                    crate::ResourceKind::Silicon => region.crystal_hist.push(price),
-                    crate::ResourceKind::Deuterium
-                    | crate::ResourceKind::WaterIce
-                    | crate::ResourceKind::Helium3 => region.deuterium_hist.push(price),
+                    hoshi_core::ResourceKind::Silicon => region.crystal_hist.push(price),
+                    hoshi_core::ResourceKind::Deuterium
+                    | hoshi_core::ResourceKind::WaterIce
+                    | hoshi_core::ResourceKind::Helium3 => region.deuterium_hist.push(price),
                 }
             }
         }
@@ -6591,17 +6630,18 @@ fn load_board(conn: &Connection, state: &mut GameState) -> Result<(), SaveError>
                 is_market,
             ) = row?;
             let id = unix_ts(id)?;
-            let order = crate::RestingOrder {
+            let order = hoshi_core::RestingOrder {
                 id,
                 region: Coord {
                     galaxy: u16_coord(g)?,
                     system: u16_coord(s)?,
                     position: u16_coord(p)?,
                 },
-                trader: crate::TraderId::from_key(&trader)
+                trader: hoshi_core::TraderId::from_key(&trader)
                     .ok_or(SaveError::Corrupt("market trader"))?,
-                side: crate::OrderSide::from_key(&side).ok_or(SaveError::Corrupt("market side"))?,
-                good: crate::ResourceKind::from_key(&good)
+                side: hoshi_core::OrderSide::from_key(&side)
+                    .ok_or(SaveError::Corrupt("market side"))?,
+                good: hoshi_core::ResourceKind::from_key(&good)
                     .ok_or(SaveError::Corrupt("market good"))?,
                 remaining,
                 price,
@@ -6662,31 +6702,31 @@ fn load_board(conn: &Connection, state: &mut GameState) -> Result<(), SaveError>
             let id = unix_ts(id)?;
             let holder = match holder {
                 Some(text) => Some(
-                    crate::TraderId::from_key(&text)
+                    hoshi_core::TraderId::from_key(&text)
                         .ok_or(SaveError::Corrupt("contract holder"))?,
                 ),
                 None => None,
             };
-            let contract = crate::MarketContract {
+            let contract = hoshi_core::MarketContract {
                 id,
-                kind: crate::ContractKind::from_key(&kind)
+                kind: hoshi_core::ContractKind::from_key(&kind)
                     .ok_or(SaveError::Corrupt("contract kind"))?,
                 region: Coord {
                     galaxy: u16_coord(g)?,
                     system: u16_coord(s)?,
                     position: u16_coord(p)?,
                 },
-                good: crate::ResourceKind::from_key(&good)
+                good: hoshi_core::ResourceKind::from_key(&good)
                     .ok_or(SaveError::Corrupt("contract good"))?,
                 amount,
                 remaining,
                 price,
                 deadline: unix_ts(deadline)?,
                 penalty,
-                issuer: crate::TraderId::from_key(&issuer)
+                issuer: hoshi_core::TraderId::from_key(&issuer)
                     .ok_or(SaveError::Corrupt("contract issuer"))?,
                 holder,
-                status: crate::ContractStatus::from_key(&status)
+                status: hoshi_core::ContractStatus::from_key(&status)
                     .ok_or(SaveError::Corrupt("contract status"))?,
             };
             state.board.contracts.insert(id, contract);
@@ -6747,7 +6787,7 @@ fn load_board(conn: &Connection, state: &mut GameState) -> Result<(), SaveError>
                 delivered,
             ) = row?;
             let id = unix_ts(id)?;
-            let ship = crate::Shipment {
+            let ship = hoshi_core::Shipment {
                 id,
                 origin: Coord {
                     galaxy: u16_coord(og)?,
@@ -6767,7 +6807,7 @@ fn load_board(conn: &Connection, state: &mut GameState) -> Result<(), SaveError>
                     Some(cid) => Some(unix_ts(cid)?),
                     None => None,
                 },
-                trader: crate::TraderId::from_key(&trader)
+                trader: hoshi_core::TraderId::from_key(&trader)
                     .ok_or(SaveError::Corrupt("shipment trader"))?,
                 delivered: delivered != 0,
             };
@@ -6790,12 +6830,12 @@ fn insert_history(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<(
                 event.kind.as_key(),
                 event.actor,
                 event.action,
-                crate::history::join_csv(&event.objects),
+                join_csv(&event.objects),
                 event.inputs,
                 event.outcome,
                 event.reason,
                 event.cause_key.as_deref(),
-                crate::history::join_ids(&event.parent_ids),
+                join_ids(&event.parent_ids),
                 event.energy,
                 event.heat,
                 event.mass,
@@ -6850,7 +6890,7 @@ fn load_history(conn: &Connection, state: &mut GameState) -> Result<(), SaveErro
             row.get::<_, f64>(13)?,
         ))
     })?;
-    state.history = crate::HistoryLog::default();
+    state.history = hoshi_core::HistoryLog::default();
     for row in rows {
         let (
             id,
@@ -6868,16 +6908,16 @@ fn load_history(conn: &Connection, state: &mut GameState) -> Result<(), SaveErro
             heat,
             mass,
         ) = row?;
-        let kind = crate::HistoryKind::from_key(&kind).ok_or(SaveError::Corrupt("history kind"))?;
-        let parent_ids = crate::history::split_ids(&parent_ids)
-            .map_err(|_| SaveError::Corrupt("history parents"))?;
-        state.history.events.push(crate::HistoryEvent {
+        let kind =
+            hoshi_core::HistoryKind::from_key(&kind).ok_or(SaveError::Corrupt("history kind"))?;
+        let parent_ids = split_ids(&parent_ids)?;
+        state.history.events.push(hoshi_core::HistoryEvent {
             id: unix_ts(id)?,
             at: unix_ts(at)?,
             kind,
             actor,
             action,
-            objects: crate::history::split_csv(&objects),
+            objects: split_csv(&objects),
             inputs,
             outcome,
             reason,
@@ -6908,7 +6948,7 @@ fn load_history(conn: &Connection, state: &mut GameState) -> Result<(), SaveErro
         })?;
         for row in rows {
             let (at, event_id, metal, crystal, deuterium, energy, heat, home_kind, levels) = row?;
-            state.history.snapshots.push(crate::EmpireSnapshot {
+            state.history.snapshots.push(hoshi_core::EmpireSnapshot {
                 at: unix_ts(at)?,
                 event_id: unix_ts(event_id)?,
                 iron: metal,
@@ -7172,7 +7212,7 @@ fn load_combat_plunder(conn: &Connection, log_id: i64) -> Result<Option<Resource
 fn load_combat_defence(
     conn: &Connection,
     log_id: i64,
-) -> Result<Option<crate::RaidDefence>, SaveError> {
+) -> Result<Option<hoshi_core::RaidDefence>, SaveError> {
     let row = conn
         .query_row(
             "SELECT intercept_in, intercept_down, stations_before, stations_after,
@@ -7185,7 +7225,7 @@ fn load_combat_defence(
                     let v: i64 = row.get(i)?;
                     Ok(u32::try_from(v).unwrap_or(0))
                 };
-                Ok(crate::RaidDefence {
+                Ok(hoshi_core::RaidDefence {
                     intercept_in: count(0)?,
                     intercept_down: count(1)?,
                     stations_before: count(2)?,
@@ -7366,7 +7406,7 @@ fn load_spy_reports(conn: &Connection, state: &mut GameState) -> Result<(), Save
         } else {
             None
         };
-        state.spy_reports.push(crate::SpyReport {
+        state.spy_reports.push(hoshi_core::SpyReport {
             id: unix_ts(id)?,
             target,
             created_at: unix_ts(created_at)?,
@@ -7450,7 +7490,7 @@ fn load_diplomacy(conn: &Connection, state: &mut GameState) -> Result<(), SaveEr
         if !delta.is_finite() {
             return Err(SaveError::Corrupt("faction log delta"));
         }
-        state.diplomacy.log.push(crate::StandingChange {
+        state.diplomacy.log.push(hoshi_core::StandingChange {
             at: unix_ts(at)?,
             faction,
             delta,
@@ -7561,7 +7601,7 @@ fn load_laws(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> 
         pending.push(row?);
     }
     drop(stmt);
-    state.laws = crate::LawState::default();
+    state.laws = hoshi_core::LawState::default();
     for (
         id,
         template_id,
@@ -7586,9 +7626,10 @@ fn load_laws(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> 
         if !param.is_finite() {
             return Err(SaveError::Corrupt("law param"));
         }
-        let jurisdiction = crate::Jurisdiction::parse(&jurisdiction)
+        let jurisdiction = hoshi_core::Jurisdiction::parse(&jurisdiction)
             .ok_or(SaveError::Corrupt("law jurisdiction"))?;
-        let status = crate::LawStatus::from_key(&status).ok_or(SaveError::Corrupt("law status"))?;
+        let status =
+            hoshi_core::LawStatus::from_key(&status).ok_or(SaveError::Corrupt("law status"))?;
         let mut approvals = Vec::new();
         let mut stmt =
             conn.prepare("SELECT who, at FROM law_approvals WHERE law_id = ?1 ORDER BY at")?;
@@ -7597,7 +7638,7 @@ fn load_laws(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> 
         })?;
         for row in rows {
             let (who, at) = row?;
-            approvals.push(crate::LawApproval {
+            approvals.push(hoshi_core::LawApproval {
                 who,
                 at: unix_ts(at)?,
             });
@@ -7618,8 +7659,8 @@ fn load_laws(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> 
         for row in rows {
             let (at, metric, expected, actual) = row?;
             let metric =
-                crate::LawMetric::from_key(&metric).ok_or(SaveError::Corrupt("law metric"))?;
-            samples.push(crate::LawSample {
+                hoshi_core::LawMetric::from_key(&metric).ok_or(SaveError::Corrupt("law metric"))?;
+            samples.push(hoshi_core::LawSample {
                 at: unix_ts(at)?,
                 metric,
                 expected,
@@ -7627,7 +7668,7 @@ fn load_laws(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> 
             });
         }
         drop(stmt);
-        state.laws.laws.push(crate::Law {
+        state.laws.laws.push(hoshi_core::Law {
             id: unix_ts(id)?,
             template_id,
             param,
@@ -7672,8 +7713,9 @@ fn load_laws(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> 
     state.laws.actions.clear();
     for row in rows {
         let (at, kind, law_id, actor) = row?;
-        let kind = crate::LawActionKind::from_key(&kind).ok_or(SaveError::Corrupt("law action"))?;
-        state.laws.actions.push(crate::LawAction {
+        let kind =
+            hoshi_core::LawActionKind::from_key(&kind).ok_or(SaveError::Corrupt("law action"))?;
+        state.laws.actions.push(hoshi_core::LawAction {
             at: unix_ts(at)?,
             kind,
             law_id: unix_ts(law_id)?,
@@ -7698,7 +7740,7 @@ fn load_market(conn: &Connection, state: &mut GameState) -> Result<(), SaveError
     })?;
     for row in rows {
         let (kind, price) = row?;
-        let kind = crate::ResourceKind::from_key(&kind)
+        let kind = hoshi_core::ResourceKind::from_key(&kind)
             .ok_or(SaveError::Corrupt("unknown market resource"))?;
         if !price.is_finite() || price <= 0.0 {
             return Err(SaveError::Corrupt("market price"));
@@ -7719,17 +7761,19 @@ fn load_market(conn: &Connection, state: &mut GameState) -> Result<(), SaveError
     })?;
     for row in rows {
         let (kind, _position, price) = row?;
-        let kind = crate::ResourceKind::from_key(&kind)
+        let kind = hoshi_core::ResourceKind::from_key(&kind)
             .ok_or(SaveError::Corrupt("unknown market history resource"))?;
         if !price.is_finite() || price <= 0.0 {
             return Err(SaveError::Corrupt("market history price"));
         }
         match kind {
-            crate::ResourceKind::Iron | crate::ResourceKind::RareEarths => metal.push(price),
-            crate::ResourceKind::Silicon => crystal.push(price),
-            crate::ResourceKind::Deuterium
-            | crate::ResourceKind::WaterIce
-            | crate::ResourceKind::Helium3 => deuterium.push(price),
+            hoshi_core::ResourceKind::Iron | hoshi_core::ResourceKind::RareEarths => {
+                metal.push(price)
+            }
+            hoshi_core::ResourceKind::Silicon => crystal.push(price),
+            hoshi_core::ResourceKind::Deuterium
+            | hoshi_core::ResourceKind::WaterIce
+            | hoshi_core::ResourceKind::Helium3 => deuterium.push(price),
         }
     }
     if !metal.is_empty() {
@@ -7869,13 +7913,13 @@ fn read_build_queue(conn: &Connection, planet_id: i64) -> Result<Vec<BuildJob>, 
             work_left,
         ) = job?;
         let operation = match operation.as_str() {
-            "build" => crate::BuildJobKind::Build,
-            "dismantle" => crate::BuildJobKind::Dismantle,
+            "build" => hoshi_core::BuildJobKind::Build,
+            "dismantle" => hoshi_core::BuildJobKind::Dismantle,
             _ => return Err(SaveError::Corrupt("unknown build operation")),
         };
         if !work_left.is_finite()
             || work_left < 0.0
-            || (operation == crate::BuildJobKind::Dismantle && from_level == 0)
+            || (operation == hoshi_core::BuildJobKind::Dismantle && from_level == 0)
         {
             return Err(SaveError::Corrupt("invalid dismantle work"));
         }
@@ -7938,7 +7982,7 @@ fn persist_finance(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<
     }
     for row in &state.finance.pending {
         let (coord, building, tech, ship, defence, count) = match &row.kind {
-            crate::PendingKind::Build { coord, building } => (
+            hoshi_core::PendingKind::Build { coord, building } => (
                 Some(*coord),
                 Some(building.as_key()),
                 None,
@@ -7946,13 +7990,13 @@ fn persist_finance(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<
                 None,
                 None,
             ),
-            crate::PendingKind::Research { tech } => {
+            hoshi_core::PendingKind::Research { tech } => {
                 (None, None, Some(tech.as_str()), None, None, None)
             }
-            crate::PendingKind::Ships { kind, count } => {
+            hoshi_core::PendingKind::Ships { kind, count } => {
                 (None, None, None, Some(kind.as_key()), None, Some(*count))
             }
-            crate::PendingKind::Defence { kind, count } => {
+            hoshi_core::PendingKind::Defence { kind, count } => {
                 (None, None, None, None, Some(kind.as_key()), Some(*count))
             }
         };
@@ -7985,7 +8029,7 @@ fn persist_finance(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<
 
 fn persist_job_credits(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<(), SaveError> {
     let mut id = 0i64;
-    let mut write = |scope: &str, idx: usize, coord: Option<crate::Coord>, credits: f64| {
+    let mut write = |scope: &str, idx: usize, coord: Option<hoshi_core::Coord>, credits: f64| {
         id += 1;
         tx.execute(
             "INSERT INTO finance_job_credits (id, scope, idx, g, s, p, credits)
@@ -8079,8 +8123,8 @@ fn persist_kpi(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<(), 
 }
 
 fn read_kpi(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
-    let cfg = crate::KpiConfig::bundled();
-    state.kpis = crate::KpiState::new(state.last_tick_unix, &cfg);
+    let cfg = hoshi_core::KpiConfig::bundled();
+    state.kpis = hoshi_core::KpiState::new(state.last_tick_unix, &cfg);
     let meta = conn
         .query_row(
             "SELECT next_report_at, next_id, period_trade, period_contract FROM kpi_meta WHERE id = 1",
@@ -8114,9 +8158,10 @@ fn read_kpi(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
     let mut targets = Vec::new();
     for row in rows {
         let (kpi, owner, value, set_at) = row?;
-        let kpi = crate::KpiId::from_key(&kpi).ok_or(SaveError::Corrupt("kpi id"))?;
-        let owner = crate::TargetOwner::parse(&owner).ok_or(SaveError::Corrupt("kpi owner"))?;
-        targets.push(crate::KpiTarget {
+        let kpi = hoshi_core::KpiId::from_key(&kpi).ok_or(SaveError::Corrupt("kpi id"))?;
+        let owner =
+            hoshi_core::TargetOwner::parse(&owner).ok_or(SaveError::Corrupt("kpi owner"))?;
+        targets.push(hoshi_core::KpiTarget {
             kpi,
             owner,
             value,
@@ -8137,7 +8182,7 @@ fn read_kpi(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
     let mut reports = Vec::new();
     for row in rows {
         let (id, at, pending, highlights) = row?;
-        reports.push(crate::PeriodicReport {
+        reports.push(hoshi_core::PeriodicReport {
             id: u64::try_from(id).map_err(|_| SaveError::Corrupt("report id"))?,
             at: unix_ts(at)?,
             measurements: Vec::new(),
@@ -8165,8 +8210,9 @@ fn read_kpi(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
     for row in rows {
         let (report_id, kpi, owner, value, target, event_ids) = row?;
         let id = u64::try_from(report_id).map_err(|_| SaveError::Corrupt("report id"))?;
-        let kpi = crate::KpiId::from_key(&kpi).ok_or(SaveError::Corrupt("kpi id"))?;
-        let owner = crate::TargetOwner::parse(&owner).ok_or(SaveError::Corrupt("kpi owner"))?;
+        let kpi = hoshi_core::KpiId::from_key(&kpi).ok_or(SaveError::Corrupt("kpi id"))?;
+        let owner =
+            hoshi_core::TargetOwner::parse(&owner).ok_or(SaveError::Corrupt("kpi owner"))?;
         let event_ids = if event_ids.is_empty() {
             Vec::new()
         } else {
@@ -8176,7 +8222,7 @@ fn read_kpi(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
                 .collect()
         };
         if let Some(report) = reports.iter_mut().find(|r| r.id == id) {
-            report.measurements.push(crate::Measurement {
+            report.measurements.push(hoshi_core::Measurement {
                 kpi,
                 owner,
                 value,
@@ -8300,8 +8346,8 @@ fn persist_maintenance(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Res
 }
 
 fn read_maintenance(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
-    let cfg = crate::MaintenanceConfig::bundled();
-    state.maintenance = crate::MaintenanceState::new(state.last_tick_unix, &cfg);
+    let cfg = hoshi_core::MaintenanceConfig::bundled();
+    state.maintenance = hoshi_core::MaintenanceState::new(state.last_tick_unix, &cfg);
     let meta = conn
         .query_row(
             "SELECT next_id, next_plan_id, next_order_id, next_reading_id, next_prediction_id, next_at
@@ -8369,11 +8415,11 @@ fn read_maintenance(conn: &Connection, state: &mut GameState) -> Result<(), Save
             last_service_hours,
             offline_until,
         ) = row?;
-        assets.push(crate::Asset {
+        assets.push(hoshi_core::Asset {
             id: u64::try_from(id).map_err(|_| SaveError::Corrupt("asset id"))?,
-            kind: crate::AssetKind::from_key(&kind).ok_or(SaveError::Corrupt("asset kind"))?,
+            kind: hoshi_core::AssetKind::from_key(&kind).ok_or(SaveError::Corrupt("asset kind"))?,
             key,
-            coord: crate::Coord {
+            coord: hoshi_core::Coord {
                 galaxy: u16::try_from(galaxy).map_err(|_| SaveError::Corrupt("asset galaxy"))?,
                 system: u16::try_from(system).map_err(|_| SaveError::Corrupt("asset system"))?,
                 position: u16::try_from(position)
@@ -8404,10 +8450,10 @@ fn read_maintenance(conn: &Connection, state: &mut GameState) -> Result<(), Save
     let mut plans = Vec::new();
     for row in rows {
         let (id, asset_id, kind, interval, enabled) = row?;
-        plans.push(crate::MaintenancePlan {
+        plans.push(hoshi_core::MaintenancePlan {
             id: u64::try_from(id).map_err(|_| SaveError::Corrupt("plan id"))?,
             asset_id: u64::try_from(asset_id).map_err(|_| SaveError::Corrupt("plan asset"))?,
-            kind: crate::PlanKind::from_key(&kind).ok_or(SaveError::Corrupt("plan kind"))?,
+            kind: hoshi_core::PlanKind::from_key(&kind).ok_or(SaveError::Corrupt("plan kind"))?,
             interval,
             enabled: enabled != 0,
         });
@@ -8432,10 +8478,10 @@ fn read_maintenance(conn: &Connection, state: &mut GameState) -> Result<(), Save
     let mut orders = Vec::new();
     for row in rows {
         let (id, asset_id, kind, started_at, ends_at, iron, silicon) = row?;
-        orders.push(crate::WorkOrder {
+        orders.push(hoshi_core::WorkOrder {
             id: u64::try_from(id).map_err(|_| SaveError::Corrupt("order id"))?,
             asset_id: u64::try_from(asset_id).map_err(|_| SaveError::Corrupt("order asset"))?,
-            kind: crate::WorkKind::from_key(&kind).ok_or(SaveError::Corrupt("order kind"))?,
+            kind: hoshi_core::WorkKind::from_key(&kind).ok_or(SaveError::Corrupt("order kind"))?,
             started_at: unix_ts(started_at)?,
             ends_at: unix_ts(ends_at)?,
             iron,
@@ -8462,7 +8508,7 @@ fn read_maintenance(conn: &Connection, state: &mut GameState) -> Result<(), Save
     let mut readings = Vec::new();
     for row in rows {
         let (id, asset_id, at, temperature, vibration, power, hours_use) = row?;
-        readings.push(crate::TelemetryReading {
+        readings.push(hoshi_core::TelemetryReading {
             id: u64::try_from(id).map_err(|_| SaveError::Corrupt("reading id"))?,
             asset_id: u64::try_from(asset_id).map_err(|_| SaveError::Corrupt("reading asset"))?,
             at: unix_ts(at)?,
@@ -8491,7 +8537,7 @@ fn read_maintenance(conn: &Connection, state: &mut GameState) -> Result<(), Save
     let mut predictions = Vec::new();
     for row in rows {
         let (id, asset_id, at, probability, horizon_secs, reading_id) = row?;
-        predictions.push(crate::FailurePrediction {
+        predictions.push(hoshi_core::FailurePrediction {
             id: u64::try_from(id).map_err(|_| SaveError::Corrupt("prediction id"))?,
             asset_id: u64::try_from(asset_id)
                 .map_err(|_| SaveError::Corrupt("prediction asset"))?,
@@ -8568,8 +8614,8 @@ fn persist_incidents(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Resul
 }
 
 fn read_incidents(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
-    let cfg = crate::IncidentConfig::bundled();
-    state.incidents = crate::IncidentState::new(state.last_tick_unix, &cfg);
+    let cfg = hoshi_core::IncidentConfig::bundled();
+    state.incidents = hoshi_core::IncidentState::new(state.last_tick_unix, &cfg);
     let meta = conn
         .query_row(
             "SELECT next_id, next_review_id, next_risk_id, next_review_at FROM incident_meta WHERE id = 1",
@@ -8624,13 +8670,13 @@ fn read_incidents(conn: &Connection, state: &mut GameState) -> Result<(), SaveEr
             closed_at,
             event_ids,
         ) = row?;
-        incidents.push(crate::Incident {
+        incidents.push(hoshi_core::Incident {
             id: u64::try_from(id).map_err(|_| SaveError::Corrupt("incident id"))?,
-            kind: crate::IncidentKind::from_key(&kind)
+            kind: hoshi_core::IncidentKind::from_key(&kind)
                 .ok_or(SaveError::Corrupt("incident kind"))?,
-            severity: crate::Severity::from_key(&severity)
+            severity: hoshi_core::Severity::from_key(&severity)
                 .ok_or(SaveError::Corrupt("incident severity"))?,
-            status: crate::IncidentStatus::from_key(&status)
+            status: hoshi_core::IncidentStatus::from_key(&status)
                 .ok_or(SaveError::Corrupt("incident status"))?,
             opened_at: unix_ts(opened_at)?,
             objects: decode_incident_list(&objects)?,
@@ -8667,7 +8713,7 @@ fn read_incidents(conn: &Connection, state: &mut GameState) -> Result<(), SaveEr
     let mut reviews = Vec::new();
     for row in rows {
         let (id, incident_id, at, root_cause, timeline, follow_ups) = row?;
-        reviews.push(crate::IncidentReview {
+        reviews.push(hoshi_core::IncidentReview {
             id: u64::try_from(id).map_err(|_| SaveError::Corrupt("review id"))?,
             incident_id: u64::try_from(incident_id)
                 .map_err(|_| SaveError::Corrupt("review incident"))?,
@@ -8694,11 +8740,12 @@ fn read_incidents(conn: &Connection, state: &mut GameState) -> Result<(), SaveEr
     let mut risks = Vec::new();
     for row in rows {
         let (id, name, likelihood, impact, review_at, last_reviewed_at) = row?;
-        risks.push(crate::Risk {
+        risks.push(hoshi_core::Risk {
             id: u64::try_from(id).map_err(|_| SaveError::Corrupt("risk id"))?,
             name,
             likelihood,
-            impact: crate::Severity::from_key(&impact).ok_or(SaveError::Corrupt("risk impact"))?,
+            impact: hoshi_core::Severity::from_key(&impact)
+                .ok_or(SaveError::Corrupt("risk impact"))?,
             review_at: unix_ts(review_at)?,
             last_reviewed_at: unix_ts(last_reviewed_at)?,
         });
@@ -8710,8 +8757,8 @@ fn read_incidents(conn: &Connection, state: &mut GameState) -> Result<(), SaveEr
 }
 
 fn read_finance(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
-    let cfg = crate::FinanceConfig::bundled();
-    state.finance = crate::FinanceState::new(state.last_tick_unix, &cfg);
+    let cfg = hoshi_core::FinanceConfig::bundled();
+    state.finance = hoshi_core::FinanceState::new(state.last_tick_unix, &cfg);
     let meta = conn
         .query_row(
             "SELECT cash, reserve_target, period_started_at, next_period_at, next_spend_id,
@@ -8774,9 +8821,9 @@ fn read_finance(conn: &Connection, state: &mut GameState) -> Result<(), SaveErro
         let mut budgets = Vec::new();
         for row in rows {
             let (center, limit, actual, forecast, last_actual, last_forecast) = row?;
-            let center =
-                crate::CostCenter::parse(&center).ok_or(SaveError::Corrupt("finance center"))?;
-            budgets.push(crate::Budget {
+            let center = hoshi_core::CostCenter::parse(&center)
+                .ok_or(SaveError::Corrupt("finance center"))?;
+            budgets.push(hoshi_core::Budget {
                 center,
                 limit,
                 actual,
@@ -8831,8 +8878,8 @@ fn read_finance(conn: &Connection, state: &mut GameState) -> Result<(), SaveErro
                 defence,
                 count,
             ) = row?;
-            let center =
-                crate::CostCenter::parse(&center).ok_or(SaveError::Corrupt("finance center"))?;
+            let center = hoshi_core::CostCenter::parse(&center)
+                .ok_or(SaveError::Corrupt("finance center"))?;
             let kind = decode_pending_kind(
                 &kind,
                 (g, s, p),
@@ -8842,7 +8889,7 @@ fn read_finance(conn: &Connection, state: &mut GameState) -> Result<(), SaveErro
                 defence.as_deref(),
                 count,
             )?;
-            pending.push(crate::PendingSpend {
+            pending.push(hoshi_core::PendingSpend {
                 id: u64::try_from(id).map_err(|_| SaveError::Corrupt("spend id"))?,
                 center,
                 amount,
@@ -8876,7 +8923,7 @@ fn apply_job_credits(conn: &Connection, state: &mut GameState) -> Result<(), Sav
         match scope.as_str() {
             "build" => {
                 let coord = match (g, s, p) {
-                    (Some(g), Some(s), Some(p)) => crate::Coord {
+                    (Some(g), Some(s), Some(p)) => hoshi_core::Coord {
                         galaxy: u16::try_from(g).unwrap_or(0),
                         system: u16::try_from(s).unwrap_or(0),
                         position: u16::try_from(p).unwrap_or(0),
@@ -8922,7 +8969,7 @@ fn decode_pending_kind(
     ship: Option<&str>,
     defence: Option<&str>,
     count: Option<i64>,
-) -> Result<crate::PendingKind, SaveError> {
+) -> Result<hoshi_core::PendingKind, SaveError> {
     match kind {
         "build" => {
             let coord = Coord {
@@ -8935,30 +8982,30 @@ fn decode_pending_kind(
             };
             let building = BuildingKind::from_key(building.unwrap_or(""))
                 .ok_or(SaveError::Corrupt("spend building"))?;
-            Ok(crate::PendingKind::Build { coord, building })
+            Ok(hoshi_core::PendingKind::Build { coord, building })
         }
-        "research" => Ok(crate::PendingKind::Research {
+        "research" => Ok(hoshi_core::PendingKind::Research {
             tech: tech.unwrap_or("").to_string(),
         }),
         "ships" => {
-            let kind = crate::ShipKind::from_key(ship.unwrap_or(""))
+            let kind = hoshi_core::ShipKind::from_key(ship.unwrap_or(""))
                 .ok_or(SaveError::Corrupt("spend ship"))?;
             let count =
                 u32::try_from(count.unwrap_or(0)).map_err(|_| SaveError::Corrupt("spend count"))?;
-            Ok(crate::PendingKind::Ships { kind, count })
+            Ok(hoshi_core::PendingKind::Ships { kind, count })
         }
         "defence" => {
-            let kind = crate::DefenceKind::from_key(defence.unwrap_or(""))
+            let kind = hoshi_core::DefenceKind::from_key(defence.unwrap_or(""))
                 .ok_or(SaveError::Corrupt("spend defence"))?;
             let count =
                 u32::try_from(count.unwrap_or(0)).map_err(|_| SaveError::Corrupt("spend count"))?;
-            Ok(crate::PendingKind::Defence { kind, count })
+            Ok(hoshi_core::PendingKind::Defence { kind, count })
         }
         _ => Err(SaveError::Corrupt("spend kind")),
     }
 }
 
-fn read_automation_rules(conn: &Connection) -> Result<Vec<crate::AutomationRule>, SaveError> {
+fn read_automation_rules(conn: &Connection) -> Result<Vec<hoshi_core::AutomationRule>, SaveError> {
     let Ok(mut stmt) = conn.prepare(
         "SELECT id, enabled, cond_kind, cond_g, cond_s, cond_p, cond_resource, cond_amount,
                 act_kind, from_g, from_s, from_p, to_g, to_s, to_p, act_resource, act_amount,
@@ -9017,48 +9064,48 @@ fn read_automation_rules(conn: &Connection) -> Result<Vec<crate::AutomationRule>
             ap,
             act_building,
         ) = row?;
-        let condition = crate::RuleCondition {
-            kind: crate::RuleConditionKind::parse(&cond_kind)
+        let condition = hoshi_core::RuleCondition {
+            kind: hoshi_core::RuleConditionKind::parse(&cond_kind)
                 .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?,
-            planet: crate::Coord {
+            planet: hoshi_core::Coord {
                 galaxy: cg as u16,
                 system: cs as u16,
                 position: cp as u16,
             },
-            resource: crate::ResourceKind::from_key(&cond_resource)
+            resource: hoshi_core::ResourceKind::from_key(&cond_resource)
                 .ok_or_else(|| rusqlite::Error::InvalidParameterName(cond_resource.clone()))?,
             amount: cond_amount,
         };
         let action = match act_kind.as_str() {
-            "transfer" => crate::RuleAction::Transfer {
-                from: crate::Coord {
+            "transfer" => hoshi_core::RuleAction::Transfer {
+                from: hoshi_core::Coord {
                     galaxy: fg.unwrap_or(0) as u16,
                     system: fs.unwrap_or(0) as u16,
                     position: fp.unwrap_or(0) as u16,
                 },
-                to: crate::Coord {
+                to: hoshi_core::Coord {
                     galaxy: tg.unwrap_or(0) as u16,
                     system: ts.unwrap_or(0) as u16,
                     position: tp.unwrap_or(0) as u16,
                 },
-                resource: crate::ResourceKind::from_key(act_resource.as_deref().unwrap_or(""))
+                resource: hoshi_core::ResourceKind::from_key(act_resource.as_deref().unwrap_or(""))
                     .ok_or_else(|| rusqlite::Error::InvalidParameterName("act_resource".into()))?,
                 amount: act_amount.unwrap_or(0.0),
             },
-            "queue_build" => crate::RuleAction::QueueBuild {
-                planet: crate::Coord {
+            "queue_build" => hoshi_core::RuleAction::QueueBuild {
+                planet: hoshi_core::Coord {
                     galaxy: ag.unwrap_or(0) as u16,
                     system: a_s.unwrap_or(0) as u16,
                     position: ap.unwrap_or(0) as u16,
                 },
-                building: crate::BuildingKind::from_key(act_building.as_deref().unwrap_or(""))
+                building: hoshi_core::BuildingKind::from_key(act_building.as_deref().unwrap_or(""))
                     .ok_or_else(|| rusqlite::Error::InvalidParameterName("act_building".into()))?,
             },
             other => {
                 return Err(rusqlite::Error::InvalidParameterName(other.into()).into());
             }
         };
-        rules.push(crate::AutomationRule {
+        rules.push(hoshi_core::AutomationRule {
             id: id as u64,
             enabled: enabled != 0,
             condition,
@@ -9164,7 +9211,7 @@ fn read_routes(conn: &Connection) -> Result<Vec<TradeRoute>, SaveError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::BuildingKind;
+    use hoshi_core::BuildingKind;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_path(tag: &str) -> PathBuf {
@@ -9209,7 +9256,7 @@ mod tests {
         let mut conn = open_save(&path).unwrap();
         conn.execute_batch("PRAGMA wal_autocheckpoint=0").unwrap();
         let mut state = GameState::with_seed(100, BalanceConfig::default(), 987654321);
-        state.record_history(crate::HistoryDraft {
+        state.record_history(hoshi_core::HistoryDraft {
             at: 100,
             action: "diagnostic-fixture".into(),
             outcome: "completed".into(),
@@ -9262,34 +9309,35 @@ mod tests {
         state.buildings.shipyard = 1;
         state.tech_levels.insert("combustion_drive".into(), 1);
         state
-            .enqueue_ships(crate::ShipKind::LightFighter, 2, 1_700_000_000)
+            .enqueue_ships(hoshi_core::ShipKind::LightFighter, 2, 1_700_000_000)
             .unwrap();
-        state.fleet.add(crate::ShipKind::HeavyFighter, 3);
-        state.fleet.add(crate::ShipKind::LightFighter, 2);
+        state.fleet.add(hoshi_core::ShipKind::HeavyFighter, 3);
+        state.fleet.add(hoshi_core::ShipKind::LightFighter, 2);
         state.galaxy_seed = 11;
-        let dest = crate::Coord {
+        let dest = hoshi_core::Coord {
             galaxy: 1,
             system: 1,
             position: 14,
         };
-        let (kind, size) = crate::planet_profile(11, dest, crate::GALAXY_GENERATOR_VERSION);
-        let mut colony_fleet = crate::Fleet::default();
-        colony_fleet.add(crate::ShipKind::SmallCargo, 1);
-        state.colonies.push(crate::Colony {
+        let (kind, size) =
+            hoshi_core::planet_profile(11, dest, hoshi_core::GALAXY_GENERATOR_VERSION);
+        let mut colony_fleet = hoshi_core::Fleet::default();
+        colony_fleet.add(hoshi_core::ShipKind::SmallCargo, 1);
+        state.colonies.push(hoshi_core::Colony {
             coord: dest,
             kind,
             size,
             resources: Resources::from_parts(50.0, 20.0, 5.0),
-            buildings: crate::Buildings {
+            buildings: hoshi_core::Buildings {
                 metal_mine: 1,
-                ..crate::Buildings::default()
+                ..hoshi_core::Buildings::default()
             },
             fleet: colony_fleet,
-            defences: crate::DefenceGrid::default(),
+            defences: hoshi_core::DefenceGrid::default(),
             rare: None,
             goods: BTreeMap::new(),
             build_queue: vec![BuildJob {
-                kind: crate::buildings::BuildJobKind::Build,
+                kind: hoshi_core::BuildJobKind::Build,
                 work_left: 0.0,
                 building: BuildingKind::SolarPlant,
                 from_level: 0,
@@ -9299,11 +9347,11 @@ mod tests {
                 completes_at: Some(1_700_000_040),
             }],
         });
-        let mut route_ships = crate::Fleet::default();
-        route_ships.add(crate::ShipKind::SmallCargo, 2);
-        state.routes.push(crate::TradeRoute {
+        let mut route_ships = hoshi_core::Fleet::default();
+        route_ships.add(hoshi_core::ShipKind::SmallCargo, 2);
+        state.routes.push(hoshi_core::TradeRoute {
             id: 0,
-            origin: crate::Coord::HOME,
+            origin: hoshi_core::Coord::HOME,
             dest,
             ships: route_ships,
             cargo: Resources::from_parts(10.0, 0.0, 0.0),
@@ -9312,16 +9360,16 @@ mod tests {
             next_at: 1_700_000_000,
         });
         state.next_route_id = 1;
-        state.events.push(crate::GameEvent {
+        state.events.push(hoshi_core::GameEvent {
             at: 1_700_000_000,
             text: "raid: pirates 1 light fighter vs none. 0 rounds. lost none. pirates lost none. plunder Fe0 Si0 D0".into(),
         });
-        let mut wing = crate::Fleet::default();
-        wing.add(crate::ShipKind::LightFighter, 2);
+        let mut wing = hoshi_core::Fleet::default();
+        wing.add(hoshi_core::ShipKind::LightFighter, 2);
         state
             .launch_fleet(
                 wing,
-                crate::Coord {
+                hoshi_core::Coord {
                     galaxy: 1,
                     system: 2,
                     position: 1,
@@ -9337,7 +9385,7 @@ mod tests {
             mission.cargo = Resources::from_parts(3.0, 2.0, 1.0);
         }
         state.completed_wonders.push("observatory".into());
-        state.wonder = Some(crate::WonderJob {
+        state.wonder = Some(hoshi_core::WonderJob {
             id: "dyson_ring".into(),
             stage: 0,
             contributed: Resources::from_parts(100.0, 50.0, 10.0),
@@ -9358,7 +9406,7 @@ mod tests {
     #[test]
     fn migrate_v53_loads_an_empty_flag_set_and_keeps_the_old_draw() {
         let cfg = BalanceConfig {
-            story: crate::StoryCatalog::parse(
+            story: hoshi_core::StoryCatalog::parse(
                 r#"
 first_delay_secs = 10
 cooldown_secs = 50
@@ -9505,7 +9553,7 @@ label = "Leave it"
         assert_eq!(loaded.last_diplomacy_at, 0);
         assert_eq!(loaded.buildings.metal_mine, 4);
         assert_eq!(loaded.tech_level("weapons"), 3);
-        assert_eq!(loaded.activity, crate::ActivityTracker::default());
+        assert_eq!(loaded.activity, hoshi_core::ActivityTracker::default());
         assert!(missions_has_column(&conn, "expedition_seed").unwrap());
         assert!(missions_has_column(&conn, "expedition_applied").unwrap());
         assert!(missions_has_column(&conn, "cargo_metal").unwrap());
@@ -9682,7 +9730,7 @@ label = "Leave it"
         let b = new_save(1_800_000_001);
         assert_ne!(a.galaxy_seed, 0);
         assert_ne!(a.galaxy_seed, b.galaxy_seed);
-        assert_eq!(a.galaxy_seed, crate::new_galaxy_seed(1_800_000_000));
+        assert_eq!(a.galaxy_seed, hoshi_core::new_galaxy_seed(1_800_000_000));
         assert!(
             !a.deterministic,
             "a path-created save still catches up live"
@@ -9731,7 +9779,7 @@ label = "Leave it"
         let default = BalanceConfig::default();
         let config = BalanceConfig {
             max_build_queue: 3,
-            metal_mine: crate::ProducerSpec {
+            metal_mine: hoshi_core::ProducerSpec {
                 base_per_hour: 99.0,
                 ..default.metal_mine
             },
@@ -9801,7 +9849,7 @@ label = "Leave it"
         migrate_v10(&conn).unwrap();
         let mut state = GameState::new(3);
         state.completed_wonders.push("observatory".into());
-        state.wonder = Some(crate::WonderJob {
+        state.wonder = Some(hoshi_core::WonderJob {
             id: "dyson_ring".into(),
             stage: 1,
             contributed: Resources::from_parts(5.0, 4.0, 3.0),
@@ -9862,7 +9910,7 @@ label = "Leave it"
         state.prestige.currency = 4;
         state.prestige.lifetime = 7;
         state.prestige.owned.insert("mine_focus".into(), 2);
-        state.prestige.runs.push(crate::RunStats {
+        state.prestige.runs.push(hoshi_core::RunStats {
             index: 1,
             started_at: 1,
             ended_at: Some(2),
@@ -9889,18 +9937,18 @@ label = "Leave it"
         let mut state = GameState::new(3);
         state.goods.insert("iron_ore".into(), 12.5);
         state.goods.insert("steel".into(), 4.0);
-        state.colonies.push(crate::Colony {
-            coord: crate::Coord {
+        state.colonies.push(hoshi_core::Colony {
+            coord: hoshi_core::Coord {
                 galaxy: 1,
                 system: 1,
                 position: 2,
             },
-            kind: crate::PlanetType::Ice,
+            kind: hoshi_core::PlanetType::Ice,
             size: 80,
             resources: Resources::ZERO,
-            buildings: crate::Buildings::default(),
-            fleet: crate::Fleet::default(),
-            defences: crate::DefenceGrid::default(),
+            buildings: hoshi_core::Buildings::default(),
+            fleet: hoshi_core::Fleet::default(),
+            defences: hoshi_core::DefenceGrid::default(),
             build_queue: Vec::new(),
             rare: None,
             goods: BTreeMap::from([("water_ice".into(), 7.0)]),
@@ -9936,7 +9984,7 @@ label = "Leave it"
         migrate_v15(&conn).unwrap();
         let mut state = GameState::new(3);
         state.last_story_at = 11;
-        state.story_pending = Some(crate::PendingStory {
+        state.story_pending = Some(hoshi_core::PendingStory {
             event_id: "derelict".into(),
             offered_at: 5,
             timeout_at: 90,
@@ -9982,7 +10030,7 @@ label = "Leave it"
         state.last_diplomacy_at = 77;
         state.diplomacy.set_standing("traders", 21.0);
         state.diplomacy.set_standing("pirates", -12.0);
-        state.diplomacy.log.push(crate::StandingChange {
+        state.diplomacy.log.push(hoshi_core::StandingChange {
             at: 9,
             faction: "traders".into(),
             delta: 21.0,
@@ -10011,7 +10059,7 @@ label = "Leave it"
         };
         let mut fleet = Fleet::default();
         fleet.add(ShipKind::LightFighter, 3);
-        state.spy_reports.push(crate::SpyReport {
+        state.spy_reports.push(hoshi_core::SpyReport {
             id: 2,
             target: dest,
             created_at: 40,
@@ -10051,32 +10099,32 @@ label = "Leave it"
         migrate_v19(&conn).unwrap();
         migrate_v19(&conn).unwrap();
         let mut state = GameState::new(3);
-        state.defences.add(crate::DefenceKind::LightCannon, 4);
-        state.defences.add(crate::DefenceKind::ShieldDome, 2);
-        state.defences.add(crate::DefenceKind::Garrison, 9);
+        state.defences.add(hoshi_core::DefenceKind::LightCannon, 4);
+        state.defences.add(hoshi_core::DefenceKind::ShieldDome, 2);
+        state.defences.add(hoshi_core::DefenceKind::Garrison, 9);
         state.ship_queue.push(ShipJob {
             ship: None,
-            defence: Some(crate::DefenceKind::IonCannon),
+            defence: Some(hoshi_core::DefenceKind::IonCannon),
             remaining: 2,
             unit_paid: Resources::from_parts(200.0, 600.0, 0.0),
             credits: 0.0,
             started_at: Some(10),
             completes_at: Some(190),
         });
-        state.colonies.push(crate::Colony {
-            coord: crate::Coord {
+        state.colonies.push(hoshi_core::Colony {
+            coord: hoshi_core::Coord {
                 galaxy: 1,
                 system: 1,
                 position: 2,
             },
-            kind: crate::PlanetType::Rocky,
+            kind: hoshi_core::PlanetType::Rocky,
             size: 80,
             resources: Resources::ZERO,
-            buildings: crate::Buildings::default(),
-            fleet: crate::Fleet::default(),
+            buildings: hoshi_core::Buildings::default(),
+            fleet: hoshi_core::Fleet::default(),
             defences: {
-                let mut grid = crate::DefenceGrid::default();
-                grid.add(crate::DefenceKind::OrbitalStation, 1);
+                let mut grid = hoshi_core::DefenceGrid::default();
+                grid.add(hoshi_core::DefenceKind::OrbitalStation, 1);
                 grid
             },
             build_queue: Vec::new(),
@@ -10099,7 +10147,7 @@ label = "Leave it"
         migrate_v20(&conn).unwrap();
         let mut state = GameState::new(10);
         let id = state
-            .propose_law("tax_rate", 25.0, crate::Jurisdiction::Empire, 0, 10)
+            .propose_law("tax_rate", 25.0, hoshi_core::Jurisdiction::Empire, 0, 10)
             .unwrap();
         state.approve_law(id, 10).unwrap();
         save_state(&mut conn, &state).unwrap();
@@ -10116,7 +10164,7 @@ label = "Leave it"
         migrate_v23(&conn).unwrap();
         migrate_v23(&conn).unwrap();
         let mut state = GameState::new(10);
-        state.fleet.add(crate::ShipKind::LightFighter, 4);
+        state.fleet.add(hoshi_core::ShipKind::LightFighter, 4);
         let _ = state.trigger_raid(10);
         assert!(!state.combat_logs.is_empty());
         save_state(&mut conn, &state).unwrap();
@@ -10130,7 +10178,7 @@ label = "Leave it"
     fn migrate_v23_keeps_empty_terminal_frames_and_ground() {
         let mut conn = open_save(Path::new(":memory:")).unwrap();
         let mut before = Fleet::default();
-        before.add(crate::ShipKind::LightFighter, 1);
+        before.add(hoshi_core::ShipKind::LightFighter, 1);
         let mut state = GameState::new(10);
         state.combat_logs.push(CombatLog {
             at: 10,
@@ -10141,7 +10189,7 @@ label = "Leave it"
                 attacker_after: Fleet::default(),
                 defender_after: Fleet::default(),
                 winner: CombatWinner::Draw,
-                ground: Some(crate::GroundReport {
+                ground: Some(hoshi_core::GroundReport {
                     attacker_strength: 10,
                     defender_strength: 4,
                     attacker_roll: 9,
@@ -10188,7 +10236,7 @@ label = "Leave it"
         state.defences.add(DefenceKind::OrbitalStation, 1);
         state.defences.add(DefenceKind::ShieldDome, 1);
         state.defences.add(DefenceKind::Garrison, 4);
-        state.fleet.add(crate::ShipKind::LightFighter, 2);
+        state.fleet.add(hoshi_core::ShipKind::LightFighter, 2);
         let report = state.trigger_raid(10);
         assert!(report.layered);
         save_state(&mut conn, &state).unwrap();
@@ -10219,8 +10267,8 @@ label = "Leave it"
         state.admirals[0].trait_id = "flanker".into();
         save_state(&mut conn, &state).unwrap();
         let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
-        assert_eq!(loaded.fleet_tactics.formation, crate::Formation::Wedge);
-        assert_eq!(loaded.fleet_tactics.stance, crate::Stance::Aggressive);
+        assert_eq!(loaded.fleet_tactics.formation, hoshi_core::Formation::Wedge);
+        assert_eq!(loaded.fleet_tactics.stance, hoshi_core::Stance::Aggressive);
         assert!((loaded.fleet_tactics.retreat_below - 0.3).abs() < 1e-12);
         assert_eq!(loaded.admirals[0].xp, 5);
         assert_eq!(loaded.admirals[0].trait_id, "flanker");
@@ -10240,13 +10288,13 @@ label = "Leave it"
         state
             .assign_leader(
                 id,
-                crate::RoleKind::Minister,
-                crate::AssignmentTarget::Empire,
+                hoshi_core::RoleKind::Minister,
+                hoshi_core::AssignmentTarget::Empire,
                 10,
             )
             .unwrap();
         state
-            .delegate_leader(id, crate::Permission::ProposeLaw, Some(100.0), 10)
+            .delegate_leader(id, hoshi_core::Permission::ProposeLaw, Some(100.0), 10)
             .unwrap();
         save_state(&mut conn, &state).unwrap();
         let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
@@ -10314,10 +10362,10 @@ label = "Leave it"
                 10,
             )
             .unwrap();
-        state.planned.push(crate::PlannedMission {
+        state.planned.push(hoshi_core::PlannedMission {
             id: 7,
             vehicle_id: id,
-            route: crate::Route {
+            route: hoshi_core::Route {
                 origin: Coord::HOME,
                 dest: Coord {
                     galaxy: 1,
@@ -10325,9 +10373,9 @@ label = "Leave it"
                     position: 8,
                 },
             },
-            transfer: crate::TransferKind::Hohmann,
-            customer: crate::Customer::Colony,
-            window: crate::LaunchWindow {
+            transfer: hoshi_core::TransferKind::Hohmann,
+            customer: hoshi_core::Customer::Colony,
+            window: hoshi_core::LaunchWindow {
                 opens_at: 10,
                 closes_at: 130,
             },
@@ -10335,7 +10383,7 @@ label = "Leave it"
             arrives_at: 400,
             delta_v: 1_234.0,
             fuel_mass: 50.0,
-            payload: crate::Payload {
+            payload: hoshi_core::Payload {
                 cargo: Resources::from_parts(10.0, 0.0, 0.0),
             },
         });
@@ -10347,7 +10395,10 @@ label = "Leave it"
         assert_eq!(loaded.vehicles[0].ships.get(ShipKind::SmallCargo), 1);
         assert_eq!(loaded.planned.len(), 1);
         assert_eq!(loaded.planned[0].id, 7);
-        assert_eq!(loaded.planned[0].transfer, crate::TransferKind::Hohmann);
+        assert_eq!(
+            loaded.planned[0].transfer,
+            hoshi_core::TransferKind::Hohmann
+        );
         assert_eq!(loaded.next_planned_id, 8);
         assert_eq!(count_rows(&conn, "vehicles").unwrap(), 1);
         assert_eq!(count_rows(&conn, "planned_missions").unwrap(), 1);
@@ -10359,7 +10410,7 @@ label = "Leave it"
         migrate_v31(&conn).unwrap();
         migrate_v31(&conn).unwrap();
         let mut state = GameState::new(10);
-        state.spy_reports.push(crate::SpyReport {
+        state.spy_reports.push(hoshi_core::SpyReport {
             id: 4,
             target: Coord::HOME,
             created_at: 10,
@@ -10384,26 +10435,26 @@ label = "Leave it"
         });
         state
             .classify(
-                crate::Actor::Player,
-                crate::ClassifiedKind::Report,
+                hoshi_core::Actor::Player,
+                hoshi_core::ClassifiedKind::Report,
                 "4",
-                crate::Classification::Secret,
-                [crate::COMPARTMENT_INTEL.into()],
+                hoshi_core::Classification::Secret,
+                [hoshi_core::COMPARTMENT_INTEL.into()],
             )
             .unwrap();
         state.diplomacy.set_standing("traders", 25.0);
         state
             .share(
                 "traders",
-                crate::Classification::Restricted,
-                [crate::COMPARTMENT_INTEL.into()],
+                hoshi_core::Classification::Restricted,
+                [hoshi_core::COMPARTMENT_INTEL.into()],
             )
             .unwrap();
         state
             .grant_clearance(
                 1,
-                crate::Classification::Secret,
-                [crate::COMPARTMENT_INTEL.into()],
+                hoshi_core::Classification::Secret,
+                [hoshi_core::COMPARTMENT_INTEL.into()],
             )
             .unwrap();
         state.maybe_leak_spy(20, true);
@@ -10411,9 +10462,9 @@ label = "Leave it"
         let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
         assert_eq!(
             loaded
-                .marking_of(crate::ClassifiedKind::Report, "4")
+                .marking_of(hoshi_core::ClassifiedKind::Report, "4")
                 .classification,
-            crate::Classification::Secret
+            hoshi_core::Classification::Secret
         );
         assert!(loaded.classification.agreements.contains_key("traders"));
         assert_eq!(loaded.classification.incidents.len(), 1);
@@ -10438,8 +10489,8 @@ label = "Leave it"
         state
             .place_order(
                 Coord::HOME,
-                crate::OrderSide::Buy,
-                crate::ResourceKind::Silicon,
+                hoshi_core::OrderSide::Buy,
+                hoshi_core::ResourceKind::Silicon,
                 5.0,
                 Some(2.0),
                 1_000,
@@ -10484,7 +10535,7 @@ label = "Leave it"
         let mut cfg = BalanceConfig::default();
         cfg.raid.enabled = false;
         cfg.market.enabled = false;
-        let cat = crate::SeasonCatalog::default();
+        let cat = hoshi_core::SeasonCatalog::default();
         let state = GameState::new_season(1_800_000_000, &cat, "closed_market", cfg).unwrap();
         let run = state.season.clone().expect("season");
         save_state(&mut conn, &state).unwrap();
@@ -10502,17 +10553,18 @@ label = "Leave it"
         let mut cfg = BalanceConfig::default();
         cfg.raid.enabled = false;
         cfg.market.enabled = false;
-        let cat = crate::SpeciesCatalog::default();
+        let cat = hoshi_core::SpeciesCatalog::default();
         let mut prestige = Prestige::new(1_000);
         prestige.unlocked_species.insert("aurelians".into());
         prestige.unlocked_species.insert("kryth".into());
         let mut state =
-            crate::GameState::new_with_species(1_000, &cat, "aurelians", cfg, 7, prestige).unwrap();
+            hoshi_core::GameState::new_with_species(1_000, &cat, "aurelians", cfg, 7, prestige)
+                .unwrap();
         state.deterministic = true;
         state
             .transmute(
-                crate::ResourceKind::Iron,
-                crate::ResourceKind::Silicon,
+                hoshi_core::ResourceKind::Iron,
+                hoshi_core::ResourceKind::Silicon,
                 10.0,
             )
             .unwrap();
@@ -10592,7 +10644,7 @@ label = "Leave it"
         assert!((deuterium - 10.0).abs() < 1e-9);
         assert_eq!(ice, 0.0);
         assert_eq!(he3, 0.0);
-        let mapped = crate::Resources::from_legacy(100.0, 40.0, 10.0);
+        let mapped = hoshi_core::Resources::from_legacy(100.0, 40.0, 10.0);
         assert!((mapped.iron - 95.0).abs() < 1e-9);
         assert!((mapped.rare_earths - 5.0).abs() < 1e-9);
         assert!((mapped.silicon - 40.0).abs() < 1e-9);
@@ -10614,15 +10666,15 @@ label = "Leave it"
         state.tech_levels.insert("logistics_rules".into(), 1);
         let id = state
             .add_automation_rule(
-                crate::RuleCondition {
-                    kind: crate::RuleConditionKind::StockBelow,
+                hoshi_core::RuleCondition {
+                    kind: hoshi_core::RuleConditionKind::StockBelow,
                     planet: state.home,
-                    resource: crate::ResourceKind::Iron,
+                    resource: hoshi_core::ResourceKind::Iron,
                     amount: 2_000.0,
                 },
-                crate::RuleAction::QueueBuild {
+                hoshi_core::RuleAction::QueueBuild {
                     planet: state.home,
-                    building: crate::BuildingKind::MetalMine,
+                    building: hoshi_core::BuildingKind::MetalMine,
                 },
             )
             .unwrap();
@@ -10652,16 +10704,16 @@ label = "Leave it"
         state.resources.deuterium = 50_000.0;
         state
             .set_budget(
-                crate::CostCenter::Department(crate::Department::Industry),
+                hoshi_core::CostCenter::Department(hoshi_core::Department::Industry),
                 Some(1.0),
-                crate::Actor::Player,
+                hoshi_core::Actor::Player,
                 1_000,
             )
             .unwrap();
         let err = state
-            .enqueue_build(crate::BuildingKind::MetalMine, 1_000)
+            .enqueue_build(hoshi_core::BuildingKind::MetalMine, 1_000)
             .unwrap_err();
-        let crate::BuildError::NeedsApproval { id } = err else {
+        let hoshi_core::BuildError::NeedsApproval { id } = err else {
             panic!("{err:?}");
         };
         state.finance.treasury.cash = 42.5;
@@ -10674,7 +10726,9 @@ label = "Leave it"
             .finance
             .budgets
             .iter()
-            .find(|b| b.center == crate::CostCenter::Department(crate::Department::Industry))
+            .find(|b| {
+                b.center == hoshi_core::CostCenter::Department(hoshi_core::Department::Industry)
+            })
             .unwrap();
         assert_eq!(industry.limit, Some(1.0));
         assert_eq!(count_rows(&conn, "finance_meta").unwrap(), 1);
@@ -10711,25 +10765,25 @@ label = "Leave it"
         state.deterministic = true;
         let id = state
             .open_incident(
-                crate::IncidentKind::Manual,
-                crate::Severity::High,
+                hoshi_core::IncidentKind::Manual,
+                hoshi_core::Severity::High,
                 vec!["home".into(), "bay\n2".into(), "a\"b".into()],
-                crate::Actor::Player,
+                hoshi_core::Actor::Player,
                 1_000,
             )
             .unwrap();
         state
-            .resolve_incident(id, "cleared\nwith note", crate::Actor::Player, 1_000)
+            .resolve_incident(id, "cleared\nwith note", hoshi_core::Actor::Player, 1_000)
             .unwrap();
         state
-            .review_incident(id, crate::Actor::Player, 1_000)
+            .review_incident(id, hoshi_core::Actor::Player, 1_000)
             .unwrap();
         save_state(&mut conn, &state).unwrap();
         let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
         assert_eq!(loaded.incidents.incidents.len(), 1);
         assert_eq!(
             loaded.incidents.incidents[0].kind,
-            crate::IncidentKind::Manual
+            hoshi_core::IncidentKind::Manual
         );
         assert_eq!(
             loaded.incidents.incidents[0].objects,
@@ -10761,7 +10815,12 @@ label = "Leave it"
         state.sync_maintenance_assets(1_000);
         let id = state.maintenance.assets[0].id;
         state
-            .schedule_maintenance(id, crate::PlanKind::Time, crate::Actor::Player, 1_000)
+            .schedule_maintenance(
+                id,
+                hoshi_core::PlanKind::Time,
+                hoshi_core::Actor::Player,
+                1_000,
+            )
             .unwrap();
         state.catch_up(state.maintenance.next_at);
         save_state(&mut conn, &state).unwrap();
@@ -10797,7 +10856,7 @@ label = "Leave it"
     #[test]
     fn raid_defence_layers_survive_save_and_v50_saves_read_as_none() {
         let mut state = GameState::new(0);
-        state.defences.add(crate::DefenceKind::HeavyCannon, 2);
+        state.defences.add(hoshi_core::DefenceKind::HeavyCannon, 2);
         state.trigger_raid(0);
         let defence = state.combat_logs.last().unwrap().raid_defence.unwrap();
         assert_eq!(defence.batteries_before, 2, "{defence:?}");
@@ -10885,7 +10944,7 @@ label = "Leave it"
         let mut state = GameState::new(100);
         state.resources = Resources::from_parts(1_000_000.0, 1_000_000.0, 1_000_000.0);
         state
-            .enqueue_build(crate::BuildingKind::MetalMine, 100)
+            .enqueue_build(hoshi_core::BuildingKind::MetalMine, 100)
             .unwrap();
         save_state(&mut conn, &state).unwrap();
         conn.execute_batch(
@@ -10925,7 +10984,7 @@ label = "Leave it"
             system: 1,
             position: 8,
         };
-        state.spy_reports.push(crate::SpyReport {
+        state.spy_reports.push(hoshi_core::SpyReport {
             id: 2,
             target: dest,
             created_at: 40,
@@ -10996,10 +11055,10 @@ label = "Leave it"
         state.deterministic = true;
         state
             .set_kpi_target(
-                crate::KpiId::Output,
-                crate::TargetOwner::Empire,
+                hoshi_core::KpiId::Output,
+                hoshi_core::TargetOwner::Empire,
                 50.0,
-                crate::Actor::Player,
+                hoshi_core::Actor::Player,
                 1_000,
             )
             .unwrap();
@@ -11024,7 +11083,7 @@ label = "Leave it"
         cfg.market.enabled = false;
         let mut state = GameState::with_seed(1_000, cfg, 9);
         state.deterministic = true;
-        state.ladder.completed.push(crate::LadderCompletion {
+        state.ladder.completed.push(hoshi_core::LadderCompletion {
             id: "water_propellant".into(),
             at: 1_500,
         });
@@ -11049,11 +11108,11 @@ label = "Leave it"
         cfg.market.enabled = false;
         let mut state = GameState::with_seed(1_000, cfg, 9);
         state.deterministic = true;
-        let mut settings = crate::RivalSettings::on();
+        let mut settings = hoshi_core::RivalSettings::on();
         settings.tick_secs = 60;
         settings.starting_bonus = 0.25;
         state
-            .spawn_rivals(&crate::RivalCatalog::default(), settings)
+            .spawn_rivals(&hoshi_core::RivalCatalog::default(), settings)
             .unwrap();
         state.catch_up(1_060);
         save_state(&mut conn, &state).unwrap();
@@ -11110,14 +11169,14 @@ label = "Leave it"
         let mut state = GameState::with_config(1_000, cfg);
         let home = state.pirate_homeworld().expect("homeworld");
         state.outposts.retain(|o| o.coord != home);
-        state.colonies.push(crate::Colony {
+        state.colonies.push(hoshi_core::Colony {
             coord: home,
-            kind: crate::PlanetType::Rocky,
+            kind: hoshi_core::PlanetType::Rocky,
             size: 8,
-            resources: crate::Resources::ZERO,
-            buildings: crate::Buildings::default(),
-            fleet: crate::Fleet::default(),
-            defences: crate::DefenceGrid::default(),
+            resources: hoshi_core::Resources::ZERO,
+            buildings: hoshi_core::Buildings::default(),
+            fleet: hoshi_core::Fleet::default(),
+            defences: hoshi_core::DefenceGrid::default(),
             build_queue: Vec::new(),
             rare: None,
             goods: Default::default(),
@@ -11125,14 +11184,14 @@ label = "Leave it"
         state.maybe_declare_victory(1_050);
         assert_eq!(
             state.victory.as_ref().map(|v| v.path),
-            Some(crate::VictoryPath::Conquest)
+            Some(hoshi_core::VictoryPath::Conquest)
         );
         save_state(&mut conn, &state).unwrap();
         let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
         assert_eq!(loaded.pirate_home, home);
         assert_eq!(
             loaded.victory.as_ref().map(|v| v.path),
-            Some(crate::VictoryPath::Conquest)
+            Some(hoshi_core::VictoryPath::Conquest)
         );
         assert!(!loaded.outposts.iter().any(|o| o.homeworld));
         assert!(loaded.colonies.iter().any(|c| c.coord == home));
@@ -11161,7 +11220,7 @@ label = "Leave it"
         migrate_v25(&conn).unwrap();
         migrate_v25(&conn).unwrap();
         let mut state = GameState::new(10);
-        state.moons.push(crate::Moon {
+        state.moons.push(hoshi_core::Moon {
             parent: Coord::HOME,
             phalanx: 1,
             jump_gate: 1,
@@ -11316,7 +11375,7 @@ label = "Leave it"
         save_state(&mut conn, &state).unwrap();
         conn.execute(
             "UPDATE meta SET generator_version = ?1 WHERE id = 1",
-            [crate::GALAXY_GENERATOR_VERSION as i64 + 1],
+            [hoshi_core::GALAXY_GENERATOR_VERSION as i64 + 1],
         )
         .unwrap();
         let err = load_state(&conn, BalanceConfig::default()).unwrap_err();
@@ -11324,8 +11383,8 @@ label = "Leave it"
             matches!(
                 err,
                 SaveError::GeneratorTooNew { found, current }
-                if found == crate::GALAXY_GENERATOR_VERSION + 1
-                    && current == crate::GALAXY_GENERATOR_VERSION
+                if found == hoshi_core::GALAXY_GENERATOR_VERSION + 1
+                    && current == hoshi_core::GALAXY_GENERATOR_VERSION
             ),
             "{err:?}"
         );
@@ -11347,7 +11406,7 @@ label = "Leave it"
         let path = unique_path("inspect");
         let mut conn = open_save(&path).unwrap();
         let mut state = GameState::new(50);
-        state.fleet.add(crate::ShipKind::LightFighter, 4);
+        state.fleet.add(hoshi_core::ShipKind::LightFighter, 4);
         save_state(&mut conn, &state).unwrap();
         drop(conn);
         let holder = lock_save(&path).unwrap();
@@ -11360,7 +11419,10 @@ label = "Leave it"
         assert_eq!(glance.planets, 1);
         assert_eq!(glance.fleet_strength, 4);
         assert_eq!(glance.galaxy_seed, Some(0));
-        assert_eq!(glance.generator_version, crate::GALAXY_GENERATOR_VERSION);
+        assert_eq!(
+            glance.generator_version,
+            hoshi_core::GALAXY_GENERATOR_VERSION
+        );
         assert_eq!(glance.species_id, None);
         assert!(!glance.rivals_enabled);
         assert!(glance.rival_personalities.is_empty());
@@ -11374,13 +11436,13 @@ label = "Leave it"
     fn inspect_save_reads_the_species_run() {
         let path = unique_path("inspect-species");
         let mut conn = open_save(&path).unwrap();
-        let mut prestige = crate::Prestige::default();
+        let mut prestige = hoshi_core::Prestige::default();
         prestige.unlocked_species.insert("aurelians".into());
-        let state = crate::GameState::new_with_species(
+        let state = hoshi_core::GameState::new_with_species(
             50,
-            &crate::SpeciesCatalog::default(),
+            &hoshi_core::SpeciesCatalog::default(),
             "aurelians",
-            crate::BalanceConfig::default(),
+            hoshi_core::BalanceConfig::default(),
             7,
             prestige,
         )
@@ -11397,12 +11459,12 @@ label = "Leave it"
     fn inspect_save_reads_the_season_run() {
         let path = unique_path("inspect-season");
         let mut conn = open_save(&path).unwrap();
-        let cat = crate::SeasonCatalog::default();
-        let state = crate::GameState::new_season(
+        let cat = hoshi_core::SeasonCatalog::default();
+        let state = hoshi_core::GameState::new_season(
             1_800_000_000,
             &cat,
             "closed_market",
-            crate::BalanceConfig::default(),
+            hoshi_core::BalanceConfig::default(),
         )
         .unwrap();
         save_state(&mut conn, &state).unwrap();
@@ -11422,11 +11484,11 @@ label = "Leave it"
         state.last_tick_unix = 150;
         state.achievements.insert("first_cut".into(), 7);
         state.completed_wonders.push("observatory".into());
-        state.fleet.add(crate::ShipKind::LightFighter, 4);
+        state.fleet.add(hoshi_core::ShipKind::LightFighter, 4);
         state.prestige.currency = 4;
         state.prestige.lifetime = 7;
         state.prestige.owned.insert("mine_focus".into(), 2);
-        state.prestige.runs.push(crate::RunStats {
+        state.prestige.runs.push(hoshi_core::RunStats {
             index: 1,
             started_at: 10,
             ended_at: Some(40),
@@ -11496,7 +11558,7 @@ label = "Leave it"
 
     #[test]
     fn reset_available_is_per_save_not_merged_maxima() {
-        let cfg = crate::PrestigeConfig::default();
+        let cfg = hoshi_core::PrestigeConfig::default();
         let mut a = CareerGlance {
             building_levels: cfg.min_score.saturating_sub(1),
             ..CareerGlance::default()
@@ -11532,7 +11594,7 @@ label = "Leave it"
         save_state(&mut conn, &GameState::new(1)).unwrap();
         conn.execute(
             "UPDATE meta SET generator_version = ?1 WHERE id = 1",
-            [crate::GALAXY_GENERATOR_VERSION as i64 + 1],
+            [hoshi_core::GALAXY_GENERATOR_VERSION as i64 + 1],
         )
         .unwrap();
         drop(conn);
@@ -11541,8 +11603,8 @@ label = "Leave it"
             matches!(
                 err,
                 SaveError::GeneratorTooNew { found, current }
-                if found == crate::GALAXY_GENERATOR_VERSION + 1
-                    && current == crate::GALAXY_GENERATOR_VERSION
+                if found == hoshi_core::GALAXY_GENERATOR_VERSION + 1
+                    && current == hoshi_core::GALAXY_GENERATOR_VERSION
             ),
             "{err:?}"
         );
@@ -11587,5 +11649,156 @@ label = "Leave it"
         let _ = std::fs::remove_file(&corrupt);
         let _ = std::fs::remove_file(&harness);
         let _ = std::fs::remove_file(&legacy);
+    }
+
+    #[test]
+    fn save_round_trip_preserves_modified_and_refuses_stale_audit() {
+        let mut conn = open_save(std::path::Path::new(":memory:")).unwrap();
+        let mut state = GameState::with_config(100, BalanceConfig::default());
+        save_state(&mut conn, &state).unwrap();
+        let stale = state.clone();
+        state.set_cheats_enabled(true, hoshi_core::Actor::Player, 100);
+        state.cheats.modified = true;
+        state.cheats.time_offset = 60;
+        state.set_cheats_enabled(false, hoshi_core::Actor::Player, 101);
+        save_state(&mut conn, &state).unwrap();
+        assert!(save_state(&mut conn, &stale).is_err());
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert!(loaded.is_modified());
+        assert!(!loaded.cheats_enabled());
+        assert_eq!(loaded.effective_time(102), 162);
+        assert_eq!(loaded.cheats.audit, state.cheats.audit);
+    }
+
+    fn expedition_state(now: u64) -> GameState {
+        let mut cfg = BalanceConfig::default();
+        cfg.expedition.min_hold_secs = 10;
+        cfg.expedition.max_hold_secs = 10_000;
+        cfg.expedition.delay_secs = 50;
+        cfg.raid = hoshi_core::RaidConfig::inactive();
+        cfg.metal_storage.base = 1_000_000.0;
+        cfg.crystal_storage.base = 1_000_000.0;
+        cfg.deuterium_storage.base = 1_000_000.0;
+        let mut state = GameState::with_config(now, cfg);
+        state.fleet.add(ShipKind::LightFighter, 10);
+        state.resources.deuterium = 10_000.0;
+        state
+    }
+
+    fn scout_fleet() -> Fleet {
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::LightFighter, 2);
+        ships
+    }
+
+    fn close(a: f64, b: f64) {
+        assert!((a - b).abs() < 1e-6, "left={a} right={b}");
+    }
+
+    #[test]
+    fn reloading_the_save_does_not_change_a_pending_expedition() {
+        let mut original = expedition_state(0);
+        original
+            .launch_expedition(scout_fleet(), 10, 100, 0)
+            .unwrap();
+        let mut conn = open_save(std::path::Path::new(":memory:")).unwrap();
+        save_state(&mut conn, &original).unwrap();
+        let mut loaded = load_state(&conn, original.config.clone()).unwrap();
+        assert_eq!(
+            loaded.missions[0].expedition_seed,
+            original.missions[0].expedition_seed
+        );
+        let outbound = original.missions[0].outbound_secs;
+        let hold = original.missions[0].hold_secs;
+        original.rng_seed = 0xDEAD_BEEF_DEAD_BEEF;
+        original.catch_up(outbound + hold + outbound);
+        loaded.catch_up(outbound + hold + outbound);
+        assert_eq!(original.events, loaded.events);
+        assert_eq!(original.fleet, loaded.fleet);
+        close(original.resources.iron, loaded.resources.iron);
+        close(original.resources.silicon, loaded.resources.silicon);
+        close(original.resources.deuterium, loaded.resources.deuterium);
+    }
+
+    #[test]
+    fn restored_solar_upgrades_cannot_exceed_a_reduced_cap() {
+        for with_dismantle in [false, true] {
+            let config = BalanceConfig::default();
+            let mut state = GameState::with_config(0, config.clone());
+            state.config.raid = hoshi_core::RaidConfig::inactive();
+            state.next_raid_at = None;
+            state.buildings = hoshi_core::Buildings::default();
+            let cap = state.max_solar_level(state.home).unwrap();
+            state.buildings.solar_plant = cap;
+            state.resources = hoshi_core::Resources::from_parts(10_000.0, 10_000.0, 0.0);
+            let before = state.resources;
+            state.config.solar_plant.max_level_base = 100;
+            state.enqueue_build(BuildingKind::SolarPlant, 0).unwrap();
+            let at = state.build_queue[0].completes_at.unwrap();
+            if with_dismantle {
+                state.enqueue_build(BuildingKind::SolarPlant, 0).unwrap();
+                state
+                    .enqueue_dismantle_as(
+                        state.home,
+                        BuildingKind::SolarPlant,
+                        0,
+                        hoshi_core::Actor::Player,
+                    )
+                    .unwrap();
+            }
+            let coord = Coord {
+                position: 8,
+                ..state.home
+            };
+            state.colonies.push(hoshi_core::Colony {
+                coord,
+                kind: state.home_kind,
+                size: state.home_size,
+                resources: state.resources,
+                buildings: state.buildings,
+                fleet: Fleet::default(),
+                defences: hoshi_core::DefenceGrid::default(),
+                build_queue: state.build_queue.clone(),
+                rare: None,
+                goods: std::collections::BTreeMap::new(),
+            });
+            let mut conn = open_save(std::path::Path::new(":memory:")).unwrap();
+            save_state(&mut conn, &state).unwrap();
+            let mut loaded = load_state(&conn, config).unwrap();
+            loaded.config.raid = hoshi_core::RaidConfig::inactive();
+            loaded.next_raid_at = None;
+            loaded.catch_up(at);
+            assert_eq!(loaded.buildings.solar_plant, cap);
+            assert_eq!(loaded.colonies[0].buildings.solar_plant, cap);
+            if with_dismantle {
+                assert_eq!(loaded.build_queue.len(), 1);
+                assert_eq!(loaded.colonies[0].build_queue.len(), 1);
+                assert_eq!(loaded.build_queue[0].from_level, cap);
+                assert_eq!(loaded.colonies[0].build_queue[0].from_level, cap);
+            } else {
+                assert!(loaded.build_queue.is_empty());
+                assert!(loaded.colonies[0].build_queue.is_empty());
+            }
+            assert_eq!(loaded.resources.iron, before.iron);
+            assert_eq!(loaded.resources.silicon, before.silicon);
+            assert_eq!(loaded.colonies[0].resources.iron, before.iron);
+            assert_eq!(loaded.colonies[0].resources.silicon, before.silicon);
+            if with_dismantle {
+                loaded.catch_up(at + 86_400);
+                assert_eq!(loaded.buildings.solar_plant, cap - 1);
+                assert_eq!(loaded.colonies[0].buildings.solar_plant, cap - 1);
+            }
+        }
+    }
+
+    #[test]
+    fn solar_cap_preserves_existing_levels_on_load() {
+        let mut state = GameState::new(0);
+        let cap = state.max_solar_level(state.home).unwrap();
+        state.buildings.solar_plant = cap + 2;
+        let mut conn = open_save(std::path::Path::new(":memory:")).unwrap();
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, state.config.clone()).unwrap();
+        assert_eq!(loaded.buildings.solar_plant, cap + 2);
     }
 }

@@ -968,11 +968,6 @@ mod tests {
             .unwrap();
         assert_eq!(state.rivals.empires.len(), 2);
         assert_ne!(state.rivals.empires[0].id, state.rivals.empires[1].id);
-        let mut conn = crate::open_save(std::path::Path::new(":memory:")).unwrap();
-        crate::save_state(&mut conn, &state).unwrap();
-        let loaded = crate::load_state(&conn, BalanceConfig::default()).unwrap();
-        assert_eq!(loaded.rivals.empires.len(), 2);
-        assert_ne!(loaded.rivals.empires[0].id, loaded.rivals.empires[1].id);
     }
 
     #[test]

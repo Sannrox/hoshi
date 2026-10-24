@@ -11,15 +11,11 @@ publish = false
 default = []
 commentary-model = []
 advisor-model = ["commentary-model"]
-mikura = ["dep:mikura"]
-chisei = []
 
 [dependencies]
-rusqlite = { version = "0.37", features = ["bundled", "serialize"] }
-serde = { version = "1.0.229", features = ["derive"] }
+serde = { version = "1.0.229", default-features = false, features = ["derive", "std"] }
 serde_json = "1.0.152"
-toml = { version = "1.1.8", features = ["parse"] }
-mikura = { version = "0.2.0", git = "https://github.com/Sannrox/mikura", tag = "v0.2.0", optional = true }
+toml = { version = "1.1.8", default-features = false, features = ["parse", "serde"] }
 hmac = "0.12"
 sha2 = "0.10"
 

@@ -4280,8 +4280,9 @@ mod tests {
     use hoshi_core::{
         BalanceConfig, Buildings, Clock, Colony, Coord, DiplomacyConfig, FakeClock, Fleet,
         GameState, MarketConfig, Outpost, PlanetType, RaidConfig, Resources, StoryCatalog, Vehicle,
-        VictoryPath, VictoryRecord, load_state, open_save, save_state,
+        VictoryPath, VictoryRecord,
     };
+    use hoshi_storage::{load_state, open_save, save_state};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use std::time::{SystemTime, UNIX_EPOCH};
