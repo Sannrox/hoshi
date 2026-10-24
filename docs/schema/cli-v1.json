@@ -90,6 +90,16 @@
       "type": ["object", "null"],
       "description": "Visible raid countdown, matching the TUI overview."
     },
+    "decision": {
+      "type": ["object", "null"],
+      "description": "Soonest choice the player can still change. Null when none. Idle queues are not a decision. The bridge alert row uses the same id, deadline and action.",
+      "required": ["id", "deadline", "action"],
+      "properties": {
+        "id": { "enum": ["story", "tactical", "raid"] },
+        "deadline": { "type": "integer", "minimum": 0, "description": "Unix time of the story timeout, the tactical round, or the raid landing." },
+        "action": { "enum": ["choose_story", "queue_tactical_action", "set_stance", "arm"] }
+      }
+    },
     "prestige": {
       "type": "object",
       "description": "Meta currency, current run and owned bonuses."

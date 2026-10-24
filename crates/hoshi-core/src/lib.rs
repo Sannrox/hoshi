@@ -14,6 +14,7 @@ mod clock;
 mod combat;
 mod commentary;
 mod daily;
+mod decision;
 mod defences;
 mod detail;
 mod diplomacy;
@@ -108,6 +109,7 @@ pub use commentary::{
 pub use daily::{
     DailyAction, DailyBoard, DailyConfig, DailyError, DailyKind, DailySlot, DailySpec,
 };
+pub use decision::{DecisionAction, DecisionId, ExpiringDecision, expiring_decision};
 pub use defences::{
     DEFENCE_KINDS, DefenceConfig, DefenceGrid, DefenceKind, DefenceRole, DefenceSpec, PlanetBattle,
     apply_rebuild, intercept_missiles, resolve_planet_battle,
