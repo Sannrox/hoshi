@@ -63,6 +63,9 @@ fn callout_lines(theme: &Theme, intent: Intent, title: &str, detail: &str) -> Ve
     lines
 }
 
+/// Resolved incidents stay listed this long after they close.
+const RECENT_INCIDENT_SECS: u64 = 24 * 60 * 60;
+
 impl App {
     /// Dims the frame and centres a dialog sized to its wrapped content.
     pub(super) fn dialog(
@@ -2029,6 +2032,62 @@ impl App {
                 ));
             }
         }
+        // A raid opens and closes its incident in one tick; the last day's
+        // resolved incidents keep a visible trace.
+        let mut recent: Vec<&hoshi_core::Incident> = self
+            .state
+            .incidents
+            .incidents
+            .iter()
+            .filter(|row| {
+                row.status == hoshi_core::IncidentStatus::Resolved
+                    && row
+                        .closed_at
+                        .is_some_and(|at| now.saturating_sub(at) <= RECENT_INCIDENT_SECS)
+            })
+            .collect();
+        recent.sort_by_key(|row| std::cmp::Reverse(row.closed_at));
+        if !recent.is_empty() {
+            foot.push(section(t, "recently resolved"));
+            for row in recent.iter().take(4) {
+                let ago = now.saturating_sub(row.closed_at.unwrap_or(now));
+                foot.push(Line::from(vec![
+                    Span::styled(
+                        format!("#{} {}  ", row.id, humanize(row.kind.as_key())),
+                        t.text(),
+                    ),
+                    tag(
+                        t,
+                        &row.severity.as_key().to_uppercase(),
+                        Intent::Neutral,
+                        true,
+                    ),
+                    Span::styled(
+                        format!(
+                            "  {}  {} ago",
+                            row.resolution.as_deref().unwrap_or("resolved"),
+                            duration(ago)
+                        ),
+                        t.muted(),
+                    ),
+                ]));
+            }
+        }
+        foot.push(section(t, "reviews"));
+        if snap.reviews.is_empty() {
+            // One short line, readable at 80 columns.
+            foot.push(Line::styled(
+                "hoshi incidents review ID, after a high or critical one",
+                t.muted(),
+            ));
+        } else {
+            for review in snap.reviews.iter().rev().take(3) {
+                foot.push(Line::styled(
+                    format!("#{}  {}", review.incident_id, review.root_cause),
+                    t.text(),
+                ));
+            }
+        }
         if !snap.risks.is_empty() {
             foot.push(section(t, "risks"));
             for risk in snap.risks.iter().take(4) {
@@ -2059,9 +2118,12 @@ impl App {
                 "No open incidents",
                 "Raids, heat overflow, missed contracts and leaks open one here.",
             ));
+            // No table to show, so the sections take the whole screen instead
+            // of the footer's half, and stay readable at 80x24.
+            head.push(Line::default());
+            head.append(&mut foot);
             return ListView {
                 head,
-                foot,
                 ..ListView::default()
             };
         }
