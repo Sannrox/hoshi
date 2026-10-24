@@ -50,7 +50,10 @@ bridge pulses need an HMAC-SHA256 the host keys. Unsigned or altered pulses
 are rejected. Player raids catch up both empires, then resolve against that
 snapshot with the same fleet combat as local play. A young defender is
 protected; an attacker has a per-identity attack cap; plunder uses the
-defender's share then cap. The local TUI and CLI do not use this gate.
+defender's share then cap. A tenant read is `ShardSession::view`: own
+planets, fleets, and stock, plus spy intel that has already arrived, never
+RNG, pirate timers, or another tenant's parked fleet and stockpile. The
+local TUI and CLI do not use this gate.
 
 The optional governance demo (`hoshi --demo demo governance --seed N`) puts an
 ungoverned CLI player next to a Chisei-governed one. Policies (spend caps,
