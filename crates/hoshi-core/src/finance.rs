@@ -570,7 +570,11 @@ impl GameState {
                 action: "request_spend".into(),
                 objects: vec![centers[0].as_key()],
                 inputs: format!("{amount:.4}"),
-                outcome: "applied".into(),
+                // What was bought and for how much, readable on its own.
+                outcome: format!(
+                    "applied: {}, {amount:.0} cash",
+                    kind.summary().replace('_', " ")
+                ),
                 reason: kind.summary(),
                 ..crate::HistoryDraft::default()
             });
@@ -789,7 +793,10 @@ impl GameState {
             action: "request_spend".into(),
             objects: vec![format!("spend:{id}"), center.as_key()],
             inputs: format!("{amount:.4}"),
-            outcome: "held".into(),
+            outcome: format!(
+                "held: {}, {amount:.0} cash",
+                kind.summary().replace('_', " ")
+            ),
             reason: kind.summary(),
             ..crate::HistoryDraft::default()
         });

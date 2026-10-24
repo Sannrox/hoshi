@@ -2037,6 +2037,18 @@ impl GameState {
         if self.ship_queue.len() == 1 {
             self.start_ship_head(now);
         }
+        self.record_history(crate::HistoryDraft {
+            at: now,
+            kind: crate::HistoryKind::Ship,
+            actor: "player".into(),
+            action: "queue".into(),
+            objects: vec![kind.as_key().into()],
+            inputs: format!("{count}"),
+            outcome: "queued".into(),
+            cause_key: Some(format!("defence:{}", kind.as_key())),
+            mass: f64::from(count),
+            ..crate::HistoryDraft::default()
+        });
         self.commit_spend(
             &centers,
             amount,
@@ -2068,6 +2080,15 @@ impl GameState {
                 .count();
             self.history
                 .forget_cause_at(&format!("ship:{}", kind.as_key()), deque_idx);
+        } else if let Some(kind) = self.ship_queue[index].defence {
+            let deque_idx = self
+                .ship_queue
+                .iter()
+                .take(index)
+                .filter(|job| job.defence == Some(kind))
+                .count();
+            self.history
+                .forget_cause_at(&format!("defence:{}", kind.as_key()), deque_idx);
         }
         let job = self.ship_queue.remove(index);
         let n = f64::from(job.remaining);
@@ -5309,7 +5330,12 @@ impl GameState {
                 .get(&pending.event_id)
                 .map(|e| e.timeout_choice.clone());
             if let Some(choice) = choice {
-                let _ = self.apply_story_choice(&pending.event_id, &choice, pending.timeout_at);
+                let _ = self.apply_story_choice(
+                    &pending.event_id,
+                    &choice,
+                    pending.timeout_at,
+                    "simulation",
+                );
             } else {
                 self.story_pending = None;
             }
@@ -5377,7 +5403,7 @@ impl GameState {
             .story_pending
             .clone()
             .ok_or(crate::StoryError::NoPending)?;
-        self.apply_story_choice(&pending.event_id, choice_id, self.last_tick_unix)
+        self.apply_story_choice(&pending.event_id, choice_id, self.last_tick_unix, "player")
     }
 
     fn next_market_at(&self) -> Option<u64> {
@@ -5721,6 +5747,8 @@ impl GameState {
         event_id: &str,
         choice_id: &str,
         at: u64,
+        // "player" for a choice, "simulation" when the default ran out the clock.
+        actor: &str,
     ) -> Result<(), crate::StoryError> {
         let event = self
             .config
@@ -5769,6 +5797,15 @@ impl GameState {
         self.last_story_at = at;
         self.story_pending = None;
         self.push_event(at, format!("story: {title} → {}", choice.label));
+        self.record_history(crate::HistoryDraft {
+            at,
+            kind: crate::HistoryKind::Other,
+            actor: actor.into(),
+            action: "story_choice".into(),
+            objects: vec![title.clone()],
+            outcome: choice.label.clone(),
+            ..crate::HistoryDraft::default()
+        });
         Ok(())
     }
 
@@ -5798,15 +5835,18 @@ impl GameState {
             self.ship_queue.remove(0);
             self.start_ship_head(done_at);
             self.note_completed(done_at, label);
-            if let Some(kind) = ship {
+            let finished = ship
+                .map(|kind| (kind.as_key(), "ship"))
+                .or_else(|| defence.map(|kind| (kind.as_key(), "defence")));
+            if let Some((key, cause)) = finished {
                 self.record_history(crate::HistoryDraft {
                     at: done_at,
                     kind: crate::HistoryKind::Ship,
                     actor: "simulation".into(),
                     action: "complete".into(),
-                    objects: vec![kind.as_key().into()],
+                    objects: vec![key.into()],
                     outcome: "built".into(),
-                    parent_key: Some(format!("ship:{}", kind.as_key())),
+                    parent_key: Some(format!("{cause}:{key}")),
                     ..crate::HistoryDraft::default()
                 });
             }
@@ -8928,6 +8968,69 @@ modifiers = []
         state.catch_up(7300);
         assert!(state.events.iter().any(|e| e.text.contains("raid:")));
         assert_eq!(state.events[0].at, 7300);
+    }
+
+    /// #296: defence builds, story choices and the purpose of a spend were
+    /// missing from the history log.
+    #[test]
+    fn history_logs_defences_story_choices_and_what_a_spend_bought() {
+        let cfg = BalanceConfig {
+            raid: crate::RaidConfig::inactive(),
+            ..BalanceConfig::default()
+        };
+        let mut state = GameState::with_config(0, cfg);
+        state.buildings.shipyard = 1;
+        state.resources = Resources::from_parts(50_000.0, 50_000.0, 50_000.0);
+        state
+            .enqueue_defence(crate::DefenceKind::LightCannon, 2, 0)
+            .unwrap();
+        let rows = |state: &GameState, action: &str| -> Vec<crate::HistoryEvent> {
+            state
+                .history
+                .events
+                .iter()
+                .filter(|e| e.action == action)
+                .cloned()
+                .collect()
+        };
+        let queued = rows(&state, "queue");
+        assert!(
+            queued
+                .iter()
+                .any(|e| e.objects == ["light_cannon"] && e.inputs == "2")
+        );
+        let spend = rows(&state, "request_spend");
+        assert!(
+            spend
+                .iter()
+                .any(|e| e.outcome.contains("queue 2 light cannon") && e.outcome.contains("cash")),
+            "{spend:?}"
+        );
+        state.catch_up(2 * 86_400);
+        assert!(
+            rows(&state, "complete")
+                .iter()
+                .any(|e| e.objects == ["light_cannon"] && e.outcome == "built")
+        );
+
+        let event = state.config.story.iter().next().unwrap().clone();
+        let choice = event.choices[0].clone();
+        state.story_pending = Some(crate::PendingStory {
+            event_id: event.id.clone(),
+            offered_at: state.last_tick_unix,
+            timeout_at: state.last_tick_unix + 3_600,
+        });
+        state
+            .choose_story(&choice.id, state.last_tick_unix)
+            .unwrap();
+        // The catch-up above let one event default on its timeout; the
+        // choice just made is the player's.
+        let story = rows(&state, "story_choice");
+        assert!(story.iter().any(|e| e.actor == "simulation"), "{story:?}");
+        let chosen = story.last().unwrap();
+        assert_eq!(chosen.objects, std::slice::from_ref(&event.title));
+        assert_eq!(chosen.outcome, choice.label);
+        assert_eq!(chosen.actor, "player");
     }
 
     #[test]
