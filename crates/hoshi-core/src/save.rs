@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 50;
+pub const SCHEMA_VERSION: u32 = 51;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -204,6 +204,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM combat_log_ships;
          DELETE FROM combat_log_frames;
          DELETE FROM combat_plunder;
+         DELETE FROM combat_defence;
          DELETE FROM combat_logs;
          DELETE FROM daily_slots;
          DELETE FROM daily_meta;
@@ -3168,6 +3169,7 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "achievement_stats" => "SELECT COUNT(*) FROM achievement_stats",
         "combat_logs" => "SELECT COUNT(*) FROM combat_logs",
         "combat_plunder" => "SELECT COUNT(*) FROM combat_plunder",
+        "combat_defence" => "SELECT COUNT(*) FROM combat_defence",
         "combat_log_frames" => "SELECT COUNT(*) FROM combat_log_frames",
         "combat_log_ships" => "SELECT COUNT(*) FROM combat_log_ships",
         "daily_meta" => "SELECT COUNT(*) FROM daily_meta",
@@ -3284,6 +3286,7 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "achievement_stats")?
         + count_rows(conn, "combat_logs")?
         + count_rows(conn, "combat_plunder")?
+        + count_rows(conn, "combat_defence")?
         + count_rows(conn, "combat_log_frames")?
         + count_rows(conn, "combat_log_ships")?
         + count_rows(conn, "daily_meta")?
@@ -3512,6 +3515,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 50 {
         migrate_v50(conn)?;
+    }
+    if found < 51 {
+        migrate_v51(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -4622,6 +4628,28 @@ fn migrate_v50(conn: &Connection) -> Result<(), SaveError> {
             water_ice REAL NOT NULL CHECK (water_ice >= 0),
             helium_3 REAL NOT NULL CHECK (helium_3 >= 0),
             deuterium REAL NOT NULL CHECK (deuterium >= 0)
+        );",
+    )?;
+    Ok(())
+}
+
+/// v51: what each defence layer did in a raid on home, per stored combat
+/// log. Logs without a row are fleet-only fights or raids from older saves.
+fn migrate_v51(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS combat_defence (
+            log_id INTEGER PRIMARY KEY,
+            intercept_in INTEGER NOT NULL CHECK (intercept_in >= 0),
+            intercept_down INTEGER NOT NULL CHECK (intercept_down >= 0),
+            stations_before INTEGER NOT NULL CHECK (stations_before >= 0),
+            stations_after INTEGER NOT NULL CHECK (stations_after >= 0),
+            hangar_before INTEGER NOT NULL CHECK (hangar_before >= 0),
+            hangar_after INTEGER NOT NULL CHECK (hangar_after >= 0),
+            dome_absorbed REAL NOT NULL CHECK (dome_absorbed >= 0),
+            dome_collapsed INTEGER NOT NULL CHECK (dome_collapsed IN (0, 1)),
+            batteries_before INTEGER NOT NULL CHECK (batteries_before >= 0),
+            batteries_after INTEGER NOT NULL CHECK (batteries_after >= 0),
+            rebuilt INTEGER NOT NULL CHECK (rebuilt >= 0)
         );",
     )?;
     Ok(())
@@ -6877,6 +6905,29 @@ fn insert_combat_logs(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Resu
             insert_combat_frame(tx, log_id, frame_i as i64, "a", frame.attacker, frame)?;
             insert_combat_frame(tx, log_id, frame_i as i64, "d", frame.defender, frame)?;
         }
+        if let Some(d) = log.raid_defence {
+            tx.execute(
+                "INSERT INTO combat_defence
+                    (log_id, intercept_in, intercept_down, stations_before, stations_after,
+                     hangar_before, hangar_after, dome_absorbed, dome_collapsed,
+                     batteries_before, batteries_after, rebuilt)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    log_id,
+                    i64::from(d.intercept_in),
+                    i64::from(d.intercept_down),
+                    i64::from(d.stations_before),
+                    i64::from(d.stations_after),
+                    i64::from(d.hangar_before),
+                    i64::from(d.hangar_after),
+                    d.dome_absorbed.max(0.0),
+                    i64::from(d.dome_collapsed),
+                    i64::from(d.batteries_before),
+                    i64::from(d.batteries_after),
+                    i64::from(d.rebuilt),
+                ],
+            )?;
+        }
         if let Some(p) = log.raid_plunder {
             tx.execute(
                 "INSERT INTO combat_plunder
@@ -6976,6 +7027,7 @@ fn load_combat_logs(conn: &Connection, state: &mut GameState) -> Result<(), Save
         };
         let frames = load_combat_frames(conn, id)?;
         let raid_plunder = load_combat_plunder(conn, id)?;
+        let raid_defence = load_combat_defence(conn, id)?;
         let (attacker_before, defender_before) = frames
             .first()
             .map(|f| (f.attacker, f.defender))
@@ -6999,6 +7051,7 @@ fn load_combat_logs(conn: &Connection, state: &mut GameState) -> Result<(), Save
                 layered: layered != 0,
             },
             raid_plunder,
+            raid_defence,
         });
     }
     Ok(())
@@ -7018,6 +7071,41 @@ fn load_combat_plunder(conn: &Connection, log_id: i64) -> Result<Option<Resource
                     water_ice: row.get(3)?,
                     helium_3: row.get(4)?,
                     deuterium: row.get(5)?,
+                })
+            },
+        )
+        .optional()?;
+    Ok(row)
+}
+
+fn load_combat_defence(
+    conn: &Connection,
+    log_id: i64,
+) -> Result<Option<crate::RaidDefence>, SaveError> {
+    let row = conn
+        .query_row(
+            "SELECT intercept_in, intercept_down, stations_before, stations_after,
+                    hangar_before, hangar_after, dome_absorbed, dome_collapsed,
+                    batteries_before, batteries_after, rebuilt
+             FROM combat_defence WHERE log_id = ?1",
+            [log_id],
+            |row| {
+                let count = |i: usize| -> rusqlite::Result<u32> {
+                    let v: i64 = row.get(i)?;
+                    Ok(u32::try_from(v).unwrap_or(0))
+                };
+                Ok(crate::RaidDefence {
+                    intercept_in: count(0)?,
+                    intercept_down: count(1)?,
+                    stations_before: count(2)?,
+                    stations_after: count(3)?,
+                    hangar_before: count(4)?,
+                    hangar_after: count(5)?,
+                    dome_absorbed: row.get(6)?,
+                    dome_collapsed: row.get::<_, i64>(7)? != 0,
+                    batteries_before: count(8)?,
+                    batteries_after: count(9)?,
+                    rebuilt: count(10)?,
                 })
             },
         )
@@ -9920,6 +10008,7 @@ mod tests {
                 layered: true,
             },
             raid_plunder: None,
+            raid_defence: None,
         });
         save_state(&mut conn, &state).unwrap();
         let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
@@ -10543,6 +10632,27 @@ mod tests {
         migrate(&conn).unwrap();
         let old = load_state(&conn, BalanceConfig::default()).unwrap();
         assert_eq!(old.combat_logs.last().unwrap().raid_plunder, None);
+    }
+
+    #[test]
+    fn raid_defence_layers_survive_save_and_v50_saves_read_as_none() {
+        let mut state = GameState::new(0);
+        state.defences.add(crate::DefenceKind::HeavyCannon, 2);
+        state.trigger_raid(0);
+        let defence = state.combat_logs.last().unwrap().raid_defence.unwrap();
+        assert_eq!(defence.batteries_before, 2, "{defence:?}");
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(
+            loaded.combat_logs.last().unwrap().raid_defence,
+            Some(defence)
+        );
+        conn.execute_batch("DROP TABLE combat_defence; PRAGMA user_version = 50;")
+            .unwrap();
+        migrate(&conn).unwrap();
+        let old = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(old.combat_logs.last().unwrap().raid_defence, None);
     }
 
     #[test]

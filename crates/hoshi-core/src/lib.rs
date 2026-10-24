@@ -98,8 +98,8 @@ pub use classification::{
 pub use clock::{Clock, FakeClock, SystemClock};
 pub use combat::{
     CombatFrame, CombatLog, CombatModifiers, CombatReport, CombatWinner, GroundReport,
-    MAX_COMBAT_LOGS, RoundAction, next_u64, plunder_from, rapid_fire_table, resolve_combat,
-    resolve_combat_with, resolve_ground, stats_from_catalog,
+    MAX_COMBAT_LOGS, RaidDefence, RoundAction, next_u64, plunder_from, rapid_fire_table,
+    resolve_combat, resolve_combat_with, resolve_ground, stats_from_catalog,
 };
 pub use commentary::{
     CommentaryCatalog, CommentaryError, model_connect_addr, probe_model_endpoint, rephrase_lines,

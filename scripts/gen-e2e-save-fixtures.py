@@ -1321,6 +1321,29 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             stopped_at INTEGER CHECK (stopped_at >= 0),
             residual_heat REAL NOT NULL CHECK (residual_heat >= 0),
             PRIMARY KEY (galaxy, system, position))""")
+    elif version == 50:
+        conn.execute("""CREATE TABLE IF NOT EXISTS combat_plunder (
+            log_id INTEGER PRIMARY KEY,
+            iron REAL NOT NULL CHECK (iron >= 0),
+            silicon REAL NOT NULL CHECK (silicon >= 0),
+            rare_earths REAL NOT NULL CHECK (rare_earths >= 0),
+            water_ice REAL NOT NULL CHECK (water_ice >= 0),
+            helium_3 REAL NOT NULL CHECK (helium_3 >= 0),
+            deuterium REAL NOT NULL CHECK (deuterium >= 0))""")
+    elif version == 51:
+        conn.execute("""CREATE TABLE IF NOT EXISTS combat_defence (
+            log_id INTEGER PRIMARY KEY,
+            intercept_in INTEGER NOT NULL CHECK (intercept_in >= 0),
+            intercept_down INTEGER NOT NULL CHECK (intercept_down >= 0),
+            stations_before INTEGER NOT NULL CHECK (stations_before >= 0),
+            stations_after INTEGER NOT NULL CHECK (stations_after >= 0),
+            hangar_before INTEGER NOT NULL CHECK (hangar_before >= 0),
+            hangar_after INTEGER NOT NULL CHECK (hangar_after >= 0),
+            dome_absorbed REAL NOT NULL CHECK (dome_absorbed >= 0),
+            dome_collapsed INTEGER NOT NULL CHECK (dome_collapsed IN (0, 1)),
+            batteries_before INTEGER NOT NULL CHECK (batteries_before >= 0),
+            batteries_after INTEGER NOT NULL CHECK (batteries_after >= 0),
+            rebuilt INTEGER NOT NULL CHECK (rebuilt >= 0))""")
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"

@@ -120,6 +120,46 @@ pub struct CombatLog {
     /// For a raid on home, what it took (zero when nothing was reachable).
     /// `None` for every other fight, and for raids saved before schema 50.
     pub raid_plunder: Option<crate::Resources>,
+    /// For a raid on a defended home, what each defence layer did. `None`
+    /// for fleet-only fights and for raids saved before schema 51.
+    pub raid_defence: Option<RaidDefence>,
+}
+
+/// The defence layers of one raid on home, before and after.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct RaidDefence {
+    /// Raider missiles that came in, and how many interceptors shot down.
+    pub intercept_in: u32,
+    pub intercept_down: u32,
+    pub stations_before: u32,
+    pub stations_after: u32,
+    pub hangar_before: u32,
+    pub hangar_after: u32,
+    /// Damage the shield dome soaked up, and whether it gave way.
+    pub dome_absorbed: f64,
+    pub dome_collapsed: bool,
+    pub batteries_before: u32,
+    pub batteries_after: u32,
+    /// Defences the repair crews put back after the fight.
+    pub rebuilt: u32,
+}
+
+impl RaidDefence {
+    pub fn from_battle(battle: &crate::defences::PlanetBattle) -> Self {
+        Self {
+            intercept_in: battle.intercept_in,
+            intercept_down: battle.intercept_down,
+            stations_before: battle.stations_before,
+            stations_after: battle.stations_after,
+            hangar_before: battle.hangar_before,
+            hangar_after: battle.hangar_after,
+            dome_absorbed: battle.dome_absorbed,
+            dome_collapsed: battle.dome_collapsed,
+            batteries_before: battle.batteries_before,
+            batteries_after: battle.batteries_after,
+            rebuilt: battle.rebuilt,
+        }
+    }
 }
 
 pub const MAX_COMBAT_LOGS: usize = 8;

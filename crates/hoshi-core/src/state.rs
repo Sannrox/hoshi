@@ -4685,7 +4685,8 @@ impl GameState {
                 layered: false,
             }
             .with_seed_and_endpoints(seed);
-            self.schedule_next_raid(done_at, report, plunder)
+            let defence = crate::RaidDefence::from_battle(&battle);
+            self.schedule_next_raid(done_at, report, plunder, Some(defence))
         }
     }
 
@@ -4720,7 +4721,7 @@ impl GameState {
         self.note_raid_outcome(report.winner);
         self.grant_admiral_xp(report.winner);
         self.push_event(done_at, format_raid_report(&report, plunder));
-        self.schedule_next_raid(done_at, report, plunder)
+        self.schedule_next_raid(done_at, report, plunder, None)
     }
 
     fn schedule_next_raid(
@@ -4728,6 +4729,7 @@ impl GameState {
         done_at: u64,
         report: CombatReport,
         plunder: Resources,
+        defence: Option<crate::RaidDefence>,
     ) -> CombatReport {
         self.next_raid_at = self
             .raid_interval_secs()
@@ -4735,6 +4737,7 @@ impl GameState {
         self.push_combat_log(done_at, report.clone());
         if let Some(log) = self.combat_logs.last_mut() {
             log.raid_plunder = Some(plunder);
+            log.raid_defence = defence;
         }
         self.note_fight_debris(done_at, self.home, &report);
         if report.winner != CombatWinner::Attacker {
@@ -4758,6 +4761,7 @@ impl GameState {
             at,
             report,
             raid_plunder: None,
+            raid_defence: None,
         });
         let extra = self
             .combat_logs

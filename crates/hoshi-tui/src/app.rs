@@ -1922,7 +1922,7 @@ impl App {
             ("you", report.defender_before, report.defender_after),
         ] {
             lines.push(Line::from(vec![
-                Span::styled(format!("{name:<8}"), t.label()),
+                Span::styled(format!("{name:<9}"), t.label()),
                 Span::styled(
                     format!(
                         "{} · lost {}",
@@ -1933,10 +1933,18 @@ impl App {
                 ),
             ]));
         }
+        if let Some(d) = replay.log.raid_defence {
+            for (name, text) in defence_layer_lines(d) {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{name:<9}"), t.label()),
+                    Span::styled(text, t.text()),
+                ]));
+            }
+        }
         let plunder = resource_list(replay.log.raid_plunder.unwrap_or(Resources::ZERO));
         if !plunder.is_empty() {
             lines.push(Line::from(vec![
-                Span::styled(format!("{:<8}", "plunder"), t.label()),
+                Span::styled(format!("{:<9}", "plunder"), t.label()),
                 Span::styled(plunder, t.intent(Intent::Danger)),
             ]));
         }
@@ -4133,6 +4141,50 @@ fn wrap_chunks(word: &str, width: usize) -> Vec<String> {
     out
 }
 
+/// One `(label, text)` row per defence layer that took part in a raid, in
+/// battle order: interception, stations, hangar, dome, batteries, rebuild.
+fn defence_layer_lines(d: hoshi_core::RaidDefence) -> Vec<(&'static str, String)> {
+    let mut rows = Vec::new();
+    if d.intercept_in > 0 {
+        rows.push((
+            "missiles",
+            format!("{} in · {} shot down", d.intercept_in, d.intercept_down),
+        ));
+    }
+    for (name, before, after) in [
+        ("stations", d.stations_before, d.stations_after),
+        ("hangar", d.hangar_before, d.hangar_after),
+    ] {
+        if before > 0 {
+            rows.push((name, format!("{before} → {after}")));
+        }
+    }
+    if d.dome_absorbed > 0.0 || d.dome_collapsed {
+        rows.push((
+            "dome",
+            format!(
+                "absorbed {:.0}{}",
+                d.dome_absorbed,
+                if d.dome_collapsed {
+                    " · collapsed"
+                } else {
+                    ""
+                }
+            ),
+        ));
+    }
+    if d.batteries_before > 0 {
+        rows.push((
+            "battery",
+            format!("{} → {}", d.batteries_before, d.batteries_after),
+        ));
+    }
+    if d.rebuilt > 0 {
+        rows.push(("rebuilt", d.rebuilt.to_string()));
+    }
+    rows
+}
+
 /// `Fe 2.7k Si 1.2k` for every resource above half a unit.
 fn resource_list(amounts: Resources) -> String {
     ResourceKind::ALL
@@ -4485,6 +4537,28 @@ mod tests {
             .unwrap();
         app.handle_key(KeyCode::Enter, 1_000 + 7_200);
         assert!(app.replay_active(), "Enter on a fight opens its report");
+    }
+
+    /// #293: two heavy cannons fought and died, and the report said nothing.
+    #[test]
+    fn the_combat_report_shows_the_defence_layers() {
+        let mut state = GameState::new(1_000);
+        state.defences.add(DefenceKind::HeavyCannon, 2);
+        state.trigger_raid(1_000);
+        let defence = state.combat_logs.last().unwrap().raid_defence.unwrap();
+        state.story_pending = None;
+        let mut app = App::new(state);
+        app.screen = Screen::Cockpit;
+        app.handle_key(KeyCode::Char('r'), 1_000);
+        let report = render_text(&app, 140, 45);
+        let battery = format!("battery  {} → {}", 2, defence.batteries_after);
+        assert!(report.contains(&battery), "{battery}\n{report}");
+        if defence.rebuilt > 0 {
+            assert!(
+                report.contains(&format!("rebuilt  {}", defence.rebuilt)),
+                "{report}"
+            );
+        }
     }
 
     #[test]
