@@ -3389,7 +3389,8 @@ impl App {
 
     fn defence_block_reason(&self, kind: DefenceKind, cost: Resources) -> Option<String> {
         let spec = self.state.config.defences.get(kind);
-        if self.state.buildings.shipyard < spec.shipyard {
+        // The same level the queue gate and the inspector check.
+        if self.state.available_building_level(BuildingKind::Shipyard) < spec.shipyard {
             return Some(format!("need shipyard {}", spec.shipyard));
         }
         if !self.state.resources.can_afford(cost) {
@@ -3412,7 +3413,8 @@ impl App {
 
     fn ship_block_reason(&self, kind: ShipKind, cost: Resources) -> Option<String> {
         let spec = self.state.config.ships.get(kind);
-        if self.state.buildings.shipyard < spec.shipyard {
+        // The same level the queue gate and the inspector check.
+        if self.state.available_building_level(BuildingKind::Shipyard) < spec.shipyard {
             return Some(format!("need shipyard {}", spec.shipyard));
         }
         if let Some(gap) = self.state.missing_ship_prereqs(kind).first() {
@@ -6916,6 +6918,35 @@ mod tests {
         let map_mid = render_text(&app, 120, 40);
         assert!(map_mid.contains("LOCATION"), "{map_mid}");
         assert!(!map_mid.contains("LV 0 → 1"), "{map_mid}");
+    }
+
+    #[test]
+    fn shipyard_row_and_inspector_agree_on_the_shipyard_level() {
+        let mut app = detail_app();
+        // Shipyard 2 is enough for small cargo, but a dismantle takes the
+        // shipyard offline for the queue gate.
+        app.state.buildings.shipyard = 2;
+        app.state.resources = hoshi_core::Resources::from_parts(1e6, 1e6, 1e6);
+        app.state.next_raid_at = None;
+        let home = app.state.home;
+        app.state
+            .enqueue_dismantle_as(
+                home,
+                BuildingKind::Shipyard,
+                1_000,
+                hoshi_core::Actor::Player,
+            )
+            .unwrap();
+        app.screen = Screen::Shipyard;
+        app.selected = ShipKind::ALL
+            .iter()
+            .position(|kind| *kind == ShipKind::SmallCargo)
+            .unwrap();
+        let text = render_text(&app, 160, 48);
+        assert!(text.contains("NEED SHIPYARD 2"), "{text}");
+        assert!(text.contains("Status   BLOCKED"), "{text}");
+        assert!(!text.contains("Status   READY"), "{text}");
+        assert!(text.contains("have 0"), "{text}");
     }
 
     #[test]
