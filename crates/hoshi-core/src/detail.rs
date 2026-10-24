@@ -443,14 +443,15 @@ impl GameState {
 
     fn describe_law(&self, id: &str) -> Option<Detail> {
         let spec = self.config.laws.get(id)?;
-        let effects: Vec<String> = spec
-            .effects
-            .iter()
-            .map(|e| camel_words(&format!("{:?}", e.kind)))
-            .collect();
+        let description = format!(
+            "At {} {:.2}: {}",
+            spec.param_name.replace('_', " "),
+            spec.default,
+            spec.effect_text(spec.default).join("; ")
+        );
         Some(Detail {
             name: spec.title.clone(),
-            description: effects.join(", "),
+            description,
             level: 0,
             costs: Vec::new(),
             energy_draw: None,
@@ -786,18 +787,6 @@ fn afford_from(
     AffordEta::In(wait.ceil().max(1.0) as u64)
 }
 
-/// `PollutionCap` → `pollution cap`, for enum names shown to the player.
-fn camel_words(name: &str) -> String {
-    let mut out = String::new();
-    for (i, c) in name.chars().enumerate() {
-        if c.is_ascii_uppercase() && i > 0 {
-            out.push(' ');
-        }
-        out.push(c.to_ascii_lowercase());
-    }
-    out
-}
-
 fn exclusive_warning(state: &GameState, spec: &crate::TechSpec) -> Option<String> {
     let group = spec.exclusive_group.as_deref()?;
     let others: Vec<String> = state
@@ -868,6 +857,16 @@ fn self_prereq(state: &GameState, building: BuildingKind, want: BuildingKind) ->
 mod tests {
     use super::*;
     use crate::BalanceConfig;
+
+    #[test]
+    fn law_detail_previews_its_effect_at_the_default_parameter() {
+        let state = GameState::new(0);
+        let research = state.describe(DetailSubject::Law("research_priority".into()), None);
+        let research = research.unwrap();
+        assert_eq!(research.description, "At focus 0.50: +5% research speed");
+        let cap = state.config.laws.get("emission_cap").unwrap();
+        assert!(cap.effect_text(0.8)[0].starts_with("emissions held to 80%"));
+    }
 
     #[test]
     fn star_map_detail_names_outposts_and_empty_slots() {

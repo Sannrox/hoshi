@@ -227,6 +227,33 @@ pub enum JurisdictionKind {
 }
 
 impl LawTemplate {
+    /// What enacting this law at `param` changes, one phrase per effect:
+    /// `+4% iron output`, `emissions held to 80% of the pollution sink`.
+    pub fn effect_text(&self, param: f64) -> Vec<String> {
+        self.effects
+            .iter()
+            .map(|effect| {
+                let v = param * effect.per_unit;
+                match effect.kind {
+                    LawEffectKind::MetalOutput => format!("{:+.0}% iron output", v * 100.0),
+                    LawEffectKind::CrystalOutput => format!("{:+.0}% silicon output", v * 100.0),
+                    LawEffectKind::DeuteriumOutput => {
+                        format!("{:+.0}% deuterium output", v * 100.0)
+                    }
+                    LawEffectKind::ResearchSpeed => format!("{:+.0}% research speed", v * 100.0),
+                    LawEffectKind::MarketFee => format!("{:+.0}% market fee", v * 100.0),
+                    LawEffectKind::PollutionCap => format!(
+                        "emissions held to {:.0}% of the pollution sink; output slows above it",
+                        v * 100.0
+                    ),
+                    LawEffectKind::TaxMetalPerHour => {
+                        format!("taxes {v:.0} iron per hour into cash")
+                    }
+                }
+            })
+            .collect()
+    }
+
     pub fn has_effect(&self, kind: LawEffectKind) -> bool {
         self.effects.iter().any(|e| e.kind == kind)
     }

@@ -1924,10 +1924,27 @@ impl App {
         ])];
         let mut rows = Vec::new();
         for tier in &catalog.tier {
+            // Name the unlocking tech as the Research screen does.
+            let tech = self.state.display_name(&tier.research);
+            let unlocked = self.state.automation_tier_unlocked(&tier.id);
             rows.push(vec![
                 Line::styled(tier.name.clone(), t.text()),
-                Line::styled(tier.research.replace('_', " "), t.muted()),
-                if self.state.automation_tier_unlocked(&tier.id) {
+                Line::styled(
+                    if unlocked {
+                        format!(
+                            "{tech} {} researched · {:.0} energy",
+                            tier.research_level, tier.energy
+                        )
+                    } else {
+                        format!(
+                            "research {tech} {} (have {})",
+                            tier.research_level,
+                            self.state.tech_level(&tier.research)
+                        )
+                    },
+                    t.muted(),
+                ),
+                if unlocked {
                     self.chip("unlocked", Intent::Success, true)
                 } else {
                     self.chip("locked", Intent::Neutral, true)
@@ -1980,7 +1997,8 @@ impl App {
             table: Some(TableView {
                 columns: vec![
                     Column::left("name", 30),
-                    Column::left("detail", 24),
+                    // Fits `research Logistics rules 1 (have 0)` and rule previews.
+                    Column::left("detail", 40),
                     Column::fill("state"),
                 ],
                 rows,
