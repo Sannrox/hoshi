@@ -879,7 +879,16 @@ impl App {
             metric(
                 t,
                 "LIMIT",
-                humanize(limited),
+                // How many chains are held back; the line below names the worst.
+                match report
+                    .steps
+                    .iter()
+                    .filter(|step| step.limited_by != hoshi_core::LimitingFactor::None)
+                    .count()
+                {
+                    0 => humanize(limited),
+                    n => format!("{n} stalled"),
+                },
                 if limited == "none" {
                     Intent::Success
                 } else {
