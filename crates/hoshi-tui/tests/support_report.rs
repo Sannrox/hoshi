@@ -238,11 +238,16 @@ fn collection_only_contacts_explicit_loopback_health_endpoint() {
                 Err(error) => panic!("health probe missing: {error}"),
             }
         };
+        // The accepted stream can inherit the listener's non-blocking mode,
+        // which turns a request still in flight into an immediate WouldBlock.
+        stream.set_nonblocking(false).unwrap();
         stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
             .unwrap();
         let mut request = [0; 1024];
-        let count = stream.read(&mut request).unwrap();
+        let count = stream
+            .read(&mut request)
+            .unwrap_or_else(|error| panic!("health probe sent no request: {error}"));
         let request = String::from_utf8_lossy(&request[..count]);
         assert!(request.starts_with("GET /healthz HTTP/1.1\r\n"));
         assert!(!request.to_ascii_lowercase().contains("authorization"));
