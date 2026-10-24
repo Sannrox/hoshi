@@ -59,6 +59,11 @@
     ],
     "streak": 0
   },
+  "decision": {
+    "action": "choose_story",
+    "deadline": 88200,
+    "id": "story"
+  },
   "defences": {
     "garrison": 0,
     "heavy_cannon": 0,

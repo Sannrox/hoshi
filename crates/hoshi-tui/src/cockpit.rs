@@ -108,6 +108,7 @@ pub enum Target {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AlertKind {
+    Decision,
     Raid,
     Defence,
     Hostile,
@@ -119,7 +120,7 @@ enum AlertKind {
 impl AlertKind {
     fn intent(self) -> Intent {
         match self {
-            Self::Raid | Self::Defence => Intent::Danger,
+            Self::Decision | Self::Raid | Self::Defence => Intent::Danger,
             Self::Hostile | Self::Power | Self::Storage => Intent::Warning,
             Self::IdleQueue => Intent::Primary,
         }
@@ -127,7 +128,7 @@ impl AlertKind {
 
     fn severity(self) -> u8 {
         match self {
-            Self::Raid => 0,
+            Self::Decision | Self::Raid => 0,
             Self::Defence => 1,
             Self::Hostile => 2,
             Self::Power => 3,
@@ -143,6 +144,8 @@ pub struct Alert {
     pub text: String,
     pub detail: String,
     pub jump: Target,
+    /// Set on the expiring-decision row. The same value `hoshi state` prints.
+    pub decision: Option<hoshi_core::ExpiringDecision>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -347,6 +350,7 @@ pub fn alerts(state: &GameState) -> Vec<Alert> {
             text: format!("Incoming raid  T-{}", countdown(secs)),
             detail: format!("pirates → {home}"),
             jump: Target::Planet(home),
+            decision: None,
         });
     }
     // The latest raid stays on the bridge until the next one replaces it.
@@ -366,6 +370,7 @@ pub fn alerts(state: &GameState) -> Vec<Alert> {
             ),
             detail: format!("plunder {} · r report", taken.brief()),
             jump: Target::Planet(home),
+            decision: None,
         });
     }
     // Undefended stays true between raids, not only inside the warning window.
@@ -385,6 +390,7 @@ pub fn alerts(state: &GameState) -> Vec<Alert> {
             text: "Home undefended".into(),
             detail,
             jump: Target::Planet(home),
+            decision: None,
         });
     }
     if state.pending_tactical.is_some() {
@@ -393,6 +399,7 @@ pub fn alerts(state: &GameState) -> Vec<Alert> {
             text: "Tactical combat pending".into(),
             detail: "orders wait for you".into(),
             jump: Target::Planet(home),
+            decision: None,
         });
     }
     for spec in state.config.diplomacy.iter() {
@@ -403,6 +410,7 @@ pub fn alerts(state: &GameState) -> Vec<Alert> {
                 text: format!("Hostile {}", spec.name),
                 detail: format!("standing {standing:.0}"),
                 jump: Target::Faction(spec.id.clone()),
+                decision: None,
             });
         }
     }
@@ -412,6 +420,7 @@ pub fn alerts(state: &GameState) -> Vec<Alert> {
             text: "Queues idle".into(),
             detail: format!("{home} · build and research"),
             jump: Target::Planet(home),
+            decision: None,
         });
     }
     for colony in &state.colonies {
@@ -421,6 +430,7 @@ pub fn alerts(state: &GameState) -> Vec<Alert> {
                 text: "Queue idle".into(),
                 detail: colony.coord.to_string(),
                 jump: Target::Planet(colony.coord),
+                decision: None,
             });
         }
     }
@@ -433,6 +443,7 @@ pub fn alerts(state: &GameState) -> Vec<Alert> {
             text: format!("Energy short {energy:.0}"),
             detail: format!("production slows at {home} · build solar"),
             jump: Target::Planet(home),
+            decision: None,
         });
     }
     let waste = state.waste_home();
@@ -447,6 +458,7 @@ pub fn alerts(state: &GameState) -> Vec<Alert> {
             ),
             detail: format!("work slows at {home} · build radiators"),
             jump: Target::Planet(home),
+            decision: None,
         });
     }
     for kind in ResourceKind::ALL {
@@ -458,10 +470,33 @@ pub fn alerts(state: &GameState) -> Vec<Alert> {
                 text: format!("{} storage full", kind.abbr()),
                 detail: format!("{:.0}% of cap at {home}", 100.0 * stock / cap),
                 jump: Target::Planet(home),
+                decision: None,
             });
         }
     }
     rows.sort_by_key(|row| row.kind.severity());
+    if let Some(decision) = hoshi_core::expiring_decision(state) {
+        let left = decision.deadline.saturating_sub(state.last_tick_unix);
+        let also = match decision.action {
+            hoshi_core::DecisionAction::SetStance => " · set_formation",
+            hoshi_core::DecisionAction::ArmHome => " · arm the home",
+            _ => "",
+        };
+        rows.insert(
+            0,
+            Alert {
+                kind: AlertKind::Decision,
+                text: format!("{}  T-{}", decision.action.as_key(), countdown(left)),
+                detail: format!(
+                    "{}{also} · deadline {}",
+                    decision.id.as_key(),
+                    decision.deadline
+                ),
+                jump: Target::Planet(home),
+                decision: Some(decision),
+            },
+        );
+    }
     rows
 }
 
@@ -1610,6 +1645,27 @@ mod tests {
         assert_eq!(kinds, sorted);
         assert!(rows.iter().any(|row| row.text.contains("Incoming raid")));
         assert!(rows.iter().any(|row| row.text.contains("idle")));
+    }
+
+    #[test]
+    fn the_expiring_decision_leads_and_keeps_the_idle_and_storage_rows() {
+        let mut state = GameState::new(1_000);
+        state.story_pending = Some(hoshi_core::PendingStory {
+            event_id: "derelict".into(),
+            offered_at: 1_000,
+            timeout_at: 1_200,
+        });
+        state.fleet.add(hoshi_core::ShipKind::LightFighter, 2);
+        state.resources.iron = state.storage_cap(ResourceKind::Iron);
+        let decision = hoshi_core::expiring_decision(&state).expect("story");
+        let rows = alerts(&state);
+        assert_eq!(rows[0].decision, Some(decision));
+        assert!(rows[0].text.contains(decision.action.as_key()));
+        assert!(rows[0].detail.contains(&decision.deadline.to_string()));
+        assert!(rows[0].detail.contains(decision.id.as_key()));
+        assert!(rows.iter().skip(1).any(|row| row.text.contains("idle")));
+        assert!(rows.iter().skip(1).any(|row| row.text.contains("storage")));
+        assert!(rows.iter().skip(1).all(|row| row.decision.is_none()));
     }
 
     #[test]

@@ -67,6 +67,11 @@
     ],
     "streak": 0
   },
+  "decision": {
+    "action": "arm",
+    "deadline": 3600,
+    "id": "raid"
+  },
   "defences": {
     "garrison": 0,
     "heavy_cannon": 0,
