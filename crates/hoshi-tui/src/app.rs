@@ -7029,6 +7029,18 @@ mod tests {
     }
 
     #[test]
+    fn automation_tiers_name_the_research_that_unlocks_them() {
+        let mut app = detail_app();
+        app.open(Screen::Automation);
+        let text = render_text(&app, 160, 48);
+        assert!(
+            text.contains("research Adaptive routes 1 (have 0)"),
+            "{text}"
+        );
+        assert!(!text.contains("auto routes"), "{text}");
+    }
+
+    #[test]
     fn detail_overlay_opens_at_80x24() {
         let mut app = detail_app();
         app.screen = Screen::Planet;
