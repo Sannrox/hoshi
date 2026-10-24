@@ -70,6 +70,12 @@ fn trait_effect(spec: &hoshi_core::TraitSpec) -> String {
     }
 }
 
+/// One decimal place without a negative zero: `-0.04` reads `0.0`.
+fn one_decimal(v: f64) -> String {
+    let text = format!("{v:.1}");
+    if text == "-0.0" { "0.0".into() } else { text }
+}
+
 /// Turns a snake_case key into words with a capital first letter.
 pub(super) fn humanize(key: &str) -> String {
     let words = key.replace(['_', '-'], " ");
@@ -2008,15 +2014,30 @@ impl App {
                 t.muted(),
             ));
         }
+        head.push(Line::styled(
+            "var: value minus target · events: history rows behind the value",
+            t.muted(),
+        ));
+        let no_missions = self
+            .state
+            .mission_schedule(self.state.last_tick_unix)
+            .missions
+            .is_empty();
         let rows = snap
             .measurements
             .iter()
             .map(|row| {
                 let dash = || Line::styled("—", t.faint());
-                let var = match row.variance() {
+                // A ratio over zero missions is not a grade; show no value.
+                let unsampled = row.kpi == hoshi_core::KpiId::MissionOnTime && no_missions;
+                let var = match row.variance().filter(|_| !unsampled) {
+                    // A variance that rounds to zero is on target, whatever its sign.
+                    Some(v) if one_decimal(v) == "0.0" => {
+                        Line::styled("0.0", t.intent(Intent::Success))
+                    }
                     Some(v) => Line::styled(
                         format!("{v:+.1}"),
-                        t.intent(if v >= 0.0 {
+                        t.intent(if v > 0.0 {
                             Intent::Success
                         } else {
                             Intent::Danger
@@ -2024,7 +2045,7 @@ impl App {
                     ),
                     None => dash(),
                 };
-                let progress = match row.progress() {
+                let progress = match row.progress().filter(|_| !unsampled) {
                     Some(p) => self.progress_cell(
                         p,
                         format!("{:.0}%", p * 100.0),
@@ -2039,9 +2060,13 @@ impl App {
                 vec![
                     Line::styled(humanize(row.kpi.as_key()), t.text()),
                     self.chip(&row.owner.as_key(), Intent::Neutral, true),
-                    Line::styled(format!("{:.1}", row.value), t.strong()),
+                    if unsampled {
+                        dash()
+                    } else {
+                        Line::styled(one_decimal(row.value), t.strong())
+                    },
                     row.target
-                        .map(|v| Line::styled(format!("{v:.1}"), t.text()))
+                        .map(|v| Line::styled(one_decimal(v), t.text()))
                         .unwrap_or_else(dash),
                     var,
                     progress,
@@ -2059,7 +2084,7 @@ impl App {
                     Column::right("target", 7),
                     Column::right("var", 6),
                     Column::left("progress", 18),
-                    Column::right("ev", 3),
+                    Column::right("events", 6),
                 ],
                 rows,
                 groups: Vec::new(),
@@ -2451,7 +2476,7 @@ impl App {
                 "CASH",
                 compact(report.cash),
                 Intent::Neutral,
-                format!("debt {}", compact(report.debt)),
+                format!("credits · debt {}", compact(report.debt)),
             ),
             metric(
                 t,
@@ -2459,7 +2484,7 @@ impl App {
                 compact(report.income.total()),
                 Intent::Success,
                 format!(
-                    "prod {} tax {} trade {}",
+                    "production {} · tax {} · trade {}",
                     compact(report.income.production),
                     compact(report.income.tax),
                     compact(report.income.trade)
@@ -2471,7 +2496,7 @@ impl App {
                 compact(report.expense.total()),
                 Intent::Danger,
                 format!(
-                    "ind {} rs {} mil {}",
+                    "industry {} · research {} · military {}",
                     compact(report.expense.industry),
                     compact(report.expense.research),
                     compact(report.expense.military)
@@ -2486,10 +2511,21 @@ impl App {
                 } else {
                     Intent::Success
                 },
-                format!("gap {}", compact(report.reserve_gap)),
+                if report.reserve_gap > 0.0 {
+                    format!("cash short of target by {}", compact(report.reserve_gap))
+                } else {
+                    "target met".into()
+                },
             ),
         ];
-        let head = vec![self.props(&[("period", duration(cfg.period_secs))])];
+        let head = vec![
+            self.props(&[("period", duration(cfg.period_secs))]),
+            Line::styled(
+                "Credits come in from production, tax and trade and go out on spending. \
+                 A spend over its budget limit waits here for approval.",
+                t.muted(),
+            ),
+        ];
         let mut rows = Vec::new();
         for pending in &report.pending {
             rows.push(vec![

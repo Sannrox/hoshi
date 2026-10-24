@@ -1595,6 +1595,7 @@ impl App {
             Screen::Staff => "assign",
             Screen::Automation => "dry-run",
             Screen::Map => "dispatch",
+            Screen::Finance if self.state.finance.pending.is_empty() => return Vec::new(),
             Screen::Finance => "approve",
             Screen::Kpis => "events",
             Screen::Incidents => "resolve",
@@ -3071,6 +3072,8 @@ impl App {
                         k.primary(Binding::Increase)
                     )
                 }
+                // Approve only means something while a spend is held.
+                Screen::Finance if self.state.finance.pending.is_empty() => select,
                 Screen::Finance => {
                     format!("{select}  {confirm} approve")
                 }
@@ -7006,6 +7009,23 @@ mod tests {
         let staff = render_text(&app, 160, 48);
         assert!(staff.contains("−5% output"), "{staff}");
         assert!(staff.contains("governor: scales"), "{staff}");
+    }
+
+    #[test]
+    fn finance_and_kpis_define_their_numbers() {
+        let mut app = detail_app();
+        app.open(Screen::Finance);
+        let finance = render_text(&app, 160, 48);
+        assert!(finance.contains("production"), "{finance}");
+        assert!(
+            finance.contains("A spend over its budget limit"),
+            "{finance}"
+        );
+        assert!(!finance.contains("approve"), "{finance}");
+        app.open(Screen::Kpis);
+        let kpis = render_text(&app, 160, 48);
+        assert!(kpis.contains("EVENTS"), "{kpis}");
+        assert!(!kpis.contains("-0.0"), "{kpis}");
     }
 
     #[test]
