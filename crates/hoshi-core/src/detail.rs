@@ -616,15 +616,22 @@ impl GameState {
         })
     }
 
+    /// What the star map knows about a slot. Size is only shown for owned
+    /// planets; outposts and frontier worlds show the type the map rows show.
     fn describe_coord(&self, coord: Coord) -> Detail {
-        let kind = self
-            .planet_kind(coord)
-            .map(|k| k.as_key().to_string())
-            .unwrap_or_else(|| "empty".into());
-        let size = self.planet_size(coord).unwrap_or(0);
+        let description =
+            if let (Some(kind), Some(size)) = (self.planet_kind(coord), self.planet_size(coord)) {
+                format!("{} size {size}", kind.as_key())
+            } else if let Some(outpost) = self.outpost(coord) {
+                format!("pirate outpost · {}", outpost.kind.as_key())
+            } else if let Some(world) = self.frontier.visible_worlds().find(|w| w.coord == coord) {
+                format!("frontier world · {}", world.kind.as_key())
+            } else {
+                "empty slot".into()
+            };
         Detail {
             name: coord.to_string(),
-            description: format!("{kind} size {size}"),
+            description,
             level: 0,
             costs: Vec::new(),
             energy_draw: None,
@@ -810,6 +817,30 @@ fn self_prereq(state: &GameState, building: BuildingKind, want: BuildingKind) ->
 mod tests {
     use super::*;
     use crate::BalanceConfig;
+
+    #[test]
+    fn star_map_detail_names_outposts_and_empty_slots() {
+        let state = GameState::new_live_galaxy(10, quiet(), 7);
+        let outpost = state.outposts[0].clone();
+        let detail = state
+            .describe(DetailSubject::Coord(outpost.coord), None)
+            .unwrap();
+        assert_eq!(
+            detail.description,
+            format!("pirate outpost · {}", outpost.kind.as_key())
+        );
+        let empty = Coord {
+            galaxy: 9,
+            system: 499,
+            position: 15,
+        };
+        let detail = state.describe(DetailSubject::Coord(empty), None).unwrap();
+        assert_eq!(detail.description, "empty slot");
+        let home = state
+            .describe(DetailSubject::Coord(state.home), None)
+            .unwrap();
+        assert!(home.description.contains(" size "), "{}", home.description);
+    }
 
     fn quiet() -> BalanceConfig {
         let mut cfg = BalanceConfig::default();
