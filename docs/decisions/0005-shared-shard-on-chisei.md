@@ -1,10 +1,16 @@
 # ADR 0005: Shared shard hosted on Chisei
 
-- Status: Accepted
+- Status: Partially superseded by [0017](0017-local-tui-may-join-a-chisei-shard.md)
 - Date: 2026-10-12
 - Partially supersedes: [0004](0004-no-shared-universe.md)
 - Follows: [0002](0002-terminal-idle-game-with-event-bridge.md)
 - Source: [#18](https://github.com/Sannrox/hoshi/issues/18)
+
+Point 1's "The local game never becomes a client of a shared world" and
+the later "not a mode of the local binary" sentence are superseded by
+[0017](0017-local-tui-may-join-a-chisei-shard.md). Points 2–4 stay: Chisei
+host, intents, snapshot raids, markings, bounded shard. The shard remains
+a Chisei-hosted workload; the local TUI may join it as a client.
 
 ## Context
 
