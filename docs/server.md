@@ -91,6 +91,8 @@ The sliding window uses `serve_rate_limit` (default 60) and
 A paired browser holds its own device session ([ADR 0016](decisions/0016-device-pairing-and-sessions.md)).
 Its secret is accepted as `Authorization: Bearer <secret>` wherever a scoped
 token is: same save scope, same rate limits per device, never admin scope.
+That pairing never authenticates to a shard; Join credentials are a
+separate file ([ADR 0020](decisions/0020-shard-identity-is-a-host-tenant.md)).
 
 Sessions are runtime data in `<save>.devices.json` beside the save (mode
 `0600`, replaced atomically). The file stores each device's label, type, OS,

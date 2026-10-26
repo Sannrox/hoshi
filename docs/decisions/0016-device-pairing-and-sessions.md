@@ -1,6 +1,7 @@
 # Device pairing and sessions
 
-Status: Accepted
+Status: Accepted. Shard identity is
+[0020](0020-shard-identity-is-a-host-tenant.md), not this pairing file.
 
 Source: [Issue #275](https://github.com/Sannrox/hoshi/issues/275)
 
@@ -57,4 +58,6 @@ stay paired after a move.
 Storing sessions in the save would leak credentials into every copied or
 reported save. Signed stateless tokens cannot be revoked one by one without a
 deny list, which is durable state again. Accounts and shared universes stay out
-of scope (ADR 0004).
+of scope (ADR 0004). Shard Join credentials are a separate file
+([0020](0020-shard-identity-is-a-host-tenant.md)) and never this session
+file.
