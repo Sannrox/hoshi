@@ -640,7 +640,7 @@ mod tests {
         let report = state.production_report();
         close(report.energy_supply, state.energy_produced() + rated * 0.16);
         assert!(
-            crate::advisor::advise(&state)
+            crate::advisor::advise(&state, None)
                 .iter()
                 .any(|a| a.id == "energy" && a.text.contains(&coord.to_string()))
         );

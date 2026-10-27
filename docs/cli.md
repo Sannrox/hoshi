@@ -136,6 +136,9 @@ or `30s` / `3m` / `1h` / `1d`.
 
 `advise` prints ranked next-move suggestions from the same player-visible
 state the TUI overlay uses. It never enqueues a build, research, or fleet.
+With `focus` set in `config.toml` beside the save (`conquest`, `wonder` or
+`diplomacy`), the first suggestion is that victory path's next step, with id
+`conquest`, `wonder` or `diplomacy`.
 Extra arguments on `advise` are invalid.
 
 `log` searches the structured history (build, research, ship, fleet, combat,

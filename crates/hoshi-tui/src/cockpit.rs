@@ -201,6 +201,8 @@ pub struct Cockpit {
     pub(crate) selected: usize,
     stack: Vec<Target>,
     layout_dirty: bool,
+    /// Victory focus from `config.toml`. Set drops idle-queue rows for non-home colonies.
+    pub victory_focus: Option<hoshi_core::VictoryPath>,
 }
 
 impl Default for Cockpit {
@@ -212,6 +214,7 @@ impl Default for Cockpit {
             selected: 0,
             stack: Vec::new(),
             layout_dirty: false,
+            victory_focus: None,
         }
     }
 }
@@ -342,7 +345,9 @@ pub fn parse_panels(spec: &str) -> Vec<Panel> {
     out
 }
 
-pub fn alerts(state: &GameState) -> Vec<Alert> {
+/// Bridge rows, most urgent first. A `focus` drops idle-queue rows for
+/// colonies other than home; the expiring decision still leads.
+pub fn alerts(state: &GameState, focus: Option<hoshi_core::VictoryPath>) -> Vec<Alert> {
     let mut rows = Vec::new();
     let home = state.home;
     if let Some(secs) = state.raid_countdown_secs() {
@@ -429,7 +434,7 @@ pub fn alerts(state: &GameState) -> Vec<Alert> {
             decision: None,
         });
     }
-    for colony in &state.colonies {
+    for colony in state.colonies.iter().filter(|_| focus.is_none()) {
         if colony.build_queue.is_empty() {
             rows.push(Alert {
                 kind: AlertKind::IdleQueue,
@@ -569,7 +574,7 @@ pub fn draw(
     let screen = frame.area();
     let mode = size_mode(screen.width, screen.height);
     let t = view.theme;
-    let alert_rows = alerts(view.state);
+    let alert_rows = alerts(view.state, view.cockpit.victory_focus);
     let panels = view.cockpit.panels();
     fill(frame.buffer_mut(), area, t.surface(Surface::Base));
     let top = if mode == SizeMode::Tabbed { 2 } else { 0 };
@@ -1610,7 +1615,7 @@ pub fn select_len(state: &GameState, cockpit: &Cockpit) -> usize {
         Some(Panel::Fleets) => fleet_targets(state).len(),
         Some(Panel::Queues) => planet_targets(state).len().max(1),
         Some(Panel::Map) => MAP_SYSTEM_MAX as usize,
-        _ => alerts(state).len().max(1),
+        _ => alerts(state, cockpit.victory_focus).len().max(1),
     }
 }
 
@@ -1657,7 +1662,7 @@ mod tests {
         let mut state = GameState::new(1_000);
         state.next_raid_at = Some(1_120);
         state.resources.iron = state.storage_cap(ResourceKind::Iron);
-        let rows = alerts(&state);
+        let rows = alerts(&state, None);
         let kinds: Vec<_> = rows.iter().map(|row| row.kind.severity()).collect();
         let mut sorted = kinds.clone();
         sorted.sort_unstable();
@@ -1677,7 +1682,7 @@ mod tests {
         state.fleet.add(hoshi_core::ShipKind::LightFighter, 2);
         state.resources.iron = state.storage_cap(ResourceKind::Iron);
         let decision = hoshi_core::expiring_decision(&state).expect("story");
-        let rows = alerts(&state);
+        let rows = alerts(&state, None);
         assert_eq!(rows[0].decision, Some(decision));
         assert!(rows[0].text.contains(decision.action.as_key()));
         assert!(rows[0].detail.contains(&decision.deadline.to_string()));
@@ -1685,6 +1690,46 @@ mod tests {
         assert!(rows.iter().skip(1).any(|row| row.text.contains("idle")));
         assert!(rows.iter().skip(1).any(|row| row.text.contains("storage")));
         assert!(rows.iter().skip(1).all(|row| row.decision.is_none()));
+    }
+
+    #[test]
+    fn a_focus_drops_idle_colonies_but_keeps_power_and_the_decision() {
+        let mut state = GameState::new(1_000);
+        state.story_pending = Some(hoshi_core::PendingStory {
+            event_id: "derelict".into(),
+            offered_at: 1_000,
+            timeout_at: 1_200,
+        });
+        state.fleet.add(hoshi_core::ShipKind::LightFighter, 2);
+        state.buildings.metal_mine = 30;
+        state.build_queue.clear();
+        state.research = None;
+        state.colonies.push(hoshi_core::Colony {
+            coord: hoshi_core::Coord {
+                galaxy: 1,
+                system: 1,
+                position: 9,
+            },
+            kind: hoshi_core::PlanetType::Rocky,
+            size: 3,
+            resources: Resources::ZERO,
+            buildings: hoshi_core::Buildings::default(),
+            fleet: hoshi_core::Fleet::default(),
+            defences: hoshi_core::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            rare: None,
+            goods: Default::default(),
+        });
+        let plain = alerts(&state, None);
+        assert!(plain.iter().any(|row| row.text == "Queue idle"));
+        let rows = alerts(&state, Some(hoshi_core::VictoryPath::Conquest));
+        assert!(rows[0].decision.is_some());
+        assert!(!rows.iter().any(|row| row.text == "Queue idle"));
+        assert!(
+            rows.iter().any(|row| row.text == "Queues idle"),
+            "home stays"
+        );
+        assert!(rows.iter().any(|row| row.text.starts_with("Energy short")));
     }
 
     #[test]
@@ -1696,7 +1741,7 @@ mod tests {
         state.next_raid_at = None;
         state.catch_up(1_800);
         state.choose_story("answer", 1_800).unwrap();
-        let rows = alerts(&state);
+        let rows = alerts(&state, None);
         assert!(rows[0].decision.is_some() || rows[0].text.contains("hail"));
         assert!(
             rows.iter().any(|row| row.text == "The hail is still open."),
@@ -1704,7 +1749,7 @@ mod tests {
             rows.iter().map(|row| row.text.as_str()).collect::<Vec<_>>()
         );
         state.catch_up(1_800 + 3_600);
-        let rows = alerts(&state);
+        let rows = alerts(&state, None);
         assert!(rows.iter().all(|row| row.text != "The hail is still open."));
     }
 
@@ -1716,7 +1761,7 @@ mod tests {
         state.set_stance("aggressive").unwrap();
         let ships = state.scheduled_raid_ships();
         assert!(ships > 0);
-        let rows = alerts(&state);
+        let rows = alerts(&state, None);
         let raid = rows
             .iter()
             .find(|row| row.text.contains("Incoming raid"))
@@ -1735,7 +1780,7 @@ mod tests {
         let mut state = GameState::new(1_000);
         state.next_raid_at = None;
         state.config.raid.enabled = false;
-        let rows = alerts(&state);
+        let rows = alerts(&state, None);
         assert!(!rows.iter().any(|row| row.text.contains("Incoming raid")));
     }
 

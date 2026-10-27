@@ -50,6 +50,8 @@ pub struct UserConfig {
     pub cockpit_economy: String,
     pub cockpit_war: String,
     pub detail_panel: bool,
+    /// Victory path that leads `advise` and quiets idle colonies. Unset keeps today's lists.
+    pub focus: Option<hoshi_core::VictoryPath>,
     /// Bind `host:port` for `hoshi serve`. Empty means the loopback default.
     pub serve_bind: String,
     /// Save path for `hoshi serve`. Empty means the default save slot.
@@ -130,6 +132,7 @@ impl Default for UserConfig {
             cockpit_economy: crate::cockpit::ECONOMY_PANELS.into(),
             cockpit_war: crate::cockpit::WAR_PANELS.into(),
             detail_panel: true,
+            focus: None,
             serve_bind: String::new(),
             serve_save: String::new(),
             serve_token: String::new(),
@@ -304,6 +307,7 @@ impl UserConfig {
                 "cockpit_economy" => cfg.cockpit_economy = value.to_string(),
                 "cockpit_war" => cfg.cockpit_war = value.to_string(),
                 "detail_panel" => cfg.detail_panel = value == "true",
+                "focus" => cfg.focus = hoshi_core::VictoryPath::from_key(value),
                 "serve_bind" => cfg.serve_bind = value.trim_matches('"').to_string(),
                 "serve_save" => cfg.serve_save = value.trim_matches('"').to_string(),
                 "serve_token" => cfg.serve_token = value.trim_matches('"').to_string(),
@@ -374,8 +378,12 @@ impl UserConfig {
             }
             _ => String::new(),
         };
+        let focus = self
+            .focus
+            .map(|path| format!("focus = \"{}\"\n", path.as_key()))
+            .unwrap_or_default();
         let text = format!(
-            "reduced_motion = {}\nno_animation = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\narena = {}\nself_play = {}\ncheats = {}\nrivals = {}\nseason = {}\ndemo = {}\ngovernance = {}\nchisei = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}\ntutorial = {}\nreset_tutorial = {}\nnotify = {}\nnotify_build = {}\nnotify_raid = {}\nnotify_fleet = {}\ncommentary = {}\ncommentary_model_url = \"{}\"\nadvisor_model_url = \"{}\"\nadvisor_model_name = \"{}\"\nadvisor_allow_lan = {}\ncockpit_layout = \"{}\"\ncockpit_overview = \"{}\"\ncockpit_economy = \"{}\"\ncockpit_war = \"{}\"\ndetail_panel = {}\nserve_bind = \"{}\"\nserve_save = \"{}\"\nserve_token = \"{}\"\nserve_token_file = \"{}\"\nserve_rate_limit = {}\nserve_rate_window_secs = {}\nserve_terminal_idle_secs = {}\nserve_push = {}\nserve_vapid_private = \"{}\"\nserve_vapid_subject = \"{}\"\nserve_oidc = {}\nserve_oidc_issuer = \"{}\"\nserve_oidc_client_id = \"{}\"\nserve_oidc_authorization = \"{}\"\nserve_oidc_token = \"{}\"\n{quiet}{}\n",
+            "reduced_motion = {}\nno_animation = {}\nhigh_contrast = {}\nbridge = {}\nai_advisor = {}\narena = {}\nself_play = {}\ncheats = {}\nrivals = {}\nseason = {}\ndemo = {}\ngovernance = {}\nchisei = {}\nportraits = {}\nportrait_protocol = \"{}\"\nlast_slot = \"{last}\"\naway_threshold_secs = {}\ntutorial = {}\nreset_tutorial = {}\nnotify = {}\nnotify_build = {}\nnotify_raid = {}\nnotify_fleet = {}\ncommentary = {}\ncommentary_model_url = \"{}\"\nadvisor_model_url = \"{}\"\nadvisor_model_name = \"{}\"\nadvisor_allow_lan = {}\ncockpit_layout = \"{}\"\ncockpit_overview = \"{}\"\ncockpit_economy = \"{}\"\ncockpit_war = \"{}\"\ndetail_panel = {}\nserve_bind = \"{}\"\nserve_save = \"{}\"\nserve_token = \"{}\"\nserve_token_file = \"{}\"\nserve_rate_limit = {}\nserve_rate_window_secs = {}\nserve_terminal_idle_secs = {}\nserve_push = {}\nserve_vapid_private = \"{}\"\nserve_vapid_subject = \"{}\"\nserve_oidc = {}\nserve_oidc_issuer = \"{}\"\nserve_oidc_client_id = \"{}\"\nserve_oidc_authorization = \"{}\"\nserve_oidc_token = \"{}\"\n{quiet}{focus}{}\n",
             self.reduced_motion,
             self.no_animation,
             self.high_contrast,
@@ -563,6 +571,7 @@ mod tests {
         assert!(loaded.detail_panel);
         assert!(loaded.portraits);
         assert_eq!(loaded.portrait_protocol, ProtocolChoice::Auto);
+        assert_eq!(loaded.focus, None);
         std::fs::write(
             UserConfig::path(&dir),
             "future_setting = 7\n[future]\nbridge = true\n",
@@ -590,6 +599,7 @@ mod tests {
         cfg.cockpit_layout = "war".into();
         cfg.cockpit_war = "map,fleets".into();
         cfg.detail_panel = false;
+        cfg.focus = Some(hoshi_core::VictoryPath::Wonder);
         cfg.serve_bind = "127.0.0.1:0".into();
         cfg.serve_save = "slot.sqlite".into();
         cfg.log_level = "debug".into();
@@ -624,6 +634,7 @@ mod tests {
         assert_eq!(again.cockpit_layout, "war");
         assert_eq!(again.cockpit_war, "map,fleets");
         assert!(!again.detail_panel);
+        assert_eq!(again.focus, Some(hoshi_core::VictoryPath::Wonder));
         assert_eq!(again.serve_bind, "127.0.0.1:0");
         assert_eq!(again.serve_save, "slot.sqlite");
         assert_eq!(again.log_level, "debug");

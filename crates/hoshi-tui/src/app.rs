@@ -458,6 +458,7 @@ impl App {
             &user.cockpit_economy,
             &user.cockpit_war,
         );
+        self.cockpit.victory_focus = user.focus;
     }
 
     #[cfg(any(test, feature = "bridge"))]
@@ -1016,7 +1017,7 @@ impl App {
     }
 
     fn cockpit_confirm(&mut self) {
-        let alerts = crate::cockpit::alerts(&self.state);
+        let alerts = crate::cockpit::alerts(&self.state, self.cockpit.victory_focus);
         let fleets = crate::cockpit::fleet_targets(&self.state);
         let planets = crate::cockpit::planet_targets(&self.state);
         self.cockpit.confirm(
@@ -3195,7 +3196,7 @@ impl App {
     }
 
     fn open_advisor(&mut self) {
-        let tips = advise(&self.state);
+        let tips = advise(&self.state, self.cockpit.victory_focus);
         self.advisor_lines = polish_all_named(
             &tips.into_iter().map(|row| row.text).collect::<Vec<_>>(),
             &self.advisor_model_url,

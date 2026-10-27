@@ -4,6 +4,7 @@ use crate::buildings::BuildingKind;
 use crate::defences::{DefenceKind, DefenceRole};
 use crate::ships::ShipKind;
 use crate::state::{GameState, ResourceKind};
+use crate::victory::VictoryPath;
 
 /// One suggestion. `id` is stable for tests; `text` is what the player reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,8 +14,12 @@ pub struct Advice {
 }
 
 /// Ranked suggestions from public stockpiles, energy, queues and raid timing.
-pub fn advise(state: &GameState) -> Vec<Advice> {
+/// A `focus` from `config.toml` puts that victory path's next step first.
+pub fn advise(state: &GameState, focus: Option<VictoryPath>) -> Vec<Advice> {
     let mut out = Vec::new();
+    if let Some(path) = focus {
+        out.extend(path_step(state, path));
+    }
     push_storage_wall(state, &mut out);
     push_energy(state, &mut out);
     push_raid(state, &mut out);
@@ -176,21 +181,7 @@ fn push_raid(state: &GameState, out: &mut Vec<Advice>) {
         });
         return;
     }
-    // No shipyard yet: the next building on its prerequisite path.
-    let gate = state
-        .config
-        .buildings
-        .get(BuildingKind::Shipyard)
-        .prerequisites
-        .iter()
-        .find(|(building, level)| state.buildings.get(*building) < *level)
-        .map(|(building, _)| *building)
-        .unwrap_or(BuildingKind::Shipyard);
-    let step = if gate == BuildingKind::Shipyard {
-        "build the shipyard".to_string()
-    } else {
-        format!("build the {gate} on the way to the shipyard")
-    };
+    let step = shipyard_step(state);
     let market = if state.config.market.enabled {
         ", and trade iron for deuterium on the market if it is short"
     } else {
@@ -200,6 +191,156 @@ fn push_raid(state: &GameState, out: &mut Vec<Advice>) {
         id: "raid",
         text: format!("a raid in {wait}s; no defence can be built yet: {step}{market}"),
     });
+}
+
+/// No shipyard yet: the next building on its prerequisite path.
+fn shipyard_step(state: &GameState) -> String {
+    let gate = state
+        .config
+        .buildings
+        .get(BuildingKind::Shipyard)
+        .prerequisites
+        .iter()
+        .find(|(building, level)| state.buildings.get(*building) < *level)
+        .map(|(building, _)| *building)
+        .unwrap_or(BuildingKind::Shipyard);
+    if gate == BuildingKind::Shipyard {
+        "build the shipyard".to_string()
+    } else {
+        format!("build the {gate} on the way to the shipyard")
+    }
+}
+
+/// The next step on one victory path, or `None` when the path is off, done,
+/// or only waiting on a timer. The id is the path key.
+fn path_step(state: &GameState, path: VictoryPath) -> Option<Advice> {
+    let cfg = &state.config.victory;
+    if !cfg.enabled || state.victory.is_some() {
+        return None;
+    }
+    let text = match path {
+        VictoryPath::Conquest => conquest_step(state)?,
+        VictoryPath::Wonder => wonder_step(state)?,
+        VictoryPath::Diplomacy => {
+            let (name, standing) = state
+                .config
+                .diplomacy
+                .iter()
+                .map(|f| (&f.name, state.diplomacy.standing(&f.id)))
+                .filter(|(_, standing)| standing + 1e-9 < cfg.allied_min)
+                .min_by(|a, b| a.1.total_cmp(&b.1))?;
+            format!(
+                "raise standing with {name} ({standing:.0} of {:.0} to ally)",
+                cfg.allied_min
+            )
+        }
+    };
+    Some(Advice {
+        id: path.as_key(),
+        text: format!("{}: {text}", path.label()),
+    })
+}
+
+/// The nearest pirate outpost the docked warships can reach, or the
+/// shipyard step that arms the home. Names a target, not a battle plan:
+/// whether to attack or invade depends on intel the player reads first.
+fn conquest_step(state: &GameState) -> Option<String> {
+    let home = state.pirate_homeworld()?;
+    if state.colonies.iter().any(|c| c.coord == home) {
+        return None;
+    }
+    let mut warships = crate::ships::Fleet::default();
+    for kind in ShipKind::ALL {
+        if state.config.ships.get(kind).attack > 0.0 {
+            warships.add(kind, state.fleet.get(kind));
+        }
+    }
+    if warships.is_empty() {
+        return Some(if state.buildings.shipyard == 0 {
+            format!("{} to arm the home", shipyard_step(state))
+        } else {
+            "queue warships in the shipyard to arm the home".into()
+        });
+    }
+    let (secs, fuel, coord) = state
+        .outposts
+        .iter()
+        .filter_map(|o| {
+            let (secs, fuel) = state.flight_time_and_fuel(warships, o.coord, 100).ok()?;
+            Some((secs, fuel, o.coord))
+        })
+        .min_by_key(|&(secs, _, coord)| (secs, coord))?;
+    let stock = state.resources.deuterium;
+    Some(if fuel > stock + 1e-9 {
+        format!(
+            "the docked warships need {fuel:.0} deuterium to reach the pirate outpost at {coord} ({stock:.0} in stock); stock more or send fewer ships"
+        )
+    } else {
+        format!(
+            "the nearest pirate outpost is {coord} ({secs}s flight); spy on it before you attack or invade"
+        )
+    })
+}
+
+/// The next unpaid stage of the victory wonder, or what blocks paying it.
+fn wonder_step(state: &GameState) -> Option<String> {
+    let id = &state.config.victory.wonder_id;
+    if state.completed_wonders.iter().any(|done| done == id) {
+        return None;
+    }
+    let spec = state.config.wonders.iter().find(|spec| &spec.id == id)?;
+    let name = state.display_name(id);
+    let (index, paid) = match &state.wonder {
+        Some(job) if &job.id == id => {
+            if job.completes_at.is_some() {
+                return None;
+            }
+            (job.stage, job.contributed)
+        }
+        Some(job) => {
+            let other = state.display_name(&job.id);
+            return Some(format!("finish {other} to free the slot for {name}"));
+        }
+        None => {
+            if let Some(tech) = spec
+                .prereq_techs
+                .iter()
+                .find(|tech| state.tech_level(&tech.id) < tech.level)
+            {
+                return Some(format!(
+                    "research {} to level {} to start {name}",
+                    tech.id, tech.level
+                ));
+            }
+            (0, crate::Resources::ZERO)
+        }
+    };
+    let stage = spec.stage(index)?;
+    if state.wonder_tier_ok(stage).is_err()
+        && let Some(tier) = stage.require_tier.as_deref()
+    {
+        let tier = state
+            .config
+            .ladder
+            .get(tier)
+            .map_or_else(|| tier.to_string(), |tier| tier.name.clone());
+        return Some(format!(
+            "reach the {tier} goal to pay stage {} of {name}",
+            index + 1
+        ));
+    }
+    let owed = stage.cost.saturating_sub(paid);
+    let verb = if state.wonder.is_none() {
+        "start"
+    } else {
+        "pay"
+    };
+    Some(format!(
+        "{verb} {name} stage {} of {} ({} owed)",
+        index + 1,
+        spec.stages.len(),
+        owed.brief()
+    ))
 }
 
 fn push_storage_wall(state: &GameState, out: &mut Vec<Advice>) {
@@ -317,7 +458,7 @@ mod tests {
     fn next_level_storage_wall_and_solar_cap_explain_the_real_blocker() {
         let mut state = GameState::new(0);
         assert!(
-            !advise(&state)
+            !advise(&state, None)
                 .iter()
                 .any(|advice| advice.id == "storage_wall")
         );
@@ -328,14 +469,14 @@ mod tests {
                 .iron
                 > state.storage_cap(ResourceKind::Iron)
         );
-        let advice = advise(&state);
+        let advice = advise(&state, None);
         assert!(advice.iter().any(
             |advice| advice.id == "storage_wall" && advice.text.contains("iron storage first")
         ));
         state.buildings.solar_plant = state.max_solar_level(state.home).unwrap();
         state.buildings.metal_mine = 30;
         assert!(
-            advise(&state).iter().any(
+            advise(&state, None).iter().any(
                 |advice| advice.id == "energy" && advice.text.contains("add fission or fusion")
             )
         );
@@ -345,7 +486,7 @@ mod tests {
     fn advise_does_not_mutate_state() {
         let state = close_state();
         let before = state.clone();
-        let _ = advise(&state);
+        let _ = advise(&state, None);
         assert_eq!(state, before);
     }
 
@@ -355,10 +496,10 @@ mod tests {
         cfg.raid.enabled = false;
         cfg.starting_buildings.solar_plant = 0;
         let state = GameState::with_config(0, cfg);
-        let ids: Vec<_> = advise(&state).iter().map(|a| a.id).collect();
+        let ids: Vec<_> = advise(&state, None).iter().map(|a| a.id).collect();
         assert!(ids.contains(&"energy"), "{ids:?}");
         assert!(
-            advise(&state)
+            advise(&state, None)
                 .iter()
                 .any(|a| a.text.contains("solar") || a.text.contains("energy"))
         );
@@ -368,7 +509,7 @@ mod tests {
     fn full_storage_suggests_upgrade_or_trade() {
         let mut state = close_state();
         state.resources.iron = state.storage_cap(ResourceKind::Iron);
-        let hit = advise(&state).into_iter().find(|a| a.id == "storage");
+        let hit = advise(&state, None).into_iter().find(|a| a.id == "storage");
         assert!(hit.is_some(), "{hit:?}");
         assert!(hit.unwrap().text.contains("iron"));
     }
@@ -383,13 +524,19 @@ mod tests {
         let mut fleet = crate::Fleet::default();
         fleet.add(ShipKind::LightFighter, 1);
         state.fleet = fleet;
-        let hit = advise(&state).into_iter().find(|a| a.id == "raid").unwrap();
+        let hit = advise(&state, None)
+            .into_iter()
+            .find(|a| a.id == "raid")
+            .unwrap();
         assert!(hit.text.contains("1800"));
         // No shipyard: point at the next building toward it, not at ships.
         assert!(hit.text.contains("robotics factory"), "{}", hit.text);
         assert!(!hit.text.contains("light fighter"), "{}", hit.text);
         state.buildings.robotics_factory = 1;
-        let hit = advise(&state).into_iter().find(|a| a.id == "raid").unwrap();
+        let hit = advise(&state, None)
+            .into_iter()
+            .find(|a| a.id == "raid")
+            .unwrap();
         assert!(
             hit.text
                 .contains("no defence can be built yet: build the shipyard"),
@@ -398,13 +545,16 @@ mod tests {
         );
         // Domes do not hold a raid, so they do not silence the warning.
         state.defences.set(DefenceKind::ShieldDome, 9);
-        assert!(advise(&state).iter().any(|a| a.id == "raid"));
+        assert!(advise(&state, None).iter().any(|a| a.id == "raid"));
 
         // With a shipyard: the cheapest defence it can build, as many as paid for.
         state.buildings.robotics_factory = 1;
         state.buildings.shipyard = 1;
         state.resources = crate::Resources::from_parts(500.0, 500.0, 0.0);
-        let hit = advise(&state).into_iter().find(|a| a.id == "raid").unwrap();
+        let hit = advise(&state, None)
+            .into_iter()
+            .find(|a| a.id == "raid")
+            .unwrap();
         let cannon = state
             .config
             .defences
@@ -448,12 +598,12 @@ mod tests {
         let mut state = GameState::with_config(0, cfg);
         state.build_queue.clear();
         state.research = None;
-        let advice = advise(&state);
+        let advice = advise(&state, None);
         assert!(advice.iter().any(|a| a.id == "build"));
         // No lab, so an idle lab is not advice.
         assert!(!advice.iter().any(|a| a.id == "research"));
         state.buildings.research_lab = 1;
-        assert!(advise(&state).iter().any(|a| a.id == "research"));
+        assert!(advise(&state, None).iter().any(|a| a.id == "research"));
         let blob = advice
             .iter()
             .map(|a| a.text.as_str())
@@ -461,5 +611,85 @@ mod tests {
             .join(" ");
         assert!(!blob.contains("outpost"), "{blob}");
         assert!(!blob.contains("spy"), "{blob}");
+    }
+
+    fn first_id(state: &GameState, focus: VictoryPath) -> &'static str {
+        advise(state, Some(focus))[0].id
+    }
+
+    #[test]
+    fn no_focus_adds_no_path_step() {
+        let state = GameState::new(0);
+        let ids: Vec<_> = advise(&state, None).iter().map(|a| a.id).collect();
+        for path in [
+            VictoryPath::Conquest,
+            VictoryPath::Wonder,
+            VictoryPath::Diplomacy,
+        ] {
+            assert!(!ids.contains(&path.as_key()), "{ids:?}");
+        }
+    }
+
+    #[test]
+    fn conquest_focus_arms_the_home_then_names_the_nearest_outpost() {
+        let mut state = close_state();
+        state.fleet = crate::ships::Fleet::default();
+        state.buildings.metal_mine = 30;
+        let advice = advise(&state, Some(VictoryPath::Conquest));
+        assert_eq!(advice[0].id, "conquest");
+        assert!(advice[0].text.contains("shipyard"), "{}", advice[0].text);
+        assert!(advice.iter().any(|a| a.id == "energy"), "energy stays");
+        state.fleet.add(ShipKind::LightFighter, 5);
+        state.resources.deuterium = 1e9;
+        let text = |state: &GameState| advise(state, Some(VictoryPath::Conquest))[0].text.clone();
+        let near = text(&state);
+        assert!(near.contains("nearest pirate outpost"), "{near}");
+        // The same text whether or not the outpost's defences are gone.
+        for outpost in &mut state.outposts {
+            outpost.defences = crate::ships::Fleet::default();
+        }
+        assert_eq!(text(&state), near, "no hidden intel");
+        state.resources.deuterium = 0.0;
+        assert!(
+            text(&state).contains("send fewer ships"),
+            "{}",
+            text(&state)
+        );
+    }
+
+    #[test]
+    fn wonder_focus_names_the_gate_before_the_next_stage() {
+        let mut state = close_state();
+        assert_eq!(first_id(&state, VictoryPath::Wonder), "wonder");
+        let text = &advise(&state, Some(VictoryPath::Wonder))[0].text;
+        assert!(text.contains("research energy to level 8"), "{text}");
+        state.tech_levels.insert("energy".into(), 8);
+        let text = &advise(&state, Some(VictoryPath::Wonder))[0].text;
+        assert!(text.contains("Wonder supply chain goal"), "{text}");
+        state.config.wonders[0].stages[0].require_tier = None;
+        let text = &advise(&state, Some(VictoryPath::Wonder))[0].text;
+        assert!(text.contains("start Dyson ring stage 1 of 2"), "{text}");
+        state.completed_wonders.push("dyson_ring".into());
+        assert_ne!(first_id(&state, VictoryPath::Wonder), "wonder");
+    }
+
+    #[test]
+    fn diplomacy_focus_names_the_furthest_faction() {
+        let mut state = close_state();
+        let ids: Vec<_> = state
+            .config
+            .diplomacy
+            .iter()
+            .map(|f| f.id.clone())
+            .collect();
+        assert!(ids.len() >= 2);
+        for id in &ids {
+            state.diplomacy.set_standing(id, 50.0);
+        }
+        state.diplomacy.set_standing(&ids[1], -30.0);
+        let hit = &advise(&state, Some(VictoryPath::Diplomacy))[0];
+        assert_eq!(hit.id, "diplomacy");
+        let name = &state.config.diplomacy.iter().nth(1).unwrap().name;
+        assert!(hit.text.contains(name.as_str()), "{}", hit.text);
     }
 }
