@@ -233,6 +233,12 @@
       "ready": false
     }
   },
+  "last_raid": {
+    "at": 162000,
+    "batteries_missing": null,
+    "defences_returned": 0,
+    "ships_lost": {}
+  },
   "laws": [],
   "leaders": [
     {
@@ -406,7 +412,7 @@
     "empires": [],
     "enabled": false
   },
-  "save_schema": 53,
+  "save_schema": 54,
   "schema_version": 2,
   "season": null,
   "species": null,

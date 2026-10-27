@@ -173,6 +173,8 @@ pub struct AwaySummary {
     pub stalls: Vec<String>,
     pub completed: Vec<String>,
     pub events: Vec<String>,
+    /// The newest raid on home during the gap, fixed when the summary is made.
+    pub raid_losses: Option<hoshi_core::RaidLosses>,
 }
 
 pub struct Title {
@@ -2882,6 +2884,12 @@ pub fn summarize_away(
             .filter(|e| e.at > before.tick)
             .map(|e| e.text.clone())
             .collect(),
+        raid_losses: after
+            .combat_logs
+            .iter()
+            .rev()
+            .filter(|log| log.at > before.tick)
+            .find_map(|log| log.raid_losses()),
     }
 }
 

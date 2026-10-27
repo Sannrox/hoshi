@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 53;
+pub const SCHEMA_VERSION: u32 = 54;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -3617,6 +3617,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     if found < 53 {
         migrate_v53(conn)?;
     }
+    if found < 54 {
+        migrate_v54(conn)?;
+    }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
 }
@@ -4732,6 +4735,23 @@ fn migrate_v50(conn: &Connection) -> Result<(), SaveError> {
 }
 
 /// v53: story flags. A missing table is an empty set, so older saves load unchanged.
+/// v54: batteries still gone after a raid's repair. Null for raids saved
+/// before this version, which did not record it.
+fn migrate_v54(conn: &Connection) -> Result<(), SaveError> {
+    let has = conn
+        .prepare(
+            "SELECT 1 FROM pragma_table_info('combat_defence') WHERE name = 'batteries_missing'",
+        )?
+        .exists([])?;
+    if !has {
+        conn.execute_batch(
+            "ALTER TABLE combat_defence
+                ADD COLUMN batteries_missing INTEGER CHECK (batteries_missing >= 0);",
+        )?;
+    }
+    Ok(())
+}
+
 fn migrate_v53(conn: &Connection) -> Result<(), SaveError> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS story_flags (
@@ -7041,8 +7061,8 @@ fn insert_combat_logs(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Resu
                 "INSERT INTO combat_defence
                     (log_id, intercept_in, intercept_down, stations_before, stations_after,
                      hangar_before, hangar_after, dome_absorbed, dome_collapsed,
-                     batteries_before, batteries_after, rebuilt)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                     batteries_before, batteries_after, rebuilt, batteries_missing)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     log_id,
                     i64::from(d.intercept_in),
@@ -7056,6 +7076,7 @@ fn insert_combat_logs(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Resu
                     i64::from(d.batteries_before),
                     i64::from(d.batteries_after),
                     i64::from(d.rebuilt),
+                    d.batteries_missing.map(i64::from),
                 ],
             )?;
         }
@@ -7217,7 +7238,7 @@ fn load_combat_defence(
         .query_row(
             "SELECT intercept_in, intercept_down, stations_before, stations_after,
                     hangar_before, hangar_after, dome_absorbed, dome_collapsed,
-                    batteries_before, batteries_after, rebuilt
+                    batteries_before, batteries_after, rebuilt, batteries_missing
              FROM combat_defence WHERE log_id = ?1",
             [log_id],
             |row| {
@@ -7237,6 +7258,9 @@ fn load_combat_defence(
                     batteries_before: count(8)?,
                     batteries_after: count(9)?,
                     rebuilt: count(10)?,
+                    batteries_missing: row
+                        .get::<_, Option<i64>>(11)?
+                        .map(|v| u32::try_from(v).unwrap_or(0)),
                 })
             },
         )
@@ -10851,6 +10875,31 @@ label = "Leave it"
         migrate(&conn).unwrap();
         let old = load_state(&conn, BalanceConfig::default()).unwrap();
         assert_eq!(old.combat_logs.last().unwrap().raid_plunder, None);
+    }
+
+    #[test]
+    fn missing_batteries_survive_save_and_v53_saves_read_as_none() {
+        let mut state = GameState::new(0);
+        state.defences.add(hoshi_core::DefenceKind::HeavyCannon, 2);
+        state.trigger_raid(0);
+        let defence = state.combat_logs.last().unwrap().raid_defence.unwrap();
+        assert!(defence.batteries_missing.is_some(), "{defence:?}");
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(
+            loaded.combat_logs.last().unwrap().raid_defence,
+            Some(defence)
+        );
+        conn.execute_batch(
+            "ALTER TABLE combat_defence DROP COLUMN batteries_missing; PRAGMA user_version = 53;",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        let old = load_state(&conn, BalanceConfig::default()).unwrap();
+        let old = old.combat_logs.last().unwrap().raid_defence.unwrap();
+        assert_eq!(old.batteries_missing, None);
+        assert_eq!(old.rebuilt, defence.rebuilt);
     }
 
     #[test]

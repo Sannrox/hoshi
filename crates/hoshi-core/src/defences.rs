@@ -502,6 +502,8 @@ pub struct PlanetBattle {
     pub batteries_before: u32,
     pub batteries_after: u32,
     pub rebuilt: u32,
+    /// Batteries still gone once the repair crews are done.
+    pub batteries_missing: u32,
     pub ground: Option<GroundReport>,
     pub winner: CombatWinner,
     pub attacker_after: Fleet,
@@ -756,6 +758,9 @@ pub(crate) fn resolve_planet_battle_protected(
     }
 
     let (defences, rebuilt) = apply_rebuild(original, defences, cfg.rebuild_chance, rng);
+    let batteries_missing = original
+        .battery_total(cfg)
+        .saturating_sub(defences.battery_total(cfg));
     let winner = if protected && !attacker.is_empty() {
         CombatWinner::Draw
     } else if attacker.is_empty() {
@@ -783,6 +788,7 @@ pub(crate) fn resolve_planet_battle_protected(
         batteries_before,
         batteries_after,
         rebuilt,
+        batteries_missing,
         ground,
         winner,
         attacker_after: attacker,
