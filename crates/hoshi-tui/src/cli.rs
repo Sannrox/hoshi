@@ -1611,7 +1611,9 @@ fn apply(
             if !state.deterministic {
                 state.catch_up(now);
             }
-            let tips = advise(state);
+            let focus =
+                crate::config::UserConfig::load(save.parent().unwrap_or(Path::new("."))).focus;
+            let tips = advise(state, focus);
             Ok(json!({
                 "schema_version": SCHEMA_VERSION,
                 "ok": true,
@@ -5612,7 +5614,7 @@ mod tests {
         assert_eq!(value["decision"]["id"], decision.id.as_key());
         assert_eq!(value["decision"]["deadline"], decision.deadline);
         assert_eq!(value["decision"]["action"], decision.action.as_key());
-        let rows = crate::cockpit::alerts(&loaded);
+        let rows = crate::cockpit::alerts(&loaded, None);
         assert_eq!(rows[0].decision, Some(decision));
         assert!(rows[0].text.contains(decision.action.as_key()));
         assert!(rows[0].detail.contains(&decision.deadline.to_string()));
@@ -5642,7 +5644,7 @@ mod tests {
         assert_eq!(value["decision"]["id"], expected.id.as_key());
         assert_eq!(value["decision"]["deadline"], expected.deadline);
         assert_eq!(value["decision"]["action"], expected.action.as_key());
-        let rows = crate::cockpit::alerts(&state);
+        let rows = crate::cockpit::alerts(&state, None);
         assert_eq!(rows[0].decision, Some(expected));
         assert_eq!(
             rows[0].decision.unwrap().deadline,
@@ -5667,7 +5669,7 @@ mod tests {
         let (value, exit) = run_on(&save, &["state"]);
         assert_eq!(exit, EXIT_OK, "{value}");
         assert!(value["decision"].is_null(), "{value}");
-        let rows = crate::cockpit::alerts(&state);
+        let rows = crate::cockpit::alerts(&state, None);
         assert!(rows.iter().all(|row| row.decision.is_none()));
         assert!(rows.iter().any(|row| row.text.contains("idle")));
         let _ = std::fs::remove_file(&save);
@@ -5902,6 +5904,21 @@ mod tests {
         assert_eq!(after["resources"]["iron"], metal);
         assert_eq!(after["build_queue"], created["build_queue"]);
         let _ = std::fs::remove_file(&save);
+    }
+
+    #[test]
+    fn advise_puts_the_config_focus_step_first() {
+        let dir = unique_save("focus").with_extension("d");
+        std::fs::create_dir_all(&dir).unwrap();
+        let save = dir.join("save.sqlite");
+        let (plain, exit) = run_on(&save, &["--seed=1", "advise"]);
+        assert_eq!(exit, EXIT_OK, "{plain}");
+        assert_ne!(plain["suggestions"][0]["id"], "diplomacy");
+        std::fs::write(dir.join("config.toml"), "focus = \"diplomacy\"\n").unwrap();
+        let (value, exit) = run_on(&save, &["advise"]);
+        assert_eq!(exit, EXIT_OK, "{value}");
+        assert_eq!(value["suggestions"][0]["id"], "diplomacy");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
