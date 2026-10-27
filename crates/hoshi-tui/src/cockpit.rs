@@ -383,6 +383,18 @@ pub fn alerts(state: &GameState, focus: Option<hoshi_core::VictoryPath>) -> Vec<
             jump: Target::Planet(home),
             decision: None,
         });
+        if let Some(losses) = log.raid_losses() {
+            for line in raid_loss_lines(losses) {
+                let (text, detail) = line.split_once(": ").unwrap_or((&line, ""));
+                rows.push(Alert {
+                    kind: AlertKind::Raid,
+                    text: text.to_string(),
+                    detail: detail.to_string(),
+                    jump: Target::Planet(home),
+                    decision: None,
+                });
+            }
+        }
     }
     // Undefended stays true between raids, not only inside the warning window.
     // Docked ships with weapons fight a raid too, so they count as defence.
@@ -522,6 +534,24 @@ pub fn alerts(state: &GameState, focus: Option<hoshi_core::VictoryPath>) -> Vec<
         );
     }
     rows
+}
+
+/// The two lines a raid on home leads with: hulls destroyed (never rebuilt),
+/// then defences the repair crews returned and batteries still missing.
+pub fn raid_loss_lines(losses: hoshi_core::RaidLosses) -> [String; 2] {
+    let ships = if losses.ships_lost.is_empty() {
+        "Ships lost: none".to_string()
+    } else {
+        format!("Ships lost: {} (gone for good)", losses.ships_lost.label())
+    };
+    let missing = losses
+        .batteries_missing
+        .map(|n| format!(" · batteries still missing {n}"))
+        .unwrap_or_default();
+    [
+        ships,
+        format!("Defences returned: {}{missing}", losses.defences_returned),
+    ]
 }
 
 pub fn fleet_targets(state: &GameState) -> Vec<Target> {
@@ -1730,6 +1760,52 @@ mod tests {
             "home stays"
         );
         assert!(rows.iter().any(|row| row.text.starts_with("Energy short")));
+    }
+
+    #[test]
+    fn a_lost_raid_alert_names_lost_ships_then_returned_defences() {
+        let mut state = GameState::new(1_000);
+        state.config.defences.rebuild_chance = 0.0;
+        state.config.raid.min_ships = 60;
+        state.config.raid.strength_factor = 20.0;
+        state.fleet.add(hoshi_core::ShipKind::LightFighter, 3);
+        state.defences.add(hoshi_core::DefenceKind::LightCannon, 6);
+        state.trigger_raid(1_000);
+        let rows = alerts(&state, None);
+        let lost = rows
+            .iter()
+            .position(|r| r.text.starts_with("Raid lost"))
+            .unwrap();
+        assert_eq!(rows[lost + 1].text, "Ships lost");
+        assert!(
+            rows[lost + 1].detail.contains("gone for good"),
+            "{:?}",
+            rows[lost + 1]
+        );
+        assert_eq!(rows[lost + 2].text, "Defences returned");
+        assert!(
+            rows[lost + 2]
+                .detail
+                .starts_with("0 · batteries still missing"),
+            "{:?}",
+            rows[lost + 2]
+        );
+    }
+
+    #[test]
+    fn raids_saved_before_the_missing_count_show_only_the_returned_units() {
+        let losses = hoshi_core::RaidLosses {
+            ships_lost: hoshi_core::Fleet::default(),
+            defences_returned: 2,
+            batteries_missing: None,
+        };
+        assert_eq!(
+            raid_loss_lines(losses),
+            [
+                "Ships lost: none".to_string(),
+                "Defences returned: 2".to_string()
+            ]
+        );
     }
 
     #[test]

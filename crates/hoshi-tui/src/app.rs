@@ -1998,6 +1998,12 @@ impl App {
         if let Some(event) = lead {
             lines.push(Line::styled(event.to_string(), t.intent(Intent::Danger)));
         }
+        // Mine, then the permanent and repaired losses, then plunder.
+        if let Some(losses) = away.raid_losses {
+            for line in crate::cockpit::raid_loss_lines(losses) {
+                lines.push(Line::styled(line, t.intent(Intent::Danger)));
+            }
+        }
         let plundered = resource_list(total.plundered);
         if !plundered.is_empty() {
             lines.push(Line::styled(
@@ -4768,6 +4774,36 @@ mod tests {
         let header = text.find("Pirates plundered").expect(&text);
         assert!(
             mine < lost && lost < defences && defences < plunder && plunder < header,
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn away_dialog_puts_ship_and_defence_losses_before_plunder() {
+        let mut state = GameState::new(0);
+        state.config.story = hoshi_core::StoryCatalog::empty();
+        state.config.raid.min_ships = 60;
+        state.config.raid.strength_factor = 20.0;
+        state.fleet.add(hoshi_core::ShipKind::LightFighter, 3);
+        state.defences.add(DefenceKind::LightCannon, 6);
+        state.resources = Resources::from_parts(9_000.0, 9_000.0, 9_000.0);
+        state.next_raid_at = Some(1);
+        let before = crate::title::snapshot_away(&state);
+        let ledger = state.catch_up_ledger(1);
+        let summary = crate::title::summarize_away(&before, ledger, &state);
+        let losses = summary.raid_losses.expect("the raid in the gap");
+        let [ships, defences] = crate::cockpit::raid_loss_lines(losses);
+        assert!(ships.contains("light fighter"), "{ships}");
+        // A later clock and a state with no raid log still show the gap's raid.
+        let mut app = App::new(GameState::new(1_000_000));
+        app.set_away(summary);
+        let text = render_text(&app, 160, 40);
+        let ships_at = text.find(&ships).expect(&text);
+        let defences_at = text.find(&defences).expect(&text);
+        let mine = text.find("iron mine offline").expect(&text);
+        let plunder = text.find("Pirates plundered").expect(&text);
+        assert!(
+            mine < ships_at && ships_at < defences_at && defences_at < plunder,
             "{text}"
         );
     }

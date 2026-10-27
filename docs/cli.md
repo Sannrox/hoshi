@@ -8,7 +8,7 @@ Harnesses and bots play through the same rules as the TUI. Every command prints
 JSON with `schema_version` 2 (see `docs/schema/cli-v1.json`). A breaking change
 bumps that version. Resource ids are `iron`, `silicon`, `rare_earths`,
 `water_ice`, `helium_3` and `deuterium`; `metal` and `crystal` error with the
-replacement name. `state` lists those stockpiles plus `energy` and `heat`. `decision` is the soonest story, live fight, or warned raid the player can still change (`id`, `deadline`, `action`), or null. The bridge shows that same row first.
+replacement name. `state` lists those stockpiles plus `energy` and `heat`. `decision` is the soonest story, live fight, or warned raid the player can still change (`id`, `deadline`, `action`), or null. The bridge shows that same row first. `last_raid` is the latest raid on home (`at`, `ships_lost` by hull, `defences_returned` by the repair crews, `batteries_missing` after repair, null for raids saved before schema 54), or null; the continue screen and raid alert lead with the same counts.
 
 ## Exit codes
 

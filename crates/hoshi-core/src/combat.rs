@@ -142,6 +142,9 @@ pub struct RaidDefence {
     pub batteries_after: u32,
     /// Defences the repair crews put back after the fight.
     pub rebuilt: u32,
+    /// Batteries still gone after the repair. `None` for raids saved before
+    /// schema 54, which did not record it.
+    pub batteries_missing: Option<u32>,
 }
 
 impl RaidDefence {
@@ -158,7 +161,34 @@ impl RaidDefence {
             batteries_before: battle.batteries_before,
             batteries_after: battle.batteries_after,
             rebuilt: battle.rebuilt,
+            batteries_missing: Some(battle.batteries_missing),
         }
+    }
+}
+
+/// What one raid on home cost for good: hulls destroyed (ships are never
+/// rebuilt) and the defence units the repair crews put back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RaidLosses {
+    pub ships_lost: Fleet,
+    pub defences_returned: u32,
+    /// `None` when the raid predates schema 54 or had no defence layers.
+    pub batteries_missing: Option<u32>,
+}
+
+impl CombatLog {
+    /// Losses for a raid on home; `None` for every other fight.
+    pub fn raid_losses(&self) -> Option<RaidLosses> {
+        self.raid_plunder?;
+        let defence = self.raid_defence;
+        Some(RaidLosses {
+            ships_lost: self
+                .report
+                .defender_before
+                .losses_to(self.report.defender_after),
+            defences_returned: defence.map_or(0, |d| d.rebuilt),
+            batteries_missing: defence.and_then(|d| d.batteries_missing),
+        })
     }
 }
 
@@ -831,5 +861,78 @@ mod tests {
         assert_eq!(report.attacker_roll, 8);
         assert_eq!(report.defender_roll, 3);
         assert_eq!(report.winner, CombatWinner::Attacker);
+    }
+
+    /// A raid strong enough to sink a small home fleet and some batteries.
+    fn lost_home_raid(rebuild_chance: f64) -> (crate::GameState, Fleet, crate::DefenceGrid) {
+        let mut state = crate::GameState::new(0);
+        state.config.defences.rebuild_chance = rebuild_chance;
+        state.config.raid.min_ships = 60;
+        state.config.raid.strength_factor = 20.0;
+        state.fleet.add(ShipKind::LightFighter, 3);
+        state.defences.add(crate::DefenceKind::LightCannon, 6);
+        let fleet = state.fleet;
+        let defences = state.defences;
+        state.trigger_raid(0);
+        (state, fleet, defences)
+    }
+
+    #[test]
+    fn raid_losses_name_lost_hulls_and_post_repair_batteries() {
+        let (state, fleet_before, defences_before) = lost_home_raid(0.5);
+        let log = state.combat_logs.last().unwrap();
+        let losses = log.raid_losses().expect("a raid on home");
+        assert_eq!(losses.ships_lost, fleet_before.losses_to(state.fleet));
+        assert!(!losses.ships_lost.is_empty(), "{losses:?}");
+        let cfg = &state.config.defences;
+        let missing = defences_before
+            .battery_total(cfg)
+            .saturating_sub(state.defences.battery_total(cfg));
+        assert_eq!(losses.batteries_missing, Some(missing));
+        let lost = log.raid_defence.unwrap();
+        assert!(lost.batteries_after < lost.batteries_before, "{lost:?}");
+        assert_eq!(losses.defences_returned, log.raid_defence.unwrap().rebuilt);
+    }
+
+    #[test]
+    fn no_rebuild_returns_nothing_and_ships_do_not_creep_back() {
+        let (mut state, _, defences_before) = lost_home_raid(0.0);
+        let losses = state.combat_logs.last().unwrap().raid_losses().unwrap();
+        assert_eq!(losses.defences_returned, 0);
+        let cfg = &state.config.defences;
+        assert_eq!(
+            losses.batteries_missing,
+            Some(defences_before.battery_total(cfg) - state.defences.battery_total(cfg))
+        );
+        let fleet = state.fleet;
+        state.config.raid.enabled = false;
+        state.next_raid_at = None;
+        state.catch_up(7 * 86_400);
+        assert_eq!(
+            state.fleet.get(ShipKind::LightFighter),
+            fleet.get(ShipKind::LightFighter)
+        );
+    }
+
+    #[test]
+    fn a_fleet_fight_has_no_raid_losses() {
+        let log = CombatLog {
+            at: 0,
+            report: CombatReport {
+                rounds: 1,
+                attacker_before: lf(1),
+                defender_before: lf(1),
+                attacker_after: lf(1),
+                defender_after: Fleet::default(),
+                winner: CombatWinner::Attacker,
+                ground: None,
+                seed: 0,
+                frames: Vec::new(),
+                layered: false,
+            },
+            raid_plunder: None,
+            raid_defence: None,
+        };
+        assert_eq!(log.raid_losses(), None);
     }
 }

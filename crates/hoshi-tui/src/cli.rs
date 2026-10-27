@@ -2535,6 +2535,23 @@ fn state_value(state: &GameState, actor: Actor) -> Value {
             "lands_in_secs": at.saturating_sub(state.last_tick_unix),
         })
     });
+    // The same counts the continue screen and raid alert lead with.
+    let last_raid = state.combat_logs.iter().rev().find_map(|log| {
+        let losses = log.raid_losses()?;
+        let mut ships = serde_json::Map::new();
+        for kind in ShipKind::ALL {
+            let n = losses.ships_lost.get(kind);
+            if n > 0 {
+                ships.insert(kind.as_key().into(), json!(n));
+            }
+        }
+        Some(json!({
+            "at": log.at,
+            "ships_lost": ships,
+            "defences_returned": losses.defences_returned,
+            "batteries_missing": losses.batteries_missing,
+        }))
+    });
     let queue: Vec<Value> = state
         .build_queue
         .iter()
@@ -2872,6 +2889,7 @@ fn state_value(state: &GameState, actor: Actor) -> Value {
         }),
         None => Value::Null,
     };
+    value["last_raid"] = last_raid.unwrap_or(Value::Null);
     value
 }
 
@@ -5882,6 +5900,27 @@ mod tests {
         assert_eq!(after["resources"]["iron"], before);
         let _ = std::fs::remove_file(&save);
         let _ = std::fs::remove_file(&log);
+    }
+
+    #[test]
+    fn state_reports_the_last_raid_losses() {
+        let mut state = GameState::new(0);
+        assert_eq!(state_value(&state, Actor::Player)["last_raid"], Value::Null);
+        state.fleet.add(ShipKind::LightFighter, 3);
+        state.defences.add(DefenceKind::LightCannon, 6);
+        state.config.raid.min_ships = 60;
+        state.config.raid.strength_factor = 20.0;
+        state.trigger_raid(0);
+        let log = state.combat_logs.last().unwrap();
+        let losses = log.raid_losses().unwrap();
+        let value = &state_value(&state, Actor::Player)["last_raid"];
+        assert_eq!(value["at"], log.at);
+        assert_eq!(
+            value["ships_lost"]["light_fighter"],
+            losses.ships_lost.get(ShipKind::LightFighter)
+        );
+        assert_eq!(value["defences_returned"], losses.defences_returned);
+        assert_eq!(value["batteries_missing"], json!(losses.batteries_missing));
     }
 
     #[test]
