@@ -2429,6 +2429,7 @@ impl GameState {
             spy: false,
             site_id: None,
             recycle: false,
+            deploy: false,
         });
         self.record_history(crate::HistoryDraft {
             at: now,
@@ -2798,6 +2799,63 @@ impl GameState {
         if cargo_has_mass(cargo) && !self.dest_has_room_for(dest, cargo) {
             return Err(FleetError::DestFull);
         }
+        self.lift_and_fly(origin, dest, ships, cargo, speed_percent, 0, false)
+    }
+
+    /// Fly cargo out of `dest`'s reach of a home raid: lift it from `origin`
+    /// like a transport, hold at `dest` (owned or empty, never an outpost),
+    /// and bring the same cargo back. Recall at any phase returns it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn launch_deploy(
+        &mut self,
+        origin: Coord,
+        dest: Coord,
+        ships: Fleet,
+        cargo: Resources,
+        hold_secs: u64,
+        speed_percent: u8,
+        now_unix: u64,
+    ) -> Result<u64, FleetError> {
+        self.catch_up(now_unix);
+        if origin == dest {
+            return Err(FleetError::SameLocation);
+        }
+        if self.outposts.iter().any(|o| o.coord == dest) {
+            return Err(FleetError::DeployToOutpost);
+        }
+        let max = self.config.flight.deploy_max_hold_secs;
+        if hold_secs == 0 || hold_secs > max {
+            return Err(FleetError::HoldOutOfRange {
+                got: hold_secs,
+                min: 1,
+                max,
+            });
+        }
+        if !self.owned_coords().contains(&origin) {
+            return Err(FleetError::UnknownPlanet);
+        }
+        Self::check_cargo(cargo)?;
+        let cap = self.cargo_capacity(ships);
+        let need = Self::cargo_mass(cargo);
+        if need > cap + 1e-9 {
+            return Err(FleetError::CargoExceedsCapacity { need, cap });
+        }
+        self.lift_and_fly(origin, dest, ships, cargo, speed_percent, hold_secs, true)
+    }
+
+    /// Shared tail of transport and deploy: price the flight, check cargo,
+    /// fuel and slots at `origin`, lift ships and cargo, record the mission.
+    #[allow(clippy::too_many_arguments)]
+    fn lift_and_fly(
+        &mut self,
+        origin: Coord,
+        dest: Coord,
+        ships: Fleet,
+        cargo: Resources,
+        speed_percent: u8,
+        hold_secs: u64,
+        deploy: bool,
+    ) -> Result<u64, FleetError> {
         let (outbound_secs, fuel) = self.flight_from(origin, dest, ships, speed_percent)?;
         let needed = cargo.with_fuel(fuel);
         let cargo_missing = {
@@ -2850,25 +2908,26 @@ impl GameState {
             phase: MissionPhase::Outbound,
             launched_at: now,
             outbound_secs,
-            hold_secs: 0,
+            hold_secs,
             phase_ends_at: now.saturating_add(outbound_secs),
             fuel_paid: fuel,
             colonize: false,
             expedition_seed: None,
             expedition_applied: false,
             cargo,
-            transport: true,
+            transport: !deploy,
             attack: false,
             invade: false,
             spy: false,
             site_id: None,
             recycle: false,
+            deploy,
         });
         self.record_history(crate::HistoryDraft {
             at: now,
             kind: crate::HistoryKind::Fleet,
             actor: "player".into(),
-            action: "transport".into(),
+            action: if deploy { "deploy" } else { "transport" }.into(),
             objects: vec![origin.to_string(), dest.to_string()],
             inputs: cargo.brief(),
             outcome: "outbound".into(),
@@ -4313,6 +4372,17 @@ impl GameState {
                     self.add_fleet_at(mission.origin, mission.ships);
                     if mission.transport {
                         self.credit_at(mission.origin, mission.cargo);
+                    }
+                    if mission.deploy && cargo_has_mass(mission.cargo) {
+                        self.credit_at(mission.origin, mission.cargo);
+                        self.note_delivery(
+                            done_at,
+                            format!(
+                                "deployed cargo back at {}: {}",
+                                mission.origin,
+                                format_cargo(mission.cargo)
+                            ),
+                        );
                     }
                     if mission.recycle && cargo_has_mass(mission.cargo) {
                         self.credit_at(mission.origin, mission.cargo);
@@ -10707,6 +10777,166 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
         assert_eq!(jumped.fleet, stepped.fleet);
         close(jumped.resources.iron, stepped.resources.iron);
         close(jumped.resources.silicon, stepped.resources.silicon);
+    }
+
+    /// One planet, deep storage, raids off unless a test triggers one,
+    /// large cargo docked, and an empty coord to deploy to.
+    fn deploy_state() -> (GameState, Coord, Fleet, Resources) {
+        let mut state = expedition_state(0);
+        state.buildings.metal_mine = 0;
+        state.buildings.crystal_mine = 0;
+        state.buildings.deuterium_synthesizer = 0;
+        state.resources = Resources::from_parts(10_000.0, 6_000.0, 10_000.0);
+        state.fleet.add(ShipKind::LargeCargo, 2);
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 9,
+        };
+        assert!(state.outpost(dest).is_none() && state.colonies.is_empty());
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::LargeCargo, 2);
+        (
+            state,
+            dest,
+            ships,
+            Resources::from_parts(4_000.0, 2_000.0, 0.0),
+        )
+    }
+
+    #[test]
+    fn deploy_lifts_cargo_and_brings_the_same_cargo_back() {
+        let (mut state, dest, ships, cargo) = deploy_state();
+        let before = state.resources;
+        let id = state
+            .launch_deploy(state.home, dest, ships, cargo, 600, 100, 0)
+            .unwrap();
+        let fuel = state.missions[0].fuel_paid;
+        close(state.resources.iron, before.iron - cargo.iron);
+        close(state.resources.silicon, before.silicon - cargo.silicon);
+        close(state.resources.deuterium, before.deuterium - fuel);
+        assert!(state.missions[0].deploy && !state.missions[0].transport);
+        let back = state.missions[0].phase_ends_at + 600 + state.missions[0].outbound_secs + 1;
+        state.catch_up(back);
+        assert!(state.missions.iter().all(|m| m.id != id));
+        close(state.resources.iron, before.iron);
+        close(state.resources.silicon, before.silicon);
+        assert_eq!(state.fleet.get(ShipKind::LargeCargo), 2);
+        assert!(
+            state
+                .logistics
+                .deliveries
+                .iter()
+                .any(|l| l.starts_with("deployed cargo back")),
+            "{:?}",
+            state.logistics.deliveries
+        );
+    }
+
+    #[test]
+    fn a_raid_during_the_hold_cannot_reach_deployed_cargo() {
+        let (mut state, dest, ships, cargo) = deploy_state();
+        state
+            .launch_deploy(state.home, dest, ships, cargo, 7_200, 100, 0)
+            .unwrap();
+        let hold_at = state.missions[0].phase_ends_at + 10;
+        state.catch_up(hold_at);
+        assert_eq!(state.missions[0].phase, MissionPhase::Action);
+        // Deep test storage would protect the whole pad, and docked
+        // fighters would hold the raid; neither is what this test is about.
+        state.config.raid = crate::RaidConfig::default_active();
+        state.config.raid.protected_share = 0.0;
+        state.fleet = Fleet::default();
+        let pad = state.plunderable();
+        assert!(pad.iron > 0.0);
+        state.trigger_raid(hold_at);
+        let taken = state.combat_logs.last().unwrap().raid_plunder.unwrap();
+        assert!(
+            taken.iron > 0.0,
+            "the raid still takes pad stock: {taken:?}"
+        );
+        for kind in ResourceKind::ALL {
+            assert!(taken.get(kind) <= pad.get(kind) + 1e-6, "{kind:?}");
+        }
+        assert_eq!(state.missions[0].cargo, cargo);
+    }
+
+    #[test]
+    fn recalling_a_deploy_in_any_phase_restores_cargo_and_ships() {
+        for recall_in_hold in [false, true] {
+            let (mut state, dest, ships, cargo) = deploy_state();
+            let before = state.resources;
+            let id = state
+                .launch_deploy(state.home, dest, ships, cargo, 600, 100, 0)
+                .unwrap();
+            let fuel = state.missions[0].fuel_paid;
+            let at = if recall_in_hold {
+                state.missions[0].phase_ends_at + 10
+            } else {
+                1
+            };
+            state.recall_fleet(id, at).unwrap();
+            state.catch_up(at + 10 * state.missions[0].outbound_secs + 10);
+            assert!(state.missions.is_empty());
+            close(state.resources.iron, before.iron);
+            close(state.resources.silicon, before.silicon);
+            close(state.resources.deuterium, before.deuterium - fuel);
+            assert_eq!(state.fleet.get(ShipKind::LargeCargo), 2);
+        }
+    }
+
+    #[test]
+    fn a_deploy_hold_outside_the_window_is_refused_before_anything_lifts() {
+        let (mut state, dest, ships, cargo) = deploy_state();
+        let before = state.resources;
+        let max = state.config.flight.deploy_max_hold_secs;
+        for hold in [0, max + 1, u64::MAX / 2 + 1] {
+            assert_eq!(
+                state.launch_deploy(state.home, dest, ships, cargo, hold, 100, 0),
+                Err(FleetError::HoldOutOfRange {
+                    got: hold,
+                    min: 1,
+                    max
+                }),
+            );
+        }
+        assert!(state.missions.is_empty());
+        assert_eq!(state.resources, before);
+        assert!(
+            state
+                .launch_deploy(state.home, dest, ships, cargo, max, 100, 0)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn deploy_catch_up_matches_step_by_step_and_refuses_an_outpost() {
+        let run = |stepped: bool| {
+            let (mut state, dest, ships, cargo) = deploy_state();
+            state
+                .launch_deploy(state.home, dest, ships, cargo, 300, 100, 0)
+                .unwrap();
+            let back = state.missions[0].phase_ends_at + 300 + state.missions[0].outbound_secs + 1;
+            if stepped {
+                for now in 1..=back {
+                    state.catch_up(now);
+                }
+            } else {
+                state.catch_up(back);
+            }
+            state
+        };
+        let (jumped, stepped) = (run(false), run(true));
+        assert_eq!(jumped.fleet, stepped.fleet);
+        close(jumped.resources.iron, stepped.resources.iron);
+        close(jumped.resources.silicon, stepped.resources.silicon);
+        close(jumped.resources.deuterium, stepped.resources.deuterium);
+        let (mut state, _, ships, cargo) = deploy_state();
+        let outpost = state.pirate_home;
+        assert_eq!(
+            state.launch_deploy(state.home, outpost, ships, cargo, 300, 100, 0),
+            Err(FleetError::DeployToOutpost)
+        );
     }
 
     #[test]

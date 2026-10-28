@@ -1230,6 +1230,7 @@ mod tests {
             spy: false,
             site_id: None,
             recycle: false,
+            deploy: false,
         });
         state
     }

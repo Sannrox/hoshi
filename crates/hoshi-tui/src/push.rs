@@ -873,6 +873,7 @@ mod tests {
             spy: false,
             site_id: None,
             recycle: false,
+            deploy: false,
         });
         let (mut gate, recording, path) = armed_gate(&state);
         subscribe(&mut gate, "https://fcm.googleapis.com/fcm/send/a");

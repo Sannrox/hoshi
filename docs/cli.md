@@ -56,6 +56,7 @@ hoshi --save PATH trade <pay> <receive> <amount>
 hoshi --save PATH research <tech>
 hoshi --save PATH cancel <queue-item>
 hoshi --save PATH fleet send <from> <to> <mission> <ships...>
+hoshi --save PATH fleet deploy <from> <to> <hold_secs> <resource=amount...> <ships...>
 hoshi --save PATH tick --advance <dur>
 hoshi --save PATH scenario create
 hoshi --save PATH scenario queue build <planet> <building>
@@ -133,6 +134,8 @@ outpost so attack and invade can read it. `intel` lists every arrived fact;
 reports and the internal deceived flag never appear. `colonize` takes exactly `colony_ship:1`. `moon build` spends stockpile on a phalanx or jump gate at that planet's moon. `moon jump` moves parked ships instantly between two moons that both have gates. `moon scan` lists fleets the phalanx can see. Extra arguments
 on `build`, `research`, and `cancel` are invalid (`state` may take `--as`). Duration is seconds,
 or `30s` / `3m` / `1h` / `1d`.
+
+`fleet deploy` lifts cargo from `from` like a transport, holds at `to` (an owned or empty coord, never a pirate outpost) for `hold_secs` (1 up to `flight.deploy_max_hold_secs`, one week bundled), and brings the same cargo back. A home raid only reaches stock still on the pad. Recall at any phase returns ships and cargo. Each mission in `state` carries `deploy` and its `cargo`.
 
 `advise` prints ranked next-move suggestions from the same player-visible
 state the TUI overlay uses. It never enqueues a build, research, or fleet.

@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 56;
+pub const SCHEMA_VERSION: u32 = 57;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -392,8 +392,8 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 phase_ends_at, fuel_paid, colonize, expedition_seed, expedition_applied,
                 cargo_metal, cargo_crystal, cargo_deuterium,
                 cargo_rare_earths, cargo_water_ice, cargo_helium_3,
-                transport, attack, invade, spy, site_id, recycle
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)",
+                transport, attack, invade, spy, site_id, recycle, deploy
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)",
             params![
                 mission.id as i64,
                 mission.origin.galaxy as i64,
@@ -424,6 +424,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 mission.spy as i64,
                 mission.site_id.map(|id| id as i64),
                 mission.recycle as i64,
+                mission.deploy as i64,
             ],
         )?;
         for kind in ShipKind::ALL {
@@ -1748,7 +1749,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
                 phase_ends_at, fuel_paid, colonize, expedition_seed, expedition_applied,
                 cargo_metal, cargo_crystal, cargo_deuterium,
                 cargo_rare_earths, cargo_water_ice, cargo_helium_3,
-                transport, attack, invade, spy, site_id, recycle
+                transport, attack, invade, spy, site_id, recycle, deploy
          FROM missions ORDER BY id",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -1782,6 +1783,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             row.get::<_, i64>(26)?,
             row.get::<_, Option<i64>>(27)?,
             row.get::<_, i64>(28)?,
+            row.get::<_, i64>(29)?,
         ))
     })?;
     let mut missions = Vec::new();
@@ -1816,6 +1818,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             spy,
             site_id,
             recycle,
+            deploy,
         ) = row?;
         let phase =
             MissionPhase::from_key(&phase).ok_or(SaveError::Corrupt("unknown mission phase"))?;
@@ -1867,6 +1870,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             spy: spy != 0,
             site_id: site_id.map(|id| id as u64),
             recycle: recycle != 0,
+            deploy: deploy != 0,
         });
     }
     state.missions = missions;
@@ -3657,6 +3661,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     if found < 56 {
         migrate_v56(conn)?;
     }
+    if found < 57 {
+        migrate_v57(conn)?;
+    }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
 }
@@ -4817,6 +4824,20 @@ fn migrate_v50(conn: &Connection) -> Result<(), SaveError> {
             deuterium REAL NOT NULL CHECK (deuterium >= 0)
         );",
     )?;
+    Ok(())
+}
+
+/// v57: deploy missions. Older missions were never deploys, so the column
+/// defaults to 0; an older binary refuses a v57 save instead of dropping
+/// a deploy's cargo on return.
+fn migrate_v57(conn: &Connection) -> Result<(), SaveError> {
+    if !missions_has_column(conn, "deploy")? {
+        conn.execute(
+            "ALTER TABLE missions ADD COLUMN deploy INTEGER NOT NULL DEFAULT 0
+                CHECK (deploy IN (0, 1))",
+            [],
+        )?;
+    }
     Ok(())
 }
 
@@ -9589,6 +9610,35 @@ label = "Leave it"
             loaded.story_pending.as_ref().map(|p| p.event_id.as_str()),
             Some("alpha")
         );
+    }
+
+    #[test]
+    fn a_deploy_survives_save_with_its_cargo_and_v56_saves_load_as_not_deploying() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let mut state = GameState::new(100);
+        state.resources = Resources::from_parts(5_000.0, 5_000.0, 10_000.0);
+        state.fleet.add(ShipKind::LargeCargo, 1);
+        let dest = hoshi_core::Coord {
+            galaxy: 1,
+            system: 1,
+            position: 9,
+        };
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::LargeCargo, 1);
+        let cargo = Resources::from_parts(1_000.0, 500.0, 0.0);
+        state
+            .launch_deploy(state.home, dest, ships, cargo, 600, 100, 100)
+            .unwrap();
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert!(loaded.missions[0].deploy);
+        assert_eq!(loaded.missions[0].cargo, cargo);
+        assert_eq!(loaded.missions[0].hold_secs, 600);
+        conn.execute_batch("ALTER TABLE missions DROP COLUMN deploy; PRAGMA user_version = 56;")
+            .unwrap();
+        migrate(&conn).unwrap();
+        let old = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert!(!old.missions[0].deploy);
     }
 
     #[test]

@@ -503,6 +503,22 @@ Environment: HOSHI_SAVE, HOSHI_BALANCE
 
 Area: cli.
 
+## fleet deploy
+
+Hold cargo away from a home raid, then bring it back.
+
+```text
+hoshi fleet deploy FROM TO HOLD_SECS RESOURCE=AMOUNT... SHIP:COUNT...
+```
+
+Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair-play restrictions.
+
+Example: `hoshi fleet deploy home 1:1:9 3600 iron=2000 large_cargo:2`
+
+Environment: HOSHI_SAVE, HOSHI_BALANCE
+
+Area: cli.
+
 ## fleet send
 
 Dispatch ships on a mission.
