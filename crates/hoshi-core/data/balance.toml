@@ -358,6 +358,8 @@ ship_kind = "light_fighter"
 pirate_per_point = 0.002
 pirate_min = 1
 delay_secs = 3600
+# Resource and ship finds times this when the fleet has an explorer (no stacking).
+explorer_mult = 2.0
 
 [expedition.sites.wreck]
 iron = 4000

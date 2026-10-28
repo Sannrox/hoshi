@@ -124,6 +124,10 @@ speeds) at `pacing.min_flight_secs` (3 minutes) or more and keeps slot, system a
 
 `[daily]` sets the in-game day length (`day_secs`), an optional reset offset, how many slots to pick (`slots`), the streak cap, and the per-streak resource bonus. The catalog lives in `crates/hoshi-core/data/missions.toml` (upgrade a mine, finish research, hold a raid, trade, launch an expedition). Picks are deterministic from the galaxy seed and the in-game day. Progress counts during offline catch-up. Completing the full set raises the streak; a missed day resets it. Rewards stop at storage caps. GitHub and agent activity never count.
 
+## Expeditions
+
+`[expedition]` sets the outcome weights, find sizes and site budgets. `explorer_mult` (bundled 2.0) multiplies resource and ship finds when the fleet carries at least one explorer; more explorers do not stack, and every other outcome is unchanged. A site find is then clamped to that site's remaining budget. An override that omits the key keeps 1.0.
+
 ## Moons
 
 `[moons]` is debris-to-moon formation around an owned planet. Hull lost in a fight adds `debris_per_hull` to that coord. Once debris passes `form_threshold`, each extra point rolls `form_chance_per_debris` (capped) against a seeded RNG; the same seed repeats the same moon. A moon is an orbital facility of its parent, not a new map slot. `phalanx_range_systems` is the sensor radius in systems; `jump_cooldown_secs` is the gate cooldown. Jump is instant between two moons that both have a jump gate, and is refused if the destination has none. Costs are `phalanx_*` and `gate_*`. Set `enabled = false` to skip formation.

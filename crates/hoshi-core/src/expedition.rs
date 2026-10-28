@@ -301,6 +301,9 @@ pub struct ExpeditionConfig {
     pub delay_secs: u64,
     /// Scales resource and ship finds. Seasonal rule sets set this above 1.
     pub reward_mult: f64,
+    /// Resource and ship finds times this when the fleet has an explorer.
+    /// One explorer is enough; more do not stack.
+    pub explorer_mult: f64,
     /// Stockpiles copied onto sites at galaxy start.
     pub sites: SiteBudgets,
 }
@@ -327,6 +330,7 @@ impl Default for ExpeditionConfig {
             pirate_min: 1,
             delay_secs: 3600,
             reward_mult: 1.0,
+            explorer_mult: 2.0,
             sites: SiteBudgets::default(),
         }
     }
@@ -393,6 +397,15 @@ pub fn scaled_weights(
 }
 
 /// Draw one outcome from `seed`. The same seed always yields the same result.
+/// Find multiplier for this fleet: `explorer_mult` with any explorer aboard, else 1.
+pub fn explorer_factor(ships: &Fleet, cfg: &ExpeditionConfig) -> f64 {
+    if ships.get(ShipKind::Explorer) > 0 {
+        cfg.explorer_mult.max(0.0)
+    } else {
+        1.0
+    }
+}
+
 pub fn roll_expedition(
     seed: u64,
     ships: &Fleet,
@@ -405,27 +418,29 @@ pub fn roll_expedition(
     let weights = scaled_weights(ships, astro, hold_secs, cfg, catalog);
     let kind = weights.pick(&mut rng);
     let points = fleet_points(ships, catalog).max(1.0);
+    // Applied to the finished find, so the explorer draws no extra random numbers.
+    let factor = explorer_factor(ships, cfg);
     match kind {
         ExpeditionKind::Nothing => ExpeditionResult::Nothing,
         ExpeditionKind::Resources => {
             let scale = 0.5 + (next_u64(&mut rng) % 1001) as f64 / 1000.0;
+            let find = |per_point: f64, floor: f64| {
+                let base = (points * per_point * scale * cfg.reward_mult.max(0.0))
+                    .floor()
+                    .max(floor);
+                (base * factor).floor()
+            };
             ExpeditionResult::Resources(Resources::from_parts(
-                (points * cfg.metal_per_point * scale * cfg.reward_mult.max(0.0))
-                    .floor()
-                    .max(1.0),
-                (points * cfg.crystal_per_point * scale * cfg.reward_mult.max(0.0))
-                    .floor()
-                    .max(0.0),
-                (points * cfg.deuterium_per_point * scale * cfg.reward_mult.max(0.0))
-                    .floor()
-                    .max(0.0),
+                find(cfg.metal_per_point, 1.0),
+                find(cfg.crystal_per_point, 0.0),
+                find(cfg.deuterium_per_point, 0.0),
             ))
         }
         ExpeditionKind::Ships => {
             let n = ((points * cfg.ships_per_point * cfg.reward_mult.max(0.0)).floor() as u32)
                 .clamp(1, cfg.ships_max.max(1));
             let mut found = Fleet::default();
-            found.add(cfg.ship_kind, n);
+            found.add(cfg.ship_kind, (f64::from(n) * factor).floor() as u32);
             ExpeditionResult::Ships(found)
         }
         ExpeditionKind::Delay => ExpeditionResult::Delay {
@@ -522,5 +537,74 @@ mod tests {
                 "bucket {i}: got {got} expected {mean} ± {tol} (p={p})"
             );
         }
+    }
+
+    fn explorer_fleet(explorers: u32) -> Fleet {
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::LightFighter, 40);
+        ships.add(ShipKind::Explorer, explorers);
+        ships
+    }
+
+    /// The first seed in 0.. whose roll has `kind` for this fleet.
+    fn seed_for(kind: ExpeditionKind, ships: &Fleet, cfg: &ExpeditionConfig) -> u64 {
+        let catalog = ShipCatalog::default();
+        (0..100_000u64)
+            .find(|&seed| roll_expedition(seed, ships, 0, 3_600, cfg, &catalog).kind() == kind)
+            .expect("a seed for the kind")
+    }
+
+    #[test]
+    fn an_explorer_doubles_resource_and_ship_finds() {
+        let catalog = ShipCatalog::default();
+        let ships = explorer_fleet(1);
+        let plain = ExpeditionConfig {
+            explorer_mult: 1.0,
+            ..ExpeditionConfig::default()
+        };
+        let doubled = ExpeditionConfig::default();
+        for kind in [ExpeditionKind::Resources, ExpeditionKind::Ships] {
+            let seed = seed_for(kind, &ships, &plain);
+            let base = roll_expedition(seed, &ships, 0, 3_600, &plain, &catalog);
+            let more = roll_expedition(seed, &ships, 0, 3_600, &doubled, &catalog);
+            match (base, more) {
+                (ExpeditionResult::Resources(a), ExpeditionResult::Resources(b)) => {
+                    assert_eq!(b.iron, a.iron * 2.0);
+                    assert_eq!(b.silicon, a.silicon * 2.0);
+                    assert_eq!(b.deuterium, a.deuterium * 2.0);
+                }
+                (ExpeditionResult::Ships(a), ExpeditionResult::Ships(b)) => {
+                    assert_eq!(b.total(), a.total() * 2);
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn other_outcomes_ignore_the_explorer_and_explorers_do_not_stack() {
+        let catalog = ShipCatalog::default();
+        let ships = explorer_fleet(1);
+        let plain = ExpeditionConfig {
+            explorer_mult: 1.0,
+            ..ExpeditionConfig::default()
+        };
+        let doubled = ExpeditionConfig::default();
+        for kind in [
+            ExpeditionKind::Pirates,
+            ExpeditionKind::Loss,
+            ExpeditionKind::Delay,
+            ExpeditionKind::EarlyReturn,
+            ExpeditionKind::Nothing,
+        ] {
+            let seed = seed_for(kind, &ships, &plain);
+            assert_eq!(
+                roll_expedition(seed, &ships, 0, 3_600, &plain, &catalog),
+                roll_expedition(seed, &ships, 0, 3_600, &doubled, &catalog),
+                "{kind:?}"
+            );
+        }
+        assert_eq!(explorer_factor(&explorer_fleet(2), &doubled), 2.0);
+        assert_eq!(explorer_factor(&explorer_fleet(0), &doubled), 1.0);
     }
 }

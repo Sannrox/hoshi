@@ -1320,7 +1320,12 @@ impl App {
                     if form.mission == Mission::Expedition {
                         let hold = self.state.config.expedition.min_hold_secs;
                         let weight = self.state.expedition_pirate_weight(&form.ships, hold);
-                        lines.push(self.props(&[("pirate weight", weight.to_string())]));
+                        let factor =
+                            hoshi_core::explorer_factor(&form.ships, &self.state.config.expedition);
+                        lines.push(self.props(&[
+                            ("pirate weight", weight.to_string()),
+                            ("find", format!("x{factor}")),
+                        ]));
                     }
                     if fuel > self.state.resources.deuterium {
                         lines.extend(callout_lines(

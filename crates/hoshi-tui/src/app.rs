@@ -6529,6 +6529,18 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_inspector_shows_the_explorer_factor() {
+        let mut state = GameState::new(1_000);
+        state.resources.deuterium = 10_000.0;
+        state.fleet.add(ShipKind::Explorer, 2);
+        let site = state.sites[0].clone();
+        let mut app = App::new(state);
+        open_dispatch(&mut app, site.coord, ShipKind::Explorer, 2);
+        let text = render_text(&app, 100, 40).to_lowercase();
+        assert!(text.contains("find x2"), "{text}");
+    }
+
+    #[test]
     fn dispatch_inspector_shows_pirate_weight_and_not_the_rolled_kind() {
         let mut state = GameState::new(1_000);
         state.resources.deuterium = 10_000.0;
@@ -6556,6 +6568,7 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("ETA"), "{text}");
+        assert!(folded.contains("find x1"), "no explorer: {text}");
         assert!(
             !text.contains(&format!("found {}", rolled.as_key())),
             "{text}"
