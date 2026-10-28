@@ -1229,6 +1229,7 @@ mod tests {
             invade: false,
             spy: false,
             site_id: None,
+            recycle: false,
         });
         state
     }

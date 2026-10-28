@@ -2364,8 +2364,25 @@ impl GameState {
         now_unix: u64,
     ) -> Result<(), FleetError> {
         self.catch_up(now_unix);
-        let now = self.last_tick_unix;
         let (outbound_secs, fuel) = self.flight_time_and_fuel(ships, dest, speed_percent)?;
+        self.launch_with_flight(ships, dest, speed_percent, hold_secs, outbound_secs, fuel)
+    }
+
+    /// Check ships, slots and fuel, then record the mission with a flight
+    /// already priced by the caller.
+    fn launch_with_flight(
+        &mut self,
+        ships: Fleet,
+        dest: Coord,
+        speed_percent: u8,
+        hold_secs: u64,
+        outbound_secs: u64,
+        fuel: f64,
+    ) -> Result<(), FleetError> {
+        let now = self.last_tick_unix;
+        if ships.is_empty() {
+            return Err(FleetError::EmptyFleet);
+        }
         for kind in ShipKind::ALL {
             let need = ships.get(kind);
             let have = self.fleet.get(kind);
@@ -2411,6 +2428,7 @@ impl GameState {
             invade: false,
             spy: false,
             site_id: None,
+            recycle: false,
         });
         self.record_history(crate::HistoryDraft {
             at: now,
@@ -2844,6 +2862,7 @@ impl GameState {
             invade: false,
             spy: false,
             site_id: None,
+            recycle: false,
         });
         self.record_history(crate::HistoryDraft {
             at: now,
@@ -3038,6 +3057,81 @@ impl GameState {
         };
         mission.spy = true;
         Ok(mission.id)
+    }
+
+    /// Fly recyclers to `dest` (home orbit included) to lift battle debris. On arrival they take
+    /// at most their own hold and the debris left; the cargo comes home as
+    /// iron and silicon split by `moons.debris_iron_share`.
+    pub fn launch_recycle(
+        &mut self,
+        dest: Coord,
+        ships: Fleet,
+        speed_percent: u8,
+        now_unix: u64,
+    ) -> Result<u64, FleetError> {
+        self.catch_up(now_unix);
+        if self.debris.get(&dest).copied().unwrap_or(0.0) <= 0.0 {
+            return Err(FleetError::NoDebris);
+        }
+        if ships.get(ShipKind::Recycler) == 0 {
+            return Err(FleetError::NeedRecycler);
+        }
+        let (outbound_secs, fuel) = self.recycle_flight(ships, dest, speed_percent)?;
+        self.launch_with_flight(ships, dest, speed_percent, 0, outbound_secs, fuel)?;
+        let Some(mission) = self.missions.last_mut() else {
+            return Err(FleetError::EmptyFleet);
+        };
+        mission.recycle = true;
+        Ok(mission.id)
+    }
+
+    /// Outbound time and fuel for a recycle trip. Home orbit has no flight:
+    /// the launch overhead each way and no fuel. Anywhere else flies.
+    pub fn recycle_flight(
+        &self,
+        ships: Fleet,
+        dest: Coord,
+        speed_percent: u8,
+    ) -> Result<(u64, f64), FleetError> {
+        if dest != self.home {
+            return self.flight_time_and_fuel(ships, dest, speed_percent);
+        }
+        if ships.is_empty() {
+            return Err(FleetError::EmptyFleet);
+        }
+        if !(10..=100).contains(&speed_percent) {
+            return Err(FleetError::SpeedPercent { got: speed_percent });
+        }
+        let pickup = self.config.flight.overhead_secs.ceil().max(1.0) as u64;
+        Ok((pickup, 0.0))
+    }
+
+    /// Lift debris at a recycle mission's destination into its cargo.
+    fn harvest_debris_at(&mut self, index: usize, done_at: u64) {
+        let dest = self.missions[index].dest;
+        let mut recyclers = Fleet::default();
+        recyclers.add(
+            ShipKind::Recycler,
+            self.missions[index].ships.get(ShipKind::Recycler),
+        );
+        let hold = self.cargo_capacity(recyclers);
+        let left = self.debris.get(&dest).copied().unwrap_or(0.0);
+        let take = left.min(hold).max(0.0);
+        if take <= 0.0 {
+            self.push_event(done_at, format!("recyclers found no debris at {dest}"));
+            return;
+        }
+        self.debris.insert(dest, left - take);
+        let iron = take * self.config.moons.debris_iron_share;
+        let found = Resources::from_parts(iron, take - iron, 0.0);
+        self.missions[index].cargo = found;
+        self.push_event(
+            done_at,
+            format!(
+                "recyclers lifted {take:.0} debris at {dest}: {}",
+                found.brief()
+            ),
+        );
     }
 
     pub fn latest_report(&self, coord: Coord) -> Option<&SpyReport> {
@@ -4185,6 +4279,9 @@ impl GameState {
                     if self.try_spy_at(index, done_at) {
                         continue;
                     }
+                    if self.missions[index].recycle {
+                        self.harvest_debris_at(index, done_at);
+                    }
                     if self.missions[index].transport {
                         let dest = self.missions[index].dest;
                         let cargo = self.missions[index].cargo;
@@ -4216,6 +4313,17 @@ impl GameState {
                     self.add_fleet_at(mission.origin, mission.ships);
                     if mission.transport {
                         self.credit_at(mission.origin, mission.cargo);
+                    }
+                    if mission.recycle && cargo_has_mass(mission.cargo) {
+                        self.credit_at(mission.origin, mission.cargo);
+                        self.note_delivery(
+                            done_at,
+                            format!(
+                                "recyclers brought {} home to {}",
+                                format_cargo(mission.cargo),
+                                mission.origin
+                            ),
+                        );
                     }
                 }
             }
@@ -10446,6 +10554,159 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
         }
         assert_eq!(jumped.sites, stepped.sites);
         close(jumped.resources.iron, stepped.resources.iron);
+    }
+
+    /// Raids off, deep storage, `debris` at an empty coord, recyclers docked.
+    fn recycle_state(debris: f64) -> (GameState, Coord) {
+        let mut state = expedition_state(0);
+        state.buildings.metal_mine = 0;
+        state.buildings.crystal_mine = 0;
+        state.buildings.deuterium_synthesizer = 0;
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 9,
+        };
+        state.debris.insert(dest, debris);
+        state.fleet.add(ShipKind::Recycler, 2);
+        state.fleet.add(ShipKind::LargeCargo, 5);
+        (state, dest)
+    }
+
+    fn recycle_until_home(state: &mut GameState, dest: Coord, ships: Fleet) {
+        state.launch_recycle(dest, ships, 100, 0).unwrap();
+        let back = state.missions[0].phase_ends_at + 2 * state.missions[0].outbound_secs + 1;
+        state.catch_up(back);
+        assert!(state.missions.is_empty());
+    }
+
+    #[test]
+    fn recycling_takes_at_most_the_recycler_hold_and_the_debris_left() {
+        let hold = state_recycler_hold();
+        let (mut state, dest) = recycle_state(10.0 * hold);
+        let iron = state.resources.iron;
+        let silicon = state.resources.silicon;
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::Recycler, 1);
+        ships.add(ShipKind::LargeCargo, 5);
+        recycle_until_home(&mut state, dest, ships);
+        let got = state.resources.iron - iron + state.resources.silicon - silicon;
+        close(got, hold);
+        close(state.debris[&dest], 9.0 * hold);
+        let share = state.config.moons.debris_iron_share;
+        close(state.resources.iron - iron, hold * share);
+
+        let (mut small, dest) = recycle_state(250.0);
+        let iron = small.resources.iron;
+        let silicon = small.resources.silicon;
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::Recycler, 2);
+        recycle_until_home(&mut small, dest, ships);
+        close(
+            small.resources.iron - iron + small.resources.silicon - silicon,
+            250.0,
+        );
+        close(small.debris[&dest], 0.0);
+    }
+
+    fn state_recycler_hold() -> f64 {
+        let state = GameState::new(0);
+        let mut one = Fleet::default();
+        one.add(ShipKind::Recycler, 1);
+        state.cargo_capacity(one)
+    }
+
+    #[test]
+    fn home_raid_debris_is_recycled_without_fuel() {
+        let (mut state, _) = recycle_state(0.0);
+        let home = state.home;
+        state.debris.insert(home, 500.0);
+        let fuel = state.resources.deuterium;
+        let iron = state.resources.iron;
+        let silicon = state.resources.silicon;
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::Recycler, 1);
+        recycle_until_home(&mut state, home, ships);
+        assert_eq!(state.resources.deuterium, fuel);
+        close(
+            state.resources.iron - iron + state.resources.silicon - silicon,
+            500.0,
+        );
+        close(state.debris[&home], 0.0);
+        assert_eq!(state.fleet.get(ShipKind::Recycler), 2);
+    }
+
+    #[test]
+    fn recycling_needs_debris_and_a_recycler() {
+        let (mut state, dest) = recycle_state(0.0);
+        let mut recyclers = Fleet::default();
+        recyclers.add(ShipKind::Recycler, 1);
+        assert_eq!(
+            state.launch_recycle(dest, recyclers, 100, 0),
+            Err(FleetError::NoDebris)
+        );
+        state.debris.insert(dest, 100.0);
+        let mut cargo = Fleet::default();
+        cargo.add(ShipKind::LargeCargo, 1);
+        assert_eq!(
+            state.launch_recycle(dest, cargo, 100, 0),
+            Err(FleetError::NeedRecycler)
+        );
+    }
+
+    #[test]
+    fn a_harvest_below_the_threshold_forms_no_moon() {
+        let (mut state, _) = recycle_state(0.0);
+        state.config.moons.form_chance_per_debris = 1.0;
+        state.config.moons.form_chance_cap = 1.0;
+        let threshold = state.config.moons.form_threshold;
+        let colony = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 9,
+        };
+        state.colonies.push(crate::Colony {
+            coord: colony,
+            kind: crate::PlanetType::Rocky,
+            size: 3,
+            resources: Resources::ZERO,
+            buildings: crate::Buildings::default(),
+            fleet: Fleet::default(),
+            defences: crate::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            rare: None,
+            goods: Default::default(),
+        });
+        state.debris.insert(colony, threshold + 10.0);
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::Recycler, 1);
+        recycle_until_home(&mut state, colony, ships);
+        assert!(state.debris[&colony] < threshold);
+        assert!(state.moon_at(colony).is_none());
+    }
+
+    #[test]
+    fn recycle_catch_up_matches_step_by_step() {
+        let run = |stepped: bool| {
+            let (mut state, dest) = recycle_state(30_000.0);
+            let mut ships = Fleet::default();
+            ships.add(ShipKind::Recycler, 1);
+            state.launch_recycle(dest, ships, 100, 0).unwrap();
+            let back = state.missions[0].phase_ends_at + 2 * state.missions[0].outbound_secs + 1;
+            if stepped {
+                for now in 1..=back {
+                    state.catch_up(now);
+                }
+            } else {
+                state.catch_up(back);
+            }
+            state
+        };
+        let (jumped, stepped) = (run(false), run(true));
+        assert_eq!(jumped.debris, stepped.debris);
+        assert_eq!(jumped.fleet, stepped.fleet);
+        close(jumped.resources.iron, stepped.resources.iron);
+        close(jumped.resources.silicon, stepped.resources.silicon);
     }
 
     #[test]

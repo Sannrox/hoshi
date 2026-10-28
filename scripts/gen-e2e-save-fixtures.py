@@ -1385,6 +1385,14 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             "site_id",
             "ALTER TABLE missions ADD COLUMN site_id INTEGER",
         )
+    elif version == 56:
+        add_column(
+            conn,
+            "missions",
+            "recycle",
+            "ALTER TABLE missions ADD COLUMN recycle INTEGER NOT NULL DEFAULT 0 "
+            "CHECK (recycle IN (0, 1))",
+        )
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"

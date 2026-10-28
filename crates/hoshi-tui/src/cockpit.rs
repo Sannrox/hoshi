@@ -554,6 +554,11 @@ pub fn raid_loss_lines(losses: hoshi_core::RaidLosses) -> [String; 2] {
     ]
 }
 
+/// Battle wreckage a recycler can still lift at `coord`.
+fn debris_at(state: &GameState, coord: Coord) -> f64 {
+    state.debris.get(&coord).copied().unwrap_or(0.0)
+}
+
 pub fn fleet_targets(state: &GameState) -> Vec<Target> {
     let mut rows = vec![Target::Fleet { mission: None }];
     for mission in &state.missions {
@@ -1026,6 +1031,8 @@ fn map_lines(
                 ('f', t.intent(Intent::Warning))
             } else if let Some(site) = state.site_at(coord) {
                 (site.map_mark(), t.intent(Intent::Warning))
+            } else if debris_at(state, coord) > 0.0 {
+                ('*', t.intent(Intent::Warning))
             } else {
                 ('·', t.faint())
             };
@@ -1046,6 +1053,10 @@ fn map_lines(
                     None => site.kind.as_key().to_string(),
                 };
                 labels.push(label);
+            }
+            let debris = debris_at(state, coord);
+            if debris > 0.0 {
+                labels.push(format!("debris {}", crate::ui::spans::compact(debris)));
             }
         }
         for mission in &state.missions {
@@ -1866,6 +1877,27 @@ mod tests {
         state.config.raid.enabled = false;
         let rows = alerts(&state, None);
         assert!(!rows.iter().any(|row| row.text.contains("Incoming raid")));
+    }
+
+    #[test]
+    fn map_marks_debris_with_its_amount() {
+        let mut state = GameState::new(1_000);
+        let coord = (2..16)
+            .map(|position| Coord {
+                galaxy: 1,
+                system: state.home.system,
+                position,
+            })
+            .find(|c| state.site_at(*c).is_none() && state.outpost(*c).is_none())
+            .unwrap();
+        state.debris.insert(coord, 1_500.0);
+        let lines = map_lines(&state, state.home.system, 1, 20, 160, &Theme::default());
+        let text: String = lines
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.to_string()))
+            .collect();
+        assert!(text.contains('*'), "{text}");
+        assert!(text.contains("debris 1.5k"), "{text}");
     }
 
     #[test]
