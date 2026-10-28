@@ -194,6 +194,8 @@ pub struct App {
     tree_branch: TechBranch,
     replay: Option<ReplayView>,
     pub reduced_motion: bool,
+    /// Name of the open save, as the title menu lists it. `None` shows nothing.
+    pub save_name: Option<String>,
     pub no_animation: bool,
     pub show_tutorial: bool,
     pub commentary: bool,
@@ -276,6 +278,7 @@ impl App {
             tree_branch: TechBranch::Industry,
             replay: None,
             reduced_motion: false,
+            save_name: None,
             no_animation: false,
             show_tutorial: true,
             commentary: false,
@@ -1421,6 +1424,10 @@ impl App {
         }
         if self.state.is_modified() {
             spans.push(ui::spans::tag(t, "MODIFIED", Intent::Warning, false));
+            spans.push(Span::raw("  "));
+        }
+        if let Some(name) = &self.save_name {
+            spans.push(Span::styled(name.clone(), t.muted()));
             spans.push(Span::raw("  "));
         }
         if let Some(run) = self.state.species.as_ref() {
@@ -4657,6 +4664,26 @@ mod tests {
     }
 
     /// #293: two heavy cannons fought and died, and the report said nothing.
+    #[test]
+    fn the_navbar_names_the_open_save() {
+        let mut app = App::new(GameState::new(1_000));
+        app.screen = Screen::Cockpit;
+        let plain = render_text(&app, 140, 45);
+        let first = plain.lines().next().unwrap().to_string();
+        app.save_name = crate::title::slot_name(std::path::Path::new("saves/alpha.sqlite"));
+        let named = render_text(&app, 140, 45);
+        let line = named.lines().next().unwrap();
+        assert!(line.contains("alpha"), "{line}");
+        assert!(!first.contains("alpha"), "{first}");
+        app.save_name = crate::title::slot_name(std::path::Path::new("saves/beta.mikura"));
+        let switched = render_text(&app, 140, 45);
+        let line = switched.lines().next().unwrap();
+        assert!(
+            line.contains("beta") && !line.contains("alpha") && !line.contains(".mikura"),
+            "{line}"
+        );
+    }
+
     #[test]
     fn the_combat_report_shows_the_defence_layers() {
         let mut state = GameState::new(1_000);
