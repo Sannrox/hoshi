@@ -219,6 +219,7 @@ silent extra departure; they extend this list.
 | Instantaneous heat and pollution (no stored slag or thermal inertia) | Catch-up stays a single pass; overflow is a work-speed and raid-signature modifier. |
 | FTL, if any | Only through late-game gates or a listed wonder. Default travel is sublight on the flight clock. |
 | Moons from battle debris | A moon is an orbital facility of its parent planet, not a new galaxy slot. Formation is a seeded roll on hull lost so fights stay fast and deterministic. |
+| Recycled debris returns as iron and silicon in a fixed catalog ratio (`moons.debris_iron_share`) | Wreckage is the frames and electronics of lost hulls; the split is not traced per part. Deuterium burned as fuel is not in the field, so none comes back. |
 | Story, species and faction flavour | Out of scope for realism; they must not mint mass or energy. |
 | Expedition sites are placed stockpiles drawn down by the existing outcome roll, not extractors on a deposit | Fuel and flight time stay on the current flight rules. The config-slot expedition still has no deposit. |
 

@@ -808,6 +808,8 @@ streak_deuterium = 0.0
 [moons]
 enabled = true
 debris_per_hull = 1.0
+# Recycled debris returns as iron (this share) and silicon (the rest).
+debris_iron_share = 0.6
 form_threshold = 400.0
 form_chance_per_debris = 0.002
 form_chance_cap = 0.35

@@ -116,6 +116,7 @@ enum Mission {
     Invade,
     Colonize,
     Expedition,
+    Recycle,
 }
 
 impl Mission {
@@ -126,6 +127,7 @@ impl Mission {
             Self::Invade => "invade",
             Self::Colonize => "colonize",
             Self::Expedition => "expedition",
+            Self::Recycle => "recycle",
         }
     }
 }
@@ -2537,12 +2539,13 @@ impl App {
             return;
         }
         let dest = self.map_cursor();
-        if dest == self.state.home {
-            self.status = "same location".into();
-            return;
-        }
         let Some(&mission) = self.dispatch_missions(dest).first() else {
-            self.status = format!("{dest} is yours: plan deliveries in Fleet › Ops");
+            // Home only opens dispatch to recycle its own raid debris.
+            self.status = if dest == self.state.home {
+                "same location".into()
+            } else {
+                format!("{dest} is yours: plan deliveries in Fleet › Ops")
+            };
             return;
         };
         self.dispatch = Some(DispatchForm {
@@ -2556,27 +2559,33 @@ impl App {
 
     /// Missions that fit `dest`, the default first: the expedition slot,
     /// an outpost (invade first once its defences are gone), or anywhere
-    /// else to settle. Own planets have none; Ops plans their deliveries.
-    fn dispatch_missions(&self, dest: Coord) -> &'static [Mission] {
-        if dest == self.state.expedition_dest() {
-            &[Mission::Expedition]
+    /// else to settle. Debris adds recycle, so home or an own colony with
+    /// wreckage gets one; otherwise own planets have none (Ops plans their
+    /// deliveries).
+    fn dispatch_missions(&self, dest: Coord) -> Vec<Mission> {
+        let mut missions = if dest == self.state.expedition_dest() {
+            vec![Mission::Expedition]
         } else if let Some(outpost) = self.state.outpost(dest) {
             if outpost.defences.total() == 0 {
-                &[Mission::Invade, Mission::Attack, Mission::Spy]
+                vec![Mission::Invade, Mission::Attack, Mission::Spy]
             } else {
-                &[Mission::Attack, Mission::Spy, Mission::Invade]
+                vec![Mission::Attack, Mission::Spy, Mission::Invade]
             }
         } else if self
             .state
             .site_at(dest)
             .is_some_and(|site| site.outcome.is_none())
         {
-            &[Mission::Expedition]
+            vec![Mission::Expedition]
         } else if self.state.owned_coords().contains(&dest) {
-            &[]
+            Vec::new()
         } else {
-            &[Mission::Colonize]
+            vec![Mission::Colonize]
+        };
+        if self.state.debris.get(&dest).is_some_and(|&d| d > 0.0) {
+            missions.push(Mission::Recycle);
         }
+        missions
     }
 
     /// The selected shipyard unit, as a ship or a defence.
@@ -2666,6 +2675,7 @@ impl App {
                 }
                 self.state.launch_colony(dest, 100, now_unix)
             }
+            Mission::Recycle => self.state.launch_recycle(dest, ships, 100, now_unix),
             Mission::Expedition => {
                 let hold = self.state.config.expedition.min_hold_secs;
                 // A site that resolved while the form was open is refused,
@@ -6425,6 +6435,25 @@ mod tests {
     }
 
     #[test]
+    fn home_with_raid_debris_opens_recycle_dispatch() {
+        let mut state = GameState::new(1_000);
+        let home = state.home;
+        state.fleet.add(ShipKind::Recycler, 1);
+        let mut app = App::new(state);
+        assert!(app.dispatch_missions(home).is_empty());
+        app.state.debris.insert(home, 200.0);
+        assert_eq!(app.dispatch_missions(home), vec![Mission::Recycle]);
+        open_dispatch(&mut app, home, ShipKind::Recycler, 1);
+        let text = render_text(&app, 100, 40);
+        assert!(text.contains("ETA"), "{text}");
+        assert!(text.contains("0.0 D"), "{text}");
+        assert!(!text.to_lowercase().contains("same location"), "{text}");
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.state.missions[0].recycle, "{}", app.status);
+        assert_eq!(app.state.missions[0].dest, home);
+    }
+
+    #[test]
     fn map_enter_opens_dispatch_and_launches() {
         let mut state = GameState::new(1_000);
         state.fleet.add(ShipKind::SmallCargo, 2);
@@ -6478,6 +6507,46 @@ mod tests {
         for _ in 0..count {
             app.handle_key(KeyCode::Char('+'), 1_000);
         }
+    }
+
+    #[test]
+    fn dispatch_recycles_debris_and_the_away_summary_names_the_harvest() {
+        let mut state = GameState::new(1_000);
+        state.config.raid.enabled = false;
+        state.next_raid_at = None;
+        state.resources.deuterium = 10_000.0;
+        state.fleet.add(ShipKind::Recycler, 1);
+        let dest = (2..16)
+            .map(|position| Coord {
+                galaxy: 1,
+                system: state.home.system,
+                position,
+            })
+            .find(|c| state.site_at(*c).is_none() && state.outpost(*c).is_none())
+            .unwrap();
+        state.debris.insert(dest, 300.0);
+        let mut app = App::new(state);
+        assert_eq!(
+            app.dispatch_missions(dest),
+            vec![Mission::Colonize, Mission::Recycle]
+        );
+        open_dispatch(&mut app, dest, ShipKind::Recycler, 1);
+        app.handle_key(KeyCode::Char(' '), 1_000);
+        assert_eq!(app.dispatch.unwrap().mission, Mission::Recycle);
+        let before = crate::title::snapshot_away(&app.state);
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.state.missions[0].recycle, "{}", app.status);
+        let back = app.state.missions[0].phase_ends_at + 2 * app.state.missions[0].outbound_secs;
+        let ledger = app.state.catch_up_ledger(back + 1);
+        let summary = crate::title::summarize_away(&before, ledger, &app.state);
+        assert!(
+            summary
+                .deliveries
+                .iter()
+                .any(|line| line.starts_with("recyclers brought")),
+            "{:?}",
+            summary.deliveries
+        );
     }
 
     #[test]

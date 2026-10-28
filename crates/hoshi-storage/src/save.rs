@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 55;
+pub const SCHEMA_VERSION: u32 = 56;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -392,8 +392,8 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 phase_ends_at, fuel_paid, colonize, expedition_seed, expedition_applied,
                 cargo_metal, cargo_crystal, cargo_deuterium,
                 cargo_rare_earths, cargo_water_ice, cargo_helium_3,
-                transport, attack, invade, spy, site_id
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)",
+                transport, attack, invade, spy, site_id, recycle
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)",
             params![
                 mission.id as i64,
                 mission.origin.galaxy as i64,
@@ -423,6 +423,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 mission.invade as i64,
                 mission.spy as i64,
                 mission.site_id.map(|id| id as i64),
+                mission.recycle as i64,
             ],
         )?;
         for kind in ShipKind::ALL {
@@ -1747,7 +1748,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
                 phase_ends_at, fuel_paid, colonize, expedition_seed, expedition_applied,
                 cargo_metal, cargo_crystal, cargo_deuterium,
                 cargo_rare_earths, cargo_water_ice, cargo_helium_3,
-                transport, attack, invade, spy, site_id
+                transport, attack, invade, spy, site_id, recycle
          FROM missions ORDER BY id",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -1780,6 +1781,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             row.get::<_, i64>(25)?,
             row.get::<_, i64>(26)?,
             row.get::<_, Option<i64>>(27)?,
+            row.get::<_, i64>(28)?,
         ))
     })?;
     let mut missions = Vec::new();
@@ -1813,6 +1815,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             invade,
             spy,
             site_id,
+            recycle,
         ) = row?;
         let phase =
             MissionPhase::from_key(&phase).ok_or(SaveError::Corrupt("unknown mission phase"))?;
@@ -1863,6 +1866,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             invade: invade != 0,
             spy: spy != 0,
             site_id: site_id.map(|id| id as u64),
+            recycle: recycle != 0,
         });
     }
     state.missions = missions;
@@ -3650,6 +3654,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     if found < 55 {
         migrate_v55(conn)?;
     }
+    if found < 56 {
+        migrate_v56(conn)?;
+    }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
 }
@@ -4810,6 +4817,19 @@ fn migrate_v50(conn: &Connection) -> Result<(), SaveError> {
             deuterium REAL NOT NULL CHECK (deuterium >= 0)
         );",
     )?;
+    Ok(())
+}
+
+/// v56: recycle missions. Older missions were never recycling, so the
+/// column defaults to 0.
+fn migrate_v56(conn: &Connection) -> Result<(), SaveError> {
+    if !missions_has_column(conn, "recycle")? {
+        conn.execute(
+            "ALTER TABLE missions ADD COLUMN recycle INTEGER NOT NULL DEFAULT 0
+                CHECK (recycle IN (0, 1))",
+            [],
+        )?;
+    }
     Ok(())
 }
 
@@ -9569,6 +9589,32 @@ label = "Leave it"
             loaded.story_pending.as_ref().map(|p| p.event_id.as_str()),
             Some("alpha")
         );
+    }
+
+    #[test]
+    fn a_recycle_mission_survives_save_and_v55_saves_load_as_not_recycling() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let mut state = GameState::new(100);
+        let dest = hoshi_core::Coord {
+            galaxy: 1,
+            system: 1,
+            position: 9,
+        };
+        state.debris.insert(dest, 5_000.0);
+        state.fleet.add(ShipKind::Recycler, 1);
+        state.resources.deuterium = 10_000.0;
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::Recycler, 1);
+        state.launch_recycle(dest, ships, 100, 100).unwrap();
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert!(loaded.missions[0].recycle);
+        assert_eq!(loaded.debris.get(&dest), Some(&5_000.0));
+        conn.execute_batch("ALTER TABLE missions DROP COLUMN recycle; PRAGMA user_version = 55;")
+            .unwrap();
+        migrate(&conn).unwrap();
+        let old = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert!(!old.missions[0].recycle);
     }
 
     #[test]

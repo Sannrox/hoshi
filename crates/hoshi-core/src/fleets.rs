@@ -170,6 +170,8 @@ pub struct Mission {
     pub spy: bool,
     /// Expedition site this mission draws from. `None` is the config slot.
     pub site_id: Option<u64>,
+    /// Action lifts debris into `cargo`; Return credits it at the origin.
+    pub recycle: bool,
 }
 
 /// A repeating transport between two owned planets.
@@ -246,6 +248,10 @@ pub enum FleetError {
         required: u32,
         actual: u32,
     },
+    /// Recycle needs debris at the destination.
+    NoDebris,
+    /// Recycle needs at least one recycler; other hulls add no hold.
+    NeedRecycler,
     UnknownSite {
         id: u64,
     },
@@ -325,6 +331,8 @@ impl fmt::Display for FleetError {
                 f,
                 "need {id} {required} to reach the frontier (have {actual})"
             ),
+            FleetError::NoDebris => write!(f, "no debris at that coord"),
+            FleetError::NeedRecycler => write!(f, "recycling needs a recycler"),
             FleetError::UnknownSite { id } => write!(f, "no expedition site {id}"),
             FleetError::SiteResolved { id } => write!(f, "expedition site {id} is resolved"),
             FleetError::SiteBusy { id } => {

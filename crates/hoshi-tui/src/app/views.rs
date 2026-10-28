@@ -1259,7 +1259,7 @@ impl App {
             Line::from({
                 let mut spans = vec![Span::styled("mission ", t.muted())];
                 for mission in self.dispatch_missions(dest) {
-                    if *mission == form.mission {
+                    if mission == form.mission {
                         spans.push(tag(t, mission.label(), Intent::Primary, true));
                     } else {
                         spans.push(Span::styled(format!(" {} ", mission.label()), t.faint()));
@@ -1312,7 +1312,12 @@ impl App {
                 "j/k moves between ship types.",
             ));
         } else {
-            match self.state.flight_time_and_fuel(form.ships, dest, 100) {
+            let flight = if form.mission == Mission::Recycle {
+                self.state.recycle_flight(form.ships, dest, 100)
+            } else {
+                self.state.flight_time_and_fuel(form.ships, dest, 100)
+            };
+            match flight {
                 Ok((eta, fuel)) => {
                     lines.push(
                         self.props(&[("ETA", duration(eta)), ("fuel", format!("{fuel:.1} D"))]),

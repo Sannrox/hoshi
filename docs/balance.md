@@ -130,7 +130,7 @@ speeds) at `pacing.min_flight_secs` (3 minutes) or more and keeps slot, system a
 
 ## Moons
 
-`[moons]` is debris-to-moon formation around an owned planet. Hull lost in a fight adds `debris_per_hull` to that coord. Once debris passes `form_threshold`, each extra point rolls `form_chance_per_debris` (capped) against a seeded RNG; the same seed repeats the same moon. A moon is an orbital facility of its parent, not a new map slot. `phalanx_range_systems` is the sensor radius in systems; `jump_cooldown_secs` is the gate cooldown. Jump is instant between two moons that both have a jump gate, and is refused if the destination has none. Costs are `phalanx_*` and `gate_*`. Set `enabled = false` to skip formation.
+`[moons]` is debris-to-moon formation around an owned planet. Hull lost in a fight adds `debris_per_hull` to that coord. Once debris passes `form_threshold`, each extra point rolls `form_chance_per_debris` (capped) against a seeded RNG; the same seed repeats the same moon. A moon is an orbital facility of its parent, not a new map slot. `phalanx_range_systems` is the sensor radius in systems; `jump_cooldown_secs` is the gate cooldown. Jump is instant between two moons that both have a jump gate, and is refused if the destination has none. Costs are `phalanx_*` and `gate_*`. Set `enabled = false` to skip formation. Recyclers lift debris at a coord (`launch_recycle`, or recycle on the star map): each trip takes at most the recyclers' own cargo hold and the debris left, and brings it home as iron (`debris_iron_share`, bundled 0.6) and silicon (the rest). Other hulls in the fleet add no hold. A harvest never forms a moon; formation only rolls when a fight adds debris.
 
 ## Frontier galaxy
 

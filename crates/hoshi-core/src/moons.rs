@@ -90,6 +90,8 @@ pub struct PhalanxContact {
 pub struct MoonConfig {
     pub enabled: bool,
     pub debris_per_hull: f64,
+    /// Share of recycled debris that comes back as iron; the rest is silicon.
+    pub debris_iron_share: f64,
     pub form_threshold: f64,
     pub form_chance_per_debris: f64,
     pub form_chance_cap: f64,
@@ -104,6 +106,7 @@ impl MoonConfig {
         Self {
             enabled: false,
             debris_per_hull: 1.0,
+            debris_iron_share: 0.6,
             form_threshold: 1_000.0,
             form_chance_per_debris: 0.0,
             form_chance_cap: 0.0,
@@ -120,6 +123,7 @@ impl Default for MoonConfig {
         Self {
             enabled: true,
             debris_per_hull: 1.0,
+            debris_iron_share: 0.6,
             form_threshold: 400.0,
             form_chance_per_debris: 0.002,
             form_chance_cap: 0.35,
@@ -137,6 +141,8 @@ pub struct FileMoons {
     pub enabled: bool,
     #[serde(default = "default_debris_hull")]
     pub debris_per_hull: f64,
+    #[serde(default = "default_iron_share")]
+    pub debris_iron_share: f64,
     #[serde(default = "default_threshold")]
     pub form_threshold: f64,
     #[serde(default = "default_chance")]
@@ -167,6 +173,9 @@ fn default_true() -> bool {
 fn default_debris_hull() -> f64 {
     1.0
 }
+fn default_iron_share() -> f64 {
+    0.6
+}
 fn default_threshold() -> f64 {
     400.0
 }
@@ -188,6 +197,11 @@ impl FileMoons {
         MoonConfig {
             enabled: self.enabled,
             debris_per_hull: self.debris_per_hull.max(0.0),
+            debris_iron_share: if self.debris_iron_share.is_finite() {
+                self.debris_iron_share.clamp(0.0, 1.0)
+            } else {
+                0.6
+            },
             form_threshold: self.form_threshold.max(0.0),
             form_chance_per_debris: self.form_chance_per_debris.max(0.0),
             form_chance_cap: self.form_chance_cap.clamp(0.0, 1.0),
