@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 54;
+pub const SCHEMA_VERSION: u32 = 55;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -173,6 +173,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM ship_queue;
          DELETE FROM mission_ships;
          DELETE FROM missions;
+         DELETE FROM expedition_sites;
          DELETE FROM raids;
          DELETE FROM event_log;
          DELETE FROM colonies;
@@ -391,8 +392,8 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 phase_ends_at, fuel_paid, colonize, expedition_seed, expedition_applied,
                 cargo_metal, cargo_crystal, cargo_deuterium,
                 cargo_rare_earths, cargo_water_ice, cargo_helium_3,
-                transport, attack, invade, spy
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
+                transport, attack, invade, spy, site_id
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)",
             params![
                 mission.id as i64,
                 mission.origin.galaxy as i64,
@@ -421,6 +422,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 mission.attack as i64,
                 mission.invade as i64,
                 mission.spy as i64,
+                mission.site_id.map(|id| id as i64),
             ],
         )?;
         for kind in ShipKind::ALL {
@@ -433,6 +435,25 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 params![mission.id as i64, kind.as_key(), count],
             )?;
         }
+    }
+    for site in &state.sites {
+        tx.execute(
+            "INSERT INTO expedition_sites (
+                id, galaxy, system, position, kind, iron, silicon, deuterium, ships, outcome
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                site.id as i64,
+                site.coord.galaxy as i64,
+                site.coord.system as i64,
+                site.coord.position as i64,
+                site.kind.as_key(),
+                site.iron,
+                site.silicon,
+                site.deuterium,
+                site.ships as i64,
+                site.outcome.map(|kind| kind.as_key()),
+            ],
+        )?;
     }
     for route in state.routes.iter() {
         tx.execute(
@@ -1726,7 +1747,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
                 phase_ends_at, fuel_paid, colonize, expedition_seed, expedition_applied,
                 cargo_metal, cargo_crystal, cargo_deuterium,
                 cargo_rare_earths, cargo_water_ice, cargo_helium_3,
-                transport, attack, invade, spy
+                transport, attack, invade, spy, site_id
          FROM missions ORDER BY id",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -1758,6 +1779,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             row.get::<_, i64>(24)?,
             row.get::<_, i64>(25)?,
             row.get::<_, i64>(26)?,
+            row.get::<_, Option<i64>>(27)?,
         ))
     })?;
     let mut missions = Vec::new();
@@ -1790,6 +1812,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             attack,
             invade,
             spy,
+            site_id,
         ) = row?;
         let phase =
             MissionPhase::from_key(&phase).ok_or(SaveError::Corrupt("unknown mission phase"))?;
@@ -1839,9 +1862,11 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             attack: attack != 0,
             invade: invade != 0,
             spy: spy != 0,
+            site_id: site_id.map(|id| id as u64),
         });
     }
     state.missions = missions;
+    state.sites = read_expedition_sites(conn)?;
     state.next_mission_id = state
         .missions
         .iter()
@@ -3244,6 +3269,7 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "goods" => "SELECT COUNT(*) FROM goods",
         "story_pending" => "SELECT COUNT(*) FROM story_pending",
         "story_flags" => "SELECT COUNT(*) FROM story_flags",
+        "expedition_sites" => "SELECT COUNT(*) FROM expedition_sites",
         "market_prices" => "SELECT COUNT(*) FROM market_prices",
         "market_history" => "SELECT COUNT(*) FROM market_history",
         "faction_standing" => "SELECT COUNT(*) FROM faction_standing",
@@ -3363,6 +3389,7 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "goods")?
         + count_rows(conn, "story_pending")?
         + count_rows(conn, "story_flags")?
+        + count_rows(conn, "expedition_sites")?
         + count_rows(conn, "market_prices")?
         + count_rows(conn, "market_history")?
         + count_rows(conn, "faction_standing")?
@@ -3620,6 +3647,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     if found < 54 {
         migrate_v54(conn)?;
     }
+    if found < 55 {
+        migrate_v55(conn)?;
+    }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
 }
@@ -3786,6 +3816,55 @@ fn migrate_v6(conn: &Connection) -> Result<(), SaveError> {
         ",
     )?;
     Ok(())
+}
+
+fn read_expedition_sites(conn: &Connection) -> Result<Vec<hoshi_core::ExpeditionSite>, SaveError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, galaxy, system, position, kind, iron, silicon, deuterium, ships, outcome
+         FROM expedition_sites ORDER BY id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, f64>(5)?,
+            row.get::<_, f64>(6)?,
+            row.get::<_, f64>(7)?,
+            row.get::<_, i64>(8)?,
+            row.get::<_, Option<String>>(9)?,
+        ))
+    })?;
+    let mut sites = Vec::new();
+    for row in rows {
+        let (id, galaxy, system, position, kind, iron, silicon, deuterium, ships, outcome) = row?;
+        let kind = hoshi_core::SiteKind::from_key(&kind)
+            .ok_or(SaveError::Corrupt("unknown expedition site kind"))?;
+        let outcome = match outcome {
+            Some(key) => Some(
+                hoshi_core::ExpeditionKind::from_key(&key)
+                    .ok_or(SaveError::Corrupt("unknown expedition outcome"))?,
+            ),
+            None => None,
+        };
+        sites.push(hoshi_core::ExpeditionSite {
+            id: unix_ts(id)?,
+            coord: Coord {
+                galaxy: u16_coord(galaxy)?,
+                system: u16_coord(system)?,
+                position: u16_coord(position)?,
+            },
+            kind,
+            iron,
+            silicon,
+            deuterium,
+            ships: u32::try_from(ships).map_err(|_| SaveError::Corrupt("site ships"))?,
+            outcome,
+        });
+    }
+    Ok(sites)
 }
 
 fn missions_has_column(conn: &Connection, column: &str) -> Result<bool, SaveError> {
@@ -4734,7 +4813,29 @@ fn migrate_v50(conn: &Connection) -> Result<(), SaveError> {
     Ok(())
 }
 
-/// v53: story flags. A missing table is an empty set, so older saves load unchanged.
+/// v55: expedition sites. A missing table is an empty list. Missions gain a
+/// nullable site id; the config-slot expedition leaves it null.
+fn migrate_v55(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS expedition_sites (
+            id INTEGER PRIMARY KEY,
+            galaxy INTEGER NOT NULL,
+            system INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            iron REAL NOT NULL CHECK (iron >= 0),
+            silicon REAL NOT NULL CHECK (silicon >= 0),
+            deuterium REAL NOT NULL CHECK (deuterium >= 0),
+            ships INTEGER NOT NULL CHECK (ships >= 0),
+            outcome TEXT
+        );",
+    )?;
+    if !missions_has_column(conn, "site_id")? {
+        conn.execute("ALTER TABLE missions ADD COLUMN site_id INTEGER", [])?;
+    }
+    Ok(())
+}
+
 /// v54: batteries still gone after a raid's repair. Null for raids saved
 /// before this version, which did not record it.
 fn migrate_v54(conn: &Connection) -> Result<(), SaveError> {
@@ -4752,6 +4853,7 @@ fn migrate_v54(conn: &Connection) -> Result<(), SaveError> {
     Ok(())
 }
 
+/// v53: story flags. A missing table is an empty set, so older saves load unchanged.
 fn migrate_v53(conn: &Connection) -> Result<(), SaveError> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS story_flags (
@@ -9466,6 +9568,34 @@ label = "Leave it"
         assert_eq!(
             loaded.story_pending.as_ref().map(|p| p.event_id.as_str()),
             Some("alpha")
+        );
+    }
+
+    #[test]
+    fn migrate_v55_loads_no_sites_and_keeps_the_slot_destination() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let mut state = GameState::new(100);
+        state.sites.clear();
+        state.fleet.add(ShipKind::LightFighter, 4);
+        state.resources.deuterium = 10_000.0;
+        state.config.expedition.min_hold_secs = 10;
+        state.config.expedition.max_hold_secs = 10_000;
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::LightFighter, 4);
+        state.launch_expedition(ships, 10, 100, 100).unwrap();
+        let dest = state.expedition_dest();
+        assert_eq!(state.missions[0].dest, dest);
+        save_state(&mut conn, &state).unwrap();
+        conn.execute_batch("DROP TABLE expedition_sites; PRAGMA user_version = 54;")
+            .unwrap();
+        migrate(&conn).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert!(loaded.sites.is_empty());
+        assert_eq!(loaded.missions[0].dest, dest);
+        assert!(loaded.missions[0].site_id.is_none());
+        assert_eq!(
+            loaded.missions[0].dest.position,
+            loaded.config.expedition.dest_position
         );
     }
 

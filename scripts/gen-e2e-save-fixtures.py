@@ -1357,6 +1357,34 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             paid_metal REAL NOT NULL CHECK (paid_metal >= 0),
             paid_crystal REAL NOT NULL CHECK (paid_crystal >= 0),
             paid_deuterium REAL NOT NULL CHECK (paid_deuterium >= 0))""")
+    elif version == 54:
+        add_column(
+            conn,
+            "combat_defence",
+            "batteries_missing",
+            "ALTER TABLE combat_defence ADD COLUMN batteries_missing INTEGER "
+            "CHECK (batteries_missing >= 0)",
+        )
+    elif version == 55:
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS expedition_sites (
+            id INTEGER PRIMARY KEY,
+            galaxy INTEGER NOT NULL,
+            system INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            iron REAL NOT NULL CHECK (iron >= 0),
+            silicon REAL NOT NULL CHECK (silicon >= 0),
+            deuterium REAL NOT NULL CHECK (deuterium >= 0),
+            ships INTEGER NOT NULL CHECK (ships >= 0),
+            outcome TEXT)"""
+        )
+        add_column(
+            conn,
+            "missions",
+            "site_id",
+            "ALTER TABLE missions ADD COLUMN site_id INTEGER",
+        )
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"

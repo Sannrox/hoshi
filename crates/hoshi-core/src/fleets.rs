@@ -168,6 +168,8 @@ pub struct Mission {
     pub invade: bool,
     /// Action writes a spy report and may lose probes.
     pub spy: bool,
+    /// Expedition site this mission draws from. `None` is the config slot.
+    pub site_id: Option<u64>,
 }
 
 /// A repeating transport between two owned planets.
@@ -244,6 +246,16 @@ pub enum FleetError {
         required: u32,
         actual: u32,
     },
+    UnknownSite {
+        id: u64,
+    },
+    SiteResolved {
+        id: u64,
+    },
+    /// Another expedition is already on its way to this site.
+    SiteBusy {
+        id: u64,
+    },
 }
 
 impl fmt::Display for FleetError {
@@ -313,6 +325,11 @@ impl fmt::Display for FleetError {
                 f,
                 "need {id} {required} to reach the frontier (have {actual})"
             ),
+            FleetError::UnknownSite { id } => write!(f, "no expedition site {id}"),
+            FleetError::SiteResolved { id } => write!(f, "expedition site {id} is resolved"),
+            FleetError::SiteBusy { id } => {
+                write!(f, "an expedition is already headed to site {id}")
+            }
         }
     }
 }
