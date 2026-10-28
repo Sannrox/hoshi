@@ -259,7 +259,9 @@ pub struct RaidConfig {
     pub first_delay_secs: u64,
     /// Delay from one landing to the next.
     pub interval_secs: u64,
-    /// Pirate light-fighter count is `max(min_ships, floor(player_points * this))`.
+    /// Share of the home's combat points (attack + hull of fleet and defences)
+    /// a raid brings, in pirate light fighters:
+    /// `max(min_ships, floor(points * this / light_fighter_points))`.
     pub strength_factor: f64,
     pub min_ships: u32,
     /// Combat rounds cap. Later combat issues keep this resolver and add extras.
@@ -271,6 +273,9 @@ pub struct RaidConfig {
     /// takes from stock above it, so an undefended home can still save up for
     /// the shipyard that makes defence possible.
     pub protected_share: f64,
+    /// For this long after the galaxy began, the gap between raids is never
+    /// shorter than `interval_secs`, whatever the pirate standing.
+    pub early_grace_secs: u64,
 }
 
 impl RaidConfig {
@@ -281,12 +286,13 @@ impl RaidConfig {
             min_warning_secs: 3600,
             first_delay_secs: 3600,
             interval_secs: 8 * 3600,
-            strength_factor: 0.4,
+            strength_factor: 0.6,
             min_ships: 1,
             max_rounds: 6,
             plunder_share: 0.5,
             plunder_cap: Resources::from_parts(10_000.0, 10_000.0, 5_000.0),
             protected_share: DEFAULT_PROTECTED_SHARE,
+            early_grace_secs: DEFAULT_EARLY_GRACE_SECS,
         }
     }
 
@@ -1400,9 +1406,16 @@ struct FileRaid {
     plunder_cap: FileResources,
     #[serde(default = "default_protected_share")]
     protected_share: f64,
+    #[serde(default = "default_early_grace_secs")]
+    early_grace_secs: u64,
 }
 
 const DEFAULT_PROTECTED_SHARE: f64 = 0.05;
+const DEFAULT_EARLY_GRACE_SECS: u64 = 3 * 86_400;
+
+fn default_early_grace_secs() -> u64 {
+    DEFAULT_EARLY_GRACE_SECS
+}
 
 fn default_protected_share() -> f64 {
     DEFAULT_PROTECTED_SHARE
@@ -1694,6 +1707,7 @@ impl File {
                 plunder_share: self.raid.plunder_share,
                 plunder_cap: self.raid.plunder_cap.into_resources(),
                 protected_share: self.raid.protected_share,
+                early_grace_secs: self.raid.early_grace_secs,
             },
             planet_types: PlanetTypeCatalog {
                 rocky: self.planet_types.rocky.into_bonus(),

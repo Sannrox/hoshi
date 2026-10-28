@@ -290,7 +290,9 @@ enabled = true
 min_warning_secs = 3600
 first_delay_secs = 3600
 interval_secs = 28800
-strength_factor = 0.4
+# A raid brings this share of the home's combat points (fleet and defences,
+# attack plus hull) as pirate light fighters.
+strength_factor = 0.6
 min_ships = 1
 max_rounds = 6
 # Winners take this share of reachable stock, then at most plunder_cap per
@@ -299,6 +301,9 @@ plunder_share = 0.5
 # Share of each storage capacity raiders cannot reach (500 D at base storage,
 # enough for the robotics factory and shipyard gates).
 protected_share = 0.05
+# For the galaxy's first three days the gap between raids never drops below
+# interval_secs, whatever the pirate standing.
+early_grace_secs = 259200
 
 [raid.plunder_cap]
 iron = 10000.0

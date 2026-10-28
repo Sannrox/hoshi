@@ -155,32 +155,32 @@
       "text": "raid: iron mine offline. lost none. pirates lost none. defences lost none. plunder Fe25 Si25 D0. winner attacker"
     },
     {
-      "at": 140400,
-      "text": "standing: Pirate clans -8 -> -12 (raid)"
+      "at": 147600,
+      "text": "standing: Pirate clans -7 -> -11 (raid)"
     },
     {
-      "at": 140400,
+      "at": 147600,
       "text": "incident #6 raid high"
     },
     {
-      "at": 140400,
+      "at": 147600,
       "text": "raid: iron mine offline. lost none. pirates lost none. defences lost none. plunder Fe25 Si25 D0. winner attacker"
     },
     {
-      "at": 162000,
-      "text": "standing: Pirate clans -9 -> -13 (raid)"
+      "at": 176400,
+      "text": "standing: Pirate clans -7 -> -11 (raid)"
     },
     {
-      "at": 162000,
+      "at": 176400,
       "text": "incident #7 raid high"
     },
     {
-      "at": 162000,
+      "at": 176400,
       "text": "raid: iron mine offline. lost none. pirates lost none. defences lost none. plunder Fe25 Si25 D0. winner attacker"
     }
   ],
   "finance": {
-    "cash": 2525.1672930687814,
+    "cash": 2752.4085008151033,
     "debt": 0.0,
     "pending": 0
   },
@@ -234,7 +234,7 @@
     }
   },
   "last_raid": {
-    "at": 162000,
+    "at": 176400,
     "batteries_missing": null,
     "defences_returned": 0,
     "ships_lost": {}
@@ -282,7 +282,7 @@
   ],
   "maintenance": {
     "assets": 3,
-    "orders": 0,
+    "orders": 1,
     "readings": 48
   },
   "missions": [],
@@ -350,13 +350,13 @@
     "unlocked_species": []
   },
   "raid": {
-    "lands_in_secs": 7200
+    "lands_in_secs": 28800
   },
   "rates": {
     "deuterium": 0.0,
     "helium_3": 0.0,
-    "iron": 49.5,
-    "rare_earths": 5.405887390905434,
+    "iron": 0.0,
+    "rare_earths": -3.2684684999999973,
     "silicon": 21.78979000000004,
     "water_ice": 0.0
   },
@@ -403,8 +403,8 @@
   "resources": {
     "deuterium": 0.0,
     "helium_3": 0.0,
-    "iron": 1338.424035,
-    "rare_earths": 28.99345983374171,
+    "iron": 1536.32751,
+    "rare_earths": 63.67396840337616,
     "silicon": 1357.613081951491,
     "water_ice": 0.0
   },
