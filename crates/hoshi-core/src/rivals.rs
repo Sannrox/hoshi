@@ -542,7 +542,7 @@ impl GameState {
         pocket.colonies.clear();
         pocket.missions.clear();
         pocket.routes.clear();
-        pocket.next_raid_at = None;
+        pocket.set_raid_schedule(None);
         pocket.config.raid.enabled = false;
         pocket.wonder = None;
         pocket.pending_tactical = None;

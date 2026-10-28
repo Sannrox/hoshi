@@ -99,11 +99,11 @@
     },
     {
       "at": 3600,
-      "text": "standing: Pirate clans 0 -> -8 (raid)"
+      "text": "standing: Pirate clans 0 -> -4 (raid)"
     },
     {
       "at": 3600,
-      "text": "raid: pirates 3 light fighter vs 5 light fighter. 6 rounds. lost none. pirates lost 3 light fighter. plunder Fe0 Si0 D0. winner defender"
+      "text": "raid: pirates 6 light fighter vs 5 light fighter. 6 rounds. lost 1 light fighter. pirates lost none. plunder Fe0 Si0 D0. winner draw"
     },
     {
       "at": 3600,
@@ -115,15 +115,15 @@
     },
     {
       "at": 32400,
-      "text": "standing: Pirate clans -5 -> -13 (raid)"
+      "text": "standing: Pirate clans -3 -> -11 (raid)"
     },
     {
       "at": 32400,
-      "text": "raid: pirates 6 light fighter vs 10 light fighter. 6 rounds. lost none. pirates lost 6 light fighter. plunder Fe0 Si0 D0. winner defender"
+      "text": "raid: pirates 2 light fighter vs 9 light fighter. 2 rounds. lost none. pirates lost 2 light fighter. plunder Fe0 Si0 D0. winner defender"
     }
   ],
   "finance": {
-    "cash": 792.0243684208878,
+    "cash": 805.1046266231284,
     "debt": 0.0,
     "pending": 0
   },
@@ -135,7 +135,7 @@
     "explorer": 0,
     "heavy_fighter": 0,
     "large_cargo": 0,
-    "light_fighter": 10,
+    "light_fighter": 9,
     "recycler": 0,
     "small_cargo": 0,
     "troop_transport": 0
@@ -336,7 +336,7 @@
     "empires": [],
     "enabled": false
   },
-  "save_schema": 57,
+  "save_schema": 58,
   "schema_version": 2,
   "season": null,
   "species": null,

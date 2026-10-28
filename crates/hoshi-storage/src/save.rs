@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 57;
+pub const SCHEMA_VERSION: u32 = 58;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -594,8 +594,11 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
         )?;
     }
     tx.execute(
-        "INSERT INTO raids (id, next_raid_at) VALUES (1, ?1)",
-        params![state.next_raid_at.map(|t| t as i64)],
+        "INSERT INTO raids (id, next_raid_at, next_raid_ships) VALUES (1, ?1, ?2)",
+        params![
+            state.next_raid_at.map(|t| t as i64),
+            state.next_raid_ships.map(i64::from)
+        ],
     )?;
     for (i, event) in state.events.iter().enumerate() {
         tx.execute(
@@ -1924,12 +1927,17 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         .map(|id| id.saturating_add(1))
         .unwrap_or(0);
 
-    let raid_row: Option<Option<i64>> = conn
-        .query_row("SELECT next_raid_at FROM raids WHERE id = 1", [], |row| {
-            row.get::<_, Option<i64>>(0)
-        })
+    let raid_row: Option<(Option<i64>, Option<i64>)> = conn
+        .query_row(
+            "SELECT next_raid_at, next_raid_ships FROM raids WHERE id = 1",
+            [],
+            |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?)),
+        )
         .optional()?;
-    state.next_raid_at = match raid_row {
+    state.next_raid_ships = raid_row
+        .and_then(|(_, ships)| ships)
+        .map(|n| u32::try_from(n).unwrap_or(0));
+    state.next_raid_at = match raid_row.map(|(at, _)| at) {
         Some(Some(ts)) => Some(unix_ts(ts)?),
         Some(None) => None,
         None if state.config.raid.enabled => Some(
@@ -2388,6 +2396,8 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     load_ladder(conn, &mut state)?;
     state.cheats = load_cheats(conn)?;
     load_frontier(conn, &mut state)?;
+    // Saves from before v58 have a scheduled raid without a size.
+    state.size_unsized_raid();
 
     Ok(state)
 }
@@ -3664,6 +3674,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     if found < 57 {
         migrate_v57(conn)?;
     }
+    if found < 58 {
+        migrate_v58(conn)?;
+    }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
 }
@@ -4824,6 +4837,20 @@ fn migrate_v50(conn: &Connection) -> Result<(), SaveError> {
             deuterium REAL NOT NULL CHECK (deuterium >= 0)
         );",
     )?;
+    Ok(())
+}
+
+/// v58: the scheduled raid's size, fixed when it was scheduled. Null for
+/// older saves; load sizes that raid from the loaded home.
+fn migrate_v58(conn: &Connection) -> Result<(), SaveError> {
+    let has = conn
+        .prepare("SELECT 1 FROM pragma_table_info('raids') WHERE name = 'next_raid_ships'")?
+        .exists([])?;
+    if !has {
+        conn.execute_batch(
+            "ALTER TABLE raids ADD COLUMN next_raid_ships INTEGER CHECK (next_raid_ships >= 0);",
+        )?;
+    }
     Ok(())
 }
 
@@ -9609,6 +9636,30 @@ label = "Leave it"
         assert_eq!(
             loaded.story_pending.as_ref().map(|p| p.event_id.as_str()),
             Some("alpha")
+        );
+    }
+
+    #[test]
+    fn the_scheduled_raid_size_survives_save_and_v57_saves_are_sized_on_load() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let mut state = GameState::new(100);
+        state.fleet.add(ShipKind::LightFighter, 10);
+        state.next_raid_ships = Some(4);
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.next_raid_ships, Some(4));
+        assert_eq!(loaded.next_raid_at, state.next_raid_at);
+        conn.execute_batch(
+            "ALTER TABLE raids DROP COLUMN next_raid_ships; PRAGMA user_version = 57;",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        let old = load_state(&conn, BalanceConfig::default()).unwrap();
+        // Sized from the loaded home: the ten fighters count.
+        assert!(
+            old.next_raid_ships.is_some_and(|n| n > 1),
+            "{:?}",
+            old.next_raid_ships
         );
     }
 

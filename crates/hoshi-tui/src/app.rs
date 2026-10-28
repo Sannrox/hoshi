@@ -4838,6 +4838,8 @@ mod tests {
         state.defences.add(DefenceKind::LightCannon, 6);
         state.resources = Resources::from_parts(9_000.0, 9_000.0, 9_000.0);
         state.next_raid_at = Some(1);
+        // Sized on landing from the raid config set above, not at new game.
+        state.next_raid_ships = None;
         let before = crate::title::snapshot_away(&state);
         let ledger = state.catch_up_ledger(1);
         let summary = crate::title::summarize_away(&before, ledger, &state);

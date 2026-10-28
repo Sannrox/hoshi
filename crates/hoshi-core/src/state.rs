@@ -343,6 +343,9 @@ pub struct GameState {
     pub next_automation_id: u64,
     pub next_automation_at: Option<u64>,
     pub next_raid_at: Option<u64>,
+    /// Pirate light fighters in the scheduled raid, fixed when it was
+    /// scheduled. `None` sizes the raid from the home's strength on landing.
+    pub next_raid_ships: Option<u32>,
     pub events: Vec<GameEvent>,
     pub activity: ActivityTracker,
     pub last_tick_unix: u64,
@@ -484,6 +487,7 @@ impl GameState {
             } else {
                 None
             },
+            next_raid_ships: None,
             events: Vec::new(),
             activity: ActivityTracker::default(),
             last_tick_unix: now_unix,
@@ -562,6 +566,10 @@ impl GameState {
         state.apply_prestige_start();
         state.sync_daily(now_unix);
         state.sync_maintenance_assets(now_unix);
+        // Size the first raid from the starting home, prestige bonuses included.
+        if state.next_raid_at.is_some() {
+            state.next_raid_ships = Some(state.live_raid_ships());
+        }
         state
     }
 
@@ -4831,7 +4839,7 @@ impl GameState {
     /// Run a raid now. The bridge and the scheduler share this path.
     /// Clears a pending schedule first so `catch_up` does not also resolve it.
     pub fn trigger_raid(&mut self, now_unix: u64) -> CombatReport {
-        self.next_raid_at = None;
+        self.set_raid_schedule(None);
         self.catch_up(now_unix);
         self.resolve_raid_at(self.last_tick_unix)
     }
@@ -4860,7 +4868,7 @@ impl GameState {
 
     fn begin_home_raid_pending(&mut self, done_at: u64) {
         let pirates = self.pirate_fleet();
-        self.next_raid_at = None;
+        self.set_raid_schedule(None);
         self.pending_tactical = Some(crate::PendingTactical {
             seed: self.rng_seed,
             attacker: pirates,
@@ -5223,9 +5231,12 @@ impl GameState {
         plunder: Resources,
         defence: Option<crate::RaidDefence>,
     ) -> CombatReport {
-        self.next_raid_at = self
+        // The landed raid's size is spent; the next one is sized now.
+        self.set_raid_schedule(None);
+        let next = self
             .raid_interval_secs(done_at)
             .map(|wait| done_at.saturating_add(wait));
+        self.set_raid_schedule(next);
         self.push_combat_log(done_at, report.clone());
         if let Some(log) = self.combat_logs.last_mut() {
             log.raid_plunder = Some(plunder);
@@ -5329,7 +5340,42 @@ impl GameState {
         self.pirate_fleet().total()
     }
 
+    /// Set or clear the next raid. A raid that becomes scheduled is sized
+    /// from the home's strength now; moving an already scheduled raid keeps
+    /// its size, so building during the countdown never grows it.
+    pub(crate) fn set_raid_schedule(&mut self, at: Option<u64>) {
+        match at {
+            None => self.next_raid_ships = None,
+            Some(_) if self.next_raid_at.is_none() || self.next_raid_ships.is_none() => {
+                self.next_raid_ships = Some(self.live_raid_ships());
+            }
+            Some(_) => {}
+        }
+        self.next_raid_at = at;
+    }
+
+    /// Fix the size of a scheduled raid that has none, as a save written
+    /// before sizes were stored. Call once the home is fully loaded.
+    pub fn size_unsized_raid(&mut self) {
+        if self.next_raid_at.is_some() && self.next_raid_ships.is_none() {
+            self.next_raid_ships = Some(self.live_raid_ships());
+        }
+    }
+
+    /// The scheduled raid: its fixed size, or the live size when none is stored.
     fn pirate_fleet(&self) -> Fleet {
+        let n = self
+            .next_raid_ships
+            .unwrap_or_else(|| self.live_raid_ships());
+        let mut fleet = Fleet::default();
+        if n > 0 {
+            fleet.add(ShipKind::LightFighter, n);
+        }
+        fleet
+    }
+
+    /// Raid size from the home's strength right now.
+    fn live_raid_ships(&self) -> u32 {
         let points =
             self.fleet_combat_points() + self.defences.combat_points(&self.config.defences);
         // Raiders fly catalog light fighters, so the share of points becomes
@@ -5342,14 +5388,9 @@ impl GameState {
         let signature = self
             .waste_home()
             .raid_ships(self.config.waste.raid_signature_per_overflow);
-        let n = scaled
+        scaled
             .max(self.config.raid.min_ships)
-            .saturating_add(signature);
-        let mut fleet = Fleet::default();
-        if n > 0 {
-            fleet.add(ShipKind::LightFighter, n);
-        }
-        fleet
+            .saturating_add(signature)
     }
 
     fn fleet_combat_points(&self) -> f64 {
@@ -6211,10 +6252,10 @@ impl GameState {
             && self.config.raid.enabled
         {
             let soon = at.saturating_add(60);
-            self.next_raid_at = Some(match self.next_raid_at {
-                Some(existing) => existing.min(soon),
-                None => soon,
-            });
+            let pulled = self
+                .next_raid_at
+                .map_or(soon, |existing| existing.min(soon));
+            self.set_raid_schedule(Some(pulled));
         }
         self.sync_raid_schedule_after_standing(at);
         self.maybe_declare_victory(at);
@@ -6227,9 +6268,9 @@ impl GameState {
             return;
         }
         match (self.next_raid_at, self.raid_interval_secs(at)) {
-            (_, None) => self.next_raid_at = None,
+            (_, None) => self.set_raid_schedule(None),
             (None, Some(wait)) => {
-                self.next_raid_at = Some(at.saturating_add(wait));
+                self.set_raid_schedule(Some(at.saturating_add(wait)));
             }
             _ => {}
         }
@@ -6300,10 +6341,10 @@ impl GameState {
         if choice.schedule_raid && self.config.raid.enabled && self.raid_interval_secs(at).is_some()
         {
             let soon = at.saturating_add(60);
-            self.next_raid_at = Some(match self.next_raid_at {
-                Some(existing) => existing.min(soon),
-                None => soon,
-            });
+            let pulled = self
+                .next_raid_at
+                .map_or(soon, |existing| existing.min(soon));
+            self.set_raid_schedule(Some(pulled));
         }
         if self.config.market.enabled {
             self.market
@@ -7932,7 +7973,7 @@ mod tests {
         assert!(raw.waste_home().overflowing());
         assert!(raw.unrest_factor() < 1.0);
         let quiet = raw.production_per_hour(ResourceKind::Iron);
-        let pirates = raw.pirate_fleet().get(crate::ShipKind::LightFighter);
+        let pirates = raw.live_raid_ships();
         assert!(pirates > 1, "{pirates}");
 
         let mut ok = raw.clone();
@@ -7941,7 +7982,7 @@ mod tests {
         assert!(!ok.waste_home().overflowing());
         close(ok.unrest_factor(), 1.0);
         assert!(ok.production_per_hour(ResourceKind::Iron) > quiet);
-        assert_eq!(ok.pirate_fleet().get(crate::ShipKind::LightFighter), 1);
+        assert_eq!(ok.live_raid_ships(), 1);
     }
 
     #[test]
@@ -9835,10 +9876,85 @@ modifiers = []
     fn a_raid_brings_a_share_of_the_homes_points_not_points_as_ships() {
         let mut state = GameState::new(0);
         state.fleet = Fleet::default();
-        assert_eq!(state.scheduled_raid_ships(), state.config.raid.min_ships);
+        assert_eq!(state.live_raid_ships(), state.config.raid.min_ships);
         state.fleet.add(ShipKind::LightFighter, 10);
         // 10 x (50 + 400) points x 0.6, in 450-point raiders.
-        assert_eq!(state.scheduled_raid_ships(), 6);
+        assert_eq!(state.live_raid_ships(), 6);
+    }
+
+    /// Raids on, a long first delay, ten fighters docked, storage to spare.
+    fn sized_raid_state() -> GameState {
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.first_delay_secs = 7_200;
+        cfg.diplomacy.enabled = false;
+        cfg.story = crate::StoryCatalog::empty();
+        let mut state = GameState::with_config(0, cfg);
+        state.fleet = Fleet::default();
+        state.fleet.add(ShipKind::LightFighter, 10);
+        state.set_raid_schedule(None);
+        state.set_raid_schedule(Some(7_200));
+        state
+    }
+
+    #[test]
+    fn building_during_the_countdown_does_not_grow_the_raid() {
+        let mut state = sized_raid_state();
+        let scheduled = state.scheduled_raid_ships();
+        assert_eq!(scheduled, 6);
+        state.defences.add(DefenceKind::HeavyCannon, 20);
+        state.fleet.add(ShipKind::LightFighter, 40);
+        assert_eq!(state.scheduled_raid_ships(), scheduled);
+        state.catch_up(7_200);
+        let landed = &state.combat_logs.last().unwrap().report;
+        assert_eq!(landed.attacker_before.total(), scheduled);
+        // The next raid is sized from the stronger home at scheduling.
+        assert!(
+            state.scheduled_raid_ships() > scheduled,
+            "{}",
+            state.scheduled_raid_ships()
+        );
+    }
+
+    #[test]
+    fn pulling_a_scheduled_raid_forward_keeps_its_size() {
+        let mut state = sized_raid_state();
+        let scheduled = state.scheduled_raid_ships();
+        state.fleet.add(ShipKind::LightFighter, 40);
+        state.set_raid_schedule(Some(60));
+        assert_eq!(state.next_raid_at, Some(60));
+        assert_eq!(state.scheduled_raid_ships(), scheduled);
+    }
+
+    #[test]
+    fn a_fixed_raid_lands_the_same_in_catch_up_and_steps() {
+        let run = |stepped: bool| {
+            let mut state = sized_raid_state();
+            state.resources = Resources::from_parts(50_000.0, 50_000.0, 50_000.0);
+            state.buildings.shipyard = 4;
+            state.tech_levels.insert("combustion_drive".into(), 1);
+            state.enqueue_ships(ShipKind::LightFighter, 10, 0).unwrap();
+            if stepped {
+                for now in (60..7_200).step_by(60) {
+                    state.catch_up(now);
+                }
+            }
+            state.catch_up(7_199);
+            assert_eq!(
+                state.fleet.get(ShipKind::LightFighter),
+                20,
+                "built before landing"
+            );
+            state.catch_up(7_260);
+            state
+                .combat_logs
+                .last()
+                .unwrap()
+                .report
+                .attacker_before
+                .total()
+        };
+        assert_eq!(run(false), 6);
+        assert_eq!(run(true), 6);
     }
 
     #[test]
