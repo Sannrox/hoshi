@@ -1117,47 +1117,68 @@ mod tests {
         std::time::Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
     }
 
-    #[test]
+    /// Thread CPU time for 50 catch-up, build and save cycles, persisted
+    /// through Chisei or, as the baseline, the default SQLite backend.
     #[cfg(unix)]
-    fn apply_save_throughput_stays_under_twelve_seconds_for_fifty() {
-        let path = unique_chisei("soak");
-        let mut store = ChiseiStorage::open(&path).unwrap();
+    fn fifty_build_cycles(chisei: bool) -> std::time::Duration {
+        use crate::Storage;
         let mut cfg = BalanceConfig::default();
         cfg.raid.enabled = false;
         let mut state = GameState::with_config(1_000, cfg);
         state.resources.iron = 500_000.0;
         state.resources.silicon = 500_000.0;
         state.resources.deuterium = 500_000.0;
+        let chisei_path = unique_chisei("soak");
+        let sqlite_path = crate::unique_temp_path("hoshi-soak", "sqlite");
+        let mut chi = ChiseiStorage::open(&chisei_path).unwrap();
+        let mut sql = crate::SqliteStorage::open(&sqlite_path).unwrap();
         let clock = FakeClock::new(1_000);
         let started = thread_cpu_time();
         for i in 0..50u32 {
             clock.advance(60);
             let now = clock.now_unix();
             state.catch_up(now);
-            let intent = if i.is_multiple_of(2) {
-                Intent::Build {
-                    planet: Coord::HOME,
-                    building: BuildingKind::MetalMine,
-                    actor: Actor::Player,
+            let building = if i.is_multiple_of(2) {
+                BuildingKind::MetalMine
+            } else {
+                BuildingKind::CrystalMine
+            };
+            let intent = Intent::Build {
+                planet: Coord::HOME,
+                building,
+                actor: Actor::Player,
+            };
+            if chisei {
+                if chi.apply_intent(&mut state, intent, now).is_err() {
+                    chi.save(&state).unwrap();
                 }
             } else {
-                Intent::Build {
-                    planet: Coord::HOME,
-                    building: BuildingKind::CrystalMine,
-                    actor: Actor::Player,
+                if let Ok(proposal) = hoshi_core::propose(&state, &intent, now) {
+                    let _ = hoshi_core::apply(&mut state, &proposal, now);
                 }
-            };
-            match store.apply_intent(&mut state, intent, now) {
-                Ok(_) => {}
-                Err(_) => store.save(&state).unwrap(),
+                sql.save(&state).unwrap();
             }
         }
         let elapsed = thread_cpu_time().saturating_sub(started);
+        drop((chi, sql));
+        cleanup_dir(&chisei_path);
+        cleanup_sqlite(&sqlite_path);
+        elapsed
+    }
+
+    /// Chisei's graph projection and write cost about 9.5x a plain SQLite
+    /// save on the same cycles. The guard is a ratio measured on this
+    /// thread, so a slower runner scales both sides; it trips if that work
+    /// roughly doubles.
+    #[test]
+    #[cfg(unix)]
+    fn apply_save_stays_within_twenty_times_sqlite_for_fifty() {
+        let sqlite = fifty_build_cycles(false);
+        let chisei = fifty_build_cycles(true);
+        let ratio = chisei.as_secs_f64() / sqlite.as_secs_f64().max(1e-6);
         assert!(
-            elapsed.as_secs_f64() < 12.0,
-            "50 apply+save cycles took {elapsed:?}"
+            ratio < 20.0,
+            "50 Chisei cycles took {chisei:?}, {ratio:.1}x the SQLite cycles ({sqlite:?})"
         );
-        drop(store);
-        cleanup_dir(&path);
     }
 }
