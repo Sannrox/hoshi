@@ -1228,6 +1228,7 @@ mod tests {
             attack: false,
             invade: false,
             spy: false,
+            site_id: None,
         });
         state
     }

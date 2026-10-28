@@ -871,6 +871,7 @@ mod tests {
             attack: false,
             invade: false,
             spy: false,
+            site_id: None,
         });
         let (mut gate, recording, path) = armed_gate(&state);
         subscribe(&mut gate, "https://fcm.googleapis.com/fcm/send/a");

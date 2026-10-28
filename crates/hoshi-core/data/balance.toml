@@ -359,6 +359,24 @@ pirate_per_point = 0.002
 pirate_min = 1
 delay_secs = 3600
 
+[expedition.sites.wreck]
+iron = 4000
+silicon = 2000
+deuterium = 500
+ships = 4
+
+[expedition.sites.cache]
+iron = 9000
+silicon = 1000
+deuterium = 3000
+ships = 0
+
+[expedition.sites.lane]
+iron = 1000
+silicon = 1000
+deuterium = 6000
+ships = 2
+
 [expedition.weights]
 nothing = 30
 resources = 32

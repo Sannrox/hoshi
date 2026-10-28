@@ -13,7 +13,9 @@ use crate::combat::{
 use crate::daily::{DailyAction, DailyBoard, mine_kind};
 use crate::defences::{DefenceKind, PlanetBattle};
 use crate::espionage::{SpyReport, resolve_spy, reveals};
-use crate::expedition::{ExpeditionResult, roll_expedition};
+use crate::expedition::{
+    ExpeditionResult, ExpeditionSite, place_expedition_sites, roll_expedition, scaled_weights,
+};
 use crate::fleets::{
     Coord, FleetError, Mission, MissionPhase, TradeRoute, distance, flight_secs, fuel_cost,
 };
@@ -356,6 +358,8 @@ pub struct GameState {
     pub wonder: Option<WonderJob>,
     pub completed_wonders: Vec<String>,
     pub outposts: Vec<Outpost>,
+    /// Finite expedition stockpiles for this galaxy. Older saves load this empty.
+    pub sites: Vec<ExpeditionSite>,
     pub prestige: Prestige,
     pub story_pending: Option<crate::PendingStory>,
     /// Flags written by story choices. Older saves load this empty.
@@ -491,6 +495,7 @@ impl GameState {
             wonder: None,
             completed_wonders: Vec::new(),
             outposts,
+            sites: Vec::new(),
             prestige: Prestige::new(now_unix),
             story_pending: None,
             story_flags: BTreeSet::new(),
@@ -551,6 +556,7 @@ impl GameState {
             config,
         };
         state.seed_pirate_home(now_unix);
+        state.install_expedition_sites();
         state.seed_frontier();
         state.install_starter_staff(now_unix);
         state.apply_prestige_start();
@@ -577,6 +583,7 @@ impl GameState {
             version,
         );
         state.seed_pirate_home(now_unix);
+        state.install_expedition_sites();
         state.seed_frontier();
         state.daily = DailyBoard::default();
         state.sync_daily(now_unix);
@@ -2403,6 +2410,7 @@ impl GameState {
             attack: false,
             invade: false,
             spy: false,
+            site_id: None,
         });
         self.record_history(crate::HistoryDraft {
             at: now,
@@ -2474,10 +2482,121 @@ impl GameState {
             };
             mission.expedition_seed = Some(next_u64(&mut self.rng_seed));
             mission.expedition_applied = false;
+            mission.site_id = None;
             mission.id
         };
         self.note_daily(DailyAction::ExpeditionLaunch, now_unix);
         Ok(id)
+    }
+
+    /// Replace sites from the current galaxy seed, home, and pirate coords.
+    fn install_expedition_sites(&mut self) {
+        let blocked: Vec<Coord> = self.outposts.iter().map(|outpost| outpost.coord).collect();
+        self.sites = place_expedition_sites(
+            self.galaxy_seed,
+            self.home,
+            &blocked,
+            self.config.expedition.dest_position,
+            &self.config.expedition.sites,
+        );
+    }
+
+    pub fn site_at(&self, coord: Coord) -> Option<&ExpeditionSite> {
+        self.sites.iter().find(|site| site.coord == coord)
+    }
+
+    /// Pirate weight the dispatch inspector shows. This is the table weight, not a roll.
+    pub fn expedition_pirate_weight(&self, ships: &Fleet, hold_secs: u64) -> u32 {
+        scaled_weights(
+            ships,
+            self.expedition_astro(),
+            hold_secs,
+            &self.config.expedition,
+            &self.config.ships,
+        )
+        .pirates
+    }
+
+    /// Fly to an open site. The mission stores the site id and an outcome seed.
+    /// A resolved site is refused. The config-slot action is [`Self::launch_expedition`].
+    pub fn launch_expedition_site(
+        &mut self,
+        site_id: u64,
+        ships: Fleet,
+        hold_secs: u64,
+        speed_percent: u8,
+        now_unix: u64,
+    ) -> Result<u64, FleetError> {
+        self.catch_up(now_unix);
+        let found = self
+            .sites
+            .iter()
+            .find(|site| site.id == site_id)
+            .map(|site| (site.coord, site.outcome));
+        let Some((dest, outcome)) = found else {
+            return Err(FleetError::UnknownSite { id: site_id });
+        };
+        if outcome.is_some() {
+            return Err(FleetError::SiteResolved { id: site_id });
+        }
+        let min = self.config.expedition.min_hold_secs;
+        let max = self.config.expedition.max_hold_secs;
+        if hold_secs < min || hold_secs > max {
+            return Err(FleetError::HoldOutOfRange {
+                got: hold_secs,
+                min,
+                max,
+            });
+        }
+        let cap = self.expedition_slots();
+        let used = self.expedition_used();
+        if used >= cap {
+            return Err(FleetError::NoExpeditionSlots { used, cap });
+        }
+        self.launch_fleet(ships, dest, speed_percent, hold_secs, now_unix)?;
+        let id = {
+            let Some(mission) = self.missions.last_mut() else {
+                return Err(FleetError::EmptyFleet);
+            };
+            mission.expedition_seed = Some(next_u64(&mut self.rng_seed));
+            mission.expedition_applied = false;
+            mission.site_id = Some(site_id);
+            mission.id
+        };
+        self.note_daily(DailyAction::ExpeditionLaunch, now_unix);
+        Ok(id)
+    }
+
+    /// Clamp a resource or ship find to the site budget and mark the site resolved.
+    fn pay_site(&mut self, site_id: u64, result: ExpeditionResult) -> ExpeditionResult {
+        let outcome = result.kind();
+        let ship_kind = self.config.expedition.ship_kind;
+        let Some(site) = self.sites.iter_mut().find(|site| site.id == site_id) else {
+            return result;
+        };
+        let paid = match result {
+            ExpeditionResult::Resources(found) => {
+                let iron = found.iron.min(site.iron).max(0.0);
+                let silicon = found.silicon.min(site.silicon).max(0.0);
+                let deuterium = found.deuterium.min(site.deuterium).max(0.0);
+                site.iron -= iron;
+                site.silicon -= silicon;
+                site.deuterium -= deuterium;
+                ExpeditionResult::Resources(Resources::from_parts(iron, silicon, deuterium))
+            }
+            ExpeditionResult::Ships(found) => {
+                let n = found.get(ship_kind).min(site.ships);
+                site.ships -= n;
+                let mut fleet = Fleet::default();
+                fleet.add(ship_kind, n);
+                ExpeditionResult::Ships(fleet)
+            }
+            other => other,
+        };
+        if let Some(site) = self.sites.iter_mut().find(|site| site.id == site_id) {
+            site.outcome = Some(outcome);
+        }
+        paid
     }
 
     pub fn owned_coords(&self) -> Vec<Coord> {
@@ -2719,6 +2838,7 @@ impl GameState {
             attack: false,
             invade: false,
             spy: false,
+            site_id: None,
         });
         self.record_history(crate::HistoryDraft {
             at: now,
@@ -3570,6 +3690,7 @@ impl GameState {
             }
         }
         next.seed_pirate_home(now);
+        next.install_expedition_sites();
         if rival_settings.enabled {
             let _ = next.spawn_rivals(&crate::RivalCatalog::default(), rival_settings);
         }
@@ -4108,7 +4229,7 @@ impl GameState {
         let ships = self.missions[index].ships;
         let hold = self.missions[index].hold_secs;
         let astro = self.expedition_astro();
-        let result = roll_expedition(
+        let mut result = roll_expedition(
             seed,
             &ships,
             astro,
@@ -4116,6 +4237,9 @@ impl GameState {
             &self.config.expedition,
             &self.config.ships,
         );
+        if let Some(site_id) = self.missions[index].site_id {
+            result = self.pay_site(site_id, result);
+        }
         if let Some(ledger) = &mut self.ledger {
             ledger.expeditions += 1;
         }
@@ -10121,6 +10245,147 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
         state.fleet.add(ShipKind::LightFighter, 10);
         state.resources.deuterium = 10_000.0;
         state
+    }
+
+    #[test]
+    fn same_seed_places_the_same_sites_and_budgets() {
+        let a = GameState::with_seed(0, BalanceConfig::default(), 42);
+        let b = GameState::with_seed(0, BalanceConfig::default(), 42);
+        assert_eq!(a.sites.len(), 3);
+        assert_eq!(a.sites, b.sites);
+        let kinds: Vec<_> = a.sites.iter().map(|site| site.kind.as_key()).collect();
+        assert_eq!(kinds, ["wreck", "cache", "lane"]);
+        assert!(
+            a.sites
+                .iter()
+                .all(|site| site.coord.system == a.home.system)
+        );
+        assert!(a.sites.iter().all(|site| site.coord != a.home));
+        assert!(
+            a.sites
+                .iter()
+                .all(|site| site.coord.position != a.config.expedition.dest_position)
+        );
+        assert!(a.sites.iter().all(|site| site.iron > 0.0 || site.ships > 0));
+    }
+
+    #[test]
+    fn site_payout_stays_inside_the_budget_and_a_resolved_site_refuses_another_launch() {
+        let mut state = expedition_state(0);
+        let site_id = state.sites[0].id;
+        state.sites[0].iron = 10.0;
+        state.sites[0].silicon = 0.0;
+        state.sites[0].deuterium = 0.0;
+        state.sites[0].ships = 0;
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::LightFighter, 10);
+        let seed = (0..10_000u64)
+            .find(|seed| {
+                matches!(
+                    roll_expedition(
+                        *seed,
+                        &ships,
+                        0,
+                        10,
+                        &state.config.expedition,
+                        &state.config.ships,
+                    ),
+                    ExpeditionResult::Resources(_)
+                )
+            })
+            .expect("a resource seed");
+        state
+            .launch_expedition_site(site_id, ships, 10, 100, 0)
+            .unwrap();
+        state.missions[0].expedition_seed = Some(seed);
+        state.buildings.metal_mine = 0;
+        state.buildings.crystal_mine = 0;
+        state.buildings.deuterium_synthesizer = 0;
+        let outbound = state.missions[0].outbound_secs;
+        state.resources.iron = 0.0;
+        state.catch_up(outbound);
+        assert!(state.resources.iron <= 10.0, "{}", state.resources.iron);
+        assert!(state.resources.iron > 0.0, "{}", state.resources.iron);
+        assert_eq!(state.sites[0].iron, 10.0 - state.resources.iron);
+        assert!(state.sites[0].outcome.is_some());
+        state.fleet.add(ShipKind::LightFighter, 10);
+        let err = state
+            .launch_expedition_site(site_id, scout_fleet(), 10, 100, state.last_tick_unix)
+            .unwrap_err();
+        assert_eq!(err, FleetError::SiteResolved { id: site_id });
+    }
+
+    #[test]
+    fn delay_does_not_spend_the_site_budget() {
+        let mut state = expedition_state(0);
+        let site_id = state.sites[0].id;
+        let budget = state.sites[0].iron;
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::LightFighter, 10);
+        let seed = (0..10_000u64)
+            .find(|seed| {
+                matches!(
+                    roll_expedition(
+                        *seed,
+                        &ships,
+                        0,
+                        10,
+                        &state.config.expedition,
+                        &state.config.ships,
+                    ),
+                    ExpeditionResult::Delay { .. }
+                )
+            })
+            .expect("a delay seed");
+        state
+            .launch_expedition_site(site_id, ships, 10, 100, 0)
+            .unwrap();
+        state.missions[0].expedition_seed = Some(seed);
+        let outbound = state.missions[0].outbound_secs;
+        state.catch_up(outbound);
+        assert_eq!(state.sites[0].iron, budget);
+        assert_eq!(state.sites[0].outcome, Some(crate::ExpeditionKind::Delay));
+    }
+
+    #[test]
+    fn site_catch_up_matches_step_by_step() {
+        let launch = |state: &mut GameState| {
+            let site_id = state.sites[0].id;
+            let mut ships = Fleet::default();
+            ships.add(ShipKind::LightFighter, 10);
+            state
+                .launch_expedition_site(site_id, ships, 10, 100, 0)
+                .unwrap();
+            state.missions[0].expedition_seed = Some(7);
+        };
+        let mut jumped = expedition_state(0);
+        launch(&mut jumped);
+        let done = jumped.missions[0].phase_ends_at
+            + jumped.missions[0].outbound_secs
+            + jumped.missions[0].hold_secs
+            + 1;
+        jumped.catch_up(done);
+        let mut stepped = expedition_state(0);
+        launch(&mut stepped);
+        let mut now = 0;
+        while now < done {
+            now += 1;
+            stepped.catch_up(now);
+        }
+        assert_eq!(jumped.sites, stepped.sites);
+        assert_eq!(jumped.fleet, stepped.fleet);
+        close(jumped.resources.iron, stepped.resources.iron);
+        close(jumped.resources.silicon, stepped.resources.silicon);
+        close(jumped.resources.deuterium, stepped.resources.deuterium);
+    }
+
+    #[test]
+    fn slot_expedition_still_reaches_the_config_position() {
+        let mut state = expedition_state(0);
+        state.sites.clear();
+        state.launch_expedition(scout_fleet(), 10, 100, 0).unwrap();
+        assert_eq!(state.missions[0].dest, state.expedition_dest());
+        assert!(state.missions[0].site_id.is_none());
     }
 
     #[test]

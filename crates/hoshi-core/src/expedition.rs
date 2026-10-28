@@ -2,6 +2,7 @@
 //! result survive save/load.
 
 use crate::combat::next_u64;
+use crate::fleets::Coord;
 use crate::ships::{Fleet, ShipCatalog, ShipKind};
 use crate::state::Resources;
 
@@ -75,6 +76,205 @@ pub enum ExpeditionKind {
     Loss,
 }
 
+impl ExpeditionKind {
+    pub fn as_key(self) -> &'static str {
+        match self {
+            Self::Nothing => "nothing",
+            Self::Resources => "resources",
+            Self::Ships => "ships",
+            Self::Delay => "delay",
+            Self::EarlyReturn => "early",
+            Self::Pirates => "pirates",
+            Self::Loss => "loss",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Some(match key {
+            "nothing" => Self::Nothing,
+            "resources" => Self::Resources,
+            "ships" => Self::Ships,
+            "delay" => Self::Delay,
+            "early" => Self::EarlyReturn,
+            "pirates" => Self::Pirates,
+            "loss" => Self::Loss,
+            _ => return None,
+        })
+    }
+}
+
+/// One placed stockpile. The kind is fixed at galaxy start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SiteKind {
+    Wreck,
+    Cache,
+    Lane,
+}
+
+impl SiteKind {
+    pub fn as_key(self) -> &'static str {
+        match self {
+            Self::Wreck => "wreck",
+            Self::Cache => "cache",
+            Self::Lane => "lane",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Some(match key {
+            "wreck" => Self::Wreck,
+            "cache" => Self::Cache,
+            "lane" => Self::Lane,
+            _ => return None,
+        })
+    }
+}
+
+/// Iron, silicon, deuterium and hulls a site can still pay.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SiteBudget {
+    pub iron: f64,
+    pub silicon: f64,
+    pub deuterium: f64,
+    pub ships: u32,
+}
+
+impl Default for SiteBudget {
+    fn default() -> Self {
+        Self {
+            iron: 0.0,
+            silicon: 0.0,
+            deuterium: 0.0,
+            ships: 0,
+        }
+    }
+}
+
+/// Budgets copied onto sites when a galaxy is created.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SiteBudgets {
+    pub wreck: SiteBudget,
+    pub cache: SiteBudget,
+    pub lane: SiteBudget,
+}
+
+impl Default for SiteBudgets {
+    fn default() -> Self {
+        Self {
+            wreck: SiteBudget {
+                iron: 4_000.0,
+                silicon: 2_000.0,
+                deuterium: 500.0,
+                ships: 4,
+            },
+            cache: SiteBudget {
+                iron: 9_000.0,
+                silicon: 1_000.0,
+                deuterium: 3_000.0,
+                ships: 0,
+            },
+            lane: SiteBudget {
+                iron: 1_000.0,
+                silicon: 1_000.0,
+                deuterium: 6_000.0,
+                ships: 2,
+            },
+        }
+    }
+}
+
+impl SiteBudgets {
+    pub fn of(&self, kind: SiteKind) -> SiteBudget {
+        match kind {
+            SiteKind::Wreck => self.wreck,
+            SiteKind::Cache => self.cache,
+            SiteKind::Lane => self.lane,
+        }
+    }
+}
+
+/// A finite find in the home system. `outcome` set means the site is resolved.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExpeditionSite {
+    pub id: u64,
+    pub coord: Coord,
+    pub kind: SiteKind,
+    pub iron: f64,
+    pub silicon: f64,
+    pub deuterium: f64,
+    pub ships: u32,
+    pub outcome: Option<ExpeditionKind>,
+}
+
+impl ExpeditionSite {
+    /// Map glyph. Open sites use the kind. Resolved sites use the outcome.
+    pub fn map_mark(&self) -> char {
+        match self.outcome {
+            Some(ExpeditionKind::Nothing) => 'n',
+            Some(ExpeditionKind::Resources) => 'r',
+            Some(ExpeditionKind::Ships) => 's',
+            Some(ExpeditionKind::Delay) => 'd',
+            Some(ExpeditionKind::EarlyReturn) => 'e',
+            Some(ExpeditionKind::Pirates) => 'p',
+            Some(ExpeditionKind::Loss) => 'x',
+            None => match self.kind {
+                SiteKind::Wreck => 'w',
+                SiteKind::Cache => 'k',
+                SiteKind::Lane => 'l',
+            },
+        }
+    }
+}
+
+/// Place up to one wreck, one cache and one lane on empty home-system coords.
+/// The expedition slot and anything in `blocked` are skipped. A full system
+/// yields fewer sites. The same seed and block list always yield the same coords.
+pub fn place_expedition_sites(
+    galaxy_seed: u64,
+    home: Coord,
+    blocked: &[Coord],
+    dest_position: u16,
+    budgets: &SiteBudgets,
+) -> Vec<ExpeditionSite> {
+    let mut slots = Vec::new();
+    for position in 1..dest_position {
+        let coord = Coord {
+            galaxy: home.galaxy,
+            system: home.system,
+            position,
+        };
+        if coord == home || blocked.contains(&coord) {
+            continue;
+        }
+        slots.push(coord);
+    }
+    let mut rng = galaxy_seed ^ 0x51FE_51FE_51FE_51FE;
+    for i in (1..slots.len()).rev() {
+        let j = (next_u64(&mut rng) as usize) % (i + 1);
+        slots.swap(i, j);
+    }
+    let kinds = [SiteKind::Wreck, SiteKind::Cache, SiteKind::Lane];
+    slots
+        .into_iter()
+        .take(kinds.len())
+        .enumerate()
+        .map(|(index, coord)| {
+            let kind = kinds[index];
+            let budget = budgets.of(kind);
+            ExpeditionSite {
+                id: index as u64 + 1,
+                coord,
+                kind,
+                iron: budget.iron.max(0.0),
+                silicon: budget.silicon.max(0.0),
+                deuterium: budget.deuterium.max(0.0),
+                ships: budget.ships,
+                outcome: None,
+            }
+        })
+        .collect()
+}
+
 /// Numbers for dest, hold window, slots and outcome scaling.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExpeditionConfig {
@@ -101,6 +301,8 @@ pub struct ExpeditionConfig {
     pub delay_secs: u64,
     /// Scales resource and ship finds. Seasonal rule sets set this above 1.
     pub reward_mult: f64,
+    /// Stockpiles copied onto sites at galaxy start.
+    pub sites: SiteBudgets,
 }
 
 impl Default for ExpeditionConfig {
@@ -125,6 +327,7 @@ impl Default for ExpeditionConfig {
             pirate_min: 1,
             delay_secs: 3600,
             reward_mult: 1.0,
+            sites: SiteBudgets::default(),
         }
     }
 }
@@ -242,6 +445,26 @@ pub fn roll_expedition(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_full_system_places_fewer_sites() {
+        let home = Coord::HOME;
+        let mut blocked = Vec::new();
+        for position in 1..16 {
+            let coord = Coord {
+                galaxy: home.galaxy,
+                system: home.system,
+                position,
+            };
+            if coord != home {
+                blocked.push(coord);
+            }
+        }
+        blocked.pop();
+        let sites = place_expedition_sites(7, home, &blocked, 16, &SiteBudgets::default());
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].kind, SiteKind::Wreck);
+    }
 
     #[test]
     fn same_seed_replays_the_same_outcome() {
