@@ -1401,6 +1401,14 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             "ALTER TABLE missions ADD COLUMN deploy INTEGER NOT NULL DEFAULT 0 "
             "CHECK (deploy IN (0, 1))",
         )
+    elif version == 58:
+        add_column(
+            conn,
+            "raids",
+            "next_raid_ships",
+            "ALTER TABLE raids ADD COLUMN next_raid_ships INTEGER "
+            "CHECK (next_raid_ships >= 0)",
+        )
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"
