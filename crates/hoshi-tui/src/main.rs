@@ -994,6 +994,7 @@ fn play_path(
     }
     let mut user = user.clone();
     let mut app = App::with_keymap(state, user.keys.clone());
+    app.save_name = title::slot_name(path);
     app.updates = Some(update_ui::UpdateUi::start(
         config_dir_for_save(path),
         &user,

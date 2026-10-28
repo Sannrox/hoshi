@@ -2507,7 +2507,8 @@ fn run_terminal(
     auth: &Mutex<Auth>,
     device: Option<&str>,
 ) -> Ending {
-    let app = crate::app::App::with_keymap(state, keys);
+    let mut app = crate::app::App::with_keymap(state, keys);
+    app.save_name = crate::title::slot_name(save);
     let Ok(mut session) = crate::terminal::Session::new(app) else {
         return Ending::Dropped;
     };

@@ -2610,13 +2610,7 @@ pub fn list_slots(dir: &Path, _now_unix: u64) -> Vec<Slot> {
         if name.contains(".mikura.state.") {
             continue;
         }
-        let stem = if name.ends_with(".mikura") {
-            name.trim_end_matches(".mikura").to_string()
-        } else if name.ends_with(".chisei") {
-            name.trim_end_matches(".chisei").to_string()
-        } else if name.ends_with(".sqlite") {
-            name.trim_end_matches(".sqlite").to_string()
-        } else {
+        let Some(stem) = slot_name(&path) else {
             continue;
         };
         let status = classify_slot(&path);
@@ -2628,6 +2622,16 @@ pub fn list_slots(dir: &Path, _now_unix: u64) -> Vec<Slot> {
     }
     slots.sort_by(|a, b| a.name.cmp(&b.name));
     slots
+}
+
+/// The name a save is listed under: its file name without the backend
+/// extension (`alpha.sqlite` is `alpha`). `None` for a file that is not a save.
+pub fn slot_name(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    [".mikura", ".chisei", ".sqlite"]
+        .into_iter()
+        .find_map(|ext| name.strip_suffix(ext))
+        .map(str::to_string)
 }
 
 pub fn classify_slot(path: &Path) -> SlotStatus {
@@ -2958,6 +2962,18 @@ mod tests {
         let path = dir.join(format!("{name}.sqlite"));
         let mut conn = open_save(&path).unwrap();
         save_state(&mut conn, state).unwrap();
+    }
+
+    #[test]
+    fn slot_names_drop_the_backend_extension() {
+        for (path, name) in [
+            ("saves/alpha.sqlite", Some("alpha")),
+            ("saves/beta.mikura", Some("beta")),
+            ("saves/gamma.chisei", Some("gamma")),
+            ("saves/notes.txt", None),
+        ] {
+            assert_eq!(slot_name(Path::new(path)).as_deref(), name, "{path}");
+        }
     }
 
     #[test]
