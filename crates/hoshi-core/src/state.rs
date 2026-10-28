@@ -5224,7 +5224,7 @@ impl GameState {
         defence: Option<crate::RaidDefence>,
     ) -> CombatReport {
         self.next_raid_at = self
-            .raid_interval_secs()
+            .raid_interval_secs(done_at)
             .map(|wait| done_at.saturating_add(wait));
         self.push_combat_log(done_at, report.clone());
         if let Some(log) = self.combat_logs.last_mut() {
@@ -5332,7 +5332,13 @@ impl GameState {
     fn pirate_fleet(&self) -> Fleet {
         let points =
             self.fleet_combat_points() + self.defences.combat_points(&self.config.defences);
-        let scaled = (points * self.config.raid.strength_factor).floor().max(0.0) as u32;
+        // Raiders fly catalog light fighters, so the share of points becomes
+        // a ship count by dividing by one fighter's points.
+        let fighter = self.config.ships.get(ShipKind::LightFighter);
+        let per_ship = (fighter.attack + fighter.hull).max(1.0);
+        let scaled = (points * self.config.raid.strength_factor / per_ship)
+            .floor()
+            .max(0.0) as u32;
         let signature = self
             .waste_home()
             .raid_ships(self.config.waste.raid_signature_per_overflow);
@@ -6127,11 +6133,15 @@ impl GameState {
         fee.clamp(0.0, 0.95)
     }
 
-    fn raid_interval_secs(&self) -> Option<u64> {
+    /// Gap before the next raid when one is scheduled at `at`: the base
+    /// interval scaled by the pirate standing tier, never shorter than the
+    /// base during the galaxy's early grace. `None` when raids are off.
+    fn raid_interval_secs(&self, at: u64) -> Option<u64> {
         if !self.config.raid.enabled {
             return None;
         }
         let base = self.config.raid.interval_secs.max(1);
+        let mut gap = base;
         if self.config.diplomacy.enabled
             && let Some(pirates) = self.config.diplomacy.get("pirates")
             && let Some(tier) = pirates.tier(self.diplomacy.standing("pirates"))
@@ -6139,9 +6149,13 @@ impl GameState {
             if tier.raid_delay_mult == 0.0 {
                 return None;
             }
-            return Some(((base as f64) * tier.raid_delay_mult).round().max(1.0) as u64);
+            gap = ((base as f64) * tier.raid_delay_mult).round().max(1.0) as u64;
         }
-        Some(base)
+        let age = at.saturating_sub(self.prestige.current.started_at);
+        if age < self.config.raid.early_grace_secs {
+            gap = gap.max(base);
+        }
+        Some(gap)
     }
 
     pub(crate) fn apply_faction_delta(
@@ -6212,7 +6226,7 @@ impl GameState {
         if !self.config.raid.enabled {
             return;
         }
-        match (self.next_raid_at, self.raid_interval_secs()) {
+        match (self.next_raid_at, self.raid_interval_secs(at)) {
             (_, None) => self.next_raid_at = None,
             (None, Some(wait)) => {
                 self.next_raid_at = Some(at.saturating_add(wait));
@@ -6283,7 +6297,8 @@ impl GameState {
                 self.fleet.saturating_sub(kind, delta.unsigned_abs());
             }
         }
-        if choice.schedule_raid && self.config.raid.enabled && self.raid_interval_secs().is_some() {
+        if choice.schedule_raid && self.config.raid.enabled && self.raid_interval_secs(at).is_some()
+        {
             let soon = at.saturating_add(60);
             self.next_raid_at = Some(match self.next_raid_at {
                 Some(existing) => existing.min(soon),
@@ -9817,6 +9832,16 @@ modifiers = []
     }
 
     #[test]
+    fn a_raid_brings_a_share_of_the_homes_points_not_points_as_ships() {
+        let mut state = GameState::new(0);
+        state.fleet = Fleet::default();
+        assert_eq!(state.scheduled_raid_ships(), state.config.raid.min_ships);
+        state.fleet.add(ShipKind::LightFighter, 10);
+        // 10 x (50 + 400) points x 0.6, in 450-point raiders.
+        assert_eq!(state.scheduled_raid_ships(), 6);
+    }
+
+    #[test]
     fn raid_strength_grows_with_planet_defences() {
         let mut bare = GameState::new(0);
         bare.fleet.add(ShipKind::LightFighter, 10);
@@ -11093,6 +11118,8 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         cfg.raid.protected_share = 0.0;
         cfg.raid.first_delay_secs = 1800;
         cfg.raid.min_warning_secs = 600;
+        // A raid the two cargo ships cannot hold, so plunder is in the ledger.
+        cfg.raid.min_ships = 10;
         cfg.crystal_storage.base = 2_000.0;
         cfg.buildings.metal_mine = cheap_spec(1_800.0);
         cfg.starting_resources = Resources::from_parts(20_000.0, 2_000.0, 500.0);
@@ -12864,19 +12891,49 @@ label = "Skip"
     }
 
     #[test]
+    fn early_grace_keeps_the_base_gap_until_it_ends_and_a_pact_still_stops_raids() {
+        let mut cfg = diplomacy_config();
+        cfg.raid.enabled = true;
+        cfg.raid.interval_secs = 100;
+        cfg.raid.early_grace_secs = 1_000;
+        let mut state = GameState::with_config(0, cfg);
+        state.diplomacy.set_standing("pirates", -100.0);
+        assert_eq!(
+            state.raid_interval_secs(999),
+            Some(100),
+            "hostile, inside grace"
+        );
+        assert_eq!(
+            state.raid_interval_secs(1_000),
+            Some(50),
+            "hostile, after grace"
+        );
+        state.diplomacy.set_standing("pirates", 25.0);
+        assert_eq!(
+            state.raid_interval_secs(0),
+            Some(200),
+            "a longer gap is kept"
+        );
+        state.diplomacy.set_standing("pirates", 60.0);
+        assert_eq!(state.raid_interval_secs(0), None, "pact inside grace");
+    }
+
+    #[test]
     fn pirate_tiers_change_raid_delay_and_pact_stops_raids() {
         let mut cfg = diplomacy_config();
         cfg.raid.enabled = true;
         cfg.raid.interval_secs = 100;
         cfg.raid.first_delay_secs = 100;
+        // The tiers themselves, without the early grace.
+        cfg.raid.early_grace_secs = 0;
         let mut state = GameState::with_config(0, cfg);
-        assert_eq!(state.raid_interval_secs(), Some(100));
+        assert_eq!(state.raid_interval_secs(0), Some(100));
         state.diplomacy.set_standing("pirates", -100.0);
-        assert_eq!(state.raid_interval_secs(), Some(50));
+        assert_eq!(state.raid_interval_secs(0), Some(50));
         state.diplomacy.set_standing("pirates", 25.0);
-        assert_eq!(state.raid_interval_secs(), Some(200));
+        assert_eq!(state.raid_interval_secs(0), Some(200));
         state.diplomacy.set_standing("pirates", 60.0);
-        assert_eq!(state.raid_interval_secs(), None);
+        assert_eq!(state.raid_interval_secs(0), None);
         state.sync_raid_schedule_after_standing(0);
         assert_eq!(state.next_raid_at, None);
         state.diplomacy.set_standing("pirates", 0.0);

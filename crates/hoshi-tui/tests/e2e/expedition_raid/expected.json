@@ -3,6 +3,10 @@
     {
       "id": "first_fighter",
       "unlocked_at": 333
+    },
+    {
+      "id": "raid_survived",
+      "unlocked_at": 3600
     }
   ],
   "build_queue": [],
@@ -36,10 +40,10 @@
     "resets_in_secs": 43200,
     "slots": [
       {
-        "done": false,
+        "done": true,
         "id": "win_raid",
         "name": "Hold the pirates",
-        "progress": 0,
+        "progress": 1,
         "target": 1
       },
       {
@@ -95,35 +99,31 @@
     },
     {
       "at": 3600,
-      "text": "standing: Pirate clans 0 -> -4 (raid)"
+      "text": "standing: Pirate clans 0 -> -8 (raid)"
     },
     {
       "at": 3600,
-      "text": "incident #1 raid high"
+      "text": "raid: pirates 3 light fighter vs 5 light fighter. 6 rounds. lost none. pirates lost 3 light fighter. plunder Fe0 Si0 D0. winner defender"
     },
     {
       "at": 3600,
-      "text": "raid: iron mine offline. lost 5 light fighter. pirates lost none. defences lost none. plunder Fe553 Si285 D4750. winner attacker"
+      "text": "daily: Hold the pirates complete"
     },
     {
       "at": 3600,
-      "text": "moon formed at 1:1:1"
+      "text": "achievement: Raid survived"
     },
     {
       "at": 32400,
-      "text": "standing: Pirate clans -3 -> -7 (raid)"
+      "text": "standing: Pirate clans -5 -> -13 (raid)"
     },
     {
       "at": 32400,
-      "text": "incident #2 raid high"
-    },
-    {
-      "at": 32400,
-      "text": "raid: iron mine offline. lost 5 light fighter. pirates lost none. defences lost none. plunder Fe342 Si231 D2375. winner attacker"
+      "text": "raid: pirates 6 light fighter vs 10 light fighter. 6 rounds. lost none. pirates lost 6 light fighter. plunder Fe0 Si0 D0. winner defender"
     }
   ],
   "finance": {
-    "cash": 535.031786309173,
+    "cash": 792.0243684208878,
     "debt": 0.0,
     "pending": 0
   },
@@ -135,7 +135,7 @@
     "explorer": 0,
     "heavy_fighter": 0,
     "large_cargo": 0,
-    "light_fighter": 0,
+    "light_fighter": 10,
     "recycler": 0,
     "small_cargo": 0,
     "troop_transport": 0
@@ -180,9 +180,7 @@
     "at": 32400,
     "batteries_missing": null,
     "defences_returned": 0,
-    "ships_lost": {
-      "light_fighter": 5
-    }
+    "ships_lost": {}
   },
   "laws": [],
   "leaders": [
@@ -208,19 +206,12 @@
   ],
   "maintenance": {
     "assets": 3,
-    "orders": 1,
+    "orders": 0,
     "readings": 36
   },
   "missions": [],
   "modified": false,
-  "moons": [
-    {
-      "jump_gate": 0,
-      "jump_ready_at": 0,
-      "parent": "1:1:1",
-      "phalanx": 0
-    }
-  ],
+  "moons": [],
   "now": 43200,
   "ok": true,
   "outposts": [
@@ -288,9 +279,9 @@
   "rates": {
     "deuterium": 0.0,
     "helium_3": 0.0,
-    "iron": 0.0,
-    "rare_earths": -3.2922779999999996,
-    "silicon": 21.94852000000003,
+    "iron": 32.922779999999875,
+    "rare_earths": 2.4770939320804786,
+    "silicon": 21.948519999999917,
     "water_ice": 0.0
   },
   "research": {
@@ -334,11 +325,11 @@
     "queue": []
   },
   "resources": {
-    "deuterium": 2875.0,
+    "deuterium": 10000.0,
     "helium_3": 0.0,
-    "iron": 842.480695,
-    "rare_earths": 14.350224638756517,
-    "silicon": 796.5440799999999,
+    "iron": 2018.5752899999993,
+    "rare_earths": 54.762892153699454,
+    "silicon": 1337.71686,
     "water_ice": 0.0
   },
   "rivals": {

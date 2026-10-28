@@ -93,6 +93,10 @@ hold over weeks under any strategy.
 
 `[espionage]` scores a probe wave as `probes * probe_weight + (own_espionage - target_level) * level_weight`. Own espionage is the existing research/faction modifier. The report tier is the highest `[[espionage.tiers]]` whose `min_score` the score still meets (activity, resources, fleet, defences, garrison). Detection chance is `detect_base + probes * detect_per_probe - (own - target) * detect_per_level`, clamped to `[0, 1]`. A detection then rolls `destroy_chance` once per probe and applies `decoy_bias` to counts. Measurement error is `error_base + error_per_au * range_au / quality`; light delay is radial range over `c`. Confidence starts from that error and spends `age_penalty_per_hour`. The TUI Intel screen lists age and confidence; Enter opens every arrived report for that target; `s` sends one probe. `hoshi intel` / `hoshi intel provenance` print the same facts.
 
+## Raids
+
+`[raid]` schedules pirate raids on home. A raid brings `strength_factor` (bundled 0.6) of the home's combat points (attack plus hull of the docked fleet and defences) as pirate light fighters: `floor(points * strength_factor / light_fighter_points)`, at least `min_ships`, plus heat-signature ships. Raids therefore grow with the home but stay below its strength. The gap between landings is `interval_secs` scaled by the pirate standing tier (`raid_delay_mult` in `factions.toml`); for `early_grace_secs` after the galaxy began (bundled three days) it never drops below `interval_secs`. A tier with `raid_delay_mult = 0` stops raids, grace or not. Winners take `plunder_share` of stock above `protected_share` of storage, capped by `plunder_cap` and the raiders' cargo.
+
 ## Outposts
 
 `[outposts]` places pirate worlds from the galaxy seed. `min_ships` and
