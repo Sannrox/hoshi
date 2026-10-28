@@ -401,6 +401,8 @@ overhead_secs = 10.0
 secs_per_root = 1100.0
 fuel_distance = 35000.0
 base_fleet_slots = 1
+# Longest hold `fleet deploy` accepts (one week).
+deploy_max_hold_secs = 604800
 
 # Circular-orbit planning for PlanMission. Lengths are metres; coast_compress
 # is game seconds per real coast second. Existing fleet send still uses [flight].

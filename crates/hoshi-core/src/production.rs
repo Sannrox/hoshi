@@ -804,6 +804,7 @@ mod tests {
             spy: false,
             site_id: None,
             recycle: false,
+            deploy: false,
         });
         let with_flight = state.production_report();
         let forge = with_flight.steps.iter().find(|s| s.id == "forge").unwrap();

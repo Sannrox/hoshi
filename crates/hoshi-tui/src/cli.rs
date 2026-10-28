@@ -111,6 +111,15 @@ crate::help::catalog_commands! {
         mission: MissionKind,
         ships: Fleet,
     },
+    #[help("fleet deploy", "Hold cargo away from a home raid, then bring it back.", "fleet deploy FROM TO HOLD_SECS RESOURCE=AMOUNT... SHIP:COUNT...", "fleet deploy home 1:1:9 3600 iron=2000 large_cargo:2")]
+    FleetDeploy {
+        from: Coord,
+        to: Coord,
+        hold_secs: u64,
+        /// `resource=amount` specs, parsed when applied like other amounts.
+        cargo: Vec<String>,
+        ships: Fleet,
+    },
     #[help("tick", "Advance a deterministic harness save.", "tick --advance DURATION", "tick --advance 60")]
     Tick {
         advance: u64,
@@ -1205,6 +1214,19 @@ fn apply(
                 }
             }
             Ok(ok_state(state, "cancelled"))
+        }
+        Command::FleetDeploy {
+            from,
+            to,
+            hold_secs,
+            cargo,
+            ships,
+        } => {
+            let cargo = parse_cargo(cargo)?;
+            state
+                .launch_deploy(*from, *to, *ships, cargo, *hold_secs, 100, now)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, "deployed"))
         }
         Command::FleetSend {
             from,
@@ -2735,6 +2757,8 @@ fn state_value(state: &GameState, actor: Actor) -> Value {
             "dest": m.dest.to_string(),
             "phase": m.phase.as_key(),
             "phase_ends_at": m.phase_ends_at,
+            "deploy": m.deploy,
+            "cargo": resources_json(m.cargo),
         })).collect::<Vec<_>>(),
         "planets": planets,
         "outposts": state.outposts.iter().map(|o| json!({
@@ -3392,9 +3416,30 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
             expect_end(args, 2)?;
             Ok(Command::Cancel { item })
         }
+        "fleet" if args.get(1).map(String::as_str) == Some("deploy") => {
+            const USAGE: &str =
+                "fleet deploy <from> <to> <hold_secs> <resource=amount...> <ships...>";
+            let from = parse_coord(nth(args, 2, USAGE)?)?;
+            let to = parse_coord(nth(args, 3, USAGE)?)?;
+            let hold_secs: u64 = nth(args, 4, USAGE)?
+                .parse()
+                .map_err(|_| CliError::Invalid(format!("invalid hold in {USAGE}")))?;
+            let (cargo, ships): (Vec<_>, Vec<_>) =
+                args[5..].iter().cloned().partition(|a| a.contains('='));
+            parse_cargo(&cargo)?;
+            Ok(Command::FleetDeploy {
+                from,
+                to,
+                hold_secs,
+                cargo,
+                ships: parse_ships(&ships)?,
+            })
+        }
         "fleet" => {
             if nth(args, 1, "fleet send ...")? != "send" {
-                return Err(CliError::Invalid("expected fleet send".into()));
+                return Err(CliError::Invalid(
+                    "expected fleet send or fleet deploy".into(),
+                ));
             }
             let from = parse_coord(nth(args, 2, "fleet send <from> <to> <mission> <ships...>")?)?;
             let to = parse_coord(nth(args, 3, "fleet send <from> <to> <mission> <ships...>")?)?;
@@ -5243,6 +5288,25 @@ fn parse_mission(text: &str) -> Result<MissionKind, CliError> {
     }
 }
 
+/// `iron=2000 silicon=500` into cargo. Every amount must be finite and >= 0.
+fn parse_cargo(args: &[String]) -> Result<hoshi_core::Resources, CliError> {
+    let mut cargo = hoshi_core::Resources::ZERO;
+    for spec in args {
+        let (key, amount) = spec
+            .split_once('=')
+            .ok_or_else(|| CliError::Invalid(format!("invalid cargo spec {spec}")))?;
+        let kind = ResourceKind::from_key(key)
+            .ok_or_else(|| CliError::Invalid(format!("unknown resource {key}")))?;
+        let amount: f64 = amount
+            .parse()
+            .ok()
+            .filter(|n: &f64| n.is_finite() && *n >= 0.0)
+            .ok_or_else(|| CliError::Invalid(format!("invalid cargo amount {spec}")))?;
+        cargo.set(kind, cargo.get(kind) + amount);
+    }
+    Ok(cargo)
+}
+
 fn parse_ships(args: &[String]) -> Result<Fleet, CliError> {
     let mut fleet = Fleet::default();
     if args.is_empty() {
@@ -5921,6 +5985,53 @@ mod tests {
         );
         assert_eq!(value["defences_returned"], losses.defences_returned);
         assert_eq!(value["batteries_missing"], json!(losses.batteries_missing));
+    }
+
+    #[test]
+    fn fleet_deploy_lifts_cargo_and_state_shows_it() {
+        let dir = unique_save("deploy").with_extension("d");
+        std::fs::create_dir_all(&dir).unwrap();
+        let save = dir.join("save.sqlite");
+        let mut state = GameState::new(0);
+        state.deterministic = true;
+        state.resources = hoshi_core::Resources::from_parts(5_000.0, 5_000.0, 10_000.0);
+        state.fleet.add(ShipKind::LargeCargo, 1);
+        let mut conn = open_save(&save).unwrap();
+        save_state(&mut conn, &state).unwrap();
+        drop(conn);
+        let (value, exit) = run_on(
+            &save,
+            &[
+                "fleet",
+                "deploy",
+                "home",
+                "1:1:9",
+                "600",
+                "iron=1000",
+                "silicon=250",
+                "large_cargo:1",
+            ],
+        );
+        assert_eq!(exit, EXIT_OK, "{value}");
+        let mission = &value["missions"][0];
+        assert_eq!(mission["deploy"], true);
+        assert_eq!(mission["cargo"]["iron"], 1000.0);
+        assert_eq!(mission["cargo"]["silicon"], 250.0);
+        assert_eq!(value["resources"]["iron"], 4000.0);
+        let (bad, exit) = run_on(
+            &save,
+            &[
+                "fleet",
+                "deploy",
+                "home",
+                "1:1:9",
+                "600",
+                "iron=-5",
+                "large_cargo:1",
+            ],
+        );
+        assert_ne!(exit, EXIT_OK, "{bad}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

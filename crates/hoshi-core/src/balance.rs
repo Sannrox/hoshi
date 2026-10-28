@@ -1571,6 +1571,12 @@ struct FileFlight {
     secs_per_root: f64,
     fuel_distance: f64,
     base_fleet_slots: u32,
+    #[serde(default = "default_deploy_max_hold_secs")]
+    deploy_max_hold_secs: u64,
+}
+
+fn default_deploy_max_hold_secs() -> u64 {
+    7 * 86_400
 }
 
 #[derive(Deserialize)]
@@ -1674,6 +1680,8 @@ impl File {
                 secs_per_root: self.flight.secs_per_root,
                 fuel_distance: self.flight.fuel_distance,
                 base_fleet_slots: self.flight.base_fleet_slots,
+                // Capped so launch + hold always fits a stored timestamp.
+                deploy_max_hold_secs: self.flight.deploy_max_hold_secs.min(365 * 86_400),
             },
             raid: RaidConfig {
                 enabled: self.raid.enabled,

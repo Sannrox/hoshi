@@ -848,12 +848,22 @@ fn upcoming_lines(state: &GameState, width: usize, t: &Theme) -> Vec<Line<'stati
     for mission in &state.missions {
         items.push((
             mission.phase_ends_at.saturating_sub(now),
-            format!(
-                "fleet #{} {} → {}",
-                mission.id,
-                mission.phase.as_key(),
-                mission.dest
-            ),
+            if mission.deploy {
+                format!(
+                    "fleet #{} {} → {} · cargo {}",
+                    mission.id,
+                    mission.phase.as_key(),
+                    mission.dest,
+                    mission.cargo.brief()
+                )
+            } else {
+                format!(
+                    "fleet #{} {} → {}",
+                    mission.id,
+                    mission.phase.as_key(),
+                    mission.dest
+                )
+            },
             Intent::Primary,
         ));
     }
@@ -1877,6 +1887,29 @@ mod tests {
         state.config.raid.enabled = false;
         let rows = alerts(&state, None);
         assert!(!rows.iter().any(|row| row.text.contains("Incoming raid")));
+    }
+
+    #[test]
+    fn the_upcoming_row_names_a_deploys_cargo() {
+        let mut state = GameState::new(1_000);
+        state.resources = Resources::from_parts(5_000.0, 5_000.0, 10_000.0);
+        state.fleet.add(hoshi_core::ShipKind::LargeCargo, 1);
+        let mut ships = hoshi_core::Fleet::default();
+        ships.add(hoshi_core::ShipKind::LargeCargo, 1);
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 9,
+        };
+        let cargo = Resources::from_parts(1_000.0, 0.0, 0.0);
+        state
+            .launch_deploy(state.home, dest, ships, cargo, 600, 100, 1_000)
+            .unwrap();
+        let text: String = upcoming_lines(&state, 120, &Theme::default())
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.to_string()))
+            .collect();
+        assert!(text.contains(&format!("cargo {}", cargo.brief())), "{text}");
     }
 
     #[test]

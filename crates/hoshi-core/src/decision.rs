@@ -299,6 +299,7 @@ mod tests {
             spy: false,
             site_id: None,
             recycle: false,
+            deploy: false,
         });
         assert!(expiring_decision(&state).is_none());
     }

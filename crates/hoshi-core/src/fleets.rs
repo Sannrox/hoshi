@@ -60,6 +60,8 @@ pub struct FlightConfig {
     /// Fuel is `sum(count * fuel) * distance / fuel_distance * speed_percent/100`.
     pub fuel_distance: f64,
     pub base_fleet_slots: u32,
+    /// Longest hold a deploy may ask for; keeps phase deadlines storable.
+    pub deploy_max_hold_secs: u64,
 }
 
 impl Default for FlightConfig {
@@ -75,6 +77,7 @@ impl Default for FlightConfig {
             secs_per_root: 1_100.0,
             fuel_distance: 35_000.0,
             base_fleet_slots: 1,
+            deploy_max_hold_secs: 7 * 86_400,
         }
     }
 }
@@ -172,6 +175,9 @@ pub struct Mission {
     pub site_id: Option<u64>,
     /// Action lifts debris into `cargo`; Return credits it at the origin.
     pub recycle: bool,
+    /// Cargo lifted at launch rides along and Return credits it at the
+    /// origin, out of reach of a home raid meanwhile.
+    pub deploy: bool,
 }
 
 /// A repeating transport between two owned planets.
@@ -232,6 +238,8 @@ pub enum FleetError {
     UnknownPlanet,
     NotOwned,
     UnknownOutpost,
+    /// Deploy holds at an owned or empty coord, never a pirate outpost.
+    DeployToOutpost,
     DefencesRemain,
     NeedTroopTransport,
     NeedEspionageProbe,
@@ -307,6 +315,9 @@ impl fmt::Display for FleetError {
             FleetError::UnknownPlanet => write!(f, "unknown planet"),
             FleetError::NotOwned => write!(f, "destination is not an owned planet"),
             FleetError::UnknownOutpost => write!(f, "no pirate outpost at destination"),
+            FleetError::DeployToOutpost => {
+                write!(f, "deploy holds at an owned or empty coord, not an outpost")
+            }
             FleetError::DefencesRemain => {
                 write!(f, "invasion refused while orbital defences remain")
             }

@@ -472,6 +472,21 @@ hoshi flagship relocate 1:1:2
 .fi
 .PP
 Environment: HOSHI_SAVE, HOSHI_BALANCE
+.SS fleet deploy
+Hold cargo away from a home raid, then bring it back.
+.PP
+Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair\-play restrictions.
+.PP
+.nf
+hoshi fleet deploy FROM TO HOLD_SECS RESOURCE=AMOUNT... SHIP:COUNT...
+.fi
+.PP
+Example:
+.nf
+hoshi fleet deploy home 1:1:9 3600 iron=2000 large_cargo:2
+.fi
+.PP
+Environment: HOSHI_SAVE, HOSHI_BALANCE
 .SS fleet send
 Dispatch ships on a mission.
 .PP

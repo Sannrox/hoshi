@@ -371,6 +371,7 @@ mod tests {
             spy: false,
             site_id: None,
             recycle: false,
+            deploy: false,
         });
         watch = Watch::from_state(&state);
         state.missions.clear();
