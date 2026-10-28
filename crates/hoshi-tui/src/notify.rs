@@ -369,6 +369,7 @@ mod tests {
             attack: false,
             invade: false,
             spy: false,
+            site_id: None,
         });
         watch = Watch::from_state(&state);
         state.missions.clear();

@@ -1024,6 +1024,8 @@ fn map_lines(
                 ('P', t.intent(Intent::Danger))
             } else if state.missions.iter().any(|m| m.dest == coord) {
                 ('f', t.intent(Intent::Warning))
+            } else if let Some(site) = state.site_at(coord) {
+                (site.map_mark(), t.intent(Intent::Warning))
             } else {
                 ('·', t.faint())
             };
@@ -1038,6 +1040,12 @@ fn map_lines(
             spans.push(Span::styled(ch.to_string(), style));
             if coord == state.home {
                 labels.push("home".to_string());
+            } else if let Some(site) = state.site_at(coord) {
+                let label = match site.outcome {
+                    Some(outcome) => format!("{} {}", site.kind.as_key(), outcome.as_key()),
+                    None => site.kind.as_key().to_string(),
+                };
+                labels.push(label);
             }
         }
         for mission in &state.missions {
@@ -1858,6 +1866,28 @@ mod tests {
         state.config.raid.enabled = false;
         let rows = alerts(&state, None);
         assert!(!rows.iter().any(|row| row.text.contains("Incoming raid")));
+    }
+
+    #[test]
+    fn map_marks_open_sites_by_kind_and_resolved_sites_by_outcome() {
+        let mut state = GameState::new(1_000);
+        assert!(state.sites.len() >= 2);
+        state.sites[1].outcome = Some(hoshi_core::ExpeditionKind::Resources);
+        let open = state.sites[0].map_mark();
+        let resolved = state.sites[1].map_mark();
+        let lines = map_lines(&state, state.home.system, 1, 20, 160, &Theme::default());
+        let text: String = lines
+            .iter()
+            .flat_map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref().to_string())
+            })
+            .collect();
+        assert!(text.contains(open), "{text}");
+        assert!(text.contains(resolved), "{text}");
+        assert!(text.contains(state.sites[0].kind.as_key()), "{text}");
+        assert!(text.contains("resources"), "{text}");
     }
 
     #[test]

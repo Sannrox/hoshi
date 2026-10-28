@@ -2566,6 +2566,12 @@ impl App {
             } else {
                 &[Mission::Attack, Mission::Spy, Mission::Invade]
             }
+        } else if self
+            .state
+            .site_at(dest)
+            .is_some_and(|site| site.outcome.is_none())
+        {
+            &[Mission::Expedition]
         } else if self.state.owned_coords().contains(&dest) {
             &[]
         } else {
@@ -2662,7 +2668,14 @@ impl App {
             }
             Mission::Expedition => {
                 let hold = self.state.config.expedition.min_hold_secs;
-                self.state.launch_expedition(ships, hold, 100, now_unix)
+                // A site that resolved while the form was open is refused,
+                // never redirected to the config slot.
+                if let Some(site_id) = self.state.site_at(dest).map(|site| site.id) {
+                    self.state
+                        .launch_expedition_site(site_id, ships, hold, 100, now_unix)
+                } else {
+                    self.state.launch_expedition(ships, hold, 100, now_unix)
+                }
             }
         };
         match launched {
@@ -6499,6 +6512,62 @@ mod tests {
         assert_eq!(app.dispatch.unwrap().mission, Mission::Spy);
         app.handle_key(KeyCode::Enter, 1_000);
         assert!(app.state.missions[0].spy, "{}", app.status);
+    }
+
+    #[test]
+    fn a_site_that_resolved_under_an_open_form_is_refused_not_redirected() {
+        let mut state = GameState::new(1_000);
+        state.resources.deuterium = 10_000.0;
+        state.fleet.add(ShipKind::LightFighter, 10);
+        let site = state.sites[0].clone();
+        let mut app = App::new(state);
+        open_dispatch(&mut app, site.coord, ShipKind::LightFighter, 10);
+        app.state.sites[0].outcome = Some(hoshi_core::ExpeditionKind::Nothing);
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.state.missions.is_empty(), "{}", app.status);
+        assert!(app.status.contains("resolved"), "{}", app.status);
+    }
+
+    #[test]
+    fn dispatch_inspector_shows_pirate_weight_and_not_the_rolled_kind() {
+        let mut state = GameState::new(1_000);
+        state.resources.deuterium = 10_000.0;
+        state.fleet.add(ShipKind::LightFighter, 10);
+        let site = state.sites[0].clone();
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::LightFighter, 10);
+        let hold = state.config.expedition.min_hold_secs;
+        let weight = state.expedition_pirate_weight(&ships, hold);
+        let rolled = hoshi_core::roll_expedition(
+            42,
+            &ships,
+            0,
+            hold,
+            &state.config.expedition,
+            &state.config.ships,
+        )
+        .kind();
+        let mut app = App::new(state);
+        open_dispatch(&mut app, site.coord, ShipKind::LightFighter, 10);
+        let text = render_text(&app, 100, 40);
+        let folded = text.to_lowercase();
+        assert!(
+            folded.contains(&format!("pirate weight {weight}")),
+            "{text}"
+        );
+        assert!(text.contains("ETA"), "{text}");
+        assert!(
+            !text.contains(&format!("found {}", rolled.as_key())),
+            "{text}"
+        );
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert_eq!(
+            app.state.missions[0].site_id,
+            Some(site.id),
+            "{}",
+            app.status
+        );
+        assert_eq!(app.state.missions[0].dest, site.coord);
     }
 
     #[test]

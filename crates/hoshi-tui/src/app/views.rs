@@ -1237,6 +1237,8 @@ impl App {
             "colony"
         } else if let Some(out) = self.state.outpost(dest) {
             out.kind.as_key()
+        } else if let Some(site) = self.state.site_at(dest) {
+            site.kind.as_key()
         } else if self
             .state
             .frontier
@@ -1315,6 +1317,11 @@ impl App {
                     lines.push(
                         self.props(&[("ETA", duration(eta)), ("fuel", format!("{fuel:.1} D"))]),
                     );
+                    if form.mission == Mission::Expedition {
+                        let hold = self.state.config.expedition.min_hold_secs;
+                        let weight = self.state.expedition_pirate_weight(&form.ships, hold);
+                        lines.push(self.props(&[("pirate weight", weight.to_string())]));
+                    }
                     if fuel > self.state.resources.deuterium {
                         lines.extend(callout_lines(
                             t,

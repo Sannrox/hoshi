@@ -1455,6 +1455,87 @@ struct FileExpedition {
     delay_secs: u64,
     #[serde(default = "default_expedition_reward_mult")]
     reward_mult: f64,
+    #[serde(default)]
+    sites: FileSiteBudgets,
+}
+
+#[derive(Deserialize)]
+struct FileSiteBudget {
+    #[serde(default)]
+    iron: f64,
+    #[serde(default)]
+    silicon: f64,
+    #[serde(default)]
+    deuterium: f64,
+    #[serde(default)]
+    ships: u32,
+}
+
+impl Default for FileSiteBudget {
+    fn default() -> Self {
+        Self {
+            iron: 0.0,
+            silicon: 0.0,
+            deuterium: 0.0,
+            ships: 0,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct FileSiteBudgets {
+    #[serde(default = "default_wreck_budget")]
+    wreck: FileSiteBudget,
+    #[serde(default = "default_cache_budget")]
+    cache: FileSiteBudget,
+    #[serde(default = "default_lane_budget")]
+    lane: FileSiteBudget,
+}
+
+impl Default for FileSiteBudgets {
+    fn default() -> Self {
+        Self {
+            wreck: default_wreck_budget(),
+            cache: default_cache_budget(),
+            lane: default_lane_budget(),
+        }
+    }
+}
+
+fn default_wreck_budget() -> FileSiteBudget {
+    FileSiteBudget {
+        iron: 4_000.0,
+        silicon: 2_000.0,
+        deuterium: 500.0,
+        ships: 4,
+    }
+}
+
+fn default_cache_budget() -> FileSiteBudget {
+    FileSiteBudget {
+        iron: 9_000.0,
+        silicon: 1_000.0,
+        deuterium: 3_000.0,
+        ships: 0,
+    }
+}
+
+fn default_lane_budget() -> FileSiteBudget {
+    FileSiteBudget {
+        iron: 1_000.0,
+        silicon: 1_000.0,
+        deuterium: 6_000.0,
+        ships: 2,
+    }
+}
+
+fn site_budget(file: FileSiteBudget) -> crate::SiteBudget {
+    crate::SiteBudget {
+        iron: file.iron.max(0.0),
+        silicon: file.silicon.max(0.0),
+        deuterium: file.deuterium.max(0.0),
+        ships: file.ships,
+    }
 }
 
 fn default_expedition_reward_mult() -> f64 {
@@ -1649,6 +1730,11 @@ impl File {
                     self.expedition.reward_mult
                 } else {
                     1.0
+                },
+                sites: crate::SiteBudgets {
+                    wreck: site_budget(self.expedition.sites.wreck),
+                    cache: site_budget(self.expedition.sites.cache),
+                    lane: site_budget(self.expedition.sites.lane),
                 },
             },
             starting_resources: self.starting_resources.into_resources(),
@@ -2603,6 +2689,26 @@ stages = []
         let cfg = BalanceConfig::parse(&text).unwrap();
         assert_eq!(cfg.metal_mine.base_per_hour, 99.0);
         assert_eq!(cfg.crystal_mine.base_per_hour, 20.0);
+    }
+
+    #[test]
+    fn override_without_site_tables_keeps_version_and_default_budgets() {
+        let text = DEFAULT_BALANCE
+            .replace(
+                "[expedition.sites.wreck]\niron = 4000\nsilicon = 2000\ndeuterium = 500\nships = 4\n\n",
+                "",
+            )
+            .replace(
+                "[expedition.sites.cache]\niron = 9000\nsilicon = 1000\ndeuterium = 3000\nships = 0\n\n",
+                "",
+            )
+            .replace(
+                "[expedition.sites.lane]\niron = 1000\nsilicon = 1000\ndeuterium = 6000\nships = 2\n\n",
+                "",
+            );
+        assert!(!text.contains("expedition.sites"), "{text}");
+        let cfg = BalanceConfig::parse(&text).unwrap();
+        assert_eq!(cfg.expedition.sites, crate::SiteBudgets::default());
     }
 
     #[test]
