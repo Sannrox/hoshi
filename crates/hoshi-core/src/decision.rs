@@ -108,7 +108,7 @@ fn consider(best: &mut Option<ExpiringDecision>, next: ExpiringDecision) {
 }
 
 fn raid_decision(state: &GameState) -> Option<ExpiringDecision> {
-    let lands = state.next_raid_at?;
+    let lands = state.upcoming_raid_at()?;
     state.raid_countdown_secs()?;
     let armed = home_armed(state);
     // A defence grid resolves through the planet battle, which ignores stance

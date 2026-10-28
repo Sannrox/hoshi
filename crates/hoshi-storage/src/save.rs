@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 58;
+pub const SCHEMA_VERSION: u32 = 59;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -594,10 +594,12 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
         )?;
     }
     tx.execute(
-        "INSERT INTO raids (id, next_raid_at, next_raid_ships) VALUES (1, ?1, ?2)",
+        "INSERT INTO raids (id, next_raid_at, next_raid_ships, event_raid_at)
+         VALUES (1, ?1, ?2, ?3)",
         params![
             state.next_raid_at.map(|t| t as i64),
-            state.next_raid_ships.map(i64::from)
+            state.next_raid_ships.map(i64::from),
+            state.event_raid_at.map(|t| t as i64)
         ],
     )?;
     for (i, event) in state.events.iter().enumerate() {
@@ -1927,17 +1929,27 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         .map(|id| id.saturating_add(1))
         .unwrap_or(0);
 
-    let raid_row: Option<(Option<i64>, Option<i64>)> = conn
+    let raid_row: Option<(Option<i64>, Option<i64>, Option<i64>)> = conn
         .query_row(
-            "SELECT next_raid_at, next_raid_ships FROM raids WHERE id = 1",
+            "SELECT next_raid_at, next_raid_ships, event_raid_at FROM raids WHERE id = 1",
             [],
-            |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, Option<i64>>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                ))
+            },
         )
         .optional()?;
     state.next_raid_ships = raid_row
-        .and_then(|(_, ships)| ships)
+        .and_then(|(_, ships, _)| ships)
         .map(|n| u32::try_from(n).unwrap_or(0));
-    state.next_raid_at = match raid_row.map(|(at, _)| at) {
+    state.event_raid_at = match raid_row.and_then(|(_, _, event)| event) {
+        Some(ts) => Some(unix_ts(ts)?),
+        None => None,
+    };
+    state.next_raid_at = match raid_row.map(|(at, _, _)| at) {
         Some(Some(ts)) => Some(unix_ts(ts)?),
         Some(None) => None,
         None if state.config.raid.enabled => Some(
@@ -3677,6 +3689,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     if found < 58 {
         migrate_v58(conn)?;
     }
+    if found < 59 {
+        migrate_v59(conn)?;
+    }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
 }
@@ -4837,6 +4852,20 @@ fn migrate_v50(conn: &Connection) -> Result<(), SaveError> {
             deuterium REAL NOT NULL CHECK (deuterium >= 0)
         );",
     )?;
+    Ok(())
+}
+
+/// v59: a pending event raid beside the scheduled one. Null for older
+/// saves, which had only the scheduled raid.
+fn migrate_v59(conn: &Connection) -> Result<(), SaveError> {
+    let has = conn
+        .prepare("SELECT 1 FROM pragma_table_info('raids') WHERE name = 'event_raid_at'")?
+        .exists([])?;
+    if !has {
+        conn.execute_batch(
+            "ALTER TABLE raids ADD COLUMN event_raid_at INTEGER CHECK (event_raid_at >= 0);",
+        )?;
+    }
     Ok(())
 }
 
@@ -9637,6 +9666,25 @@ label = "Leave it"
             loaded.story_pending.as_ref().map(|p| p.event_id.as_str()),
             Some("alpha")
         );
+    }
+
+    #[test]
+    fn a_pending_event_raid_survives_save_and_v58_saves_have_none() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let mut state = GameState::new(100);
+        state.event_raid_at = Some(160);
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.event_raid_at, Some(160));
+        assert_eq!(loaded.next_raid_at, state.next_raid_at);
+        conn.execute_batch(
+            "ALTER TABLE raids DROP COLUMN event_raid_at; PRAGMA user_version = 58;",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        let old = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(old.event_raid_at, None);
+        assert_eq!(old.next_raid_at, state.next_raid_at);
     }
 
     #[test]

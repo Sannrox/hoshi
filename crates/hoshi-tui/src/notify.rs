@@ -75,7 +75,7 @@ impl Watch {
     pub fn from_state(state: &GameState) -> Self {
         Self {
             buildings: building_sum(state),
-            raid_at: state.next_raid_at,
+            raid_at: state.upcoming_raid_at(),
             raid_warned: None,
             returning: returning_count(state),
         }
@@ -113,11 +113,11 @@ impl Watch {
         }
         self.returning = returning;
 
-        if state.next_raid_at != self.raid_at {
+        if state.upcoming_raid_at() != self.raid_at {
             self.raid_warned = None;
         }
-        self.raid_at = state.next_raid_at;
-        if let Some(at) = state.next_raid_at
+        self.raid_at = state.upcoming_raid_at();
+        if let Some(at) = state.upcoming_raid_at()
             && now_unix < at
             && at - now_unix <= RAID_INCOMING_SECS
             && self.raid_warned != Some(at)

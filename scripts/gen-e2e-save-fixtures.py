@@ -1409,6 +1409,14 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             "ALTER TABLE raids ADD COLUMN next_raid_ships INTEGER "
             "CHECK (next_raid_ships >= 0)",
         )
+    elif version == 59:
+        add_column(
+            conn,
+            "raids",
+            "event_raid_at",
+            "ALTER TABLE raids ADD COLUMN event_raid_at INTEGER "
+            "CHECK (event_raid_at >= 0)",
+        )
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"

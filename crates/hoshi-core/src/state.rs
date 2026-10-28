@@ -346,6 +346,9 @@ pub struct GameState {
     /// Pirate light fighters in the scheduled raid, fixed when it was
     /// scheduled. `None` sizes the raid from the home's strength on landing.
     pub next_raid_ships: Option<u32>,
+    /// A raid a story choice, standing change or bridge event brought. It
+    /// lands on its own and leaves the scheduled raid where it was.
+    pub event_raid_at: Option<u64>,
     pub events: Vec<GameEvent>,
     pub activity: ActivityTracker,
     pub last_tick_unix: u64,
@@ -488,6 +491,7 @@ impl GameState {
                 None
             },
             next_raid_ships: None,
+            event_raid_at: None,
             events: Vec::new(),
             activity: ActivityTracker::default(),
             last_tick_unix: now_unix,
@@ -680,7 +684,7 @@ impl GameState {
             let mission_at = self.missions.iter().map(|m| m.phase_ends_at).min();
             let route_at = self.routes.iter().map(|r| r.next_at).min();
             let raid_at = if self.config.raid.enabled {
-                self.next_raid_at
+                self.upcoming_raid_at()
             } else {
                 None
             };
@@ -941,7 +945,12 @@ impl GameState {
             }
             self.settle_ledger(Term::Transfer);
             if raid_at == Some(done_at) {
-                self.resolve_raid_at(done_at);
+                if self.event_raid_at == Some(done_at) {
+                    self.land_event_raid(done_at);
+                }
+                if self.next_raid_at == Some(done_at) {
+                    self.resolve_raid_at(done_at);
+                }
             }
             if tactical_at == Some(done_at) {
                 self.progress_tactical(done_at);
@@ -1019,7 +1028,9 @@ impl GameState {
             ActivityChannel::PrMerged => self.grant_payout(at, spec.payout_hours),
             ActivityChannel::CiGreen => self.set_prod_boost(at, spec.boost_factor, spec.boost_secs),
             ActivityChannel::CiRed | ActivityChannel::AgentStuck => {
-                let _ = self.trigger_raid(at);
+                if self.config.raid.enabled {
+                    self.land_event_raid(at);
+                }
             }
             ActivityChannel::AgentLongRun => {
                 self.set_research_boost(at, spec.boost_factor, spec.boost_secs)
@@ -4821,7 +4832,39 @@ impl GameState {
         if !self.config.raid.enabled {
             return None;
         }
-        Some(self.next_raid_at?.saturating_sub(self.last_tick_unix))
+        Some(self.upcoming_raid_at()?.saturating_sub(self.last_tick_unix))
+    }
+
+    /// The next raid to land: an event raid or the scheduled one, whichever
+    /// is sooner.
+    pub fn upcoming_raid_at(&self) -> Option<u64> {
+        match (self.next_raid_at, self.event_raid_at) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// Bring an event raid at `at`, or keep an earlier one already coming.
+    fn bring_event_raid(&mut self, at: u64) {
+        self.event_raid_at = Some(self.event_raid_at.map_or(at, |e| e.min(at)));
+    }
+
+    /// Land the event raid now with the home's live strength. The scheduled
+    /// raid keeps its time and size. Event raids always auto-resolve; they
+    /// never open the interactive tactical round.
+    fn land_event_raid(&mut self, done_at: u64) {
+        self.event_raid_at = None;
+        // A scheduled battle still open finishes first, outcome and all,
+        // before the event raid meets the fleet it left.
+        self.finish_pending_tactical();
+        let held = (self.next_raid_at, self.next_raid_ships);
+        self.next_raid_ships = None;
+        let _ = self.resolve_raid_now(done_at);
+        // Resolving reschedules; put the scheduled raid back unless the
+        // landing turned raids off (a pact) or none was scheduled.
+        if held.0.is_some() && self.next_raid_at.is_some() {
+            (self.next_raid_at, self.next_raid_ships) = held;
+        }
     }
 
     /// Seconds until the next raid when it has been announced, else `None`.
@@ -4829,7 +4872,7 @@ impl GameState {
         if !self.config.raid.enabled {
             return None;
         }
-        let lands = self.next_raid_at?;
+        let lands = self.upcoming_raid_at()?;
         if self.last_tick_unix + self.config.raid.min_warning_secs < lands {
             return None;
         }
@@ -5336,7 +5379,12 @@ impl GameState {
 
     /// Light fighters the next home raid will send. This is the scheduler's
     /// fleet, not a sensor report, so the count is exact.
+    /// Attackers in the next raid to land: an event raid's live size when it
+    /// comes first, else the scheduled raid's fixed size.
     pub fn scheduled_raid_ships(&self) -> u32 {
+        if self.event_raid_at.is_some() && self.upcoming_raid_at() == self.event_raid_at {
+            return self.live_raid_ships();
+        }
         self.pirate_fleet().total()
     }
 
@@ -6251,11 +6299,7 @@ impl GameState {
             && tier.schedule_raid
             && self.config.raid.enabled
         {
-            let soon = at.saturating_add(60);
-            let pulled = self
-                .next_raid_at
-                .map_or(soon, |existing| existing.min(soon));
-            self.set_raid_schedule(Some(pulled));
+            self.bring_event_raid(at.saturating_add(60));
         }
         self.sync_raid_schedule_after_standing(at);
         self.maybe_declare_victory(at);
@@ -6268,7 +6312,11 @@ impl GameState {
             return;
         }
         match (self.next_raid_at, self.raid_interval_secs(at)) {
-            (_, None) => self.set_raid_schedule(None),
+            (_, None) => {
+                // A pact cancels a pending event raid as well.
+                self.set_raid_schedule(None);
+                self.event_raid_at = None;
+            }
             (None, Some(wait)) => {
                 self.set_raid_schedule(Some(at.saturating_add(wait)));
             }
@@ -6340,11 +6388,7 @@ impl GameState {
         }
         if choice.schedule_raid && self.config.raid.enabled && self.raid_interval_secs(at).is_some()
         {
-            let soon = at.saturating_add(60);
-            let pulled = self
-                .next_raid_at
-                .map_or(soon, |existing| existing.min(soon));
-            self.set_raid_schedule(Some(pulled));
+            self.bring_event_raid(at.saturating_add(60));
         }
         if self.config.market.enabled {
             self.market
@@ -10518,6 +10562,9 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
         );
         assert!(state.events.len() > events_before);
         assert!(state.events.iter().any(|e| e.text.starts_with("raid:")));
+        // The bridge raid lands on its own; the scheduled one stays put (#407).
+        assert_eq!(state.next_raid_at, Some(10_000));
+        assert_eq!(state.event_raid_at, None);
     }
 
     #[test]
@@ -13067,7 +13114,9 @@ label = "Skip"
         close(state.modifier(ModifierKind::WeaponDamage), 0.0);
         state.adjust_standing("ancients", -50.0, "story", 0);
         close(state.modifier(ModifierKind::WeaponDamage), -0.05);
-        assert_eq!(state.next_raid_at, Some(60));
+        // The tier brings its own raid; the scheduled one stays put (#407).
+        assert_eq!(state.event_raid_at, Some(60));
+        assert_eq!(state.next_raid_at, Some(10_000));
         state.diplomacy.set_standing("ancients", 50.0);
         close(state.modifier(ModifierKind::Espionage), 2.0);
         close(state.modifier(ModifierKind::EnergyOutput), 0.10);
@@ -13221,6 +13270,133 @@ label = "Leave it"
         state.catch_up(10);
         state.choose_story("take", 12).unwrap();
         assert_eq!(state.next_raid_at, None);
+        assert_eq!(state.event_raid_at, None, "a pact blocks story raids too");
+    }
+
+    /// Raids on with the first one 2 h out, and one story whose "take"
+    /// choice brings a raid.
+    fn story_raid_state() -> GameState {
+        let mut cfg = story_config();
+        cfg.diplomacy.enabled = false;
+        cfg.raid.enabled = true;
+        cfg.raid.first_delay_secs = 7_200;
+        cfg.story = crate::StoryCatalog::parse(
+            r#"
+first_delay_secs = 10
+cooldown_secs = 100000
+[[event]]
+id = "alpha"
+title = "Alpha"
+text = "First pick."
+weight = 1
+timeout_secs = 20
+timeout_choice = "leave"
+[[event.choices]]
+id = "take"
+label = "Take it"
+schedule_raid = true
+[[event.choices]]
+id = "leave"
+label = "Leave it"
+"#,
+        )
+        .expect("story raid catalog");
+        let mut state = GameState::with_config(0, cfg);
+        state.rng_seed = 1;
+        state
+    }
+
+    #[test]
+    fn a_story_raid_lands_and_the_scheduled_raid_still_lands_on_time() {
+        let interval = story_raid_state().config.raid.interval_secs;
+        let run = |stepped: bool| {
+            let mut state = story_raid_state();
+            state.catch_up(10);
+            state.choose_story("take", 12).unwrap();
+            assert_eq!(state.event_raid_at, Some(72));
+            assert_eq!(state.next_raid_at, Some(7_200), "the scheduled raid stays");
+            let raids = |s: &GameState| {
+                s.combat_logs
+                    .iter()
+                    .filter(|l| l.raid_plunder.is_some())
+                    .count()
+            };
+            if stepped {
+                for now in 13..=7_201 {
+                    state.catch_up(now);
+                    if now == 73 {
+                        assert_eq!(raids(&state), 1, "the event raid landed");
+                        assert_eq!(state.next_raid_at, Some(7_200));
+                    }
+                }
+            } else {
+                state.catch_up(73);
+                assert_eq!(raids(&state), 1, "the event raid landed");
+                assert_eq!(state.next_raid_at, Some(7_200));
+                state.catch_up(7_201);
+            }
+            assert_eq!(raids(&state), 2, "and the scheduled one too");
+            assert_eq!(state.next_raid_at, Some(7_200 + interval));
+            assert_eq!(state.event_raid_at, None);
+            state
+        };
+        let (jumped, stepped) = (run(false), run(true));
+        assert_eq!(jumped.fleet, stepped.fleet);
+        assert_eq!(jumped.combat_logs.len(), stepped.combat_logs.len());
+    }
+
+    #[test]
+    fn a_pact_cancels_a_pending_event_raid() {
+        let mut cfg = diplomacy_config();
+        cfg.raid.enabled = true;
+        cfg.raid.first_delay_secs = 10_000;
+        let mut state = GameState::with_config(0, cfg);
+        state.adjust_standing("ancients", -50.0, "story", 0);
+        assert_eq!(state.event_raid_at, Some(60));
+        state.diplomacy.set_standing("pirates", 60.0);
+        state.sync_raid_schedule_after_standing(1);
+        assert_eq!(state.event_raid_at, None);
+        assert_eq!(state.next_raid_at, None);
+        state.catch_up(120);
+        assert!(
+            state.combat_logs.is_empty(),
+            "no raid landed under the pact"
+        );
+    }
+
+    #[test]
+    fn a_bridge_raid_finishes_an_open_tactical_battle_first() {
+        let mut cfg = activity_config();
+        cfg.raid = crate::RaidConfig::default_active();
+        cfg.raid.first_delay_secs = 10;
+        let mut state = GameState::with_config(0, cfg);
+        state.fleet.add(ShipKind::LightFighter, 4);
+        state.interactive_tactics = true;
+        state.catch_up(10);
+        assert!(
+            state.pending_tactical.is_some(),
+            "the scheduled battle is open"
+        );
+        assert_eq!(
+            state.apply_activity(
+                ActivityPulse::WorkflowFinished {
+                    ts: 10,
+                    success: false,
+                },
+                10,
+            ),
+            ActivityApply::Applied
+        );
+        assert!(state.pending_tactical.is_none());
+        let raids = state
+            .combat_logs
+            .iter()
+            .filter(|log| log.raid_plunder.is_some())
+            .count();
+        assert_eq!(
+            raids, 2,
+            "the scheduled battle and the bridge raid both resolved"
+        );
     }
 
     #[test]

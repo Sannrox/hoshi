@@ -249,7 +249,7 @@ impl GameState {
                 cap > 0.0 && self.resources.iron >= cap * 0.9
             }
             HintTrigger::ResearchDone => self.tech_levels.values().any(|&lv| lv > 0),
-            HintTrigger::RaidSoon => self.next_raid_at.is_some(),
+            HintTrigger::RaidSoon => self.upcoming_raid_at().is_some(),
             HintTrigger::FleetOut => !self.missions.is_empty(),
             HintTrigger::ShipyardReady => self.buildings.shipyard >= 1,
         }
