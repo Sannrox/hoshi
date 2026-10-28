@@ -1455,6 +1455,9 @@ struct FileExpedition {
     delay_secs: u64,
     #[serde(default = "default_expedition_reward_mult")]
     reward_mult: f64,
+    /// Older overrides omit it and keep the unscaled find.
+    #[serde(default = "default_expedition_reward_mult")]
+    explorer_mult: f64,
     #[serde(default)]
     sites: FileSiteBudgets,
 }
@@ -1728,6 +1731,13 @@ impl File {
                     && self.expedition.reward_mult >= 0.0
                 {
                     self.expedition.reward_mult
+                } else {
+                    1.0
+                },
+                explorer_mult: if self.expedition.explorer_mult.is_finite()
+                    && self.expedition.explorer_mult >= 0.0
+                {
+                    self.expedition.explorer_mult
                 } else {
                     1.0
                 },
@@ -2689,6 +2699,15 @@ stages = []
         let cfg = BalanceConfig::parse(&text).unwrap();
         assert_eq!(cfg.metal_mine.base_per_hour, 99.0);
         assert_eq!(cfg.crystal_mine.base_per_hour, 20.0);
+    }
+
+    #[test]
+    fn bundled_explorer_doubles_and_an_override_without_it_keeps_one() {
+        assert_eq!(BalanceConfig::default().expedition.explorer_mult, 2.0);
+        let text = DEFAULT_BALANCE.replace("explorer_mult = 2.0\n", "");
+        assert_ne!(text, DEFAULT_BALANCE);
+        let cfg = BalanceConfig::parse(&text).unwrap();
+        assert_eq!(cfg.expedition.explorer_mult, 1.0);
     }
 
     #[test]

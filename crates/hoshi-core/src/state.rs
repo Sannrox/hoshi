@@ -10400,6 +10400,55 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
     }
 
     #[test]
+    fn an_explorer_find_is_clamped_to_the_site_and_catch_up_matches_steps() {
+        let launch = |state: &mut GameState| {
+            state.config.expedition.explorer_mult = 2.0;
+            state.config.expedition.weights = crate::ExpeditionWeights {
+                nothing: 0,
+                resources: 1,
+                ships: 0,
+                delay: 0,
+                early_return: 0,
+                pirates: 0,
+                loss: 0,
+            };
+            state.config.expedition.pirate_weight_per_unit = 0;
+            state.config.expedition.hold_find_per_hour = 0;
+            state.config.expedition.astro_find_per_level = 0;
+            state.sites[0].iron = 10.0;
+            state.buildings.metal_mine = 0;
+            state.fleet.add(ShipKind::Explorer, 1);
+            let site_id = state.sites[0].id;
+            let mut ships = Fleet::default();
+            ships.add(ShipKind::LightFighter, 10);
+            ships.add(ShipKind::Explorer, 1);
+            state
+                .launch_expedition_site(site_id, ships, 10, 100, 0)
+                .unwrap();
+            state.missions[0].expedition_seed = Some(7);
+        };
+        let mut jumped = expedition_state(0);
+        launch(&mut jumped);
+        let iron_before = jumped.resources.iron;
+        let done = jumped.missions[0].phase_ends_at
+            + jumped.missions[0].outbound_secs
+            + jumped.missions[0].hold_secs
+            + 1;
+        jumped.catch_up(done);
+        assert!(jumped.resources.iron - iron_before <= 10.0 + 1e-9);
+        assert_eq!(jumped.sites[0].iron, 0.0, "{:?}", jumped.sites[0]);
+        let mut stepped = expedition_state(0);
+        launch(&mut stepped);
+        let mut now = 0;
+        while now < done {
+            now += 1;
+            stepped.catch_up(now);
+        }
+        assert_eq!(jumped.sites, stepped.sites);
+        close(jumped.resources.iron, stepped.resources.iron);
+    }
+
+    #[test]
     fn slot_expedition_still_reaches_the_config_position() {
         let mut state = expedition_state(0);
         state.sites.clear();

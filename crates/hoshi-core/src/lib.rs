@@ -126,8 +126,8 @@ pub use espionage::{
 };
 pub use expedition::{
     ExpeditionConfig, ExpeditionKind, ExpeditionResult, ExpeditionSite, ExpeditionWeights,
-    SiteBudget, SiteBudgets, SiteKind, fleet_points, place_expedition_sites, roll_expedition,
-    scaled_weights,
+    SiteBudget, SiteBudgets, SiteKind, explorer_factor, fleet_points, place_expedition_sites,
+    roll_expedition, scaled_weights,
 };
 pub use finance::{
     Budget, CostCenter, Department, FinanceConfig, FinanceError, FinanceReport, FinanceState,
