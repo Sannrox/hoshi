@@ -126,7 +126,7 @@ const RAID_GUARD: u32 = 5;
 /// as the stock pays for), or else the next building on the way to the
 /// shipyard. Never a unit whose shipyard or research is still out of reach.
 fn push_raid(state: &GameState, out: &mut Vec<Advice>) {
-    let Some(at) = state.next_raid_at else {
+    let Some(at) = state.upcoming_raid_at() else {
         return;
     };
     let wait = at.saturating_sub(state.last_tick_unix);

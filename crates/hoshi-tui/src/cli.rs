@@ -2552,7 +2552,7 @@ fn resources_json(r: hoshi_core::Resources) -> Value {
 }
 
 fn state_value(state: &GameState, actor: Actor) -> Value {
-    let raid = state.next_raid_at.map(|at| {
+    let raid = state.upcoming_raid_at().map(|at| {
         json!({
             "lands_in_secs": at.saturating_sub(state.last_tick_unix),
         })
