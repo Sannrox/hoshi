@@ -104,8 +104,19 @@ taking at most its hold from what is left. `submit` catches up without the
 other empires, so it refuses with `Unsettled` while a colony, recycler, or
 raid arrival of that empire, or another tenant's raid on its home, is due;
 the host settles and retries. The session keeps each target's next raid
-arrival in its bookkeeping, so the refusal holds across a restart. The expedition dest
-and the NPC regional book are still per save.
+arrival in its bookkeeping, so the refusal holds across a restart. The NPC
+regional book is still per save.
+
+The shard has one expedition coord. The host places it once with
+`ShardCommons::place_expedition`: the last `Empty` slot on the `ShardMap` home
+walk outside the frontier galaxy, so the seed and bounds alone fix it on a new
+shard. It persists in the `ShardCommons` bytes (version 2; version 1 bytes read
+with none, and the host places it after restoring them). `submit` flies an
+`Intent::Expedition` without a site to that coord at the current flight rules,
+so a farther tenant pays more fuel and time, and refuses with
+`NoExpeditionCoord` until the host has placed it. Occupancy reads the coord as
+`site` for every tenant, so join, colonize, and raids refuse it. Local
+expeditions still fly to the home-system slot.
 
 `ShardSession::spy` flies the probe hull with a hold of zero. At a `tenant`
 coord the host stops catch-up at the probe's arrival, reads that planet's
