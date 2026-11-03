@@ -3,6 +3,13 @@
 //! Local play never goes through this module. A shard host owns the clock,
 //! the MAC key, and per-identity command windows, then calls the same
 //! `propose` / `apply` path as the CLI.
+//!
+//! Host duties on restart: persist [`ShardSession::export_bookkeeping`] next
+//! to the tenant saves and hand it back through
+//! [`ShardSession::restore_bookkeeping`], so a retried submit after reconnect
+//! still hits its idempotency id. Load tenants with [`load_tenants`], one at a
+//! time through the migrating save loader; a tenant that fails to load is
+//! reported and never stops or writes the others.
 
 use crate::activity::{ActivityApply, ActivityPulse};
 use crate::classification::ClassifiedKind;
@@ -17,6 +24,7 @@ use crate::leaders::Actor;
 use crate::ships::Fleet;
 use crate::state::{GameState, Resources};
 use hmac::{Hmac, Mac};
+use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -32,6 +40,15 @@ pub struct ShardConfig {
     pub newbie_secs: u64,
     pub attack_window_secs: u64,
     pub attack_limit: u32,
+}
+
+impl ShardConfig {
+    /// How long an idempotency id is remembered: the longer of the command
+    /// and attack windows, so a reconnect inside either window still hits the
+    /// same id. An older id is forgotten and may apply again.
+    pub fn seen_ttl_secs(&self) -> u64 {
+        self.command_window_secs.max(self.attack_window_secs).max(1)
+    }
 }
 
 impl Default for ShardConfig {
@@ -241,6 +258,8 @@ pub enum ShardError {
     },
     /// `submit` cannot see the shard map. Colonize goes through [`ShardSession::colonize`].
     ColonizeNeedsMap,
+    /// Restored bookkeeping bytes are not a version this build reads.
+    Bookkeeping(String),
 }
 
 impl fmt::Display for ShardError {
@@ -277,11 +296,52 @@ impl fmt::Display for ShardError {
             ShardError::ColonizeNeedsMap => {
                 write!(f, "colonize needs the shard map")
             }
+            ShardError::Bookkeeping(msg) => write!(f, "shard bookkeeping: {msg}"),
         }
     }
 }
 
 impl std::error::Error for ShardError {}
+
+const BOOKKEEPING_VERSION: u32 = 1;
+
+/// Host-owned shard bookkeeping: idempotency ids, command windows and attack
+/// stamps. Opaque bytes the host persists beside the tenant saves. It holds
+/// identity strings, so it is never part of a tenant view, a `GameState`, or
+/// a bug report; `Debug` prints only its size.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ShardBookkeeping(Vec<u8>);
+
+impl ShardBookkeeping {
+    pub fn from_bytes(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for ShardBookkeeping {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ShardBookkeeping({} bytes)", self.0.len())
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct BookkeepingDoc {
+    version: u32,
+    seen: Vec<SeenRow>,
+    windows: BTreeMap<String, Vec<u64>>,
+    attacks: BTreeMap<String, Vec<u64>>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SeenRow {
+    identity: String,
+    id: String,
+    at: u64,
+}
 
 /// Live shard session. The clock and MAC key stay on the host.
 pub struct ShardSession<C> {
@@ -289,8 +349,11 @@ pub struct ShardSession<C> {
     config: ShardConfig,
     mac_key: [u8; 32],
     windows: BTreeMap<String, Vec<u64>>,
-    seen: BTreeSet<(String, String)>,
+    /// `(identity, idempotency id)` to the host time it applied.
+    seen: BTreeMap<(String, String), u64>,
     attacks: BTreeMap<String, Vec<u64>>,
+    /// Host time of the last full prune. See [`Self::prune_due`].
+    pruned_at: u64,
 }
 
 impl<C: Clock> ShardSession<C> {
@@ -300,8 +363,9 @@ impl<C: Clock> ShardSession<C> {
             config,
             mac_key,
             windows: BTreeMap::new(),
-            seen: BTreeSet::new(),
+            seen: BTreeMap::new(),
             attacks: BTreeMap::new(),
+            pruned_at: 0,
         }
     }
 
@@ -342,16 +406,17 @@ impl<C: Clock> ShardSession<C> {
             return Err(ShardError::EmptyIdempotency);
         }
         let _ = cmd.client_now_unix;
+        let now = self.clock.now_unix();
+        self.prune_due(now);
         let seen_key = (cmd.identity.clone(), cmd.idempotency_id.clone());
-        if self.seen.contains(&seen_key) {
+        if self.is_seen(&seen_key, now) {
             return Ok(());
         }
-        let now = self.clock.now_unix();
         self.admit(&cmd.identity, now)?;
         state.catch_up(now);
         let proposal = propose(state, &cmd.intent, now).map_err(ShardError::Intent)?;
         apply(state, &proposal, now).map_err(ShardError::Intent)?;
-        self.seen.insert(seen_key);
+        self.seen.insert(seen_key, now);
         Ok(())
     }
 
@@ -397,14 +462,15 @@ impl<C: Clock> ShardSession<C> {
             return Err(ShardError::SameEmpire);
         }
         let _ = cmd.client_now_unix;
+        let now = self.clock.now_unix();
+        self.prune_due(now);
         let seen_key = (cmd.attacker_id.clone(), cmd.idempotency_id.clone());
-        if self.seen.contains(&seen_key) {
+        if self.is_seen(&seen_key, now) {
             return Ok(ShardRaidResult {
                 report: empty_report(attacker.fleet, defender.fleet),
                 plunder: Resources::ZERO,
             });
         }
-        let now = self.clock.now_unix();
         attacker.catch_up(now);
         defender.catch_up(now);
         if now.saturating_sub(defender.prestige.current.started_at) < self.config.newbie_secs {
@@ -438,7 +504,7 @@ impl<C: Clock> ShardSession<C> {
         };
         defender.resources = defender.resources.saturating_sub(plunder);
         attacker.resources = attacker.resources.saturating_add(plunder);
-        self.seen.insert(seen_key);
+        self.seen.insert(seen_key, now);
         Ok(ShardRaidResult { report, plunder })
     }
 
@@ -490,8 +556,10 @@ impl<C: Clock> ShardSession<C> {
                 identity: identity.to_string(),
             });
         }
+        let now = self.clock.now_unix();
+        self.prune_due(now);
         let seen_key = (identity.to_string(), idempotency_id.to_string());
-        if self.seen.contains(&seen_key) {
+        if self.is_seen(&seen_key, now) {
             return Ok(());
         }
         {
@@ -504,7 +572,6 @@ impl<C: Clock> ShardSession<C> {
                 .require_fair_play()
                 .map_err(|e| ShardError::Intent(IntentError::Cheat(e)))?;
         }
-        let now = self.clock.now_unix();
         for state in empires.values_mut() {
             state.catch_up(now);
         }
@@ -524,7 +591,7 @@ impl<C: Clock> ShardSession<C> {
         };
         let proposal = propose(state, &intent, now).map_err(ShardError::Intent)?;
         apply(state, &proposal, now).map_err(ShardError::Intent)?;
-        self.seen.insert(seen_key);
+        self.seen.insert(seen_key, now);
         Ok(())
     }
 
@@ -565,6 +632,85 @@ impl<C: Clock> ShardSession<C> {
                 identity: identity.to_string(),
             }),
         }
+    }
+
+    /// Prune at the host clock, then serialise ids, windows and attack stamps.
+    pub fn export_bookkeeping(&mut self) -> Result<ShardBookkeeping, ShardError> {
+        self.prune(self.clock.now_unix());
+        let doc = BookkeepingDoc {
+            version: BOOKKEEPING_VERSION,
+            seen: self
+                .seen
+                .iter()
+                .map(|((identity, id), &at)| SeenRow {
+                    identity: identity.clone(),
+                    id: id.clone(),
+                    at,
+                })
+                .collect(),
+            windows: self.windows.clone(),
+            attacks: self.attacks.clone(),
+        };
+        serde_json::to_vec(&doc)
+            .map(ShardBookkeeping)
+            .map_err(|e| ShardError::Bookkeeping(e.to_string()))
+    }
+
+    /// Replace this session's bookkeeping with `saved`, then prune at the
+    /// host clock. Unreadable bytes or another version leave the session
+    /// untouched.
+    pub fn restore_bookkeeping(&mut self, saved: &ShardBookkeeping) -> Result<(), ShardError> {
+        let doc: BookkeepingDoc = serde_json::from_slice(saved.as_bytes())
+            .map_err(|e| ShardError::Bookkeeping(e.to_string()))?;
+        if doc.version != BOOKKEEPING_VERSION {
+            return Err(ShardError::Bookkeeping(format!(
+                "version {} is not {BOOKKEEPING_VERSION}",
+                doc.version
+            )));
+        }
+        self.seen = doc
+            .seen
+            .into_iter()
+            .map(|row| ((row.identity, row.id), row.at))
+            .collect();
+        self.windows = doc.windows;
+        self.attacks = doc.attacks;
+        self.prune(self.clock.now_unix());
+        Ok(())
+    }
+
+    /// Whether `key` applied less than [`ShardConfig::seen_ttl_secs`] ago.
+    /// Expiry is checked here, so a stale id between full prunes is forgotten.
+    fn is_seen(&self, key: &(String, String), now: u64) -> bool {
+        self.seen
+            .get(key)
+            .is_some_and(|&at| now.saturating_sub(at) < self.config.seen_ttl_secs())
+    }
+
+    /// Full prune at most once per command window, so a request does not
+    /// scan every remembered id on the shard.
+    fn prune_due(&mut self, now: u64) {
+        if now.saturating_sub(self.pruned_at) >= self.config.command_window_secs.max(1) {
+            self.prune(now);
+        }
+    }
+
+    /// Forget ids past [`ShardConfig::seen_ttl_secs`] and stamps outside
+    /// their window, so a long-lived host does not grow without bound.
+    fn prune(&mut self, now: u64) {
+        self.pruned_at = now;
+        let ttl = self.config.seen_ttl_secs();
+        self.seen.retain(|_, at| now.saturating_sub(*at) < ttl);
+        let command = now.saturating_sub(self.config.command_window_secs.max(1));
+        self.windows.retain(|_, stamps| {
+            stamps.retain(|&t| t > command);
+            !stamps.is_empty()
+        });
+        let attack = now.saturating_sub(self.config.attack_window_secs.max(1));
+        self.attacks.retain(|_, stamps| {
+            stamps.retain(|&t| t > attack);
+            !stamps.is_empty()
+        });
     }
 
     fn admit_attack(&mut self, identity: &str, now: u64) -> Result<(), ShardError> {
@@ -614,6 +760,26 @@ impl<C: Clock> ShardSession<C> {
         stamps.push(now);
         Ok(())
     }
+}
+
+/// Load each tenant one at a time through `load`, which the host backs with
+/// the migrating save loader. A tenant that fails is returned with its error
+/// and never stops or writes the others. Nothing is saved here.
+pub fn load_tenants<E>(
+    identities: impl IntoIterator<Item = String>,
+    mut load: impl FnMut(&str) -> Result<GameState, E>,
+) -> (BTreeMap<String, GameState>, Vec<(String, E)>) {
+    let mut loaded = BTreeMap::new();
+    let mut failed = Vec::new();
+    for identity in identities {
+        match load(&identity) {
+            Ok(state) => {
+                loaded.insert(identity, state);
+            }
+            Err(err) => failed.push((identity, err)),
+        }
+    }
+    (loaded, failed)
 }
 
 /// Kind at `coord` for `viewer`. Hosts call this before join and colonize.
@@ -1076,6 +1242,136 @@ mod tests {
         assert_eq!(state.ship_queue.len(), 1);
         assert_eq!(state.ship_queue[0].remaining, 3);
         assert_eq!(state.last_tick_unix, 1_000);
+    }
+
+    #[test]
+    fn restored_bookkeeping_keeps_a_retry_from_applying_twice() {
+        let mut before_restart = session(1_000);
+        let mut state = test_state(1_000);
+        before_restart
+            .submit(&mut state, build_cmd("tenant-a", "same", None))
+            .unwrap();
+        let saved = before_restart.export_bookkeeping().unwrap();
+        let iron = state.resources.iron;
+
+        let mut after_restart = session(1_030);
+        after_restart.restore_bookkeeping(&saved).unwrap();
+        after_restart
+            .submit(&mut state, build_cmd("tenant-a", "same", None))
+            .unwrap();
+        assert_eq!(state.build_queue.len(), 1);
+        assert!(state.resources.iron >= iron, "no second build was paid");
+    }
+
+    #[test]
+    fn an_id_older_than_the_ttl_is_forgotten_and_applies_again() {
+        let ttl = ShardConfig::default().seen_ttl_secs();
+        assert!(ttl >= ShardConfig::default().command_window_secs);
+        assert!(ttl >= ShardConfig::default().attack_window_secs);
+        let zero = ShardConfig {
+            command_window_secs: 0,
+            attack_window_secs: 0,
+            ..ShardConfig::default()
+        };
+        assert_eq!(zero.seen_ttl_secs(), 1, "zero windows keep dedup on");
+        let mut first = session(1_000);
+        let mut state = test_state(1_000);
+        state.resources.iron = 1_000_000.0;
+        state.resources.silicon = 1_000_000.0;
+        first
+            .submit(&mut state, build_cmd("tenant-a", "same", None))
+            .unwrap();
+        let saved = first.export_bookkeeping().unwrap();
+
+        let mut later = session(1_000 + ttl);
+        later.restore_bookkeeping(&saved).unwrap();
+        state.catch_up(1_000 + ttl);
+        assert!(state.build_queue.is_empty(), "the first build finished");
+        later
+            .submit(&mut state, build_cmd("tenant-a", "same", None))
+            .unwrap();
+        assert_eq!(state.build_queue.len(), 1, "the forgotten id applied again");
+    }
+
+    #[test]
+    fn restored_windows_still_rate_limit() {
+        let mut first = tight_session(1_000, 2);
+        let mut state = test_state(1_000);
+        for id in ["a", "b"] {
+            first
+                .submit(&mut state, build_cmd("tenant-a", id, None))
+                .unwrap();
+        }
+        let saved = first.export_bookkeeping().unwrap();
+
+        let mut restarted = tight_session(1_010, 2);
+        restarted.restore_bookkeeping(&saved).unwrap();
+        let err = restarted
+            .submit(&mut state, build_cmd("tenant-a", "c", None))
+            .unwrap_err();
+        assert!(matches!(err, ShardError::RateLimited { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn unreadable_bookkeeping_leaves_the_session_untouched() {
+        let mut shard = session(1_000);
+        let mut state = test_state(1_000);
+        shard
+            .submit(&mut state, build_cmd("tenant-a", "same", None))
+            .unwrap();
+        for bad in [
+            b"not json".to_vec(),
+            br#"{"version":2,"seen":[],"windows":{},"attacks":{}}"#.to_vec(),
+        ] {
+            let err = shard
+                .restore_bookkeeping(&ShardBookkeeping::from_bytes(bad))
+                .unwrap_err();
+            assert!(matches!(err, ShardError::Bookkeeping(_)), "{err:?}");
+        }
+        shard
+            .submit(&mut state, build_cmd("tenant-a", "same", None))
+            .unwrap();
+        assert_eq!(state.build_queue.len(), 1);
+    }
+
+    #[test]
+    fn bookkeeping_stays_out_of_debug_and_the_tenant_view() {
+        let mut shard = session(1_000);
+        let mut empires = two_empires(tenant_a(1_000), tenant_b(1_000));
+        let state = empires.get_mut("tenant-a").unwrap();
+        shard
+            .submit(state, build_cmd("tenant-a", "secret-retry-id", None))
+            .unwrap();
+        let saved = shard.export_bookkeeping().unwrap();
+        let debug = format!("{saved:?}");
+        assert!(!debug.contains("tenant-a"), "{debug}");
+        assert!(!debug.contains("secret-retry-id"), "{debug}");
+        let json = shard
+            .view("tenant-a", &mut empires, ShardSites::none())
+            .unwrap()
+            .to_json()
+            .to_string();
+        assert!(!json.contains("seen"), "{json}");
+        assert!(!json.contains("secret-retry-id"), "{json}");
+    }
+
+    #[test]
+    fn a_tenant_that_fails_to_load_does_not_stop_the_others() {
+        let ids = ["tenant-a", "broken", "tenant-b"].map(String::from);
+        let mut calls = Vec::new();
+        let (loaded, failed) = load_tenants(ids, |id| {
+            calls.push(id.to_string());
+            match id {
+                "broken" => Err("schema too new"),
+                _ => Ok(test_state(1_000)),
+            }
+        });
+        assert_eq!(calls, ["tenant-a", "broken", "tenant-b"]);
+        assert_eq!(
+            loaded.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["tenant-a", "tenant-b"]
+        );
+        assert_eq!(failed, [("broken".to_string(), "schema too new")]);
     }
 
     #[test]

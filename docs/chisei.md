@@ -61,6 +61,14 @@ planets, fleets, and stock, plus spy intel that has already arrived, never
 RNG, pirate timers, or another tenant's parked fleet and stockpile. The
 local TUI and CLI do not use this gate.
 
+An idempotency id is remembered for the longer of the command and attack
+windows (`ShardConfig::seen_ttl_secs`); an older id is forgotten and may
+apply again. On restart the host restores the ids, command windows and
+attack stamps from `ShardSession::export_bookkeeping`, opaque bytes it keeps
+beside the tenant saves and never puts in a tenant view or bug report. It
+loads tenants one at a time with `load_tenants` through the migrating save
+loader; one tenant that fails to load does not stop or write the others.
+
 The optional governance demo (`hoshi --demo demo governance --seed N`) puts an
 ungoverned CLI player next to a Chisei-governed one. Policies (spend caps,
 no attacks on allies, invasion approval, token budgets) wrap propose/apply.
