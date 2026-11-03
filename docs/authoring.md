@@ -55,6 +55,7 @@ instead. The game binary ignores this config.
 
 A choice may `sets` flag ids. An event may `requires` every listed flag,
 `requires_any` one of them, and `forbids` any of them. A `[[flag]]` row may
-attach a `note` to an id a choice sets. The bridge shows the latest of those
-notes until the next arc event is pending or `lane_closed` is set. The
+attach a `note` to an id a choice sets. The bridge shows the note of the
+latest set `[[flag]]` row in catalog order, until the next arc event is
+pending. A row without a note, such as `lane_closed`, clears it. The
 original events leave these keys empty and stay in the weighted draw.

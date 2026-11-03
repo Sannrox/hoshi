@@ -184,15 +184,15 @@ impl StoryCatalog {
         })
     }
 
-    /// Latest note among set flags, in catalog order. Empty when none is set.
+    /// Note of the latest set `[[flag]]` row, in catalog order. A row without
+    /// a note (such as an arc's closing flag) clears it.
     pub fn flag_note<'a>(&'a self, flags: &BTreeSet<String>) -> Option<&'a str> {
-        let mut note = None;
-        for flag in &self.flags {
-            if !flag.note.is_empty() && flags.contains(&flag.id) {
-                note = Some(flag.note.as_str());
-            }
-        }
-        note
+        self.flags
+            .iter()
+            .rev()
+            .find(|flag| flags.contains(&flag.id))
+            .filter(|flag| !flag.note.is_empty())
+            .map(|flag| flag.note.as_str())
     }
 
     pub fn get(&self, id: &str) -> Option<&StoryEvent> {
@@ -476,8 +476,41 @@ mod tests {
         }
         assert_eq!(
             arcs,
-            ["lane_contact", "lane_escort", "lane_toll", "lane_quiet"]
+            [
+                "lane_contact",
+                "lane_escort",
+                "lane_toll",
+                "lane_quiet",
+                "trade_hail",
+                "trade_convoy",
+                "trade_silence",
+            ]
         );
+    }
+
+    #[test]
+    fn no_trader_event_is_eligible_before_the_lane_closes() {
+        let cat = StoryCatalog::default();
+        let mut flags: Vec<&str> = cat
+            .iter()
+            .flat_map(|event| event.choices.iter())
+            .flat_map(|choice| choice.sets.iter().map(String::as_str))
+            .filter(|flag| *flag != "lane_closed")
+            .collect();
+        flags.sort_unstable();
+        flags.dedup();
+        assert!(flags.len() <= 16, "{}", flags.len());
+        for mask in 0..1usize << flags.len() {
+            let set: BTreeSet<String> = flags
+                .iter()
+                .enumerate()
+                .filter(|(bit, _)| mask & (1 << bit) != 0)
+                .map(|(_, flag)| (*flag).to_string())
+                .collect();
+            for event in cat.iter().filter(|event| event.id.starts_with("trade_")) {
+                assert!(!event.allows(&set), "{} with {set:?}", event.id);
+            }
+        }
     }
 
     #[test]

@@ -387,3 +387,93 @@ id = "light"
 label = "Light sensors"
 sets = ["lit_sensors", "lane_closed"]
 schedule_raid = true
+
+# Trader arc. It opens only after the pirate lane closes, so it is never
+# eligible beside `lane_contact`.
+
+[[flag]]
+id = "trade_dealt"
+note = "The guild expects a convoy."
+
+[[flag]]
+id = "trade_passed"
+note = "The guild ship left without a word."
+
+[[flag]]
+id = "convoy_sent"
+
+[[flag]]
+id = "convoy_refused"
+
+[[flag]]
+id = "trade_closed"
+
+[[event]]
+id = "trade_hail"
+title = "Guild hail"
+text = "With the lane quiet, a guild freighter asks to trade. Iron opens the deal. Passing is allowed."
+weight = 1
+timeout_secs = 86400
+timeout_choice = "pass"
+min_elapsed_secs = 0
+requires = ["lane_closed"]
+forbids = ["trade_dealt", "trade_passed", "trade_closed"]
+
+[[event.choices]]
+id = "deal"
+label = "Make the deal"
+iron = -60.0
+standing = { traders = 5.0 }
+sets = ["trade_dealt"]
+
+[[event.choices]]
+id = "pass"
+label = "Pass"
+sets = ["trade_passed"]
+
+[[event]]
+id = "trade_convoy"
+title = "Guild convoy"
+text = "The guild sends a convoy through the old lane and asks for cover. Fuel pays for the escort. Refusing is noted."
+weight = 1
+timeout_secs = 86400
+timeout_choice = "escort"
+min_elapsed_secs = 0
+requires = ["lane_closed", "trade_dealt"]
+forbids = ["trade_passed", "trade_closed"]
+
+[[event.choices]]
+id = "escort"
+label = "Escort the convoy"
+deuterium = -30.0
+standing = { traders = 8.0 }
+sets = ["convoy_sent", "trade_closed"]
+
+[[event.choices]]
+id = "refuse"
+label = "Refuse"
+standing = { traders = -6.0 }
+sets = ["convoy_refused", "trade_closed"]
+
+[[event]]
+id = "trade_silence"
+title = "Guild silence"
+text = "The guild has stopped calling. A short message could mend it. Staying quiet is also an answer."
+weight = 1
+timeout_secs = 86400
+timeout_choice = "stay"
+min_elapsed_secs = 0
+requires = ["lane_closed", "trade_passed"]
+forbids = ["trade_dealt", "trade_closed"]
+
+[[event.choices]]
+id = "apologize"
+label = "Send word"
+standing = { traders = 3.0 }
+sets = ["trade_closed"]
+
+[[event.choices]]
+id = "stay"
+label = "Stay quiet"
+standing = { traders = -4.0 }
+sets = ["trade_closed"]
