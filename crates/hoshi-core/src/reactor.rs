@@ -27,7 +27,7 @@ impl Default for ReactorConfig {
     fn default() -> Self {
         Self {
             base_energy: 60.0,
-            growth: 1.1,
+            growth: 1.3,
             reactor_fuel_per_energy_hour: 0.01,
             spent_fuel_per_level: 30.0,
             waste_heat_per_energy: 2.0,
@@ -74,6 +74,13 @@ impl ReactorConfig {
         } else {
             self.base_energy * self.growth.powf(f64::from(level - 1))
         }
+    }
+
+    /// Rated output relative to level 1. Fuel fabrication draw scales by this,
+    /// so enrichment energy follows the fuel burned at rated output. The
+    /// recipe's own run rate (ore in, fuel out) is not scaled by it.
+    pub fn throughput_share(&self, level: u32) -> f64 {
+        self.rated_output(level) / self.base_energy
     }
 
     pub fn pool_capacity(&self, level: u32) -> f64 {
@@ -808,6 +815,31 @@ mod tests {
         assert_eq!(state.buildings.fission_reactor, 1);
         assert_eq!(state.tech_level("fission"), 1);
         assert!(state.reactor_shutdowns.contains_key(&state.home));
+    }
+
+    /// #426: fabrication draw grew per level while output grew by 1.1, so
+    /// upgrades past level 1 lost net energy.
+    #[test]
+    fn every_reactor_level_adds_net_energy() {
+        let config = crate::BalanceConfig::default();
+        let net = |level: u32| {
+            let buildings = crate::Buildings {
+                fission_reactor: level,
+                ..Default::default()
+            };
+            config.fission_reactor.rated_output(level) - config.energy_draw(&buildings)
+        };
+        assert_eq!(config.fission_reactor.rated_output(1), 60.0);
+        assert!((net(1) - 52.0).abs() < 1e-9);
+        let mut last_gain = 0.0;
+        for level in 2..=15 {
+            let gain = net(level) - net(level - 1);
+            assert!(
+                gain > 0.0 && gain >= last_gain,
+                "level {level}: gain {gain}"
+            );
+            last_gain = gain;
+        }
     }
 
     #[test]
