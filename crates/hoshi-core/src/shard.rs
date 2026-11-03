@@ -1055,6 +1055,30 @@ mod tests {
     }
 
     #[test]
+    fn shipyard_intent_applies_once_at_the_host_clock() {
+        let mut shard = session(1_000);
+        let mut state = test_state(0);
+        state.buildings.shipyard = 1;
+        state.tech_levels.insert("combustion_drive".into(), 1);
+        state.resources.iron = 100_000.0;
+        state.resources.silicon = 100_000.0;
+        let command = ShardCommand {
+            identity: "tenant-a".into(),
+            idempotency_id: "fighters".into(),
+            intent: Intent::QueueShips {
+                kind: ShipKind::LightFighter,
+                count: 3,
+            },
+            client_now_unix: Some(5_000),
+        };
+        shard.submit(&mut state, command.clone()).unwrap();
+        shard.submit(&mut state, command).unwrap();
+        assert_eq!(state.ship_queue.len(), 1);
+        assert_eq!(state.ship_queue[0].remaining, 3);
+        assert_eq!(state.last_tick_unix, 1_000);
+    }
+
+    #[test]
     fn idempotency_ids_are_per_identity() {
         let mut shard = session(1_000);
         let mut state = test_state(1_000);

@@ -68,7 +68,7 @@ pub const RELATIONS: [&str; 17] = [
     "closed-by",
     "reviewed-in",
 ];
-pub const ACTIONS: [&str; 20] = [
+pub const ACTIONS: [&str; 29] = [
     "build",
     "research",
     "launch",
@@ -89,6 +89,15 @@ pub const ACTIONS: [&str; 20] = [
     "review_incident",
     "schedule_maintenance",
     "complete_work_order",
+    "queue_ships",
+    "queue_defences",
+    "cancel_build",
+    "cancel_research",
+    "cancel_ships",
+    "recall",
+    "spy",
+    "expedition",
+    "choose_story",
 ];
 
 const ONTOLOGY_JSON: &str = include_str!("../data/ontology/hoshi-v1.json");
