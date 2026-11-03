@@ -1879,9 +1879,9 @@ impl GameState {
             }
             _ => {}
         }
-        if spec.max_level.is_some_and(|m| self.tech_level(tech) >= m) {
+        if spec.at_max(self.tech_level(tech)) {
             return Err(ResearchError::Complete {
-                id: tech.to_string(),
+                name: spec.name.clone(),
             });
         }
         Ok(())

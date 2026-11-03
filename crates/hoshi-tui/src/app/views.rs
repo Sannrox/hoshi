@@ -520,12 +520,20 @@ impl App {
                 name.push(Span::styled(format!(" {level}"), t.muted()));
             }
             let mut row = vec![Line::from(name)];
-            row.extend(self.cost_cells(cost, self.state.resources, base));
-            row.push(Line::styled(duration(spec.duration_secs(next)), base));
             let node = self.state.tech_node_state(&spec.id);
+            let complete = node != TechNodeState::InProgress && spec.at_max(level);
+            if complete {
+                // No next level: blank cost and time cells.
+                row.extend(ResourceKind::QUOTED.iter().map(|_| Line::default()));
+                row.push(Line::default());
+            } else {
+                row.extend(self.cost_cells(cost, self.state.resources, base));
+                row.push(Line::styled(duration(spec.duration_secs(next)), base));
+            }
             row.push(match node {
                 TechNodeState::InProgress => self.chip("in progress", Intent::Warning, false),
                 TechNodeState::Excluded => self.chip("excluded", Intent::Neutral, true),
+                _ if complete => self.chip("complete", Intent::Success, true),
                 _ => self.status_chip(reason.as_deref()),
             });
             rows.push(row);

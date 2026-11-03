@@ -163,6 +163,12 @@ impl TechSpec {
         let raw = self.base_seconds * self.time_growth.powi(from_level as i32);
         raw.ceil().max(1.0) as u64
     }
+
+    /// True once `level` reaches `max_level`: no further level can be researched.
+    /// The one cap rule for research start, tech detail and the TUI row.
+    pub fn at_max(&self, level: u32) -> bool {
+        self.max_level.is_some_and(|max| level >= max)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -433,16 +439,37 @@ pub struct ResearchJob {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResearchError {
-    UnknownTech { id: String },
-    Busy { current: String },
-    InsufficientResources { missing: Resources, cost: Resources },
-    MissingPrerequisites { gaps: Vec<PrereqGap> },
+    UnknownTech {
+        id: String,
+    },
+    Busy {
+        current: String,
+    },
+    InsufficientResources {
+        missing: Resources,
+        cost: Resources,
+    },
+    MissingPrerequisites {
+        gaps: Vec<PrereqGap>,
+    },
     Idle,
-    Excluded { id: String, group: String },
-    Hidden { id: String },
-    Complete { id: String },
-    NeedsApproval { id: u64 },
-    QueueFull { cap: usize },
+    Excluded {
+        id: String,
+        group: String,
+    },
+    Hidden {
+        id: String,
+    },
+    /// Already at `max_level`; `name` is the display name.
+    Complete {
+        name: String,
+    },
+    NeedsApproval {
+        id: u64,
+    },
+    QueueFull {
+        cap: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -509,7 +536,7 @@ impl fmt::Display for ResearchError {
                 write!(f, "{id} is excluded by exclusive group {group}")
             }
             ResearchError::Hidden { id } => write!(f, "{id} is locked behind prestige"),
-            ResearchError::Complete { id } => write!(f, "{id} is already complete"),
+            ResearchError::Complete { name } => write!(f, "{name} is already complete"),
             ResearchError::NeedsApproval { id } => {
                 write!(f, "spend waits for approval (#{id})")
             }
