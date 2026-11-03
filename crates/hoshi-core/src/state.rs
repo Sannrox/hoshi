@@ -5293,7 +5293,7 @@ impl GameState {
         report
     }
 
-    fn push_combat_log(&mut self, at: u64, report: CombatReport) {
+    pub(crate) fn push_combat_log(&mut self, at: u64, report: CombatReport) {
         self.record_history(crate::HistoryDraft {
             at,
             kind: crate::HistoryKind::Combat,

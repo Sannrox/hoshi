@@ -21,7 +21,7 @@ use crate::fleets::{Coord, MissionPhase};
 use crate::intel::IntelFact;
 use crate::intent::{Intent, IntentError, apply, propose};
 use crate::leaders::Actor;
-use crate::ships::Fleet;
+use crate::ships::{Fleet, ShipKind};
 use crate::state::{GameState, Resources};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
@@ -114,6 +114,19 @@ pub struct ShardMission {
     pub phase_ends_at: u64,
 }
 
+/// One raid on the tenant's home, read from its own combat log. It names
+/// what the tenant lost and never what the raider kept.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShardRaidAftermath {
+    pub at: u64,
+    /// Own ships destroyed, by hull. Ships are never rebuilt.
+    pub lost: Fleet,
+    /// Stock carried off. Zero when the raid was held.
+    pub plunder: Resources,
+    /// Debris the fight left at home. Zero when no hull was lost.
+    pub debris: f64,
+}
+
 /// Pirate outposts and open expedition sites. Sites stay empty until that
 /// catalog exists. These lists are the shard map, not each save's private
 /// outpost table.
@@ -203,6 +216,9 @@ pub struct ShardView {
     pub intel: Vec<IntelFact>,
     /// Coords the player's clearance can see, tagged `you`, `occupied`, or `empty`.
     pub occupancy: Vec<ShardSlot>,
+    /// Raids on home still in the combat log, oldest first. Reads do not
+    /// consume them; newer fights push them out of the capped log.
+    pub raids: Vec<ShardRaidAftermath>,
 }
 
 impl ShardView {
@@ -225,6 +241,23 @@ impl ShardView {
                 "deuterium": self.resources.deuterium,
             },
             "planets": self.planets.iter().map(|planet| planet.coord.to_string()).collect::<Vec<_>>(),
+            "raids": self.raids.iter().map(|raid| {
+                let lost: serde_json::Map<String, serde_json::Value> = ShipKind::ALL
+                    .iter()
+                    .filter(|&&kind| raid.lost.get(kind) > 0)
+                    .map(|&kind| (kind.as_key().to_string(), raid.lost.get(kind).into()))
+                    .collect();
+                serde_json::json!({
+                    "at": raid.at,
+                    "lost": lost,
+                    "plunder": {
+                        "iron": raid.plunder.iron,
+                        "silicon": raid.plunder.silicon,
+                        "deuterium": raid.plunder.deuterium,
+                    },
+                    "debris": raid.debris,
+                })
+            }).collect::<Vec<_>>(),
         })
     }
 }
@@ -442,6 +475,10 @@ impl<C: Clock> ShardSession<C> {
     }
 
     /// Catch up both empires on the host clock, then resolve a snapshot raid.
+    ///
+    /// The defender's save logs the fight as a raid on home, with plunder,
+    /// and takes the debris at its home coord. Its next [`Self::view`]
+    /// reads that log. The attacker learns its plunder from the result.
     pub fn raid(
         &mut self,
         attacker: &mut GameState,
@@ -504,6 +541,11 @@ impl<C: Clock> ShardSession<C> {
         };
         defender.resources = defender.resources.saturating_sub(plunder);
         attacker.resources = attacker.resources.saturating_add(plunder);
+        defender.push_combat_log(now, report.clone());
+        if let Some(log) = defender.combat_logs.last_mut() {
+            log.raid_plunder = Some(plunder);
+        }
+        defender.note_fight_debris(now, defender.home, &report);
         self.seen.insert(seen_key, now);
         Ok(ShardRaidResult { report, plunder })
     }
@@ -599,8 +641,9 @@ impl<C: Clock> ShardSession<C> {
     ///
     /// The view is a whitelist: own planets, fleets, and stock, plus spy intel
     /// that has already arrived, plus occupancy tags for coords the player
-    /// clearance allows. It has no RNG, pirate timer, or other tenant's
-    /// parked fleet and stockpile. Local play does not call this.
+    /// clearance allows, plus what each logged raid on home took. It has no
+    /// RNG, pirate timer, or other tenant's parked fleet and stockpile. Local
+    /// play does not call this.
     /// `sites` is the shard's pirate outposts and open expedition sites.
     /// The site list stays empty until those sites exist.
     pub fn view(
@@ -865,6 +908,18 @@ fn shard_view(
         resources: own.resources,
         intel: own.intel_facts_for(Actor::Player, own.last_tick_unix),
         occupancy: occupancy_rows,
+        raids: own
+            .combat_logs
+            .iter()
+            .filter_map(|log| {
+                Some(ShardRaidAftermath {
+                    at: log.at,
+                    lost: log.raid_losses()?.ships_lost,
+                    plunder: log.raid_plunder?,
+                    debris: own.fight_debris(&log.report),
+                })
+            })
+            .collect(),
     })
 }
 
@@ -2065,5 +2120,83 @@ mod tests {
                 .iter()
                 .all(|coord| coord.as_str() != Some(other_home.as_str()))
         );
+    }
+
+    /// Attacker at B_HOME with battleships, defender at home with fighters.
+    fn raided(
+        atk_battleships: u32,
+        def_fighters: u32,
+    ) -> (
+        ShardSession<FakeClock>,
+        BTreeMap<String, GameState>,
+        ShardRaidResult,
+    ) {
+        let mut shard = raid_session(1_000, 0, 3);
+        let mut attacker = armed(1_000, 0);
+        attacker.home = B_HOME;
+        attacker.fleet.add(ShipKind::Battleship, atk_battleships);
+        let mut defender = armed(1_000, def_fighters);
+        defender.config.moons.form_chance_per_debris = 0.0;
+        let result = shard
+            .raid(&mut attacker, &mut defender, raid_cmd("a", "b", "r1"))
+            .unwrap();
+        let mut empires = BTreeMap::new();
+        empires.insert("a".to_string(), attacker);
+        empires.insert("b".to_string(), defender);
+        (shard, empires, result)
+    }
+
+    #[test]
+    fn defender_view_names_losses_plunder_and_debris_not_the_raider_fleet() {
+        let (shard, mut empires, result) = raided(20, 2);
+        assert_eq!(result.report.winner, CombatWinner::Attacker);
+        assert!(result.plunder.iron > 0.0);
+        let view = shard.view("b", &mut empires, ShardSites::none()).unwrap();
+        let [raid] = view.raids.as_slice() else {
+            panic!("one raid: {:?}", view.raids);
+        };
+        assert_eq!(raid.at, 1_000);
+        assert_eq!(raid.lost.get(ShipKind::LightFighter), 2);
+        assert_eq!(raid.lost.total(), 2);
+        assert_eq!(raid.plunder, result.plunder);
+        assert!(raid.debris > 0.0);
+        assert_eq!(Some(&raid.debris), empires["b"].debris.get(&Coord::HOME));
+        let text = serde_json::to_string(&view.to_json()).unwrap();
+        assert!(text.contains("\"light_fighter\":2"), "{text}");
+        assert!(!text.contains("battleship"), "{text}");
+        assert_eq!(view.fleet.get(ShipKind::Battleship), 0);
+    }
+
+    #[test]
+    fn held_raid_reports_ships_lost_without_plunder() {
+        let (shard, mut empires, result) = raided(1, 40);
+        assert_eq!(result.report.winner, CombatWinner::Defender);
+        assert_eq!(result.plunder, Resources::ZERO);
+        let view = shard.view("b", &mut empires, ShardSites::none()).unwrap();
+        let [raid] = view.raids.as_slice() else {
+            panic!("one raid: {:?}", view.raids);
+        };
+        assert!(raid.lost.get(ShipKind::LightFighter) > 0);
+        assert_eq!(
+            raid.lost,
+            result
+                .report
+                .defender_before
+                .losses_to(result.report.defender_after)
+        );
+        assert_eq!(raid.plunder, Resources::ZERO);
+    }
+
+    #[test]
+    fn raid_aftermath_stays_through_catch_up_and_repeat_reads() {
+        let (shard, mut empires, _) = raided(20, 2);
+        shard.clock.advance(3_600);
+        let first = shard.view("b", &mut empires, ShardSites::none()).unwrap();
+        let again = shard.view("b", &mut empires, ShardSites::none()).unwrap();
+        assert_eq!(first.at, 4_600);
+        assert_eq!(first.raids.len(), 1);
+        assert_eq!(first.raids, again.raids);
+        let attacker = shard.view("a", &mut empires, ShardSites::none()).unwrap();
+        assert!(attacker.raids.is_empty());
     }
 }

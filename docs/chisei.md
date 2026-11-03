@@ -57,8 +57,12 @@ raids to missions with flight; `ShardSession::raid` still resolves at
 admit time until that follow-up. A young defender is
 protected; an attacker has a per-identity attack cap; plunder uses the
 defender's share then cap. A tenant read is `ShardSession::view`: own
-planets, fleets, and stock, plus spy intel that has already arrived, never
-RNG, pirate timers, or another tenant's parked fleet and stockpile. The
+planets, fleets, and stock, plus spy intel that has already arrived, plus
+each raid on home still in its combat log (ships lost, stock taken, debris
+left), never RNG, pirate timers, or another tenant's parked fleet and
+stockpile. A raid writes that log on the defender's save, so the next read
+shows it and later reads keep it. The attacker reads its plunder from the
+raid result. The
 local TUI and CLI do not use this gate.
 
 An idempotency id is remembered for the longer of the command and attack
