@@ -1267,6 +1267,33 @@ mod tests {
         assert_eq!(done.afford, None);
     }
 
+    /// #426: the 1 -> 2 reactor preview showed +6 output against +8 draw.
+    #[test]
+    fn reactor_upgrade_preview_adds_net_energy() {
+        let mut state = GameState::with_config(0, quiet());
+        state.buildings.fission_reactor = 1;
+        state.buildings.radiator = 10;
+        state.goods.insert("reactor_fuel".into(), 10.0);
+        let detail = state
+            .describe(
+                DetailSubject::Building {
+                    kind: BuildingKind::FissionReactor,
+                    planet: state.home,
+                },
+                None,
+            )
+            .unwrap();
+        let output = detail
+            .deltas
+            .iter()
+            .find(|row| row.label == "energy output")
+            .expect("energy output");
+        let output_gain = output.to.parse::<f64>().unwrap() - output.from.parse::<f64>().unwrap();
+        let draw_gain = detail.energy_draw.expect("energy draw");
+        assert!((draw_gain - 8.0 * 0.3).abs() < 1e-9, "draw {draw_gain}");
+        assert!(output_gain - draw_gain > 0.0, "output {output_gain}");
+    }
+
     #[test]
     fn building_deltas_match_the_queued_next_level() {
         let mut state = GameState::with_config(0, quiet());

@@ -214,15 +214,23 @@ retain their additional 10% penalty. Existing colonies use this rule on load.
 Fission requires `energy` level 3, a level-3 research lab, then `fission` level 1.
 A reactor costs 900 frames and 500 electronics, takes 600 seconds before robotics,
 and requires a level-2 lab. Cost and time grow by 1.8 per level. Electrical output
-starts at 60 and grows by 1.1, independent of orbit and planet modifiers.
+starts at 60 and grows by 1.3, independent of orbit and planet modifiers.
 
 Rocky and ice deposits yield uranium ore (richness 0.30 and 0.05); gas giants
 have none. Iron mines extract ore at 0.05 per recipe unit. Fabrication in the reactor complex consumes
-0.05 ore for 0.005 reactor fuel, adds 8 electrical draw per reactor level, and 0.6
-recipe heat. Delivered electricity consumes 0.01 fuel per energy-hour and leaves
-the same mass of spent fuel. Each reactor level provides 30 units of on-site
+0.05 ore for 0.005 reactor fuel and 0.6 recipe heat. Its electrical draw is a
+share of rated output: the recipe's 8 against the level-1 output of 60, so
+`8 × rated_output(L) / 60`, about 13%. The draw follows the fuel the reactor
+burns at rated output; the recipe's ore and fuel rates keep their own scaling.
+Delivered electricity consumes 0.01 fuel per energy-hour and leaves the same
+mass of spent fuel. Each reactor level provides 30 units of on-site
 pool capacity. A full pool stops generation. Spent fuel is excluded from raid
 loot, as are all intermediate goods under the current resource-only raid rules.
+
+With enough cooling and fuel, net electricity (rated output minus fabrication
+draw) is 52, 68, 88, 114 and 149 for levels 1 to 5, so every level adds more
+than the last. A level-1 fusion plant (400) is overtaken around level 9, when
+the reactor already costs more than the plant.
 
 Reactors reject twice their electrical output as heat. Output is capped by the
 remaining heat sink, so a radiator's 40 cooling permits 20 additional electricity
@@ -235,7 +243,7 @@ The pacing report also runs a research-focused baseline for the first reactor:
 mines at levels 6/4/8, level-3 lab, energy level 3, then fission and construction. It uses
 the default seed, tolerates half power while saving for research, and stops after
 30 days; its hours are separate from the greedy mining targets. The default seed
-reaches the first reactor in 307.23 hours (12.80 days) with this strategy.
+reaches the first reactor in 312.03 hours (13.00 days) with this strategy.
 
 ## Fusion
 
@@ -266,7 +274,7 @@ of a plant that burned D-D waits 86,400 seconds after the last stop.
 A second research-focused baseline grows mines to 12/12/12, a level-6 lab and
 one reactor, researches energy 3, fission 3, laser 6, energy 8, plasma physics
 2 and fusion D-D, then builds the plant; it re-plans at least daily. The default
-seed reaches the first fusion plant in 1821.67 hours (75.90 days). The test
+seed reaches the first fusion plant in 1650.15 hours (68.76 days). The test
 that reports it is ignored by default because it simulates months; run it with
 `cargo test --release -p hoshi-core first_fusion -- --ignored --nocapture`
 after balance changes.

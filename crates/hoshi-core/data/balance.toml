@@ -689,6 +689,7 @@ outputs = { uranium_ore = 0.05 }
 heat = 0.0
 pollution = 0.2
 
+# Energy is the level-1 draw; it scales with the reactor's rated output.
 [[chains.recipes]]
 id = "fabricate_fuel"
 building = "fission_reactor"
@@ -877,7 +878,7 @@ order_ttl_secs = 86400
 
 [fission_reactor]
 base_energy = 60.0
-growth = 1.1
+growth = 1.3
 reactor_fuel_per_energy_hour = 0.01
 spent_fuel_per_level = 30.0
 waste_heat_per_energy = 2.0

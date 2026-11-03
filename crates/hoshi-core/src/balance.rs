@@ -435,7 +435,8 @@ pub struct BalanceConfig {
 }
 
 impl BalanceConfig {
-    /// Mine plus radiator and scrubber energy draw for a planet's buildings.
+    /// Mine, radiator, scrubber and recipe energy draw for a planet's buildings.
+    /// A pure function of levels, so build previews can diff it.
     pub fn energy_draw(&self, buildings: &Buildings) -> f64 {
         self.metal_mine.energy_use(buildings.metal_mine)
             + self.crystal_mine.energy_use(buildings.crystal_mine)
@@ -448,8 +449,18 @@ impl BalanceConfig {
                 .recipes
                 .iter()
                 .filter(|recipe| recipe.energy > 0.0)
-                .map(|recipe| recipe.energy * f64::from(buildings.get(recipe.building)))
+                .map(|recipe| recipe.energy * self.recipe_scale(recipe.building, buildings))
                 .sum::<f64>()
+    }
+
+    /// Energy multiplier on a recipe's level-1 draw. Fission fabrication follows
+    /// rated output (fuel demand), not its run rate; other recipes scale by level.
+    fn recipe_scale(&self, building: BuildingKind, buildings: &Buildings) -> f64 {
+        let level = buildings.get(building);
+        match building {
+            BuildingKind::FissionReactor => self.fission_reactor.throughput_share(level),
+            _ => f64::from(level),
+        }
     }
 
     /// Mine energy only. Waste heat and pollution scale from this, not from radiators.
