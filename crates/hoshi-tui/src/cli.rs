@@ -2839,6 +2839,21 @@ fn state_value(state: &GameState, actor: Actor) -> Value {
         })).collect::<Vec<_>>(),
     });
     value["decision"] = decision.unwrap_or(Value::Null);
+    // Unseen signals stay hidden until light-time passes; the seed never leaves core.
+    value["signals"] = state
+        .signals
+        .iter()
+        .filter(|s| s.seen_at <= state.last_tick_unix)
+        .map(|s| {
+            json!({
+                "id": s.id,
+                "coord": s.coord.to_string(),
+                "deadline": s.deadline,
+                "status": s.outcome.map_or("open", |o| o.as_key()),
+                "mission_id": s.mission_id,
+            })
+        })
+        .collect();
     value["heat"] = json!({
         "load": waste.heat_load,
         "sink": waste.heat_sink,

@@ -366,6 +366,8 @@ pub struct GameState {
     pub outposts: Vec<Outpost>,
     /// Finite expedition stockpiles for this galaxy. Older saves load this empty.
     pub sites: Vec<ExpeditionSite>,
+    /// Scanned signals, open and recently resolved. Older saves load this empty.
+    pub signals: Vec<crate::Signal>,
     pub prestige: Prestige,
     pub story_pending: Option<crate::PendingStory>,
     /// Flags written by story choices. Older saves load this empty.
@@ -504,6 +506,7 @@ impl GameState {
             completed_wonders: Vec::new(),
             outposts,
             sites: Vec::new(),
+            signals: Vec::new(),
             prestige: Prestige::new(now_unix),
             story_pending: None,
             story_flags: BTreeSet::new(),
@@ -682,6 +685,7 @@ impl GameState {
             let research_at = self.research.as_ref().map(|job| job.completes_at);
             let ship_at = self.ship_queue.first().and_then(|job| job.completes_at);
             let mission_at = self.missions.iter().map(|m| m.phase_ends_at).min();
+            let signal_at = self.next_signal_at();
             let route_at = self.routes.iter().map(|r| r.next_at).min();
             let raid_at = if self.config.raid.enabled {
                 self.upcoming_raid_at()
@@ -728,7 +732,7 @@ impl GameState {
                         min_time(
                             min_time(
                                 min_time(min_time(build_at, research_at), ship_at),
-                                mission_at,
+                                min_time(mission_at, signal_at),
                             ),
                             min_time(raid_at, tactical_at),
                         ),
@@ -933,6 +937,9 @@ impl GameState {
             self.settle_ledger(Term::Other);
             if mission_at == Some(done_at) {
                 self.advance_missions_at(done_at);
+            }
+            if signal_at == Some(done_at) {
+                self.advance_signals_at(done_at);
             }
             if planned_at == Some(done_at) {
                 self.advance_planned_at(done_at);
@@ -4348,6 +4355,9 @@ impl GameState {
                     if self.try_colonize_at(index, done_at) {
                         continue;
                     }
+                    if self.try_hold_signal_at(index, done_at) {
+                        continue;
+                    }
                     if self.try_attack_at(index, done_at) {
                         continue;
                     }
@@ -5073,7 +5083,7 @@ impl GameState {
         }
     }
 
-    fn resolve_player_attack(
+    pub(crate) fn resolve_player_attack(
         &self,
         attacker: Fleet,
         defender: Fleet,
@@ -7940,6 +7950,7 @@ mod tests {
             achievements: crate::AchievementConfig::empty(),
             daily: crate::DailyConfig::empty(),
             moons: crate::MoonConfig::inactive(),
+            signals: crate::SignalConfig::default(),
             tactics: crate::TacticsConfig::default(),
             leaders: {
                 let mut leaders = crate::LeaderConfig::default();
@@ -11122,6 +11133,154 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
             state.launch_deploy(state.home, outpost, ships, cargo, 300, 100, 0),
             Err(FleetError::DeployToOutpost)
         );
+    }
+
+    /// Raids off, deep storage, debris on, ten fighters, galaxy seed `seed`.
+    fn signal_state(seed: u64) -> GameState {
+        let mut cfg = test_config();
+        cfg.raid = crate::RaidConfig::inactive();
+        cfg.moons = crate::MoonConfig::default();
+        cfg.signals.hold_secs = 600;
+        cfg.deuterium_storage.base = 1_000_000.0;
+        let mut state = GameState::with_seed(0, cfg, seed);
+        state.buildings.deuterium_synthesizer = 0;
+        state.fleet.add(ShipKind::LightFighter, 10);
+        state.resources.deuterium = 10_000.0;
+        state
+    }
+
+    /// Scan from home and catch up until the signal is seen.
+    fn seen_signal(state: &mut GameState) -> crate::Signal {
+        let id = state.scan_signal(state.home, 0).unwrap();
+        let seen = state.signal(id).unwrap().seen_at;
+        state.catch_up(seen);
+        state.signal(id).unwrap().clone()
+    }
+
+    #[test]
+    fn same_seed_and_origin_give_the_same_signal_and_hostile_fleet() {
+        let mut a = signal_state(42);
+        let mut b = signal_state(42);
+        let fuel = a.resources.deuterium;
+        let id = a.scan_signal(a.home, 0).unwrap();
+        b.scan_signal(b.home, 0).unwrap();
+        assert_eq!(a.signals, b.signals);
+        let signal = a.signal(id).unwrap();
+        let cfg = &a.config.signals;
+        assert_eq!(
+            crate::hostile_fleet(signal.seed, cfg),
+            crate::hostile_fleet(b.signals[0].seed, &b.config.signals)
+        );
+        close(fuel - a.resources.deuterium, cfg.scan_deuterium);
+        assert_eq!(signal.coord.system, a.home.system);
+        assert_ne!(signal.coord, a.home);
+        assert!(a.outpost(signal.coord).is_none());
+        assert_eq!(
+            signal.seen_at,
+            crate::light_delay_secs(a.home, signal.coord, &a.config.orbits)
+        );
+        assert_eq!(signal.deadline, signal.seen_at + cfg.hold_secs);
+    }
+
+    #[test]
+    fn a_scan_refuses_a_coord_with_an_open_expedition_site() {
+        let mut state = signal_state(7);
+        assert!(!state.sites.is_empty());
+        loop {
+            match state.scan_signal(state.home, 0) {
+                Ok(_) => {}
+                Err(err) => {
+                    assert_eq!(err, FleetError::NoSignalCoord);
+                    break;
+                }
+            }
+        }
+        for signal in &state.signals {
+            assert!(state.site_at(signal.coord).is_none(), "{}", signal.coord);
+        }
+        state.sites[0].outcome = Some(crate::ExpeditionKind::Nothing);
+        let id = state.scan_signal(state.home, 0).unwrap();
+        assert_eq!(state.signal(id).unwrap().coord, state.sites[0].coord);
+    }
+
+    #[test]
+    fn a_hold_that_fights_matches_step_by_step() {
+        let run = |stepped: bool| {
+            let mut state = signal_state(42);
+            let signal = seen_signal(&mut state);
+            let mut ships = Fleet::default();
+            ships.add(ShipKind::LightFighter, 10);
+            let now = state.last_tick_unix;
+            let mission = state.hold_signal(signal.id, ships, 100, now).unwrap();
+            let outbound = state.missions[0].outbound_secs;
+            let back = signal.deadline + outbound + 1;
+            if stepped {
+                for t in now + 1..=back {
+                    state.catch_up(t);
+                }
+            } else {
+                state.catch_up(back);
+            }
+            assert!(state.missions.iter().all(|m| m.id != mission));
+            (state, signal)
+        };
+        let ((jumped, signal), (stepped, _)) = (run(false), run(true));
+        let fought = jumped.signal(signal.id).unwrap();
+        assert_eq!(fought.outcome, Some(crate::SignalOutcome::Fought));
+        assert_eq!(
+            fought.mission_id,
+            stepped.signal(signal.id).unwrap().mission_id
+        );
+        assert_eq!(jumped.signals, stepped.signals);
+        assert_eq!(jumped.fleet, stepped.fleet);
+        assert_eq!(jumped.debris, stepped.debris);
+        assert!(jumped.debris.get(&signal.coord).is_some_and(|&d| d > 0.0));
+        assert!(
+            jumped
+                .events
+                .iter()
+                .any(|e| e.text.starts_with(&format!("signal #{} at", signal.id))
+                    && e.text.contains("fought")),
+            "{:?}",
+            jumped.events
+        );
+    }
+
+    #[test]
+    fn an_expired_signal_with_no_fleet_leaves_no_debris() {
+        let mut state = signal_state(42);
+        let signal = seen_signal(&mut state);
+        state.catch_up(signal.deadline + 1);
+        let expired = state.signal(signal.id).unwrap();
+        assert_eq!(expired.outcome, Some(crate::SignalOutcome::Expired));
+        assert_eq!(state.debris.get(&signal.coord).copied().unwrap_or(0.0), 0.0);
+        assert!(state.combat_logs.is_empty());
+        assert!(
+            state
+                .events
+                .iter()
+                .any(|e| e.text
+                    == format!("signal #{} at {} expired unheld", signal.id, signal.coord))
+        );
+    }
+
+    #[test]
+    fn a_hold_is_refused_before_the_signal_is_seen_or_when_it_arrives_too_late() {
+        let mut state = signal_state(42);
+        let id = state.scan_signal(state.home, 0).unwrap();
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::LightFighter, 1);
+        assert_eq!(
+            state.hold_signal(id, ships, 100, 0),
+            Err(FleetError::UnknownSignal { id })
+        );
+        let deadline = state.signal(id).unwrap().deadline;
+        let now = deadline - 1;
+        assert!(matches!(
+            state.hold_signal(id, ships, 100, now),
+            Err(FleetError::SignalTooLate { .. })
+        ));
+        assert!(state.missions.is_empty());
     }
 
     #[test]

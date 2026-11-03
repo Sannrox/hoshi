@@ -829,6 +829,17 @@ gate_metal = 800.0
 gate_crystal = 400.0
 gate_deuterium = 100.0
 
+# A scan burns deuterium at the scanning planet and places one signal on a
+# free home-system coord after light-time. A fleet holding there at the
+# deadline fights hostile_min..=hostile_max hostile_kind; an unheld signal
+# expires with no fight.
+[signals]
+scan_deuterium = 200.0
+hold_secs = 3600
+hostile_kind = "light_fighter"
+hostile_min = 2
+hostile_max = 6
+
 [market]
 enabled = true
 tick_secs = 3600

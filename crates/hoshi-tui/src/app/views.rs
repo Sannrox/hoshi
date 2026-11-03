@@ -1237,6 +1237,8 @@ impl App {
             "colony"
         } else if let Some(out) = self.state.outpost(dest) {
             out.kind.as_key()
+        } else if self.seen_signal_at(dest).is_some() {
+            "signal"
         } else if let Some(site) = self.state.site_at(dest) {
             site.kind.as_key()
         } else if self

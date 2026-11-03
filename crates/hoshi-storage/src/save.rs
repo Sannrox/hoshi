@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 59;
+pub const SCHEMA_VERSION: u32 = 60;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -174,6 +174,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM mission_ships;
          DELETE FROM missions;
          DELETE FROM expedition_sites;
+         DELETE FROM signals;
          DELETE FROM raids;
          DELETE FROM event_log;
          DELETE FROM colonies;
@@ -454,6 +455,24 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 site.deuterium,
                 site.ships as i64,
                 site.outcome.map(|kind| kind.as_key()),
+            ],
+        )?;
+    }
+    for signal in &state.signals {
+        tx.execute(
+            "INSERT INTO signals (
+                id, galaxy, system, position, seen_at, deadline, seed, mission_id, outcome
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                signal.id as i64,
+                signal.coord.galaxy as i64,
+                signal.coord.system as i64,
+                signal.coord.position as i64,
+                signal.seen_at as i64,
+                signal.deadline as i64,
+                signal.seed as i64,
+                signal.mission_id.map(|id| id as i64),
+                signal.outcome.map(|outcome| outcome.as_key()),
             ],
         )?;
     }
@@ -1880,10 +1899,14 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     }
     state.missions = missions;
     state.sites = read_expedition_sites(conn)?;
+    state.signals = read_signals(conn)?;
+    // A signal keeps its hold mission's id after that mission returns, so a
+    // reload must not hand the id out again.
     state.next_mission_id = state
         .missions
         .iter()
         .map(|m| m.id)
+        .chain(state.signals.iter().filter_map(|s| s.mission_id))
         .max()
         .map(|id| id.saturating_add(1))
         .unwrap_or(0);
@@ -3300,6 +3323,7 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "story_pending" => "SELECT COUNT(*) FROM story_pending",
         "story_flags" => "SELECT COUNT(*) FROM story_flags",
         "expedition_sites" => "SELECT COUNT(*) FROM expedition_sites",
+        "signals" => "SELECT COUNT(*) FROM signals",
         "market_prices" => "SELECT COUNT(*) FROM market_prices",
         "market_history" => "SELECT COUNT(*) FROM market_history",
         "faction_standing" => "SELECT COUNT(*) FROM faction_standing",
@@ -3420,6 +3444,7 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "story_pending")?
         + count_rows(conn, "story_flags")?
         + count_rows(conn, "expedition_sites")?
+        + count_rows(conn, "signals")?
         + count_rows(conn, "market_prices")?
         + count_rows(conn, "market_history")?
         + count_rows(conn, "faction_standing")?
@@ -3692,6 +3717,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     if found < 59 {
         migrate_v59(conn)?;
     }
+    if found < 60 {
+        migrate_v60(conn)?;
+    }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
 }
@@ -3858,6 +3886,51 @@ fn migrate_v6(conn: &Connection) -> Result<(), SaveError> {
         ",
     )?;
     Ok(())
+}
+
+fn read_signals(conn: &Connection) -> Result<Vec<hoshi_core::Signal>, SaveError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, galaxy, system, position, seen_at, deadline, seed, mission_id, outcome
+         FROM signals ORDER BY id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, i64>(5)?,
+            row.get::<_, i64>(6)?,
+            row.get::<_, Option<i64>>(7)?,
+            row.get::<_, Option<String>>(8)?,
+        ))
+    })?;
+    let mut signals = Vec::new();
+    for row in rows {
+        let (id, galaxy, system, position, seen_at, deadline, seed, mission_id, outcome) = row?;
+        let outcome = match outcome {
+            Some(key) => Some(
+                hoshi_core::SignalOutcome::from_key(&key)
+                    .ok_or(SaveError::Corrupt("unknown signal outcome"))?,
+            ),
+            None => None,
+        };
+        signals.push(hoshi_core::Signal {
+            id: unix_ts(id)?,
+            coord: Coord {
+                galaxy: u16_coord(galaxy)?,
+                system: u16_coord(system)?,
+                position: u16_coord(position)?,
+            },
+            seen_at: unix_ts(seen_at)?,
+            deadline: unix_ts(deadline)?,
+            seed: seed as u64,
+            mission_id: unix_ts_opt(mission_id)?,
+            outcome,
+        });
+    }
+    Ok(signals)
 }
 
 fn read_expedition_sites(conn: &Connection) -> Result<Vec<hoshi_core::ExpeditionSite>, SaveError> {
@@ -4850,6 +4923,25 @@ fn migrate_v50(conn: &Connection) -> Result<(), SaveError> {
             water_ice REAL NOT NULL CHECK (water_ice >= 0),
             helium_3 REAL NOT NULL CHECK (helium_3 >= 0),
             deuterium REAL NOT NULL CHECK (deuterium >= 0)
+        );",
+    )?;
+    Ok(())
+}
+
+/// v60: scanned signals. A missing table is an empty list, so older saves
+/// load with no signals.
+fn migrate_v60(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS signals (
+            id INTEGER PRIMARY KEY,
+            galaxy INTEGER NOT NULL,
+            system INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            seen_at INTEGER NOT NULL CHECK (seen_at >= 0),
+            deadline INTEGER NOT NULL CHECK (deadline >= seen_at),
+            seed INTEGER NOT NULL,
+            mission_id INTEGER,
+            outcome TEXT
         );",
     )?;
     Ok(())
@@ -9786,6 +9878,31 @@ label = "Leave it"
         migrate(&conn).unwrap();
         let old = load_state(&conn, BalanceConfig::default()).unwrap();
         assert!(!old.missions[0].recycle);
+    }
+
+    #[test]
+    fn signals_survive_save_and_a_v59_save_loads_with_none() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let mut state = GameState::new(100);
+        state.resources.deuterium = 10_000.0;
+        let id = state.scan_signal(state.home, 100).unwrap();
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.signals, state.signals);
+        assert_eq!(
+            loaded.signal(id).map(|s| s.coord),
+            state.signal(id).map(|s| s.coord)
+        );
+        state.signals[0].mission_id = Some(7);
+        save_state(&mut conn, &state).unwrap();
+        let held = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert!(held.missions.is_empty());
+        assert_eq!(held.next_mission_id, 8);
+        conn.execute_batch("DROP TABLE signals; PRAGMA user_version = 59;")
+            .unwrap();
+        migrate(&conn).unwrap();
+        let old = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert!(old.signals.is_empty());
     }
 
     #[test]

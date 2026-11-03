@@ -54,6 +54,7 @@ mod season;
 mod self_play;
 mod shard;
 mod ships;
+mod signals;
 mod simulate;
 mod species;
 mod state;
@@ -240,6 +241,7 @@ pub use ships::{
     Fleet, SHIP_KINDS, ShipCatalog, ShipCatalogError, ShipError, ShipJob, ShipKind, ShipSpec,
     ShipStats,
 };
+pub use signals::{Signal, SignalConfig, SignalOutcome, hostile_fleet, signal_coord, signal_seed};
 pub use simulate::{
     DaySnapshot, EnergyRecoveryRow, HeavyIndustryReport, LadderSimRow, PrestigeSimRow, SimReport,
     VictorySimRow, energy_recovery, greedy_curve, heavy_industry_check, simulate_greedy,

@@ -1013,6 +1013,13 @@ fn map_lines(
     t: &Theme,
 ) -> Vec<Line<'static>> {
     let owned = state.owned_coords();
+    let now = state.last_tick_unix;
+    // Signals whose light has arrived: open ones get a glyph, resolved ones a label.
+    let signals: Vec<&hoshi_core::Signal> = state
+        .signals
+        .iter()
+        .filter(|signal| signal.seen_at <= now)
+        .collect();
     let mut entries = Vec::new();
     for system in 1..=MAP_SYSTEM_MAX {
         let current = system == map_system;
@@ -1037,6 +1044,8 @@ fn map_lines(
                 ('C', t.intent(Intent::Success))
             } else if state.outposts.iter().any(|o| o.coord == coord) {
                 ('P', t.intent(Intent::Danger))
+            } else if signals.iter().any(|s| s.coord == coord && s.is_open()) {
+                ('!', t.intent(Intent::Danger))
             } else if state.missions.iter().any(|m| m.dest == coord) {
                 ('f', t.intent(Intent::Warning))
             } else if let Some(site) = state.site_at(coord) {
@@ -1063,6 +1072,16 @@ fn map_lines(
                     None => site.kind.as_key().to_string(),
                 };
                 labels.push(label);
+            }
+            for signal in signals.iter().filter(|s| s.coord == coord) {
+                labels.push(match signal.outcome {
+                    Some(outcome) => format!("signal #{} {}", signal.id, outcome.as_key()),
+                    None => format!(
+                        "signal #{} {}",
+                        signal.id,
+                        countdown(signal.deadline.saturating_sub(now))
+                    ),
+                });
             }
             let debris = debris_at(state, coord);
             if debris > 0.0 {
@@ -1931,6 +1950,43 @@ mod tests {
             .collect();
         assert!(text.contains('*'), "{text}");
         assert!(text.contains("debris 1.5k"), "{text}");
+    }
+
+    #[test]
+    fn map_marks_an_open_signal_and_labels_a_resolved_one() {
+        let mut state = GameState::new(1_000);
+        state.resources.deuterium = 10_000.0;
+        let open = state.scan_signal(state.home, 1_000).unwrap();
+        let done = state.scan_signal(state.home, 1_000).unwrap();
+        let hidden = state.scan_signal(state.home, 1_000).unwrap();
+        let seen = state
+            .signal(open)
+            .unwrap()
+            .seen_at
+            .max(state.signal(done).unwrap().seen_at);
+        state.last_tick_unix = seen;
+        let later = seen + 1_000;
+        for signal in &mut state.signals {
+            if signal.id == done {
+                signal.outcome = Some(hoshi_core::SignalOutcome::Expired);
+            }
+            if signal.id == hidden {
+                signal.seen_at = later;
+            }
+        }
+        let lines = map_lines(&state, state.home.system, 1, 20, 160, &Theme::default());
+        let text: String = lines
+            .iter()
+            .flat_map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref().to_string())
+            })
+            .collect();
+        assert_eq!(text.matches('!').count(), 1, "{text}");
+        assert!(text.contains(&format!("signal #{open} ")), "{text}");
+        assert!(text.contains(&format!("signal #{done} expired")), "{text}");
+        assert!(!text.contains(&format!("signal #{hidden}")), "{text}");
     }
 
     #[test]

@@ -137,6 +137,8 @@ or `30s` / `3m` / `1h` / `1d`.
 
 `fleet deploy` lifts cargo from `from` like a transport, holds at `to` (an owned or empty coord, never a pirate outpost) for `hold_secs` (1 up to `flight.deploy_max_hold_secs`, one week bundled), and brings the same cargo back. A home raid only reaches stock still on the pad. Recall at any phase returns ships and cargo. Each mission in `state` carries `deploy` and its `cargo`.
 
+`state` includes a `signals` array: scanned signals whose light has arrived, each with `id`, `coord`, `deadline`, `status` (`open`, `fought` or `expired`) and the holding `mission_id`. A signal still in flight as light stays hidden.
+
 `advise` prints ranked next-move suggestions from the same player-visible
 state the TUI overlay uses. It never enqueues a build, research, or fleet.
 With `focus` set in `config.toml` beside the save (`conquest`, `wonder` or

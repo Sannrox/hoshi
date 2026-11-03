@@ -117,6 +117,7 @@ enum Mission {
     Colonize,
     Expedition,
     Recycle,
+    Hold,
 }
 
 impl Mission {
@@ -128,6 +129,7 @@ impl Mission {
             Self::Colonize => "colonize",
             Self::Expedition => "expedition",
             Self::Recycle => "recycle",
+            Self::Hold => "hold",
         }
     }
 }
@@ -950,6 +952,9 @@ impl App {
             }
             Some(Binding::SendProbe) if self.screen == Screen::Reports && !self.opened_report => {
                 self.send_probe(now_unix);
+            }
+            Some(Binding::SendProbe) if self.screen == Screen::Map && self.dispatch.is_none() => {
+                self.scan_signal(now_unix);
             }
             Some(Binding::Dismantle) if self.screen == Screen::Planet => {
                 if let Some(kind) = BuildingKind::ALL.get(self.selected).copied() {
@@ -2431,6 +2436,18 @@ impl App {
         }
     }
 
+    /// Scan from home for a signal. It shows on the map after light-time.
+    fn scan_signal(&mut self, now_unix: u64) {
+        match self.state.scan_signal(self.state.home, now_unix) {
+            Ok(id) => {
+                let seen = self.state.signal(id).map_or(0, |signal| signal.seen_at);
+                let wait = seen.saturating_sub(self.state.last_tick_unix);
+                self.status = format!("scan sent: signal #{id} in {}", ui::spans::duration(wait));
+            }
+            Err(e) => self.status = e.to_string(),
+        }
+    }
+
     fn activate_law(&mut self, now_unix: u64) {
         let templates: Vec<_> = self.state.config.laws.iter().cloned().collect();
         if self.selected < templates.len() {
@@ -2565,8 +2582,8 @@ impl App {
     }
 
     /// Missions that fit `dest`, the default first: the expedition slot,
-    /// an outpost (invade first once its defences are gone), or anywhere
-    /// else to settle. Debris adds recycle, so home or an own colony with
+    /// an outpost (invade first once its defences are gone), a seen signal
+    /// to hold, or anywhere else to settle. Debris adds recycle, so home or an own colony with
     /// wreckage gets one; otherwise own planets have none (Ops plans their
     /// deliveries).
     fn dispatch_missions(&self, dest: Coord) -> Vec<Mission> {
@@ -2584,6 +2601,8 @@ impl App {
             .is_some_and(|site| site.outcome.is_none())
         {
             vec![Mission::Expedition]
+        } else if self.seen_signal_at(dest).is_some() {
+            vec![Mission::Hold]
         } else if self.state.owned_coords().contains(&dest) {
             Vec::new()
         } else {
@@ -2593,6 +2612,14 @@ impl App {
             missions.push(Mission::Recycle);
         }
         missions
+    }
+
+    /// The open signal at `dest` once its light has arrived.
+    fn seen_signal_at(&self, dest: Coord) -> Option<u64> {
+        self.state
+            .seen_signals(self.state.last_tick_unix)
+            .find(|signal| signal.coord == dest)
+            .map(|signal| signal.id)
     }
 
     /// The selected shipyard unit, as a ship or a defence.
@@ -2683,6 +2710,14 @@ impl App {
                 self.state.launch_colony(dest, 100, now_unix)
             }
             Mission::Recycle => self.state.launch_recycle(dest, ships, 100, now_unix),
+            // A signal that resolved while the form was open is refused by core.
+            Mission::Hold => match self.state.open_signal_at(dest).map(|signal| signal.id) {
+                Some(id) => self.state.hold_signal(id, ships, 100, now_unix),
+                None => {
+                    self.status = format!("no open signal at {dest}");
+                    return;
+                }
+            },
             Mission::Expedition => {
                 let hold = self.state.config.expedition.min_hold_secs;
                 // A site that resolved while the form was open is refused,
@@ -6570,6 +6605,40 @@ mod tests {
         for _ in 0..count {
             app.handle_key(KeyCode::Char('+'), 1_000);
         }
+    }
+
+    #[test]
+    fn map_scan_then_hold_and_the_away_summary_names_the_fight() {
+        let mut state = GameState::new(1_000);
+        state.config.raid.enabled = false;
+        state.next_raid_at = None;
+        state.resources.deuterium = 10_000.0;
+        state.fleet.add(ShipKind::LightFighter, 10);
+        let mut app = App::new(state);
+        app.open(Screen::Map);
+        app.handle_key(KeyCode::Char('s'), 1_000);
+        let signal = app.state.signals[0].clone();
+        assert!(app.status.starts_with("scan sent"), "{}", app.status);
+        assert_ne!(app.dispatch_missions(signal.coord), vec![Mission::Hold]);
+        app.state.catch_up(signal.seen_at);
+        assert_eq!(app.dispatch_missions(signal.coord), vec![Mission::Hold]);
+        open_dispatch(&mut app, signal.coord, ShipKind::LightFighter, 10);
+        app.handle_key(KeyCode::Enter, signal.seen_at);
+        assert_eq!(
+            app.state.signals[0].mission_id,
+            Some(app.state.missions[0].id),
+            "{}",
+            app.status
+        );
+        let before = crate::title::snapshot_away(&app.state);
+        let ledger = app.state.catch_up_ledger(signal.deadline + 1);
+        let summary = crate::title::summarize_away(&before, ledger, &app.state);
+        let fight = format!("signal #{} at {}: fought", signal.id, signal.coord);
+        assert!(
+            summary.events.iter().any(|line| line.starts_with(&fight)),
+            "{:?}",
+            summary.events
+        );
     }
 
     #[test]
