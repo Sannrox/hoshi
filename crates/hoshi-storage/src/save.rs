@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 60;
+pub const SCHEMA_VERSION: u32 = 61;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -175,6 +175,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM missions;
          DELETE FROM expedition_sites;
          DELETE FROM signals;
+         DELETE FROM merchant_visit;
          DELETE FROM raids;
          DELETE FROM event_log;
          DELETE FROM colonies;
@@ -651,6 +652,12 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 params![kind.as_key(), i as i64, price],
             )?;
         }
+    }
+    if let Some(visit) = &state.merchant {
+        tx.execute(
+            "INSERT INTO merchant_visit (id, until_unix, fee) VALUES (1, ?1, ?2)",
+            params![visit.until_unix as i64, visit.fee],
+        )?;
     }
     for (id, standing) in &state.diplomacy.standing {
         tx.execute(
@@ -1900,6 +1907,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     state.missions = missions;
     state.sites = read_expedition_sites(conn)?;
     state.signals = read_signals(conn)?;
+    state.merchant = read_merchant_visit(conn)?;
     // A signal keeps its hold mission's id after that mission returns, so a
     // reload must not hand the id out again.
     state.next_mission_id = state
@@ -3324,6 +3332,7 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "story_flags" => "SELECT COUNT(*) FROM story_flags",
         "expedition_sites" => "SELECT COUNT(*) FROM expedition_sites",
         "signals" => "SELECT COUNT(*) FROM signals",
+        "merchant_visit" => "SELECT COUNT(*) FROM merchant_visit",
         "market_prices" => "SELECT COUNT(*) FROM market_prices",
         "market_history" => "SELECT COUNT(*) FROM market_history",
         "faction_standing" => "SELECT COUNT(*) FROM faction_standing",
@@ -3445,6 +3454,7 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "story_flags")?
         + count_rows(conn, "expedition_sites")?
         + count_rows(conn, "signals")?
+        + count_rows(conn, "merchant_visit")?
         + count_rows(conn, "market_prices")?
         + count_rows(conn, "market_history")?
         + count_rows(conn, "faction_standing")?
@@ -3720,6 +3730,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     if found < 60 {
         migrate_v60(conn)?;
     }
+    if found < 61 {
+        migrate_v61(conn)?;
+    }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
 }
@@ -3886,6 +3899,23 @@ fn migrate_v6(conn: &Connection) -> Result<(), SaveError> {
         ",
     )?;
     Ok(())
+}
+
+fn read_merchant_visit(conn: &Connection) -> Result<Option<hoshi_core::MerchantVisit>, SaveError> {
+    let row = conn
+        .query_row(
+            "SELECT until_unix, fee FROM merchant_visit WHERE id = 1",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?)),
+        )
+        .optional()?;
+    row.map(|(until, fee)| {
+        Ok(hoshi_core::MerchantVisit {
+            until_unix: unix_ts(until)?,
+            fee,
+        })
+    })
+    .transpose()
 }
 
 fn read_signals(conn: &Connection) -> Result<Vec<hoshi_core::Signal>, SaveError> {
@@ -4923,6 +4953,19 @@ fn migrate_v50(conn: &Connection) -> Result<(), SaveError> {
             water_ice REAL NOT NULL CHECK (water_ice >= 0),
             helium_3 REAL NOT NULL CHECK (helium_3 >= 0),
             deuterium REAL NOT NULL CHECK (deuterium >= 0)
+        );",
+    )?;
+    Ok(())
+}
+
+/// v61: the merchant visit an expedition brought. At most one row; a
+/// missing row is no visit, so older saves load with the plain market fee.
+fn migrate_v61(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS merchant_visit (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            until_unix INTEGER NOT NULL CHECK (until_unix >= 0),
+            fee REAL NOT NULL CHECK (fee >= 0 AND fee < 1)
         );",
     )?;
     Ok(())
@@ -9903,6 +9946,27 @@ label = "Leave it"
         migrate(&conn).unwrap();
         let old = load_state(&conn, BalanceConfig::default()).unwrap();
         assert!(old.signals.is_empty());
+    }
+
+    #[test]
+    fn a_merchant_visit_survives_save_and_a_v60_save_loads_with_none() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let mut state = GameState::new(100);
+        let plain_fee = state.effective_market_fee();
+        state.merchant = Some(hoshi_core::MerchantVisit {
+            until_unix: 7_300,
+            fee: 0.01,
+        });
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.merchant, state.merchant);
+        assert_eq!(loaded.effective_market_fee(), 0.01);
+        conn.execute_batch("DROP TABLE merchant_visit; PRAGMA user_version = 60;")
+            .unwrap();
+        migrate(&conn).unwrap();
+        let old = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(old.merchant, None);
+        assert_eq!(old.effective_market_fee(), plain_fee);
     }
 
     #[test]

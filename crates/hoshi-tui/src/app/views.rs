@@ -1077,7 +1077,15 @@ impl App {
             .market
             .cargo_free
             .max(self.state.cargo_capacity(self.state.fleet));
-        let head = vec![Line::from(vec![
+        // An open merchant visit shows how long its fee holds.
+        let merchant = self.state.open_merchant().map(|visit| {
+            let left = visit.until_unix.saturating_sub(self.state.last_tick_unix);
+            [
+                Span::styled("   MERCHANT ", t.label()),
+                Span::styled(duration(left), t.text()),
+            ]
+        });
+        let mut head = vec![Line::from(vec![
             Span::styled("AMOUNT ", t.label()),
             keycap(t, "-"),
             Span::styled(format!(" {:.0} ", self.trade_amount), t.strong()),
@@ -1090,6 +1098,7 @@ impl App {
             Span::styled("   HUB ", t.label()),
             Span::styled(self.state.config.market.hub().to_string(), t.text()),
         ])];
+        head[0].spans.extend(merchant.into_iter().flatten());
         let rows = TRADE_PAIRS
             .iter()
             .map(|&(pay, recv)| {

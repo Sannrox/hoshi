@@ -375,6 +375,8 @@ pub struct GameState {
     pub last_story_at: u64,
     pub market: crate::MarketState,
     pub last_market_at: u64,
+    /// A merchant an expedition brought. Older saves load this as none.
+    pub merchant: Option<crate::MerchantVisit>,
     pub diplomacy: crate::DiplomacyState,
     pub last_diplomacy_at: u64,
     pub spy_reports: Vec<crate::SpyReport>,
@@ -513,6 +515,7 @@ impl GameState {
             last_story_at: 0,
             market: crate::MarketState::from_config(&config.market),
             last_market_at: 0,
+            merchant: None,
             diplomacy: crate::DiplomacyState::from_config(&config.diplomacy),
             last_diplomacy_at: 0,
             spy_reports: Vec::new(),
@@ -713,6 +716,9 @@ impl GameState {
                 .min();
             let story_at = self.next_story_at();
             let market_at = self.next_market_at();
+            let merchant_at = self
+                .merchant
+                .map(|visit| visit.until_unix.max(self.last_tick_unix.saturating_add(1)));
             let diplomacy_at = self.next_diplomacy_at();
             let law_at = self.next_law_at();
             let logistics_at = self.next_logistics_at();
@@ -746,7 +752,10 @@ impl GameState {
                                 rebuild_at,
                                 min_time(
                                     story_at,
-                                    min_time(market_at, min_time(diplomacy_at, law_at)),
+                                    min_time(
+                                        min_time(market_at, merchant_at),
+                                        min_time(diplomacy_at, law_at),
+                                    ),
                                 ),
                             ),
                         ),
@@ -983,6 +992,12 @@ impl GameState {
             }
             if market_at == Some(done_at) {
                 self.tick_market(done_at);
+            }
+            // Checked against the visit now, not `merchant_at`: an expedition
+            // resolved in this step may have just reopened it.
+            if self.merchant.is_some_and(|visit| !visit.is_open(done_at)) {
+                self.merchant = None;
+                self.push_event(done_at, "market: merchant visit closed".into());
             }
             if diplomacy_at == Some(done_at) {
                 self.tick_diplomacy(done_at);
@@ -4460,6 +4475,10 @@ impl GameState {
                 self.push_event(done_at, "expedition: nothing found".into());
                 false
             }
+            ExpeditionResult::Merchant => {
+                self.open_merchant_visit(done_at);
+                false
+            }
             ExpeditionResult::Resources(found) => {
                 self.settle_ledger(Term::Transfer);
                 self.credit_capped(found);
@@ -4532,6 +4551,39 @@ impl GameState {
                 true
             }
         }
+    }
+
+    /// Open a merchant visit at `at`, or push an open one's end out. A
+    /// second visit keeps the fee it has, so fees never stack.
+    fn open_merchant_visit(&mut self, at: u64) {
+        let until = at.saturating_add(self.config.expedition.merchant_secs.max(1));
+        match &mut self.merchant {
+            Some(visit) if visit.is_open(at) => {
+                visit.until_unix = visit.until_unix.max(until);
+                self.push_event(at, "expedition: merchant visit extended".into());
+            }
+            _ => {
+                let fee = self.config.expedition.merchant_fee;
+                self.merchant = Some(crate::MerchantVisit {
+                    until_unix: until,
+                    fee,
+                });
+                self.push_event(
+                    at,
+                    format!(
+                        "expedition: merchant visit opened, market fee {:.0}%",
+                        fee * 100.0
+                    ),
+                );
+            }
+        }
+    }
+
+    /// The merchant visit open at the current tick, if any.
+    pub fn open_merchant(&self) -> Option<&crate::MerchantVisit> {
+        self.merchant
+            .as_ref()
+            .filter(|visit| visit.is_open(self.last_tick_unix))
     }
 
     fn credit_capped(&mut self, found: Resources) {
@@ -6211,9 +6263,12 @@ impl GameState {
             .min(self.config.diplomacy.max_standing)
     }
 
-    /// Market fee after the traders' current tier overlay.
+    /// Market fee after the traders' current tier overlay. An open merchant
+    /// visit replaces the base `[market].fee`; tier and law effects still apply.
     pub fn effective_market_fee(&self) -> f64 {
-        let mut fee = self.config.market.fee;
+        let mut fee = self
+            .open_merchant()
+            .map_or(self.config.market.fee, |visit| visit.fee);
         if self.config.diplomacy.enabled
             && let Some(traders) = self.config.diplomacy.get("traders")
             && let Some(tier) = traders.tier(self.diplomacy.standing("traders"))
@@ -10779,6 +10834,7 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
             state.config.expedition.explorer_mult = 2.0;
             state.config.expedition.weights = crate::ExpeditionWeights {
                 nothing: 0,
+                merchant: 0,
                 resources: 1,
                 ships: 0,
                 delay: 0,
@@ -11290,6 +11346,128 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
         state.launch_expedition(scout_fleet(), 10, 100, 0).unwrap();
         assert_eq!(state.missions[0].dest, state.expedition_dest());
         assert!(state.missions[0].site_id.is_none());
+    }
+
+    /// Expedition state with a live market and one slot expedition whose
+    /// seed rolls `kind`. Returns the time the outcome applies.
+    fn expedition_rolling(kind: crate::ExpeditionKind) -> (GameState, u64) {
+        let mut state = expedition_state(0);
+        state.config.market = crate::MarketConfig {
+            enabled: true,
+            tick_secs: 1_000_000,
+            cargo_free: 1_000.0,
+            ..crate::MarketConfig::default_active()
+        };
+        state.sites.clear();
+        state.resources.iron = 10_000.0;
+        state.launch_expedition(scout_fleet(), 10, 100, 0).unwrap();
+        let mission = &state.missions[0];
+        let seed = (0..100_000u64)
+            .find(|&seed| {
+                roll_expedition(
+                    seed,
+                    &mission.ships,
+                    state.expedition_astro(),
+                    mission.hold_secs,
+                    &state.config.expedition,
+                    &state.config.ships,
+                )
+                .kind()
+                    == kind
+            })
+            .expect("a seed for the kind");
+        let at = mission.outbound_secs;
+        state.missions[0].expedition_seed = Some(seed);
+        (state, at)
+    }
+
+    fn has_event(state: &GameState, text: &str) -> bool {
+        state.events.iter().any(|e| e.text.starts_with(text))
+    }
+
+    #[test]
+    fn a_merchant_outcome_opens_one_visit_whose_fee_trades_pay_until_it_closes() {
+        let (mut state, at) = expedition_rolling(crate::ExpeditionKind::Merchant);
+        let base = state.effective_market_fee();
+        state.catch_up(at);
+        let cfg = state.config.expedition.clone();
+        assert_eq!(
+            state.merchant,
+            Some(crate::MerchantVisit {
+                until_unix: at + cfg.merchant_secs,
+                fee: cfg.merchant_fee,
+            })
+        );
+        assert!(has_event(&state, "expedition: merchant visit opened"));
+        let quote = state
+            .trade_market(ResourceKind::Iron, ResourceKind::Silicon, 100.0, at + 1)
+            .unwrap();
+        close(quote.fee, cfg.merchant_fee);
+        let until = at + cfg.merchant_secs;
+        let quote = state
+            .trade_market(ResourceKind::Iron, ResourceKind::Silicon, 100.0, until)
+            .unwrap();
+        close(quote.fee, base);
+        assert_eq!(state.merchant, None);
+        assert!(has_event(&state, "market: merchant visit closed"));
+    }
+
+    #[test]
+    fn a_merchant_visit_closing_in_one_catch_up_matches_step_by_step() {
+        let run = |stepped: bool| {
+            let (mut state, at) = expedition_rolling(crate::ExpeditionKind::Merchant);
+            let end = at + state.config.expedition.merchant_secs + 5;
+            if stepped {
+                for t in 1..=end {
+                    state.catch_up(t);
+                }
+            } else {
+                state.catch_up(end);
+            }
+            state
+        };
+        let (jumped, stepped) = (run(false), run(true));
+        assert_eq!(jumped.merchant, None);
+        assert_eq!(jumped.merchant, stepped.merchant);
+        assert_eq!(jumped.market, stepped.market);
+        assert_eq!(jumped.events, stepped.events);
+        assert!(has_event(&jumped, "market: merchant visit closed"));
+    }
+
+    #[test]
+    fn other_expedition_outcomes_open_no_visit() {
+        for kind in [
+            crate::ExpeditionKind::Nothing,
+            crate::ExpeditionKind::Resources,
+        ] {
+            let (mut state, at) = expedition_rolling(kind);
+            state.catch_up(at);
+            assert_eq!(state.merchant, None, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn a_second_merchant_extends_the_open_visit_without_stacking_its_fee() {
+        let (mut state, at) = expedition_rolling(crate::ExpeditionKind::Merchant);
+        state.merchant = Some(crate::MerchantVisit {
+            until_unix: at + 1,
+            fee: 0.02,
+        });
+        state.catch_up(at);
+        let until = at + state.config.expedition.merchant_secs;
+        assert_eq!(
+            state.merchant,
+            Some(crate::MerchantVisit {
+                until_unix: until,
+                fee: 0.02,
+            })
+        );
+        close(state.effective_market_fee(), 0.02);
+        assert!(has_event(&state, "expedition: merchant visit extended"));
+        state.catch_up(at + 1);
+        assert!(state.merchant.is_some());
+        state.catch_up(until);
+        assert_eq!(state.merchant, None);
     }
 
     #[test]

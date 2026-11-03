@@ -6143,6 +6143,35 @@ mod tests {
     }
 
     #[test]
+    fn market_shows_the_merchant_time_left_and_the_away_summary_names_the_close() {
+        let mut state = GameState::new(1_000);
+        state.config.raid.enabled = false;
+        state.next_raid_at = None;
+        state.merchant = Some(hoshi_core::MerchantVisit {
+            until_unix: 1_000 + 3_600,
+            fee: 0.01,
+        });
+        let mut app = App::new(state);
+        app.open(Screen::Market);
+        let text = render_text(&app, 140, 32);
+        assert!(text.contains("FEE 1%"), "{text}");
+        assert!(text.contains("MERCHANT 1h"), "{text}");
+        let before = crate::title::snapshot_away(&app.state);
+        let ledger = app.state.catch_up_ledger(1_000 + 3_601);
+        let summary = crate::title::summarize_away(&before, ledger, &app.state);
+        assert!(
+            summary
+                .events
+                .iter()
+                .any(|line| line == "market: merchant visit closed"),
+            "{:?}",
+            summary.events
+        );
+        let text = render_text(&app, 140, 32);
+        assert!(!text.contains("MERCHANT"), "{text}");
+    }
+
+    #[test]
     fn diplomacy_screen_shows_standing_next_tier_and_pays_tribute() {
         let mut state = GameState::new(1_000);
         state.resources.iron = 1_000.0;

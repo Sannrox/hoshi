@@ -363,6 +363,10 @@ ship_kind = "light_fighter"
 pirate_per_point = 0.002
 pirate_min = 1
 delay_secs = 3600
+# A merchant outcome sets the market fee to merchant_fee (in place of
+# [market].fee) for merchant_secs. A second one only extends the visit.
+merchant_fee = 0.01
+merchant_secs = 7200
 # Resource and ship finds times this when the fleet has an explorer (no stacking).
 explorer_mult = 2.0
 
@@ -385,7 +389,9 @@ deuterium = 6000
 ships = 2
 
 [expedition.weights]
-nothing = 30
+# merchant is carved from nothing's tail, so other seeds keep their outcome.
+nothing = 27
+merchant = 3
 resources = 32
 ships = 12
 delay = 8

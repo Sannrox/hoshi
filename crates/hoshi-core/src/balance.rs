@@ -1469,6 +1469,10 @@ struct FileExpedition {
     pirate_per_point: f64,
     pirate_min: u32,
     delay_secs: u64,
+    #[serde(default = "default_merchant_fee")]
+    merchant_fee: f64,
+    #[serde(default = "default_merchant_secs")]
+    merchant_secs: u64,
     #[serde(default = "default_expedition_reward_mult")]
     reward_mult: f64,
     /// Older overrides omit it and keep the unscaled find.
@@ -1557,6 +1561,14 @@ fn site_budget(file: FileSiteBudget) -> crate::SiteBudget {
     }
 }
 
+fn default_merchant_fee() -> f64 {
+    ExpeditionConfig::default().merchant_fee
+}
+
+fn default_merchant_secs() -> u64 {
+    ExpeditionConfig::default().merchant_secs
+}
+
 fn default_expedition_reward_mult() -> f64 {
     1.0
 }
@@ -1564,6 +1576,9 @@ fn default_expedition_reward_mult() -> f64 {
 #[derive(Deserialize)]
 struct FileWeights {
     nothing: u32,
+    /// Older overrides omit it and never roll a merchant.
+    #[serde(default)]
+    merchant: u32,
     resources: u32,
     ships: u32,
     delay: u32,
@@ -1732,6 +1747,7 @@ impl File {
                 base_slots: self.expedition.base_slots,
                 weights: ExpeditionWeights {
                     nothing: self.expedition.weights.nothing,
+                    merchant: self.expedition.weights.merchant,
                     resources: self.expedition.weights.resources,
                     ships: self.expedition.weights.ships,
                     delay: self.expedition.weights.delay,
@@ -1752,6 +1768,8 @@ impl File {
                 pirate_per_point: self.expedition.pirate_per_point,
                 pirate_min: self.expedition.pirate_min,
                 delay_secs: self.expedition.delay_secs,
+                merchant_fee: self.expedition.merchant_fee,
+                merchant_secs: self.expedition.merchant_secs,
                 reward_mult: if self.expedition.reward_mult.is_finite()
                     && self.expedition.reward_mult >= 0.0
                 {
@@ -2089,6 +2107,17 @@ impl FileChannel {
 impl BalanceConfig {
     fn validate(&self) -> Result<(), BalanceError> {
         self.dismantle.validate().map_err(BalanceError::Invalid)?;
+        nonneg_finite("expedition.merchant_fee", self.expedition.merchant_fee)?;
+        if self.expedition.merchant_fee >= 1.0 {
+            return Err(BalanceError::Invalid(
+                "expedition.merchant_fee must be < 1".into(),
+            ));
+        }
+        if self.expedition.merchant_secs == 0 {
+            return Err(BalanceError::Invalid(
+                "expedition.merchant_secs must be > 0".into(),
+            ));
+        }
         if !(0.0..=1.0).contains(&self.raid.protected_share) {
             return Err(BalanceError::Invalid(
                 "raid.protected_share must be in [0, 1]".into(),
@@ -2734,6 +2763,19 @@ stages = []
         assert_ne!(text, DEFAULT_BALANCE);
         let cfg = BalanceConfig::parse(&text).unwrap();
         assert_eq!(cfg.expedition.explorer_mult, 1.0);
+    }
+
+    #[test]
+    fn an_override_without_the_merchant_weight_loads_and_rolls_no_merchant() {
+        let bundled = BalanceConfig::default().expedition;
+        assert_eq!(bundled.weights.merchant, 3);
+        assert!(bundled.weights.merchant < bundled.weights.nothing);
+        let text = DEFAULT_BALANCE.replace("merchant = 3\n", "");
+        assert_ne!(text, DEFAULT_BALANCE);
+        let cfg = BalanceConfig::parse(&text).unwrap();
+        assert_eq!(cfg.expedition.weights.merchant, 0);
+        let bad = DEFAULT_BALANCE.replace("merchant_fee = 0.01", "merchant_fee = 1.0");
+        assert!(BalanceConfig::parse(&bad).is_err());
     }
 
     #[test]

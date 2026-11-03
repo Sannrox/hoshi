@@ -10,6 +10,8 @@ use crate::state::Resources;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExpeditionWeights {
     pub nothing: u32,
+    /// A merchant visit at the market. Older overrides omit it and roll none.
+    pub merchant: u32,
     pub resources: u32,
     pub ships: u32,
     pub delay: u32,
@@ -21,6 +23,7 @@ pub struct ExpeditionWeights {
 impl ExpeditionWeights {
     pub fn total(self) -> u32 {
         self.nothing
+            .saturating_add(self.merchant)
             .saturating_add(self.resources)
             .saturating_add(self.ships)
             .saturating_add(self.delay)
@@ -32,8 +35,11 @@ impl ExpeditionWeights {
 
     pub fn pick(self, seed: &mut u64) -> ExpeditionKind {
         let mut r = next_u64(seed) % u64::from(self.total());
-        let steps: [(u32, ExpeditionKind); 7] = [
+        // Merchant sits right after nothing: the bundled table carves its
+        // weight from nothing's tail, so every other seed keeps its outcome.
+        let steps: [(u32, ExpeditionKind); 8] = [
             (self.nothing, ExpeditionKind::Nothing),
+            (self.merchant, ExpeditionKind::Merchant),
             (self.resources, ExpeditionKind::Resources),
             (self.ships, ExpeditionKind::Ships),
             (self.delay, ExpeditionKind::Delay),
@@ -54,7 +60,8 @@ impl ExpeditionWeights {
 impl Default for ExpeditionWeights {
     fn default() -> Self {
         Self {
-            nothing: 30,
+            nothing: 27,
+            merchant: 3,
             resources: 32,
             ships: 12,
             delay: 8,
@@ -68,6 +75,7 @@ impl Default for ExpeditionWeights {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExpeditionKind {
     Nothing,
+    Merchant,
     Resources,
     Ships,
     Delay,
@@ -80,6 +88,7 @@ impl ExpeditionKind {
     pub fn as_key(self) -> &'static str {
         match self {
             Self::Nothing => "nothing",
+            Self::Merchant => "merchant",
             Self::Resources => "resources",
             Self::Ships => "ships",
             Self::Delay => "delay",
@@ -92,6 +101,7 @@ impl ExpeditionKind {
     pub fn from_key(key: &str) -> Option<Self> {
         Some(match key {
             "nothing" => Self::Nothing,
+            "merchant" => Self::Merchant,
             "resources" => Self::Resources,
             "ships" => Self::Ships,
             "delay" => Self::Delay,
@@ -211,6 +221,7 @@ impl ExpeditionSite {
     pub fn map_mark(&self) -> char {
         match self.outcome {
             Some(ExpeditionKind::Nothing) => 'n',
+            Some(ExpeditionKind::Merchant) => 'm',
             Some(ExpeditionKind::Resources) => 'r',
             Some(ExpeditionKind::Ships) => 's',
             Some(ExpeditionKind::Delay) => 'd',
@@ -299,6 +310,10 @@ pub struct ExpeditionConfig {
     pub pirate_per_point: f64,
     pub pirate_min: u32,
     pub delay_secs: u64,
+    /// Market fee while a merchant visit is open, in place of `[market].fee`.
+    pub merchant_fee: f64,
+    /// How long a merchant visit stays open.
+    pub merchant_secs: u64,
     /// Scales resource and ship finds. Seasonal rule sets set this above 1.
     pub reward_mult: f64,
     /// Resource and ship finds times this when the fleet has an explorer.
@@ -329,6 +344,8 @@ impl Default for ExpeditionConfig {
             pirate_per_point: 0.002,
             pirate_min: 1,
             delay_secs: 3600,
+            merchant_fee: 0.01,
+            merchant_secs: 7200,
             reward_mult: 1.0,
             explorer_mult: 2.0,
             sites: SiteBudgets::default(),
@@ -339,11 +356,17 @@ impl Default for ExpeditionConfig {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExpeditionResult {
     Nothing,
+    /// A merchant opens a visit at the market. The fleet holds and returns as usual.
+    Merchant,
     Resources(Resources),
     Ships(Fleet),
-    Delay { extra_secs: u64 },
+    Delay {
+        extra_secs: u64,
+    },
     EarlyReturn,
-    Pirates { enemy: Fleet },
+    Pirates {
+        enemy: Fleet,
+    },
     Loss,
 }
 
@@ -351,6 +374,7 @@ impl ExpeditionResult {
     pub fn kind(&self) -> ExpeditionKind {
         match self {
             ExpeditionResult::Nothing => ExpeditionKind::Nothing,
+            ExpeditionResult::Merchant => ExpeditionKind::Merchant,
             ExpeditionResult::Resources(_) => ExpeditionKind::Resources,
             ExpeditionResult::Ships(_) => ExpeditionKind::Ships,
             ExpeditionResult::Delay { .. } => ExpeditionKind::Delay,
@@ -422,6 +446,7 @@ pub fn roll_expedition(
     let factor = explorer_factor(ships, cfg);
     match kind {
         ExpeditionKind::Nothing => ExpeditionResult::Nothing,
+        ExpeditionKind::Merchant => ExpeditionResult::Merchant,
         ExpeditionKind::Resources => {
             let scale = 0.5 + (next_u64(&mut rng) % 1001) as f64 / 1000.0;
             let find = |per_point: f64, floor: f64| {
@@ -503,7 +528,7 @@ mod tests {
         let weights = scaled_weights(&ships, astro, hold, &cfg, &catalog);
         let total = f64::from(weights.total());
         let n = 10_000u32;
-        let mut counts = [0u32; 7];
+        let mut counts = [0u32; 8];
         for i in 0..n {
             let kind = roll_expedition(u64::from(i), &ships, astro, hold, &cfg, &catalog).kind();
             let idx = match kind {
@@ -514,6 +539,7 @@ mod tests {
                 ExpeditionKind::EarlyReturn => 4,
                 ExpeditionKind::Pirates => 5,
                 ExpeditionKind::Loss => 6,
+                ExpeditionKind::Merchant => 7,
             };
             counts[idx] += 1;
         }
@@ -525,6 +551,7 @@ mod tests {
             weights.early_return,
             weights.pirates,
             weights.loss,
+            weights.merchant,
         ];
         for (i, &weight) in expected.iter().enumerate() {
             let p = f64::from(weight) / total;
@@ -596,6 +623,7 @@ mod tests {
             ExpeditionKind::Delay,
             ExpeditionKind::EarlyReturn,
             ExpeditionKind::Nothing,
+            ExpeditionKind::Merchant,
         ] {
             let seed = seed_for(kind, &ships, &plain);
             assert_eq!(
