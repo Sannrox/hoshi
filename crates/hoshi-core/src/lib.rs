@@ -233,8 +233,8 @@ pub use self_play::{
     SelfPlayCell, SelfPlayConfig, SelfPlayReport, path_bot_relpaths, run_self_play,
 };
 pub use shard::{
-    Occupancy, ShardBookkeeping, ShardCommand, ShardCommons, ShardConfig, ShardError, ShardMap,
-    ShardMission, ShardPlanet, ShardRaid, ShardRaidAftermath, ShardRecycle, ShardSession,
+    Occupancy, ShardBookkeeping, ShardCommand, ShardCommons, ShardConfig, ShardError, ShardInbound,
+    ShardMap, ShardMission, ShardPlanet, ShardRaid, ShardRaidAftermath, ShardRecycle, ShardSession,
     ShardSites, ShardSlot, ShardSpy, ShardTarget, ShardView, SignedBridgeEvent, load_tenants,
     occupancy, place_home, seat_home, targets,
 };

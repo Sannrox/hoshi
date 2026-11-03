@@ -65,7 +65,15 @@ planets, fleets, and stock, plus spy intel that has already arrived, plus
 each raid on home still in its combat log (ships lost, stock taken, debris
 left), never RNG, pirate timers, or another tenant's parked fleet and
 stockpile. A raid writes that log on the defender's save, so the next read
-shows it and later reads keep it. The attacker's save logs the fight too and
+shows it and later reads keep it. While another tenant's raid still flies
+at home, the view lists it as an inbound: the arrival on the flight clock,
+no attacker identity or origin, and a hull count only when the defender's
+own phalanx covers the fleet (the pirate raid contact's noise; a probe reads
+parked fleets, never one in flight). The view's expiring decision takes the
+earliest inbound as one more candidate with the arm action, since the fight
+reads the parked home fleet and ignores stance and defences; a sooner story,
+fight, or pirate warning still wins. The attacker's view shows its own
+mission instead. The attacker's save logs the fight too and
 its mission carries the plunder until it lands. The
 local TUI and CLI do not use this gate.
 

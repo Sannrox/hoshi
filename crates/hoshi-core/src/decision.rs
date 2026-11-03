@@ -10,6 +10,8 @@ pub enum DecisionId {
     Story,
     Tactical,
     Raid,
+    /// Another tenant's raid flying at a shard home. Local play never has one.
+    Inbound,
 }
 
 impl DecisionId {
@@ -18,6 +20,7 @@ impl DecisionId {
             Self::Story => "story",
             Self::Tactical => "tactical",
             Self::Raid => "raid",
+            Self::Inbound => "inbound",
         }
     }
 
@@ -26,6 +29,7 @@ impl DecisionId {
             Self::Story => 0,
             Self::Tactical => 1,
             Self::Raid => 2,
+            Self::Inbound => 3,
         }
     }
 }
@@ -90,6 +94,31 @@ pub fn expiring_decision(state: &GameState) -> Option<ExpiringDecision> {
     }
     if let Some(raid) = raid_decision(state) {
         consider(&mut best, raid);
+    }
+    best
+}
+
+/// [`expiring_decision`] for a shard tenant whose home another tenant's
+/// raid reaches at `inbound_at`, the earliest such arrival.
+///
+/// The inbound is one more candidate, so an earlier story, fight, or pirate
+/// warning still wins and ties go to them. Its action is always arming the
+/// home: the shard fight reads the parked home fleet at arrival and ignores
+/// stance, formation, and defences.
+pub(crate) fn expiring_decision_with_inbound(
+    state: &GameState,
+    inbound_at: Option<u64>,
+) -> Option<ExpiringDecision> {
+    let mut best = expiring_decision(state);
+    if let Some(deadline) = inbound_at.filter(|&at| state.last_tick_unix < at) {
+        consider(
+            &mut best,
+            ExpiringDecision {
+                id: DecisionId::Inbound,
+                deadline,
+                action: DecisionAction::ArmHome,
+            },
+        );
     }
     best
 }

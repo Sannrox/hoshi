@@ -17,6 +17,7 @@ use crate::clock::Clock;
 use crate::combat::{
     CombatWinner, fill_hold, plunder_from, rapid_fire_table, resolve_combat, stats_from_catalog,
 };
+use crate::decision::{ExpiringDecision, expiring_decision_with_inbound};
 use crate::fleets::{Coord, Mission, MissionPhase};
 use crate::intel::IntelFact;
 use crate::intent::{Intent, IntentError, apply, propose};
@@ -141,6 +142,19 @@ pub struct ShardRaidAftermath {
     pub plunder: Resources,
     /// Debris the fight left at home. Zero when no hull was lost.
     pub debris: f64,
+}
+
+/// Another tenant's raid flying at the viewer's home. It carries no
+/// attacker identity or origin: the row is the clock. `ships` is the hull
+/// count the viewer's own phalanx reads, with its sensor noise, and `None`
+/// when no phalanx covers the fleet. A probe reads a parked fleet, never one
+/// in flight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShardInbound {
+    pub dest: Coord,
+    /// The raid's arrival on the flight clock.
+    pub arrives_at: u64,
+    pub ships: Option<u32>,
 }
 
 /// Pirate outposts and open expedition sites, borrowed from
@@ -372,6 +386,10 @@ pub struct ShardView {
     /// Raids on home still in the combat log, oldest first. Reads do not
     /// consume them; newer fights push them out of the capped log.
     pub raids: Vec<ShardRaidAftermath>,
+    /// Other tenants' raids still flying at home, earliest arrival first.
+    pub inbound: Vec<ShardInbound>,
+    /// The earliest choice still open, an inbound raid included.
+    pub decision: Option<ExpiringDecision>,
 }
 
 impl ShardView {
@@ -411,6 +429,20 @@ impl ShardView {
                     "debris": raid.debris,
                 })
             }).collect::<Vec<_>>(),
+            "inbound": self.inbound.iter().map(|inbound| {
+                serde_json::json!({
+                    "dest": inbound.dest.to_string(),
+                    "arrives_at": inbound.arrives_at,
+                    "ships": inbound.ships,
+                })
+            }).collect::<Vec<_>>(),
+            "decision": self.decision.map(|decision| {
+                serde_json::json!({
+                    "id": decision.id.as_key(),
+                    "deadline": decision.deadline,
+                    "action": decision.action.as_key(),
+                })
+            }),
         })
     }
 }
@@ -981,9 +1013,11 @@ impl<C: Clock> ShardSession<C> {
     ///
     /// The view is a whitelist: own planets, fleets, and stock, plus spy intel
     /// that has already arrived, plus occupancy tags for coords the player
-    /// clearance allows, plus what each logged raid on home took. It has no
-    /// RNG, pirate timer, or other tenant's parked fleet and stockpile. Local
-    /// play does not call this.
+    /// clearance allows, plus what each logged raid on home took, plus each
+    /// other tenant's raid still flying at home and the expiring decision
+    /// with those inbounds as candidates. It has no RNG, pirate timer, or
+    /// other tenant's parked fleet and stockpile, and an inbound names no
+    /// attacker. Local play does not call this.
     /// Occupancy reads the session's [`ShardCommons`]. The site list stays
     /// empty until those sites exist.
     pub fn view(
@@ -1635,6 +1669,9 @@ fn shard_view(
             fleet: colony.fleet,
         });
     }
+    let inbound = inbound_at_home(own, identity, empires);
+    let decision =
+        expiring_decision_with_inbound(own, inbound.first().map(|inbound| inbound.arrives_at));
     Some(ShardView {
         identity: identity.to_string(),
         at: own.last_tick_unix,
@@ -1668,7 +1705,38 @@ fn shard_view(
                 })
             })
             .collect(),
+        inbound,
+        decision,
     })
+}
+
+/// Other tenants' raids that still land on `own`'s home after its clock,
+/// earliest first, each with the hull count `own`'s phalanx reads.
+fn inbound_at_home(
+    own: &GameState,
+    identity: &str,
+    empires: &BTreeMap<String, GameState>,
+) -> Vec<ShardInbound> {
+    let mut inbound: Vec<ShardInbound> = empires
+        .iter()
+        .filter(|(id, _)| id.as_str() != identity)
+        .flat_map(|(_, attacker)| {
+            attacker
+                .missions
+                .iter()
+                .filter(|mission| mission.dest == own.home && tenant_raid(attacker, mission))
+                .filter_map(|mission| {
+                    let arrives_at = action_at(mission).filter(|&at| at > own.last_tick_unix)?;
+                    Some(ShardInbound {
+                        dest: mission.dest,
+                        arrives_at,
+                        ships: own.phalanx_foreign_ships(mission, arrives_at),
+                    })
+                })
+        })
+        .collect();
+    inbound.sort_by_key(|inbound| inbound.arrives_at);
+    inbound
 }
 
 fn occupancy_slots(
@@ -1735,6 +1803,7 @@ mod tests {
     use crate::buildings::BuildingKind;
     use crate::clock::FakeClock;
     use crate::combat::{plunder_from, rapid_fire_table, resolve_combat, stats_from_catalog};
+    use crate::decision::{DecisionAction, DecisionId};
     use crate::espionage::SpyReport;
     use crate::fleets::{Coord, Mission, MissionPhase};
     use crate::intel::{IntelValue, light_delay_secs};
@@ -3227,6 +3296,92 @@ mod tests {
                     "{id} {kind:?}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn the_defender_decision_is_the_inbound_on_the_flight_clock() {
+        let mut shard = raid_session(RAID_START, 0, 3);
+        let mut empires = raid_empires(20, 2);
+        let arrive = launch(&mut shard, &mut empires);
+
+        let b = shard.view("b", &mut empires).unwrap();
+        assert_eq!(
+            b.inbound,
+            vec![ShardInbound {
+                dest: B_HOME,
+                arrives_at: arrive,
+                ships: None,
+            }]
+        );
+        let decision = b.decision.expect("inbound");
+        assert_eq!(decision.id, DecisionId::Inbound);
+        assert_eq!(decision.action, DecisionAction::ArmHome);
+        assert_eq!(decision.deadline, arrive);
+        let text = serde_json::to_string(&b.to_json()).unwrap();
+        assert!(text.contains("\"ships\":null"), "{text}");
+        assert!(!text.contains("battleship"), "{text}");
+
+        let a = shard.view("a", &mut empires).unwrap();
+        assert!(a.inbound.is_empty());
+        assert_ne!(a.decision.map(|d| d.id), Some(DecisionId::Inbound));
+        assert_eq!(a.missions.len(), 1);
+        assert_eq!(a.missions[0].dest, B_HOME);
+
+        shard.clock.set(arrive);
+        let after = shard.view("b", &mut empires).unwrap();
+        assert!(after.inbound.is_empty());
+        assert_eq!(after.decision, None);
+    }
+
+    #[test]
+    fn a_sooner_pirate_warning_beats_the_inbound() {
+        let mut shard = raid_session(RAID_START, 0, 3);
+        let mut empires = raid_empires(20, 0);
+        let arrive = launch(&mut shard, &mut empires);
+        let b = empires.get_mut("b").unwrap();
+        b.config.raid.enabled = true;
+        b.config.raid.min_warning_secs = arrive;
+        for (pirate, winner) in [
+            (arrive - 10, DecisionId::Raid),
+            (arrive + 10, DecisionId::Inbound),
+        ] {
+            empires.get_mut("b").unwrap().next_raid_at = Some(pirate);
+            let decision = shard.view("b", &mut empires).unwrap().decision.unwrap();
+            assert_eq!(decision.id, winner);
+            assert_eq!(decision.deadline, pirate.min(arrive));
+        }
+    }
+
+    #[test]
+    fn a_home_phalanx_reads_the_inbound_hull_count() {
+        let mut shard = raid_session(RAID_START, 0, 3);
+        let mut empires = raid_empires(20, 2);
+        let b = empires.get_mut("b").unwrap();
+        let mut moon = crate::moons::Moon::new(B_HOME);
+        moon.phalanx = 1;
+        b.moons.push(moon);
+        b.config.espionage.error_base = 0.0;
+        b.config.espionage.error_per_au = 0.0;
+        launch(&mut shard, &mut empires);
+        let view = shard.view("b", &mut empires).unwrap();
+        assert_eq!(view.inbound[0].ships, Some(20));
+    }
+
+    #[test]
+    fn catch_up_keeps_one_inbound_on_the_flight_clock() {
+        let mut shard = raid_session(RAID_START, 0, 3);
+        let mut empires = raid_empires(20, 2);
+        let arrive = launch(&mut shard, &mut empires);
+        for at in (RAID_START + 1..arrive).step_by(397) {
+            shard.clock.set(at);
+            shard.settle(&mut empires);
+            let view = shard.view("b", &mut empires).unwrap();
+            let [inbound] = view.inbound.as_slice() else {
+                panic!("one inbound at {at}: {:?}", view.inbound);
+            };
+            assert_eq!(inbound.arrives_at, arrive);
+            assert_eq!(view.decision.map(|d| d.deadline), Some(arrive));
         }
     }
 
