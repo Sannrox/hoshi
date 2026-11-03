@@ -270,6 +270,25 @@ pub enum FleetError {
     SiteBusy {
         id: u64,
     },
+    /// No seen signal with this id.
+    UnknownSignal {
+        id: u64,
+    },
+    SignalResolved {
+        id: u64,
+    },
+    /// Another fleet already holds this signal.
+    SignalBusy {
+        id: u64,
+    },
+    /// The fleet would arrive at or after the signal's deadline.
+    SignalTooLate {
+        id: u64,
+        arrives: u64,
+        deadline: u64,
+    },
+    /// Every home-system coord a signal could land on is taken.
+    NoSignalCoord,
 }
 
 impl fmt::Display for FleetError {
@@ -349,6 +368,18 @@ impl fmt::Display for FleetError {
             FleetError::SiteBusy { id } => {
                 write!(f, "an expedition is already headed to site {id}")
             }
+            FleetError::UnknownSignal { id } => write!(f, "no seen signal {id}"),
+            FleetError::SignalResolved { id } => write!(f, "signal {id} is resolved"),
+            FleetError::SignalBusy { id } => write!(f, "a fleet already holds signal {id}"),
+            FleetError::SignalTooLate {
+                id,
+                arrives,
+                deadline,
+            } => write!(
+                f,
+                "fleet would reach signal {id} at {arrives}, after its deadline {deadline}"
+            ),
+            FleetError::NoSignalCoord => write!(f, "no free coord for a signal"),
         }
     }
 }

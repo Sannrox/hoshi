@@ -412,9 +412,10 @@
     "empires": [],
     "enabled": false
   },
-  "save_schema": 59,
+  "save_schema": 60,
   "schema_version": 2,
   "season": null,
+  "signals": [],
   "species": null,
   "spy_reports": [],
   "tactics": {

@@ -222,6 +222,7 @@ silent extra departure; they extend this list.
 | Recycled debris returns as iron and silicon in a fixed catalog ratio (`moons.debris_iron_share`) | Wreckage is the frames and electronics of lost hulls; the split is not traced per part. Deuterium burned as fuel is not in the field, so none comes back. |
 | Story, species and faction flavour | Out of scope for realism; they must not mint mass or energy. |
 | Expedition sites are placed stockpiles drawn down by the existing outcome roll, not extractors on a deposit | Fuel and flight time stay on the current flight rules. The config-slot expedition still has no deposit. |
+| Signal hostiles are a seeded NPC fleet with no home, supply or flight of their own | A scanned contact is a short local fight. Its wreckage joins the debris field on the same hull-loss rule as any fight; it pays no find. |
 
 ## Known gaps in current config
 

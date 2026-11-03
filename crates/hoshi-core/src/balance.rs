@@ -424,6 +424,7 @@ pub struct BalanceConfig {
     pub achievements: crate::AchievementConfig,
     pub daily: crate::DailyConfig,
     pub moons: crate::MoonConfig,
+    pub signals: crate::SignalConfig,
     pub tactics: crate::TacticsConfig,
     pub leaders: crate::LeaderConfig,
     pub orbits: crate::OrbitConfig,
@@ -528,6 +529,8 @@ struct File {
     daily: Option<FileDaily>,
     #[serde(default)]
     moons: Option<crate::moons::FileMoons>,
+    #[serde(default)]
+    signals: crate::signals::FileSignals,
     #[serde(default)]
     orbits: crate::orbits::FileOrbits,
     #[serde(default)]
@@ -1917,6 +1920,7 @@ impl File {
                 .moons
                 .map(crate::moons::FileMoons::into_config)
                 .unwrap_or_default(),
+            signals: self.signals.into_config().map_err(BalanceError::Invalid)?,
             tactics: crate::TacticsConfig::default(),
             leaders: crate::LeaderConfig::default(),
             orbits: self.orbits.into_config().map_err(BalanceError::Invalid)?,
@@ -2730,6 +2734,19 @@ stages = []
         assert_ne!(text, DEFAULT_BALANCE);
         let cfg = BalanceConfig::parse(&text).unwrap();
         assert_eq!(cfg.expedition.explorer_mult, 1.0);
+    }
+
+    #[test]
+    fn signals_table_defaults_when_missing_and_refuses_an_empty_hostile_range() {
+        let table = "[signals]\nscan_deuterium = 200.0\nhold_secs = 3600\nhostile_kind = \"light_fighter\"\nhostile_min = 2\nhostile_max = 6\n";
+        assert!(DEFAULT_BALANCE.contains(table));
+        let cfg = BalanceConfig::parse(&DEFAULT_BALANCE.replace(table, "")).unwrap();
+        assert_eq!(cfg.signals, crate::SignalConfig::default());
+        let bad = DEFAULT_BALANCE.replace(
+            "hostile_min = 2\nhostile_max = 6",
+            "hostile_min = 3\nhostile_max = 2",
+        );
+        assert!(BalanceConfig::parse(&bad).is_err());
     }
 
     #[test]

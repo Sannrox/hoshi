@@ -1417,6 +1417,19 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             "ALTER TABLE raids ADD COLUMN event_raid_at INTEGER "
             "CHECK (event_raid_at >= 0)",
         )
+    elif version == 60:
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS signals (
+            id INTEGER PRIMARY KEY,
+            galaxy INTEGER NOT NULL,
+            system INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            seen_at INTEGER NOT NULL CHECK (seen_at >= 0),
+            deadline INTEGER NOT NULL CHECK (deadline >= seen_at),
+            seed INTEGER NOT NULL,
+            mission_id INTEGER,
+            outcome TEXT)"""
+        )
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"
