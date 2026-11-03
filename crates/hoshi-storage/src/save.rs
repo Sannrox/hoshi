@@ -9627,6 +9627,28 @@ mod tests {
     }
 
     #[test]
+    fn a_save_inside_the_pirate_arc_loads_unchanged_and_keeps_its_next_offer() {
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.enabled = false;
+        cfg.market.enabled = false;
+        cfg.diplomacy.enabled = false;
+        let mut state = GameState::with_config(0, cfg.clone());
+        state.catch_up(1_800);
+        state.choose_story("answer", 1_800).unwrap();
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        save_state(&mut conn, &state).unwrap();
+        let mut loaded = load_state(&conn, cfg).unwrap();
+        assert_eq!(loaded.story_flags, state.story_flags);
+        assert_eq!(loaded.story_pending, state.story_pending);
+        assert_eq!(loaded.last_story_at, state.last_story_at);
+        loaded.catch_up(1_800 + 3_600);
+        assert_eq!(
+            loaded.story_pending.as_ref().map(|p| p.event_id.as_str()),
+            Some("lane_escort")
+        );
+    }
+
+    #[test]
     fn migrate_v53_loads_an_empty_flag_set_and_keeps_the_old_draw() {
         let cfg = BalanceConfig {
             story: hoshi_core::StoryCatalog::parse(

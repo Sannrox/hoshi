@@ -5983,11 +5983,8 @@ impl GameState {
     }
 
     /// Note from the latest set flag, until the next arc event is pending or
-    /// `lane_closed` is set.
+    /// a later flag without a note (an arc's closing flag) is set.
     pub fn story_bridge_note(&self) -> Option<&str> {
-        if self.story_flags.contains("lane_closed") {
-            return None;
-        }
         let arc_pending = self.story_pending.as_ref().is_some_and(|pending| {
             self.config
                 .story
@@ -12721,7 +12718,7 @@ label = "Pass"
     }
 
     #[test]
-    fn lane_closed_stops_further_arc_offers() {
+    fn lane_closed_offers_the_guild_hail_next() {
         let mut state = arc_game();
         state.catch_up(1_800);
         state.choose_story("answer", 1_800).unwrap();
@@ -12734,12 +12731,124 @@ label = "Pass"
         assert!(state.story_flags.contains("lane_closed"));
         assert!(state.story_bridge_note().is_none());
         state.catch_up(12_600);
-        let pending = state.story_pending.as_ref().expect("weighted offer");
-        assert!(
-            !pending.event_id.starts_with("lane_"),
-            "{}",
-            pending.event_id
+        assert_eq!(
+            state.story_pending.as_ref().map(|p| p.event_id.as_str()),
+            Some("trade_hail")
         );
+    }
+
+    /// Pirate arc closed through silence; returns the time `lane_closed` was set.
+    fn close_the_lane(state: &mut GameState) -> u64 {
+        state.catch_up(1_800);
+        state.choose_story("silence", 1_800).unwrap();
+        state.catch_up(5_400);
+        state.choose_story("stay", 5_400).unwrap();
+        assert!(state.story_flags.contains("lane_closed"));
+        5_400
+    }
+
+    #[test]
+    fn every_trader_branch_sets_trade_closed_and_returns_to_the_pool() {
+        let branches = [
+            ("deal", "trade_convoy", "escort"),
+            ("deal", "trade_convoy", "refuse"),
+            ("pass", "trade_silence", "apologize"),
+            ("pass", "trade_silence", "stay"),
+        ];
+        for (opening, follow_up, last) in branches {
+            let mut state = arc_game();
+            state.config.diplomacy = crate::DiplomacyConfig::default();
+            let mut at = close_the_lane(&mut state) + 3_600;
+            state.catch_up(at);
+            state.resources.iron = 100.0;
+            state.resources.deuterium = 100.0;
+            state.choose_story(opening, at).unwrap();
+            at += 3_600;
+            state.catch_up(at);
+            assert_eq!(
+                state.story_pending.as_ref().map(|p| p.event_id.as_str()),
+                Some(follow_up),
+                "{opening}"
+            );
+            let before = state.diplomacy.standing("traders");
+            state.choose_story(last, at).unwrap();
+            assert!(state.story_flags.contains("trade_closed"), "{last}");
+            assert!(state.story_bridge_note().is_none(), "{last}");
+            let delta = state.diplomacy.standing("traders") - before;
+            match last {
+                "escort" => close(delta, 8.0),
+                "refuse" => close(delta, -6.0),
+                "apologize" => close(delta, 3.0),
+                _ => close(delta, -4.0),
+            }
+            at += 3_600;
+            state.catch_up(at);
+            let pending = state.story_pending.as_ref().expect("weighted offer");
+            assert!(
+                !pending.event_id.starts_with("trade_") && !pending.event_id.starts_with("lane_"),
+                "{last}: {}",
+                pending.event_id
+            );
+        }
+    }
+
+    #[test]
+    fn the_guild_deal_spends_iron_and_flag_only_choices_keep_the_stockpile() {
+        let mut state = arc_game();
+        let at = close_the_lane(&mut state) + 3_600;
+        state.catch_up(at);
+        state.resources.iron = 100.0;
+        state.choose_story("deal", at).unwrap();
+        assert_eq!(state.resources.iron, 40.0);
+        assert_eq!(
+            state.story_bridge_note(),
+            Some("The guild expects a convoy.")
+        );
+
+        let mut quiet = arc_game();
+        let at = close_the_lane(&mut quiet) + 3_600;
+        quiet.catch_up(at);
+        let before = quiet.resources;
+        quiet.choose_story("pass", at).unwrap();
+        assert_eq!(quiet.resources, before);
+        assert_eq!(
+            quiet.story_bridge_note(),
+            Some("The guild ship left without a word.")
+        );
+        quiet.catch_up(at + 3_600);
+        let before = quiet.resources;
+        quiet.choose_story("apologize", at + 3_600).unwrap();
+        assert_eq!(quiet.resources, before);
+    }
+
+    #[test]
+    fn both_arcs_replay_the_same_flags_through_catch_up_and_step_ticks() {
+        // Timeouts close the pirate lane, the player deals, the convoy times out.
+        let deal_at = 1_800 + 86_400 + 3_600 + 86_400 + 3_600;
+        let end = deal_at + 3_600 + 86_400 + 600;
+        let mut gap = arc_game();
+        let mut step = arc_game();
+        gap.catch_up(deal_at);
+        for t in (600..=deal_at).step_by(600) {
+            step.catch_up(t);
+        }
+        for state in [&mut gap, &mut step] {
+            assert_eq!(
+                state.story_pending.as_ref().map(|p| p.event_id.as_str()),
+                Some("trade_hail")
+            );
+            state.choose_story("deal", deal_at).unwrap();
+        }
+        gap.catch_up(end);
+        for t in (deal_at + 600..=end).step_by(600) {
+            step.catch_up(t);
+        }
+        assert_eq!(gap.story_flags, step.story_flags);
+        assert_eq!(gap.story_pending, step.story_pending);
+        assert_eq!(gap.last_story_at, step.last_story_at);
+        for flag in ["lane_closed", "trade_dealt", "convoy_sent", "trade_closed"] {
+            assert!(gap.story_flags.contains(flag), "{flag}");
+        }
     }
 
     #[test]
