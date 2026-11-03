@@ -1,5 +1,5 @@
-//! Fleet › Ops: register a vehicle and plan a mission with the same core
-//! actions as `hoshi vehicle register` and `hoshi mission plan`.
+//! Fleet › Ops: register, dissolve, and plan with the same core actions as
+//! `hoshi vehicle register`, `hoshi vehicle dissolve`, and `hoshi mission plan`.
 
 use super::*;
 use hoshi_core::{Customer, Payload, PlanRequest, TransferKind};
@@ -45,6 +45,25 @@ impl App {
             Ok(id) => format!("registered vehicle #{id} at {planet}"),
             Err(error) => error.to_string(),
         };
+    }
+
+    /// Cancel on an Ops vehicle row dissolves it, the same core action as
+    /// `hoshi vehicle dissolve`: its ships rejoin the parked fleet where it is.
+    /// Mission and alert rows are ignored.
+    pub(super) fn dissolve_ops_vehicle(&mut self, now: u64) {
+        let Some((id, coord)) = self
+            .state
+            .vehicles
+            .get(self.selected)
+            .map(|v| (v.id, v.coord))
+        else {
+            return;
+        };
+        self.status = match self.state.dissolve_vehicle(id, now) {
+            Ok(()) => format!("dissolved vehicle #{id} at {coord}"),
+            Err(error) => error.to_string(),
+        };
+        self.selected = self.selected.min(self.list_len().saturating_sub(1));
     }
 
     /// Enter on an Ops vehicle row opens the plan form for it.
