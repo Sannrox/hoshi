@@ -312,6 +312,21 @@ pub struct TradeQuote {
     pub slip: f64,
 }
 
+/// A merchant an expedition brought to the market. Until `until_unix` the
+/// market fee is `fee` in place of `[market].fee`; it moves no mass itself.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MerchantVisit {
+    pub until_unix: u64,
+    pub fee: f64,
+}
+
+impl MerchantVisit {
+    /// Open while the clock is before `until_unix`.
+    pub fn is_open(&self, now_unix: u64) -> bool {
+        now_unix < self.until_unix
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MarketState {
     pub iron: f64,

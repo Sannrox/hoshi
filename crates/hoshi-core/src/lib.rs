@@ -189,7 +189,8 @@ pub use maintenance::{
 };
 pub use market::{
     ContractKind, ContractStatus, MarketBoard, MarketConfig, MarketContract, MarketError,
-    MarketState, OrderSide, RegionMarket, RestingOrder, Shipment, TradeQuote, TraderId,
+    MarketState, MerchantVisit, OrderSide, RegionMarket, RestingOrder, Shipment, TradeQuote,
+    TraderId,
 };
 pub use moons::{Moon, MoonConfig, MoonError, MoonFacility, PhalanxContact};
 pub use ontology::{

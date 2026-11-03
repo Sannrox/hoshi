@@ -1430,6 +1430,13 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             mission_id INTEGER,
             outcome TEXT)"""
         )
+    elif version == 61:
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS merchant_visit (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            until_unix INTEGER NOT NULL CHECK (until_unix >= 0),
+            fee REAL NOT NULL CHECK (fee >= 0 AND fee < 1))"""
+        )
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"
