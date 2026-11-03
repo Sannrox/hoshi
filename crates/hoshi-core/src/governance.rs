@@ -169,10 +169,12 @@ pub fn dest_of(intent: &Intent) -> Option<Coord> {
     match intent {
         Intent::Launch { dest, .. }
         | Intent::Colonize { dest, .. }
-        | Intent::Invade { dest, .. } => Some(*dest),
+        | Intent::Invade { dest, .. }
+        | Intent::Spy { dest, .. } => Some(*dest),
         Intent::Build { planet, .. }
         | Intent::Dismantle { planet, .. }
-        | Intent::FusionMode { planet, .. } => Some(*planet),
+        | Intent::FusionMode { planet, .. }
+        | Intent::CancelBuild { planet, .. } => Some(*planet),
         Intent::PlaceOrder { region, .. } => Some(*region),
         Intent::ShipGoods { dest, .. } => Some(*dest),
         Intent::Cheat { .. }
@@ -189,7 +191,14 @@ pub fn dest_of(intent: &Intent) -> Option<Coord> {
         | Intent::ResolveIncident { .. }
         | Intent::ReviewIncident { .. }
         | Intent::ScheduleMaintenance { .. }
-        | Intent::CompleteWorkOrder { .. } => None,
+        | Intent::CompleteWorkOrder { .. }
+        | Intent::QueueShips { .. }
+        | Intent::QueueDefences { .. }
+        | Intent::CancelResearch
+        | Intent::CancelShips { .. }
+        | Intent::Recall { .. }
+        | Intent::Expedition { .. }
+        | Intent::ChooseStory { .. } => None,
     }
 }
 
@@ -216,7 +225,30 @@ pub fn spend_of(state: &GameState, intent: &Intent, _now: u64) -> f64 {
             ships,
             dest,
             speed_percent,
+        }
+        | Intent::Spy {
+            ships,
+            dest,
+            speed_percent,
         } => fuel_of(state, *ships, *dest, *speed_percent),
+        Intent::Expedition {
+            ships,
+            site,
+            speed_percent,
+            ..
+        } => {
+            let dest = match site {
+                Some(id) => state.sites.iter().find(|s| s.id == *id).map(|s| s.coord),
+                None => Some(state.expedition_dest()),
+            };
+            dest.map_or(0.0, |dest| fuel_of(state, *ships, dest, *speed_percent))
+        }
+        Intent::QueueShips { kind, count } => {
+            stock_of(state.config.ships.get(*kind).unit_cost()) * f64::from(*count)
+        }
+        Intent::QueueDefences { kind, count } => {
+            stock_of(state.config.defences.get(*kind).unit_cost()) * f64::from(*count)
+        }
         Intent::Colonize {
             dest,
             speed_percent,
@@ -254,7 +286,12 @@ pub fn spend_of(state: &GameState, intent: &Intent, _now: u64) -> f64 {
         | Intent::AssignIncident { .. }
         | Intent::ResolveIncident { .. }
         | Intent::ReviewIncident { .. }
-        | Intent::CompleteWorkOrder { .. } => 0.0,
+        | Intent::CompleteWorkOrder { .. }
+        | Intent::CancelBuild { .. }
+        | Intent::CancelResearch
+        | Intent::CancelShips { .. }
+        | Intent::Recall { .. }
+        | Intent::ChooseStory { .. } => 0.0,
         Intent::ScheduleMaintenance { .. } => {
             let cfg = state.maintenance_config();
             cfg.iron_cost + cfg.silicon_cost

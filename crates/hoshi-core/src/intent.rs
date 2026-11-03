@@ -1,11 +1,12 @@
 //! Propose then apply. A refused proposal never mutates live state.
 
 use crate::buildings::{BuildError, BuildingKind};
+use crate::defences::DefenceKind;
 use crate::fleets::{Coord, FleetError};
 use crate::leaders::Actor;
 use crate::market::{MarketError, OrderSide};
 use crate::research::ResearchError;
-use crate::ships::{Fleet, ShipKind};
+use crate::ships::{Fleet, ShipError, ShipKind};
 use crate::state::{GameState, ResourceKind, Resources};
 use std::fmt;
 
@@ -119,6 +120,42 @@ pub enum Intent {
         order_id: u64,
         actor: Actor,
     },
+    QueueShips {
+        kind: ShipKind,
+        count: u32,
+    },
+    QueueDefences {
+        kind: DefenceKind,
+        count: u32,
+    },
+    /// `index` is the slot in that planet's build queue.
+    CancelBuild {
+        planet: Coord,
+        index: usize,
+    },
+    /// Newest research entry first, the same as the local cancel.
+    CancelResearch,
+    CancelShips {
+        index: usize,
+    },
+    Recall {
+        mission: u64,
+    },
+    Spy {
+        ships: Fleet,
+        dest: Coord,
+        speed_percent: u8,
+    },
+    /// `site: None` flies into deep space; `Some` targets a known site.
+    Expedition {
+        ships: Fleet,
+        site: Option<u64>,
+        hold_secs: u64,
+        speed_percent: u8,
+    },
+    ChooseStory {
+        choice: String,
+    },
 }
 
 impl Intent {
@@ -147,6 +184,15 @@ impl Intent {
             Intent::ReviewIncident { .. } => "review_incident",
             Intent::ScheduleMaintenance { .. } => "schedule_maintenance",
             Intent::CompleteWorkOrder { .. } => "complete_work_order",
+            Intent::QueueShips { .. } => "queue_ships",
+            Intent::QueueDefences { .. } => "queue_defences",
+            Intent::CancelBuild { .. } => "cancel_build",
+            Intent::CancelResearch => "cancel_research",
+            Intent::CancelShips { .. } => "cancel_ships",
+            Intent::Recall { .. } => "recall",
+            Intent::Spy { .. } => "spy",
+            Intent::Expedition { .. } => "expedition",
+            Intent::ChooseStory { .. } => "choose_story",
         }
     }
 }
@@ -164,12 +210,14 @@ pub enum IntentError {
     Build(BuildError),
     Fusion(crate::FusionError),
     Research(ResearchError),
+    Ship(ShipError),
     Fleet(FleetError),
     Market(MarketError),
     Finance(crate::FinanceError),
     Kpi(crate::KpiError),
     Incident(crate::IncidentError),
     Maintenance(crate::MaintenanceError),
+    Story(crate::StoryError),
     Save(String),
 }
 
@@ -180,12 +228,14 @@ impl fmt::Display for IntentError {
             IntentError::Build(e) => write!(f, "{e}"),
             IntentError::Fusion(e) => write!(f, "{e}"),
             IntentError::Research(e) => write!(f, "{e}"),
+            IntentError::Ship(e) => write!(f, "{e}"),
             IntentError::Fleet(e) => write!(f, "{e}"),
             IntentError::Market(e) => write!(f, "{e}"),
             IntentError::Finance(e) => write!(f, "{e}"),
             IntentError::Kpi(e) => write!(f, "{e}"),
             IntentError::Incident(e) => write!(f, "{e}"),
             IntentError::Maintenance(e) => write!(f, "{e}"),
+            IntentError::Story(e) => write!(f, "{e}"),
             IntentError::Save(e) => write!(f, "save backend: {e}"),
         }
     }
@@ -348,6 +398,38 @@ fn proposal_id(intent: &Intent, now_unix: u64, tick: u64) -> String {
             "complete_work_order:{now_unix}:{tick}:{order_id}:{}",
             actor.as_key()
         ),
+        Intent::QueueShips { kind, count } => {
+            format!("queue_ships:{now_unix}:{tick}:{}:{count}", kind.as_key())
+        }
+        Intent::QueueDefences { kind, count } => {
+            format!("queue_defences:{now_unix}:{tick}:{}:{count}", kind.as_key())
+        }
+        Intent::CancelBuild { planet, index } => {
+            format!("cancel_build:{now_unix}:{tick}:{planet}:{index}")
+        }
+        Intent::CancelResearch => format!("cancel_research:{now_unix}:{tick}"),
+        Intent::CancelShips { index } => format!("cancel_ships:{now_unix}:{tick}:{index}"),
+        Intent::Recall { mission } => format!("recall:{now_unix}:{tick}:{mission}"),
+        Intent::Spy {
+            ships,
+            dest,
+            speed_percent,
+        } => format!(
+            "spy:{now_unix}:{tick}:{dest}:{speed_percent}:{}",
+            fleet_sig(ships)
+        ),
+        Intent::Expedition {
+            ships,
+            site,
+            hold_secs,
+            speed_percent,
+        } => format!(
+            "expedition:{now_unix}:{tick}:{}:{hold_secs}:{speed_percent}:{}",
+            site.map(|id| id.to_string())
+                .unwrap_or_else(|| "deep".into()),
+            fleet_sig(ships)
+        ),
+        Intent::ChooseStory { choice } => format!("choose_story:{now_unix}:{tick}:{choice}"),
     }
 }
 
@@ -519,6 +601,51 @@ fn apply_inner(state: &mut GameState, intent: &Intent, now_unix: u64) -> Result<
         Intent::CompleteWorkOrder { order_id, actor } => state
             .complete_work_order(*order_id, *actor, now_unix)
             .map_err(IntentError::Maintenance),
+        Intent::QueueShips { kind, count } => state
+            .enqueue_ships(*kind, *count, now_unix)
+            .map_err(IntentError::Ship),
+        Intent::QueueDefences { kind, count } => state
+            .enqueue_defence(*kind, *count, now_unix)
+            .map_err(IntentError::Ship),
+        Intent::CancelBuild { planet, index } => state
+            .cancel_build_on(*planet, *index, now_unix)
+            .map(|_| ())
+            .map_err(IntentError::Build),
+        Intent::CancelResearch => state
+            .cancel_research(now_unix)
+            .map(|_| ())
+            .map_err(IntentError::Research),
+        Intent::CancelShips { index } => state
+            .cancel_ships(*index, now_unix)
+            .map(|_| ())
+            .map_err(IntentError::Ship),
+        Intent::Recall { mission } => state
+            .recall_fleet(*mission, now_unix)
+            .map_err(IntentError::Fleet),
+        Intent::Spy {
+            ships,
+            dest,
+            speed_percent,
+        } => state
+            .launch_spy(*ships, *dest, *speed_percent, now_unix)
+            .map(|_| ())
+            .map_err(IntentError::Fleet),
+        Intent::Expedition {
+            ships,
+            site,
+            hold_secs,
+            speed_percent,
+        } => match site {
+            Some(id) => {
+                state.launch_expedition_site(*id, *ships, *hold_secs, *speed_percent, now_unix)
+            }
+            None => state.launch_expedition(*ships, *hold_secs, *speed_percent, now_unix),
+        }
+        .map(|_| ())
+        .map_err(IntentError::Fleet),
+        Intent::ChooseStory { choice } => state
+            .choose_story(choice, now_unix)
+            .map_err(IntentError::Story),
     }
 }
 
@@ -527,7 +654,6 @@ mod tests {
     use super::*;
     use crate::BalanceConfig;
     use crate::ontology::ACTIONS;
-    use crate::ships::ShipKind;
 
     #[test]
     fn action_names_match_ontology() {
@@ -639,6 +765,41 @@ mod tests {
                 actor: Actor::Player,
             }
             .as_key(),
+            Intent::QueueShips {
+                kind: ShipKind::LightFighter,
+                count: 1,
+            }
+            .as_key(),
+            Intent::QueueDefences {
+                kind: DefenceKind::LightCannon,
+                count: 1,
+            }
+            .as_key(),
+            Intent::CancelBuild {
+                planet: Coord::HOME,
+                index: 0,
+            }
+            .as_key(),
+            Intent::CancelResearch.as_key(),
+            Intent::CancelShips { index: 0 }.as_key(),
+            Intent::Recall { mission: 1 }.as_key(),
+            Intent::Spy {
+                ships: Fleet::default(),
+                dest: Coord::HOME,
+                speed_percent: 100,
+            }
+            .as_key(),
+            Intent::Expedition {
+                ships: Fleet::default(),
+                site: None,
+                hold_secs: 0,
+                speed_percent: 100,
+            }
+            .as_key(),
+            Intent::ChooseStory {
+                choice: "answer".into(),
+            }
+            .as_key(),
         ];
         assert_eq!(names, ACTIONS);
     }
@@ -738,6 +899,134 @@ mod tests {
         apply(&mut state, &proposal, 1_000).unwrap();
         assert_eq!(state.build_queue.len(), 1);
         assert!(state.resources.iron < snapshot.resources.iron);
+    }
+
+    /// Apply `intent` through propose/apply and `direct` on a clone, then
+    /// require the same outcome and, on success, the same state. A refusal
+    /// must leave live state untouched.
+    fn same_as_direct(
+        state: &mut GameState,
+        intent: Intent,
+        now: u64,
+        direct: impl FnOnce(&mut GameState) -> bool,
+    ) -> bool {
+        let mut want = state.clone();
+        let ok = direct(&mut want);
+        let before = state.clone();
+        match propose(state, &intent, now) {
+            Ok(proposal) => {
+                assert!(ok, "{} applied but the method refused", intent.as_key());
+                apply(state, &proposal, now).unwrap();
+                assert_eq!(*state, want, "{}", intent.as_key());
+            }
+            Err(err) => {
+                assert!(!ok, "{} refused: {err}", intent.as_key());
+                assert_eq!(*state, before, "{}", intent.as_key());
+            }
+        }
+        ok
+    }
+
+    #[test]
+    fn shipyard_cancel_mission_and_story_intents_match_the_methods() {
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.enabled = false;
+        cfg.market.enabled = false;
+        cfg.diplomacy.enabled = false;
+        let hold = cfg.expedition.min_hold_secs;
+        let mut state = GameState::with_config(0, cfg);
+        state.buildings.shipyard = 1;
+        state.tech_levels.insert("combustion_drive".into(), 1);
+        state.resources.iron = 100_000.0;
+        state.resources.silicon = 100_000.0;
+        state.resources.deuterium = 100_000.0;
+        state.fleet.add(ShipKind::LightFighter, 4);
+        let s = &mut state;
+
+        assert!(same_as_direct(
+            s,
+            Intent::QueueShips {
+                kind: ShipKind::LightFighter,
+                count: 2,
+            },
+            0,
+            |g| g.enqueue_ships(ShipKind::LightFighter, 2, 0).is_ok(),
+        ));
+        assert!(same_as_direct(
+            s,
+            Intent::QueueDefences {
+                kind: DefenceKind::LightCannon,
+                count: 1,
+            },
+            0,
+            |g| g.enqueue_defence(DefenceKind::LightCannon, 1, 0).is_ok(),
+        ));
+        assert!(same_as_direct(
+            s,
+            Intent::CancelShips { index: 1 },
+            0,
+            |g| g.cancel_ships(1, 0).is_ok(),
+        ));
+        s.enqueue_build(BuildingKind::MetalMine, 0).unwrap();
+        assert!(same_as_direct(
+            s,
+            Intent::CancelBuild {
+                planet: Coord::HOME,
+                index: 0,
+            },
+            0,
+            |g| g.cancel_build_on(Coord::HOME, 0, 0).is_ok(),
+        ));
+        assert!(!same_as_direct(s, Intent::CancelResearch, 0, |g| g
+            .cancel_research(0)
+            .is_ok()));
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::LightFighter, 2);
+        assert!(same_as_direct(
+            s,
+            Intent::Expedition {
+                ships,
+                site: None,
+                hold_secs: hold,
+                speed_percent: 100,
+            },
+            0,
+            |g| g.launch_expedition(ships, hold, 100, 0).is_ok(),
+        ));
+        let mission = s.missions[0].id;
+        assert!(same_as_direct(s, Intent::Recall { mission }, 10, |g| g
+            .recall_fleet(mission, 10)
+            .is_ok()));
+        let mut probes = Fleet::default();
+        probes.add(ShipKind::EspionageProbe, 1);
+        let nowhere = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 8,
+        };
+        assert!(!same_as_direct(
+            s,
+            Intent::Spy {
+                ships: probes,
+                dest: nowhere,
+                speed_percent: 100,
+            },
+            10,
+            |g| g.launch_spy(probes, nowhere, 100, 10).is_ok(),
+        ));
+        s.catch_up(1_800);
+        assert_eq!(
+            s.story_pending.as_ref().map(|p| p.event_id.as_str()),
+            Some("lane_contact")
+        );
+        assert!(same_as_direct(
+            s,
+            Intent::ChooseStory {
+                choice: "answer".into(),
+            },
+            1_800,
+            |g| g.choose_story("answer", 1_800).is_ok(),
+        ));
     }
 
     #[test]
