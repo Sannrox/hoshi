@@ -3373,10 +3373,17 @@ impl App {
                     }
                     Ok(contacts) => {
                         for contact in contacts {
+                            let what = match contact.id {
+                                Some(id) => format!("fleet #{id} {}", contact.phase),
+                                None => "raid".to_string(),
+                            };
+                            let light = if contact.delay_secs > 0 {
+                                format!("  light {}", ui::spans::duration(contact.delay_secs))
+                            } else {
+                                String::new()
+                            };
                             rows.push(Line::from(format!(
-                                "Phalanx  fleet #{} {} {} → {}  {}  ships {}",
-                                contact.id,
-                                contact.phase,
+                                "Phalanx  {what} {} → {}  {}  ships {}{light}",
                                 contact.origin,
                                 contact.dest,
                                 ui::spans::duration(contact.eta_secs),
@@ -6430,6 +6437,33 @@ mod tests {
         let planet = render_text(&app, 100, 32);
         assert!(planet.contains("Moon"), "{planet}");
         assert!(planet.contains("phalanx"), "{planet}");
+    }
+
+    #[test]
+    fn moon_inspector_shows_the_phalanx_raid_contact() {
+        let mut state = GameState::new(0);
+        let mut moon = hoshi_core::Moon::new(Coord::HOME);
+        moon.phalanx = 1;
+        state.moons.push(moon);
+        state.next_raid_at = Some(600);
+        state.next_raid_ships = Some(12);
+        let raid = state
+            .phalanx_contacts(Coord::HOME, 0)
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id.is_none())
+            .unwrap();
+        let mut app = App::new(state);
+        app.screen = Screen::Planet;
+        let text = render_text(&app, 120, 40);
+        let line = format!(
+            "Phalanx  raid {} → {}  {}  ships {}",
+            raid.origin,
+            Coord::HOME,
+            ui::spans::duration(600),
+            raid.ships
+        );
+        assert!(text.contains(&line), "{text}");
     }
 
     #[test]
