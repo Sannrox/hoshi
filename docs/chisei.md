@@ -65,6 +65,16 @@ shows it and later reads keep it. The attacker reads its plunder from the
 raid result. The
 local TUI and CLI do not use this gate.
 
+Join places a home with `place_home`: given the host's `ShardMap` (seed and
+bounds), the empires, and the pirate outposts and open sites, it returns the
+first `Empty` coord on a walk that visits one position in every system before
+the next position. `seat_home` writes the home only on a coord that is still
+`Empty`, so a parallel place that lost the slot is refused and places again.
+`targets` lists the coords a tenant's clearance can see tagged `you`,
+`tenant`, `outpost`, `site`, or `empty`, with no other identity or stockpile;
+spy and shard raids pick a `tenant` coord from it. The tenant view keeps the
+coarser `you`, `occupied`, `empty` tags.
+
 An idempotency id is remembered for the longer of the command and attack
 windows (`ShardConfig::seen_ttl_secs`); an older id is forgotten and may
 apply again. On restart the host restores the ids, command windows and

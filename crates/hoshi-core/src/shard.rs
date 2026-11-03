@@ -146,6 +146,60 @@ impl ShardSites<'static> {
     }
 }
 
+/// Bounds of the shard map and the seed its home walk starts from.
+///
+/// The map is galaxies `1..=galaxies`, systems `1..=systems` in each galaxy,
+/// and positions `1..=positions` in each system. The host picks these once
+/// per shard and keeps them stable, so [`place_home`] stays deterministic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShardMap {
+    pub seed: u64,
+    pub galaxies: u16,
+    pub systems: u16,
+    pub positions: u16,
+}
+
+impl ShardMap {
+    /// Every slot once, in home-walk order.
+    ///
+    /// Systems are numbered galaxy-major (`1:1`, `1:2`, ..., `2:1`, ...). The
+    /// walk starts at system `seed % systems` and position
+    /// `(seed / systems) % positions`, both zero-based. It visits that
+    /// position in every system, wrapping, before moving to the next
+    /// position, so homes spread one per system before any system takes a
+    /// second.
+    fn home_walk(self) -> impl Iterator<Item = Coord> {
+        let per_galaxy = u64::from(self.systems);
+        let systems = u64::from(self.galaxies) * per_galaxy;
+        let positions = u64::from(self.positions);
+        let start_system = self.seed.checked_rem(systems).unwrap_or(0);
+        let start_position = (self.seed / systems.max(1))
+            .checked_rem(positions)
+            .unwrap_or(0);
+        (0..systems * positions).map(move |n| {
+            let system = (start_system + n % systems) % systems;
+            let position = (start_position + n / systems) % positions;
+            // Each quotient is below its u16 bound, so the casts are exact.
+            Coord {
+                galaxy: (system / per_galaxy) as u16 + 1,
+                system: (system % per_galaxy) as u16 + 1,
+                position: position as u16 + 1,
+            }
+        })
+    }
+}
+
+/// One coord on a tenant's target list and who holds it.
+///
+/// Spy and shard raids take a `Tenant` coord from this list; `You` is not a
+/// target and `Empty` is for colonize only. The kind carries no identity or
+/// stockpile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShardTarget {
+    pub coord: Coord,
+    pub kind: Occupancy,
+}
+
 /// One coord the tenant may see. `tag` is `you`, `occupied`, or `empty`.
 /// Another tenant's name and stockpile are not on this row.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -284,7 +338,8 @@ pub enum ShardError {
         identity: String,
         retry_after_secs: u64,
     },
-    /// Colonize or a planet raid dest is `Tenant`, `Outpost`, or `Site`.
+    /// Colonize or a planet raid dest is `Tenant`, `Outpost`, or `Site`, or
+    /// a join seat is no longer `Empty`.
     Occupied {
         coord: Coord,
         kind: Occupancy,
@@ -293,6 +348,12 @@ pub enum ShardError {
     ColonizeNeedsMap,
     /// Restored bookkeeping bytes are not a version this build reads.
     Bookkeeping(String),
+    /// The home walk has no `Empty` slot left.
+    NoEmptySlot,
+    /// `identity` already has a home elsewhere on the shard.
+    AlreadySeated {
+        identity: String,
+    },
 }
 
 impl fmt::Display for ShardError {
@@ -330,6 +391,10 @@ impl fmt::Display for ShardError {
                 write!(f, "colonize needs the shard map")
             }
             ShardError::Bookkeeping(msg) => write!(f, "shard bookkeeping: {msg}"),
+            ShardError::NoEmptySlot => write!(f, "shard map has no empty slot"),
+            ShardError::AlreadySeated { identity } => {
+                write!(f, "{identity} already has a home on the shard")
+            }
         }
     }
 }
@@ -576,8 +641,8 @@ impl<C: Clock> ShardSession<C> {
     /// launch a colony ship. An empty coord uses the same colonize intent as
     /// local play. The check does not reserve the dest: a second colonize of
     /// that still-empty coord also launches, and each empire settles its own
-    /// mission. Join is not this method: a host calls [`occupancy`] and
-    /// [`Occupancy::join_slot`] before placing a home.
+    /// mission. Join is not this method: a host calls [`place_home`] and
+    /// [`seat_home`].
     pub fn colonize(
         &mut self,
         identity: &str,
@@ -860,6 +925,102 @@ pub fn occupancy(
     Occupancy::Empty
 }
 
+/// First `Empty` slot on `map`'s home walk, for the next tenant to join.
+///
+/// Deterministic from the seed and join order: each seated home fills the
+/// earliest free slot, so the next place returns the one after it. This is a
+/// read and reserves nothing. The host seats the result with [`seat_home`]
+/// before the next place, under the same serialisation as other Actions. A
+/// place computed from a stale map can return a coord that a parallel join
+/// already took; [`seat_home`] refuses it and the host places again.
+pub fn place_home(
+    map: ShardMap,
+    empires: &BTreeMap<String, GameState>,
+    sites: ShardSites<'_>,
+) -> Result<Coord, ShardError> {
+    // No tenant has an empty identity, so every held coord reads as taken.
+    map.home_walk()
+        .find(|&coord| occupancy("", empires, sites, coord).join_slot())
+        .ok_or(ShardError::NoEmptySlot)
+}
+
+/// Seat `state` as `identity`'s empire with its home on `coord`.
+///
+/// Join writes the home only here. A coord that is no longer `Empty` is
+/// refused with [`ShardError::Occupied`] and nothing is written. A retried
+/// seat whose home already landed on `coord` is a no-op.
+///
+/// Only `home` moves. A state built by `GameState::with_seed` rolled its home
+/// planet profile and private pirate outposts around `Coord::HOME`; join
+/// builds `state` for `coord` before seating it.
+pub fn seat_home(
+    identity: &str,
+    mut state: GameState,
+    coord: Coord,
+    empires: &mut BTreeMap<String, GameState>,
+    sites: ShardSites<'_>,
+) -> Result<(), ShardError> {
+    if identity.is_empty() {
+        return Err(ShardError::EmptyIdentity);
+    }
+    if let Some(seated) = empires.get(identity) {
+        if seated.home == coord {
+            return Ok(());
+        }
+        return Err(ShardError::AlreadySeated {
+            identity: identity.to_string(),
+        });
+    }
+    let kind = occupancy(identity, empires, sites, coord);
+    if !kind.join_slot() {
+        return Err(ShardError::Occupied { coord, kind });
+    }
+    state.home = coord;
+    empires.insert(identity.to_string(), state);
+    Ok(())
+}
+
+/// `viewer`'s target list: coords its clearance can see, each with its kind.
+///
+/// Covers the viewer's home system up to the expedition point, every tenant
+/// home and colony, and the host's outposts and sites. Reads the map as
+/// given; [`ShardSession::view`] catches empires up first. The tenant view
+/// shows the same coords with [`Occupancy::view_tag`].
+pub fn targets(
+    viewer: &str,
+    empires: &BTreeMap<String, GameState>,
+    sites: ShardSites<'_>,
+) -> Vec<ShardTarget> {
+    let Some(own) = empires.get(viewer) else {
+        return Vec::new();
+    };
+    let home = own.home;
+    let mut coords = BTreeSet::new();
+    for position in 1..own.config.expedition.dest_position {
+        coords.insert(Coord {
+            galaxy: home.galaxy,
+            system: home.system,
+            position,
+        });
+    }
+    for state in empires.values() {
+        coords.insert(state.home);
+        for colony in &state.colonies {
+            coords.insert(colony.coord);
+        }
+    }
+    coords.extend(sites.outposts.iter().copied());
+    coords.extend(sites.sites.iter().copied());
+    coords
+        .into_iter()
+        .filter(|coord| own.can_see(Actor::Player, ClassifiedKind::Fact, &coord.to_string()))
+        .map(|coord| ShardTarget {
+            coord,
+            kind: occupancy(viewer, empires, sites, coord),
+        })
+        .collect()
+}
+
 fn tenant_holds(state: &GameState, coord: Coord) -> bool {
     state.home == coord || state.colonies.iter().any(|colony| colony.coord == coord)
 }
@@ -928,39 +1089,11 @@ fn occupancy_slots(
     empires: &BTreeMap<String, GameState>,
     sites: ShardSites<'_>,
 ) -> Vec<ShardSlot> {
-    let (home, end) = match empires.get(viewer) {
-        Some(own) => (own.home, own.config.expedition.dest_position),
-        None => return Vec::new(),
-    };
-    let mut coords = BTreeSet::new();
-    for position in 1..end {
-        coords.insert(Coord {
-            galaxy: home.galaxy,
-            system: home.system,
-            position,
-        });
-    }
-    for state in empires.values() {
-        coords.insert(state.home);
-        for colony in &state.colonies {
-            coords.insert(colony.coord);
-        }
-    }
-    coords.extend(sites.outposts.iter().copied());
-    coords.extend(sites.sites.iter().copied());
-    coords
+    targets(viewer, empires, sites)
         .into_iter()
-        .filter(|coord| {
-            empires.get(viewer).is_some_and(|own| {
-                own.can_see(Actor::Player, ClassifiedKind::Fact, &coord.to_string())
-            })
-        })
-        .map(|coord| {
-            let kind = occupancy(viewer, empires, sites, coord);
-            ShardSlot {
-                coord,
-                tag: kind.view_tag().to_string(),
-            }
+        .map(|target| ShardSlot {
+            coord: target.coord,
+            tag: target.kind.view_tag().to_string(),
         })
         .collect()
 }
@@ -2120,6 +2253,121 @@ mod tests {
                 .iter()
                 .all(|coord| coord.as_str() != Some(other_home.as_str()))
         );
+    }
+
+    /// One galaxy, four systems, three positions. Seed 7 starts the walk at
+    /// system 4 (7 % 4 = 3) and position 2 ((7 / 4) % 3 = 1).
+    const WALK: ShardMap = ShardMap {
+        seed: 7,
+        galaxies: 1,
+        systems: 4,
+        positions: 3,
+    };
+
+    fn walk_slot(system: u16, position: u16) -> Coord {
+        Coord {
+            galaxy: 1,
+            system,
+            position,
+        }
+    }
+
+    #[test]
+    fn place_home_walks_empty_slots_in_join_order() {
+        let outposts = [walk_slot(1, 2)];
+        let sites = ShardSites {
+            outposts: &outposts,
+            sites: &[],
+        };
+        let mut empires = BTreeMap::new();
+        let first = place_home(WALK, &empires, sites).unwrap();
+        assert_eq!(first, walk_slot(4, 2));
+        seat_home("tenant-a", test_state(1_000), first, &mut empires, sites).unwrap();
+        let second = place_home(WALK, &empires, sites).unwrap();
+        assert_eq!(second, walk_slot(2, 2), "skips the outpost at 1:1:2");
+        assert_eq!(
+            occupancy("tenant-b", &empires, sites, second),
+            Occupancy::Empty
+        );
+        seat_home("tenant-b", test_state(1_000), second, &mut empires, sites).unwrap();
+        assert_eq!(empires["tenant-a"].home, first);
+        assert_eq!(empires["tenant-b"].home, second);
+    }
+
+    #[test]
+    fn seat_home_refuses_a_parallel_place_that_lost_the_slot() {
+        let sites = ShardSites::none();
+        let mut empires = BTreeMap::new();
+        let a_slot = place_home(WALK, &empires, sites).unwrap();
+        let b_slot = place_home(WALK, &empires, sites).unwrap();
+        assert_eq!(a_slot, b_slot, "both places read the same map");
+        seat_home("tenant-a", test_state(1_000), a_slot, &mut empires, sites).unwrap();
+        assert_eq!(
+            seat_home("tenant-b", test_state(1_000), b_slot, &mut empires, sites).unwrap_err(),
+            ShardError::Occupied {
+                coord: a_slot,
+                kind: Occupancy::Tenant
+            }
+        );
+        assert!(!empires.contains_key("tenant-b"));
+        seat_home("tenant-a", test_state(1_000), a_slot, &mut empires, sites).unwrap();
+        assert_eq!(empires.len(), 1, "a retried seat is a no-op");
+        let retry = place_home(WALK, &empires, sites).unwrap();
+        assert_ne!(retry, a_slot);
+        seat_home("tenant-b", test_state(1_000), retry, &mut empires, sites).unwrap();
+        assert_eq!(empires["tenant-b"].home, retry);
+    }
+
+    #[test]
+    fn place_home_refuses_a_full_map() {
+        let tiny = ShardMap {
+            seed: 0,
+            galaxies: 1,
+            systems: 1,
+            positions: 1,
+        };
+        let mut empires = BTreeMap::new();
+        let slot = place_home(tiny, &empires, ShardSites::none()).unwrap();
+        seat_home(
+            "tenant-a",
+            test_state(1_000),
+            slot,
+            &mut empires,
+            ShardSites::none(),
+        )
+        .unwrap();
+        assert_eq!(
+            place_home(tiny, &empires, ShardSites::none()).unwrap_err(),
+            ShardError::NoEmptySlot
+        );
+    }
+
+    #[test]
+    fn target_list_tags_kinds_without_the_other_identity() {
+        let empires = two_empires(tenant_a(1_000), tenant_b(1_000));
+        let outposts = [pirate_coord()];
+        let sites = [site_coord()];
+        let list = targets(
+            "tenant-a",
+            &empires,
+            ShardSites {
+                outposts: &outposts,
+                sites: &sites,
+            },
+        );
+        let kind_at = |coord: Coord| {
+            list.iter()
+                .find(|target| target.coord == coord)
+                .map(|target| target.kind)
+        };
+        assert_eq!(kind_at(Coord::HOME), Some(Occupancy::You));
+        assert_eq!(kind_at(B_HOME), Some(Occupancy::Tenant));
+        assert_eq!(kind_at(pirate_coord()), Some(Occupancy::Outpost));
+        assert_eq!(kind_at(site_coord()), Some(Occupancy::Site));
+        assert_eq!(kind_at(empty_slot()), Some(Occupancy::Empty));
+        let dump = format!("{list:?}");
+        assert!(!dump.contains("tenant-b"), "{dump}");
+        assert!(!dump.contains(&format!("{B_IRON}")), "{dump}");
     }
 
     /// Attacker at B_HOME with battleships, defender at home with fighters.
