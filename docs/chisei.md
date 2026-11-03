@@ -75,6 +75,23 @@ the next position. `seat_home` writes the home only on a coord that is still
 spy and shard raids pick a `tenant` coord from it. The tenant view keeps the
 coarser `you`, `occupied`, `empty` tags.
 
+One shard map: the session holds a `ShardCommons` with the pirate outposts,
+the open sites, and the battle debris per coord, so every tenant sees the
+same `outpost` and the same pile. Tenant saves keep no shard debris; each
+catch-up lends the pile to one tenant and takes it back with its harvests
+and new wreckage. The host persists `ShardCommons::to_bytes` beside the
+tenant saves and restores it through `ShardSession::commons_mut`.
+`ShardSession::settle` (and `view`, `colonize`, `spy`, `recycle`, which
+settle first) steps every empire to each colony and recycler arrival in time
+order, and at one instant in identity order. Two colony ships may launch at
+one `empty` coord; the first arrival founds, and a ship that finds the coord
+held by then turns back with the colony ship. Recyclers launched with
+`ShardSession::recycle` harvest the shared pile in arrival order, each
+taking at most its hold from what is left. `submit` and `raid` catch up
+without the other empires, so they refuse with `Unsettled` while a colony or
+recycler arrival is due; the host settles and retries. The expedition dest
+and the NPC regional book are still per save.
+
 `ShardSession::spy` flies the probe hull with a hold of zero. At a `tenant`
 coord the host stops catch-up at the probe's arrival, reads that planet's
 stock and parked fleet, and writes a `SpyReport` with the espionage sensor
