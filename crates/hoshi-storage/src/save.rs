@@ -2563,6 +2563,7 @@ pub fn save_lock_path(save: &Path) -> PathBuf {
 /// True when another process already holds the exclusive save lock.
 ///
 /// Opens the lock file only to probe. The caller does not keep the lock.
+/// Like [`lock_save`], a held save answers only after the settle window.
 pub fn save_is_locked(path: &Path) -> bool {
     if path == Path::new(":memory:") {
         return false;
@@ -2581,8 +2582,7 @@ pub fn save_is_locked(path: &Path) -> bool {
             #[cfg(unix)]
             {
                 let fd = std::os::unix::io::AsRawFd::as_raw_fd(&file);
-                let rc = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
-                if rc == 0 {
+                if flock_settled(fd) {
                     unsafe {
                         libc::flock(fd, libc::LOCK_UN);
                     }
@@ -3214,21 +3214,30 @@ fn open_lock_file(path: &Path) -> Result<File, SaveError> {
         Err(err) => return Err(lock_open_error(err)),
     };
     #[cfg(unix)]
-    {
-        let fd = std::os::unix::io::AsRawFd::as_raw_fd(&file);
-        // A child process spawned by another thread shares our descriptors
-        // until it execs, so a lock this process just released can stay held
-        // for a moment. Try again briefly; a real holder (a running game)
-        // still answers Locked once the window has passed.
-        let deadline = std::time::Instant::now() + LOCK_SETTLE;
-        while unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            if std::time::Instant::now() >= deadline {
-                return Err(SaveError::Locked);
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+    if !flock_settled(std::os::unix::io::AsRawFd::as_raw_fd(&file)) {
+        return Err(SaveError::Locked);
     }
     Ok(file)
+}
+
+/// Takes the exclusive `flock` on `fd`, retrying for [`LOCK_SETTLE`] while it
+/// is busy. False when it is still held after that.
+///
+/// A child process spawned by another thread shares our descriptors until it
+/// execs, so a lock this process just released can stay held for a moment.
+/// Both [`lock_save`] and the [`save_is_locked`] probe go through here so the
+/// probe does not report that leftover as a held save. A real holder (a
+/// running game) still answers held once the window has passed.
+#[cfg(unix)]
+fn flock_settled(fd: std::os::unix::io::RawFd) -> bool {
+    let deadline = std::time::Instant::now() + LOCK_SETTLE;
+    while unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    true
 }
 
 /// How long a busy save lock is retried before it counts as held.
@@ -11451,8 +11460,9 @@ label = "Leave it"
         assert_eq!(old.combat_logs.last().unwrap().raid_defence, None);
     }
 
-    /// #317: another thread spawning children kept a released save lock
-    /// held for a moment, so the next command failed with "save is locked".
+    /// #317, #447: another thread spawning children kept a released save lock
+    /// held for a moment, so the next command, or the next probe, read it as
+    /// "save is locked".
     #[test]
     #[cfg(unix)]
     fn a_released_lock_is_taken_while_other_threads_spawn_processes() {
@@ -11473,7 +11483,9 @@ label = "Leave it"
                     .status();
             }
         });
-        let refused = (0..2_000).filter(|_| lock_save(&path).is_err()).count();
+        let refused = (0..2_000)
+            .filter(|_| lock_save(&path).is_err() || save_is_locked(&path))
+            .count();
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
         spawner.join().unwrap();
         let _ = std::fs::remove_file(save_lock_path(&path));
@@ -11481,6 +11493,7 @@ label = "Leave it"
         // A real holder is still refused.
         let held = lock_save(&path).unwrap();
         assert!(matches!(lock_save(&path), Err(SaveError::Locked)));
+        assert!(save_is_locked(&path));
         drop(held);
         let _ = std::fs::remove_file(save_lock_path(&path));
     }
