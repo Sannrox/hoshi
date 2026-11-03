@@ -432,7 +432,10 @@ impl Title {
         let mut best_currency = 0u32;
         let mut source_prestige: Option<Prestige> = None;
         for slot in &self.slots {
-            if inspect_save(&slot.path).is_ok_and(|glance| glance.modified) {
+            // A held save has nothing to read; probing it again only waits.
+            if matches!(slot.status, SlotStatus::Locked)
+                || inspect_save(&slot.path).is_ok_and(|glance| glance.modified)
+            {
                 continue;
             }
             if let Ok(glance) = inspect_career(&slot.path) {
