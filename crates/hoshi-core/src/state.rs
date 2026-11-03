@@ -2519,6 +2519,21 @@ impl GameState {
         speed_percent: u8,
         now_unix: u64,
     ) -> Result<u64, FleetError> {
+        let dest = self.expedition_dest();
+        self.launch_expedition_to(dest, ships, hold_secs, speed_percent, now_unix)
+    }
+
+    /// [`Self::launch_expedition`] to `dest` instead of the home-system slot.
+    /// A shard passes its one expedition coord here; flight time and fuel
+    /// follow from the distance to it.
+    pub fn launch_expedition_to(
+        &mut self,
+        dest: Coord,
+        ships: Fleet,
+        hold_secs: u64,
+        speed_percent: u8,
+        now_unix: u64,
+    ) -> Result<u64, FleetError> {
         self.catch_up(now_unix);
         let min = self.config.expedition.min_hold_secs;
         let max = self.config.expedition.max_hold_secs;
@@ -2534,7 +2549,6 @@ impl GameState {
         if used >= cap {
             return Err(FleetError::NoExpeditionSlots { used, cap });
         }
-        let dest = self.expedition_dest();
         self.launch_fleet(ships, dest, speed_percent, hold_secs, now_unix)?;
         let id = {
             let Some(mission) = self.missions.last_mut() else {

@@ -19,6 +19,7 @@ use crate::combat::{
 };
 use crate::decision::{ExpiringDecision, expiring_decision_with_inbound};
 use crate::fleets::{Coord, Mission, MissionPhase};
+use crate::frontier::FrontierConfig;
 use crate::intel::IntelFact;
 use crate::intent::{Intent, IntentError, apply, propose};
 use crate::leaders::Actor;
@@ -157,27 +158,31 @@ pub struct ShardInbound {
     pub ships: Option<u32>,
 }
 
-/// Pirate outposts and open expedition sites, borrowed from
-/// [`ShardCommons`]. Sites stay empty until that catalog exists. These
-/// lists are the shard map, not each save's private outpost table.
+/// Pirate outposts, open expedition sites, and the shard's one expedition
+/// coord, borrowed from [`ShardCommons`]. Sites stay empty until that
+/// catalog exists. These lists are the shard map, not each save's private
+/// outpost table.
 #[derive(Debug, Clone, Copy)]
 pub struct ShardSites<'a> {
     pub outposts: &'a [Coord],
     pub sites: &'a [Coord],
+    /// Reads as a `Site` for every tenant.
+    pub expedition: Option<Coord>,
 }
 
 impl ShardSites<'static> {
-    /// No pirate outposts and no open sites.
+    /// No pirate outposts, no open sites, and no expedition coord.
     pub fn none() -> Self {
         Self {
             outposts: &[],
             sites: &[],
+            expedition: None,
         }
     }
 }
 
 /// What sits on the shard map and belongs to no tenant: pirate outposts,
-/// open sites, and battle debris per coord.
+/// open sites, the expedition coord, and battle debris per coord.
 ///
 /// The [`ShardSession`] holds the shard's one copy, so every tenant reads
 /// the same outpost and the same debris stock. A tenant save keeps no shard
@@ -189,16 +194,24 @@ impl ShardSites<'static> {
 pub struct ShardCommons {
     pub outposts: Vec<Coord>,
     pub sites: Vec<Coord>,
+    /// Where every shard expedition without a site flies. `None` until the
+    /// host calls [`Self::place_expedition`]; until then
+    /// [`ShardSession::submit`] refuses such a launch.
+    pub expedition: Option<Coord>,
     pub debris: BTreeMap<Coord, f64>,
 }
 
-const COMMONS_VERSION: u32 = 1;
+/// Version 2 added `expedition`. Version 1 bytes still read, with none set.
+const COMMONS_VERSION: u32 = 2;
+const COMMONS_VERSION_NO_EXPEDITION: u32 = 1;
 
 #[derive(Serialize, Deserialize)]
 struct CommonsDoc {
     version: u32,
     outposts: Vec<[u16; 3]>,
     sites: Vec<[u16; 3]>,
+    #[serde(default)]
+    expedition: Option<[u16; 3]>,
     debris: Vec<([u16; 3], f64)>,
 }
 
@@ -215,12 +228,41 @@ fn row_coord([galaxy, system, position]: [u16; 3]) -> Coord {
 }
 
 impl ShardCommons {
-    /// Occupancy view of the outposts and sites.
+    /// Occupancy view of the outposts, sites, and expedition coord.
     pub fn sites(&self) -> ShardSites<'_> {
         ShardSites {
             outposts: &self.outposts,
             sites: &self.sites,
+            expedition: self.expedition,
         }
+    }
+
+    /// The shard's one expedition coord, placed on the first call.
+    ///
+    /// It is the last `Empty` slot on `map`'s home walk outside the
+    /// `frontier` galaxy, which a fresh tenant cannot fly to. A host that
+    /// places it before any join gets a coord from the seed and bounds alone,
+    /// and homes would reach it last. A placed coord is kept, so a restart or
+    /// a retry returns the same one. Restored version 1 bytes have none; the
+    /// host calls this after restoring them.
+    pub fn place_expedition(
+        &mut self,
+        map: ShardMap,
+        frontier: &FrontierConfig,
+        empires: &BTreeMap<String, GameState>,
+    ) -> Result<Coord, ShardError> {
+        if let Some(coord) = self.expedition {
+            return Ok(coord);
+        }
+        let sites = self.sites();
+        let coord = map
+            .home_walk()
+            .rev()
+            .filter(|coord| coord.galaxy != frontier.galaxy)
+            .find(|&coord| occupancy("", empires, sites, coord).join_slot())
+            .ok_or(ShardError::NoEmptySlot)?;
+        self.expedition = Some(coord);
+        Ok(coord)
     }
 
     pub fn to_bytes(&self) -> Result<Vec<u8>, ShardError> {
@@ -228,6 +270,7 @@ impl ShardCommons {
             version: COMMONS_VERSION,
             outposts: self.outposts.iter().copied().map(coord_row).collect(),
             sites: self.sites.iter().copied().map(coord_row).collect(),
+            expedition: self.expedition.map(coord_row),
             debris: self
                 .debris
                 .iter()
@@ -237,11 +280,12 @@ impl ShardCommons {
         serde_json::to_vec(&doc).map_err(|e| ShardError::Commons(e.to_string()))
     }
 
-    /// Read bytes from [`Self::to_bytes`]. Another version is refused.
+    /// Read bytes from [`Self::to_bytes`], or version 1 bytes from a build
+    /// before the expedition coord. Another version is refused.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ShardError> {
         let doc: CommonsDoc =
             serde_json::from_slice(bytes).map_err(|e| ShardError::Commons(e.to_string()))?;
-        if doc.version != COMMONS_VERSION {
+        if doc.version != COMMONS_VERSION && doc.version != COMMONS_VERSION_NO_EXPEDITION {
             return Err(ShardError::Commons(format!(
                 "version {} is not {COMMONS_VERSION}",
                 doc.version
@@ -250,6 +294,7 @@ impl ShardCommons {
         Ok(Self {
             outposts: doc.outposts.into_iter().map(row_coord).collect(),
             sites: doc.sites.into_iter().map(row_coord).collect(),
+            expedition: doc.expedition.map(row_coord),
             debris: doc
                 .debris
                 .into_iter()
@@ -281,7 +326,7 @@ impl ShardMap {
     /// position in every system, wrapping, before moving to the next
     /// position, so homes spread one per system before any system takes a
     /// second.
-    fn home_walk(self) -> impl Iterator<Item = Coord> {
+    fn home_walk(self) -> impl DoubleEndedIterator<Item = Coord> {
         let per_galaxy = u64::from(self.systems);
         let systems = u64::from(self.galaxies) * per_galaxy;
         let positions = u64::from(self.positions);
@@ -500,6 +545,10 @@ pub enum ShardError {
     },
     /// The home walk has no `Empty` slot left.
     NoEmptySlot,
+    /// A shard expedition without a site needs the shard's expedition
+    /// coord, and the host has not placed it with
+    /// [`ShardCommons::place_expedition`].
+    NoExpeditionCoord,
     /// `identity` already has a home elsewhere on the shard.
     AlreadySeated {
         identity: String,
@@ -552,6 +601,9 @@ impl fmt::Display for ShardError {
                 write!(f, "{identity} has an arrival due; settle the shard first")
             }
             ShardError::NoEmptySlot => write!(f, "shard map has no empty slot"),
+            ShardError::NoExpeditionCoord => {
+                write!(f, "shard map has no expedition coord yet")
+            }
             ShardError::AlreadySeated { identity } => {
                 write!(f, "{identity} already has a home on the shard")
             }
@@ -664,9 +716,12 @@ impl<C: Clock> ShardSession<C> {
     /// `cmd.client_now_unix` is accepted so a caller can send a wall clock
     /// and is never read. `Intent::Colonize` is refused: this method has one
     /// empire, so it cannot see another tenant, a pirate outpost, or a site.
-    /// Hosts call [`Self::colonize`]. A colony, recycler, or raid arrival due
-    /// by the host clock, or another tenant's raid due on this home, is
-    /// refused as [`ShardError::Unsettled`] before anything moves.
+    /// Hosts call [`Self::colonize`]. `Intent::Expedition` without a site
+    /// flies to the shard's one expedition coord, not the tenant's own slot,
+    /// and is refused as [`ShardError::NoExpeditionCoord`] until the host
+    /// places it. A colony, recycler, or raid arrival due by the host clock,
+    /// or another tenant's raid due on this home, is refused as
+    /// [`ShardError::Unsettled`] before anything moves.
     pub fn submit(&mut self, state: &mut GameState, cmd: ShardCommand) -> Result<(), ShardError> {
         state
             .require_fair_play()
@@ -679,6 +734,14 @@ impl<C: Clock> ShardSession<C> {
         if matches!(cmd.intent, Intent::Colonize { .. }) {
             return Err(ShardError::ColonizeNeedsMap);
         }
+        let expedition = match cmd.intent {
+            Intent::Expedition { site: None, .. } => Some(
+                self.commons
+                    .expedition
+                    .ok_or(ShardError::NoExpeditionCoord)?,
+            ),
+            _ => None,
+        };
         if cmd.identity.is_empty() {
             return Err(ShardError::EmptyIdentity);
         }
@@ -701,8 +764,24 @@ impl<C: Clock> ShardSession<C> {
         self.admit(&cmd.identity, now)?;
         with_shared_debris(&mut self.commons.debris, state, |state| {
             state.catch_up(now);
-            let proposal = propose(state, &cmd.intent, now)?;
-            apply(state, &proposal, now)
+            match (&cmd.intent, expedition) {
+                (
+                    Intent::Expedition {
+                        ships,
+                        hold_secs,
+                        speed_percent,
+                        ..
+                    },
+                    Some(dest),
+                ) => state
+                    .launch_expedition_to(dest, *ships, *hold_secs, *speed_percent, now)
+                    .map(|_| ())
+                    .map_err(IntentError::Fleet),
+                (intent, _) => {
+                    let proposal = propose(state, intent, now)?;
+                    apply(state, &proposal, now)
+                }
+            }
         })
         .map_err(ShardError::Intent)?;
         self.seen.insert(seen_key, now);
@@ -1245,7 +1324,7 @@ pub fn occupancy(
     if sites.outposts.contains(&coord) {
         return Occupancy::Outpost;
     }
-    if sites.sites.contains(&coord) {
+    if sites.sites.contains(&coord) || sites.expedition == Some(coord) {
         return Occupancy::Site;
     }
     Occupancy::Empty
@@ -1337,6 +1416,7 @@ pub fn targets(
     }
     coords.extend(sites.outposts.iter().copied());
     coords.extend(sites.sites.iter().copied());
+    coords.extend(sites.expedition);
     coords
         .into_iter()
         .filter(|coord| own.can_see(Actor::Player, ClassifiedKind::Fact, &coord.to_string()))
@@ -2493,7 +2573,8 @@ mod tests {
                 &empires,
                 ShardSites {
                     outposts: &outposts,
-                    sites: &sites
+                    sites: &sites,
+                    expedition: None,
                 },
                 Coord::HOME
             ),
@@ -2505,7 +2586,8 @@ mod tests {
                 &empires,
                 ShardSites {
                     outposts: &outposts,
-                    sites: &sites
+                    sites: &sites,
+                    expedition: None,
                 },
                 Coord::HOME
             ),
@@ -2517,7 +2599,8 @@ mod tests {
                 &empires,
                 ShardSites {
                     outposts: &outposts,
-                    sites: &sites
+                    sites: &sites,
+                    expedition: None,
                 },
                 colony
             ),
@@ -2529,7 +2612,8 @@ mod tests {
                 &empires,
                 ShardSites {
                     outposts: &outposts,
-                    sites: &sites
+                    sites: &sites,
+                    expedition: None,
                 },
                 colony
             ),
@@ -2541,7 +2625,8 @@ mod tests {
                 &empires,
                 ShardSites {
                     outposts: &outposts,
-                    sites: &sites
+                    sites: &sites,
+                    expedition: None,
                 },
                 B_HOME
             ),
@@ -2553,7 +2638,8 @@ mod tests {
                 &empires,
                 ShardSites {
                     outposts: &outposts,
-                    sites: &sites
+                    sites: &sites,
+                    expedition: None,
                 },
                 B_HOME
             ),
@@ -2566,6 +2652,7 @@ mod tests {
                 ShardSites {
                     outposts: &[B_HOME],
                     sites: &sites,
+                    expedition: None,
                 },
                 B_HOME,
             ),
@@ -2579,6 +2666,7 @@ mod tests {
                 ShardSites {
                     outposts: &outposts,
                     sites: &sites,
+                    expedition: None,
                 },
                 pirate_coord(),
             );
@@ -2590,6 +2678,7 @@ mod tests {
                 ShardSites {
                     outposts: &outposts,
                     sites: &sites,
+                    expedition: None,
                 },
                 site_coord(),
             );
@@ -2602,6 +2691,7 @@ mod tests {
             ShardSites {
                 outposts: &outposts,
                 sites: &[],
+                expedition: None,
             },
             site_coord(),
         );
@@ -2613,6 +2703,7 @@ mod tests {
             ShardSites {
                 outposts: &outposts,
                 sites: &sites,
+                expedition: None,
             },
             empty_slot(),
         );
@@ -2742,6 +2833,7 @@ mod tests {
         let sites = ShardSites {
             outposts: &outposts,
             sites: &[],
+            expedition: None,
         };
         let mut empires = BTreeMap::new();
         let first = place_home(WALK, &empires, sites).unwrap();
@@ -2817,6 +2909,7 @@ mod tests {
             ShardSites {
                 outposts: &outposts,
                 sites: &sites,
+                expedition: None,
             },
         );
         let kind_at = |coord: Coord| {
@@ -3607,6 +3700,7 @@ mod tests {
         let mut commons = ShardCommons {
             outposts: vec![pirate_coord()],
             sites: vec![site_coord()],
+            expedition: Some(walk_slot(3, 1)),
             ..ShardCommons::default()
         };
         commons.debris.insert(empty_slot(), 42.5);
@@ -3614,10 +3708,190 @@ mod tests {
         assert_eq!(ShardCommons::from_bytes(&bytes).unwrap(), commons);
         let other = String::from_utf8(bytes)
             .unwrap()
-            .replace("\"version\":1", "\"version\":2");
+            .replace("\"version\":2", "\"version\":3");
         assert!(matches!(
             ShardCommons::from_bytes(other.as_bytes()),
             Err(ShardError::Commons(_))
         ));
+    }
+
+    #[test]
+    fn version_1_commons_read_with_no_expedition_coord() {
+        let v1 = br#"{"version":1,"outposts":[[4,4,4]],"sites":[],"debris":[[[1,1,14],42.5]]}"#;
+        let commons = ShardCommons::from_bytes(v1).unwrap();
+        assert_eq!(commons.outposts, vec![pirate_coord()]);
+        assert_eq!(commons.debris[&empty_slot()], 42.5);
+        assert_eq!(commons.expedition, None);
+    }
+
+    fn frontier() -> FrontierConfig {
+        BalanceConfig::default().frontier
+    }
+
+    #[test]
+    fn expedition_coord_skips_the_frontier_galaxy() {
+        let map = ShardMap {
+            seed: 0,
+            galaxies: 2,
+            systems: 2,
+            positions: 2,
+        };
+        let frontier = frontier();
+        assert_eq!(frontier.galaxy, 2);
+        let coord = ShardCommons::default()
+            .place_expedition(map, &frontier, &BTreeMap::new())
+            .unwrap();
+        assert_eq!(
+            coord,
+            Coord {
+                galaxy: 1,
+                system: 2,
+                position: 2,
+            },
+            "the walk ends in galaxy 2, so the last slot before it"
+        );
+    }
+
+    #[test]
+    fn expedition_coord_is_placed_once_from_the_seed_and_bounds() {
+        let mut empires = BTreeMap::new();
+        let mut commons = ShardCommons::default();
+        let coord = commons
+            .place_expedition(WALK, &frontier(), &empires)
+            .unwrap();
+        assert_eq!(coord, walk_slot(3, 1), "last slot on the home walk");
+        assert_eq!(commons.expedition, Some(coord));
+        assert_eq!(
+            ShardCommons::default()
+                .place_expedition(WALK, &frontier(), &empires)
+                .unwrap(),
+            coord,
+            "same seed and bounds, same coord"
+        );
+        seat_home(
+            "tenant-a",
+            test_state(1_000),
+            walk_slot(2, 3),
+            &mut empires,
+            commons.sites(),
+        )
+        .unwrap();
+        assert_eq!(
+            commons
+                .place_expedition(WALK, &frontier(), &empires)
+                .unwrap(),
+            coord
+        );
+        let mut late = ShardCommons::default();
+        let mut seated = BTreeMap::new();
+        seat_home(
+            "tenant-a",
+            test_state(1_000),
+            coord,
+            &mut seated,
+            late.sites(),
+        )
+        .unwrap();
+        assert_eq!(
+            late.place_expedition(WALK, &frontier(), &seated).unwrap(),
+            walk_slot(2, 1),
+            "a host placing after joins skips a held slot"
+        );
+    }
+
+    #[test]
+    fn submit_refuses_a_shard_expedition_before_the_coord_is_placed() {
+        let mut shard = session(1_000);
+        let mut empires = race_empires(one(ShipKind::LightFighter));
+        let a = empires.get_mut("tenant-a").unwrap();
+        let before = a.clone();
+        let hold_secs = a.config.expedition.min_hold_secs;
+        assert_eq!(
+            shard.submit(a, expedition_cmd("tenant-a", hold_secs)),
+            Err(ShardError::NoExpeditionCoord)
+        );
+        assert_eq!(*a, before);
+    }
+
+    fn expedition_cmd(identity: &str, hold_secs: u64) -> ShardCommand {
+        ShardCommand {
+            identity: identity.into(),
+            idempotency_id: "exp".into(),
+            intent: Intent::Expedition {
+                ships: one(ShipKind::LightFighter),
+                site: None,
+                hold_secs,
+                speed_percent: 100,
+            },
+            client_now_unix: None,
+        }
+    }
+
+    #[test]
+    fn two_tenants_fly_expeditions_to_one_shard_coord_at_their_own_distance() {
+        let mut shard = session(1_000);
+        let mut ships = one(ShipKind::LightFighter);
+        ships.add(ShipKind::ColonyShip, 1);
+        let mut empires = race_empires(ships);
+        let local = empires["tenant-b"].clone();
+        let coord = shard
+            .commons_mut()
+            .place_expedition(WALK, &frontier(), &empires)
+            .unwrap();
+        let mut outbound = Vec::new();
+        for identity in ["tenant-a", "tenant-b"] {
+            let state = empires.get_mut(identity).unwrap();
+            let (secs, fuel) = state
+                .flight_time_and_fuel(one(ShipKind::LightFighter), coord, 100)
+                .unwrap();
+            let hold_secs = state.config.expedition.min_hold_secs;
+            shard
+                .submit(state, expedition_cmd(identity, hold_secs))
+                .unwrap();
+            let mission = &state.missions[0];
+            assert_eq!(mission.dest, coord, "{identity}");
+            assert!(mission.expedition_seed.is_some());
+            assert_eq!(mission.outbound_secs, secs, "{identity}");
+            assert_eq!(mission.fuel_paid, fuel, "{identity}");
+            outbound.push(secs);
+        }
+        assert_ne!(outbound[0], outbound[1], "each pays its own distance");
+        for identity in ["tenant-a", "tenant-b"] {
+            assert_eq!(
+                occupancy(identity, &empires, shard.commons().sites(), coord),
+                Occupancy::Site
+            );
+            assert!(
+                targets(identity, &empires, shard.commons().sites()).contains(&ShardTarget {
+                    coord,
+                    kind: Occupancy::Site,
+                })
+            );
+        }
+        assert_eq!(
+            shard.colonize("tenant-a", &mut empires, coord, 100, "col"),
+            Err(ShardError::Occupied {
+                coord,
+                kind: Occupancy::Site,
+            })
+        );
+
+        let mut local = local;
+        local
+            .launch_expedition(
+                one(ShipKind::LightFighter),
+                local.config.expedition.min_hold_secs,
+                100,
+                1_000,
+            )
+            .unwrap();
+        assert_eq!(
+            local.missions[0].dest,
+            Coord {
+                position: local.config.expedition.dest_position,
+                ..B_HOME
+            },
+            "a local expedition still flies to its home-system slot"
+        );
     }
 }
