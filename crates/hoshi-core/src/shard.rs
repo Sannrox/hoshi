@@ -88,6 +88,16 @@ pub struct ShardRaid {
     pub client_now_unix: Option<u64>,
 }
 
+/// Probe wave from `identity` to `dest`. See [`ShardSession::spy`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShardSpy {
+    pub identity: String,
+    pub idempotency_id: String,
+    pub ships: Fleet,
+    pub dest: Coord,
+    pub speed_percent: u8,
+}
+
 /// Combat report plus plunder moved from defender to attacker.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShardRaidResult {
@@ -338,6 +348,11 @@ pub enum ShardError {
         identity: String,
         retry_after_secs: u64,
     },
+    /// A spy dest is `Empty` or a `Site`: nothing there to read.
+    NothingToSpy {
+        coord: Coord,
+        kind: Occupancy,
+    },
     /// Colonize or a planet raid dest is `Tenant`, `Outpost`, or `Site`, or
     /// a join seat is no longer `Empty`.
     Occupied {
@@ -373,7 +388,10 @@ impl fmt::Display for ShardError {
             ),
             ShardError::ForgedBridge => write!(f, "forged bridge event"),
             ShardError::Intent(err) => write!(f, "{err}"),
-            ShardError::SameEmpire => write!(f, "cannot raid your own empire"),
+            ShardError::SameEmpire => write!(f, "cannot raid or spy on your own empire"),
+            ShardError::NothingToSpy { coord, kind } => {
+                write!(f, "{coord} is {}, nothing to spy", kind.as_key())
+            }
             ShardError::NewbieProtected { identity } => {
                 write!(f, "{identity} is under newbie protection")
             }
@@ -679,9 +697,7 @@ impl<C: Clock> ShardSession<C> {
                 .require_fair_play()
                 .map_err(|e| ShardError::Intent(IntentError::Cheat(e)))?;
         }
-        for state in empires.values_mut() {
-            state.catch_up(now);
-        }
+        catch_up_empires(empires, now);
         let kind = occupancy(identity, empires, sites, dest);
         if kind.blocks_planet_dest() {
             return Err(ShardError::Occupied { coord: dest, kind });
@@ -698,6 +714,78 @@ impl<C: Clock> ShardSession<C> {
         };
         let proposal = propose(state, &intent, now).map_err(ShardError::Intent)?;
         apply(state, &proposal, now).map_err(ShardError::Intent)?;
+        self.seen.insert(seen_key, now);
+        Ok(())
+    }
+
+    /// Launch probes from `cmd.identity` at `cmd.dest` after catching every
+    /// empire up at the host clock.
+    ///
+    /// A `Tenant` dest flies the probe hull with a hold of zero. On arrival
+    /// the host reads the target planet's stock and parked fleet at that
+    /// moment and writes a noisy report with the current sensor error,
+    /// delivered after light-time from the spy's home (see
+    /// [`catch_up_empires`]). An `Outpost` dest is today's local spy.
+    /// `You` is refused as [`ShardError::SameEmpire`]; `Empty` and `Site` as
+    /// [`ShardError::NothingToSpy`]. A refusal launches nothing.
+    pub fn spy(
+        &mut self,
+        empires: &mut BTreeMap<String, GameState>,
+        sites: ShardSites<'_>,
+        cmd: ShardSpy,
+    ) -> Result<(), ShardError> {
+        let identity = cmd.identity.as_str();
+        if identity.is_empty() {
+            return Err(ShardError::EmptyIdentity);
+        }
+        if cmd.idempotency_id.is_empty() {
+            return Err(ShardError::EmptyIdempotency);
+        }
+        let Some(state) = empires.get(identity) else {
+            return Err(ShardError::UnknownIdentity {
+                identity: cmd.identity,
+            });
+        };
+        state
+            .require_fair_play()
+            .map_err(|e| ShardError::Intent(IntentError::Cheat(e)))?;
+        let now = self.clock.now_unix();
+        self.prune_due(now);
+        let seen_key = (cmd.identity.clone(), cmd.idempotency_id.clone());
+        if self.is_seen(&seen_key, now) {
+            return Ok(());
+        }
+        catch_up_empires(empires, now);
+        let kind = occupancy(identity, empires, sites, cmd.dest);
+        match kind {
+            Occupancy::You => return Err(ShardError::SameEmpire),
+            Occupancy::Empty | Occupancy::Site => {
+                return Err(ShardError::NothingToSpy {
+                    coord: cmd.dest,
+                    kind,
+                });
+            }
+            Occupancy::Tenant | Occupancy::Outpost => {}
+        }
+        self.admit(identity, now)?;
+        let state = empires
+            .get_mut(identity)
+            .ok_or_else(|| ShardError::UnknownIdentity {
+                identity: identity.to_string(),
+            })?;
+        if kind == Occupancy::Tenant {
+            state
+                .launch_tenant_spy(cmd.ships, cmd.dest, cmd.speed_percent, now)
+                .map_err(|e| ShardError::Intent(IntentError::Fleet(e)))?;
+        } else {
+            let intent = Intent::Spy {
+                ships: cmd.ships,
+                dest: cmd.dest,
+                speed_percent: cmd.speed_percent,
+            };
+            let proposal = propose(state, &intent, now).map_err(ShardError::Intent)?;
+            apply(state, &proposal, now).map_err(ShardError::Intent)?;
+        }
         self.seen.insert(seen_key, now);
         Ok(())
     }
@@ -726,14 +814,12 @@ impl<C: Clock> ShardSession<C> {
             });
         }
         let now = self.clock.now_unix();
-        for (id, state) in empires.iter_mut() {
-            if id == identity {
-                state
-                    .require_fair_play()
-                    .map_err(|e| ShardError::Intent(crate::IntentError::Cheat(e)))?;
-            }
-            state.catch_up(now);
+        if let Some(state) = empires.get(identity) {
+            state
+                .require_fair_play()
+                .map_err(|e| ShardError::Intent(crate::IntentError::Cheat(e)))?;
         }
+        catch_up_empires(empires, now);
         match shard_view(identity, empires, sites) {
             Some(view) => Ok(view),
             None => Err(ShardError::UnknownIdentity {
@@ -1021,6 +1107,95 @@ pub fn targets(
         .collect()
 }
 
+/// Catch every empire up to `now`, stopping at each probe arrival at
+/// another tenant's planet so the host reads that planet as it was then.
+///
+/// One long gap and many short ones read the same numbers. A lone
+/// catch-up (a `submit` or a raid) can run either side past the arrival:
+/// the probe then leaves a pending report, or the target is already ahead.
+/// Either way the report is filled from the target as it is now and stamped
+/// with the target's time, never back-dated to the arrival.
+fn catch_up_empires(empires: &mut BTreeMap<String, GameState>, now: u64) {
+    while let Some(at) = next_tenant_probe(empires, now) {
+        for state in empires.values_mut() {
+            state.catch_up(at);
+        }
+        fill_tenant_spies(empires);
+    }
+    for state in empires.values_mut() {
+        state.catch_up(now);
+    }
+    fill_tenant_spies(empires);
+}
+
+/// Earliest Action of a probe flying at a planet its owner does not hold,
+/// due by `now` and not yet reached.
+fn next_tenant_probe(empires: &BTreeMap<String, GameState>, now: u64) -> Option<u64> {
+    empires
+        .values()
+        .flat_map(|state| {
+            state
+                .missions
+                .iter()
+                .filter(|mission| {
+                    mission.spy
+                        && state.outpost(mission.dest).is_none()
+                        && !tenant_holds(state, mission.dest)
+                })
+                .filter_map(|mission| match mission.phase {
+                    MissionPhase::Outbound => {
+                        Some(mission.phase_ends_at.saturating_add(mission.hold_secs))
+                    }
+                    MissionPhase::Action => Some(mission.phase_ends_at),
+                    MissionPhase::Return => None,
+                })
+                .filter(|&at| at > state.last_tick_unix && at <= now)
+        })
+        .min()
+}
+
+/// Fill every pending probe report from the tenant that holds its target,
+/// once that tenant has reached the arrival.
+fn fill_tenant_spies(empires: &mut BTreeMap<String, GameState>) {
+    let mut fills = Vec::new();
+    for (id, state) in empires.iter() {
+        for report in state.spy_reports.iter().filter(|report| report.pending()) {
+            let target =
+                empires
+                    .iter()
+                    .filter(|(other, _)| *other != id)
+                    .find_map(|(_, target)| {
+                        tenant_planet(target, report.target)
+                            .map(|planet| (planet, target.last_tick_unix))
+                    });
+            let (planet, seen_at) = match target {
+                // Behind the arrival: wait for a later stop, at the latest `now`.
+                Some((_, seen_at)) if seen_at < report.observed_at => continue,
+                Some((planet, seen_at)) => (Some(planet), seen_at),
+                None => (None, report.observed_at),
+            };
+            fills.push((id.clone(), report.id, planet, seen_at));
+        }
+    }
+    for (id, report, planet, seen_at) in fills {
+        if let Some(state) = empires.get_mut(&id) {
+            state.fill_tenant_spy(report, planet, seen_at);
+        }
+    }
+}
+
+/// Stock and parked fleet on `state`'s home or colony at `coord`.
+fn tenant_planet(state: &GameState, coord: Coord) -> Option<(Resources, Fleet)> {
+    if state.home == coord {
+        return Some((state.resources, state.fleet));
+    }
+    state
+        .colonies
+        .iter()
+        .find(|colony| colony.coord == coord)
+        .map(|colony| (colony.resources, colony.fleet))
+}
+
 fn tenant_holds(state: &GameState, coord: Coord) -> bool {
     state.home == coord || state.colonies.iter().any(|colony| colony.coord == coord)
 }
@@ -1165,7 +1340,7 @@ mod tests {
     use crate::combat::{plunder_from, rapid_fire_table, resolve_combat, stats_from_catalog};
     use crate::espionage::SpyReport;
     use crate::fleets::{Coord, Mission, MissionPhase};
-    use crate::intel::IntelValue;
+    use crate::intel::{IntelValue, light_delay_secs};
     use crate::leaders::Actor;
     use crate::ships::{Fleet, ShipKind};
     use crate::state::GameState;
@@ -2446,5 +2621,196 @@ mod tests {
         assert_eq!(first.raids, again.raids);
         let attacker = shard.view("a", &mut empires, ShardSites::none()).unwrap();
         assert!(attacker.raids.is_empty());
+    }
+
+    const SPY_START: u64 = 1_000;
+
+    fn spy_empires() -> BTreeMap<String, GameState> {
+        let mut a = test_state(SPY_START);
+        a.resources.deuterium = 10_000.0;
+        a.fleet.add(ShipKind::EspionageProbe, 4);
+        a.config.espionage.error_base = 0.3;
+        two_empires(a, tenant_b(SPY_START))
+    }
+
+    fn spy_cmd(dest: Coord, id: &str) -> ShardSpy {
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::EspionageProbe, 4);
+        ShardSpy {
+            identity: "tenant-a".into(),
+            idempotency_id: id.into(),
+            ships,
+            dest,
+            speed_percent: 100,
+        }
+    }
+
+    fn intel_value<'a>(view: &'a ShardView, field: &str) -> &'a IntelValue {
+        &view
+            .intel
+            .iter()
+            .find(|fact| fact.object == B_HOME.to_string() && fact.field == field)
+            .unwrap_or_else(|| panic!("no {field} intel"))
+            .observations[0]
+            .value
+    }
+
+    #[test]
+    fn tenant_spy_reads_noisy_stock_and_fleet_after_light_delay() {
+        let mut shard = session(SPY_START);
+        let mut empires = spy_empires();
+        shard
+            .spy(&mut empires, ShardSites::none(), spy_cmd(B_HOME, "spy"))
+            .unwrap();
+        let mission = &empires["tenant-a"].missions[0];
+        assert!(mission.spy);
+        assert_eq!(mission.hold_secs, 0);
+        let arrive = mission.phase_ends_at;
+        let delay = light_delay_secs(Coord::HOME, B_HOME, &empires["tenant-a"].config.orbits);
+        assert!(delay > 0);
+
+        shard.clock.set(arrive + delay - 1);
+        let early = shard
+            .view("tenant-a", &mut empires, ShardSites::none())
+            .unwrap();
+        assert!(
+            early
+                .intel
+                .iter()
+                .all(|fact| fact.object != B_HOME.to_string())
+        );
+        let report = &empires["tenant-a"].spy_reports[0];
+        assert_eq!(report.observed_at, arrive);
+        assert_eq!(report.arrives_at, arrive + delay);
+        assert_eq!(
+            empires["tenant-a"].marking_of(ClassifiedKind::Report, &report.id.to_string()),
+            crate::Marking::new(
+                crate::Classification::Restricted,
+                [crate::classification::COMPARTMENT_INTEL.to_string()],
+            )
+        );
+
+        shard.clock.advance(1);
+        let view = shard
+            .view("tenant-a", &mut empires, ShardSites::none())
+            .unwrap();
+        let mut truth = tenant_b(SPY_START);
+        truth.catch_up(arrive);
+        let IntelValue::Number(iron) = *intel_value(&view, "resources.iron") else {
+            panic!("iron is a number");
+        };
+        assert!(iron > 0.0 && iron != truth.resources.iron);
+        let IntelValue::Count(battleships) = *intel_value(&view, "fleet.battleship") else {
+            panic!("battleships are a count");
+        };
+        assert!(battleships > 0 && battleships != B_BATTLESHIPS);
+        dump_hides(&view, "rng_seed");
+        dump_hides(&view, &B_RNG.to_string());
+        dump_hides(&view, "next_raid");
+        dump_hides(&view, &B_RAID_AT.to_string());
+        assert!(view.planets.iter().all(|planet| planet.coord != B_HOME));
+        assert_eq!(view.fleet.get(ShipKind::Battleship), 0);
+    }
+
+    /// A's spy reports and RNG after viewing at each of `steps`.
+    fn spy_run(steps: &[u64]) -> (Vec<SpyReport>, u64) {
+        let mut shard = session(SPY_START);
+        let mut empires = spy_empires();
+        shard
+            .spy(&mut empires, ShardSites::none(), spy_cmd(B_HOME, "spy"))
+            .unwrap();
+        for &at in steps {
+            shard.clock.set(at);
+            shard
+                .view("tenant-a", &mut empires, ShardSites::none())
+                .unwrap();
+        }
+        let a = &empires["tenant-a"];
+        (a.spy_reports.clone(), a.rng_seed)
+    }
+
+    #[test]
+    fn tenant_spy_repeats_by_seed_and_catch_up_matches_stepped_views() {
+        let end = SPY_START + 48 * 3_600;
+        let (once, rng) = spy_run(&[end]);
+        assert_eq!(once.len(), 1);
+        assert!(once[0].delivered(end));
+        assert_eq!((once.clone(), rng), spy_run(&[end]));
+        let steps: Vec<u64> = (SPY_START + 7..end).step_by(397).chain([end]).collect();
+        let (stepped, stepped_rng) = spy_run(&steps);
+        assert_eq!(stepped_rng, rng);
+        // Production splits float sums at each step; stock may drift in the last bits.
+        let (mut a, mut b) = (once[0].clone(), stepped[0].clone());
+        let (stock_a, stock_b) = (a.resources.take(), b.resources.take());
+        assert_eq!(a, b);
+        let (stock_a, stock_b) = (stock_a.unwrap(), stock_b.unwrap());
+        for kind in crate::ResourceKind::ALL {
+            assert!((stock_a.get(kind) - stock_b.get(kind)).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn tenant_spy_on_a_target_that_ran_ahead_is_stamped_with_its_time() {
+        let mut shard = session(SPY_START);
+        let mut empires = spy_empires();
+        shard
+            .spy(&mut empires, ShardSites::none(), spy_cmd(B_HOME, "spy"))
+            .unwrap();
+        let arrive = empires["tenant-a"].missions[0].phase_ends_at;
+        let ahead = arrive + 600;
+        empires.get_mut("tenant-b").unwrap().catch_up(ahead);
+        shard.clock.set(ahead + 60);
+        shard
+            .view("tenant-a", &mut empires, ShardSites::none())
+            .unwrap();
+        let report = &empires["tenant-a"].spy_reports[0];
+        assert_eq!(report.created_at, arrive);
+        assert_eq!(report.observed_at, ahead);
+        let delay = light_delay_secs(Coord::HOME, B_HOME, &empires["tenant-a"].config.orbits);
+        assert_eq!(report.arrives_at, ahead + delay);
+    }
+
+    #[test]
+    fn spy_refuses_own_home_empty_and_site_and_keeps_the_outpost_path() {
+        let mut shard = session(SPY_START);
+        let mut empires = spy_empires();
+        let outposts = [pirate_coord()];
+        let sites = [site_coord()];
+        let map = ShardSites {
+            outposts: &outposts,
+            sites: &sites,
+        };
+        let refused = [
+            (Coord::HOME, ShardError::SameEmpire),
+            (
+                empty_slot(),
+                ShardError::NothingToSpy {
+                    coord: empty_slot(),
+                    kind: Occupancy::Empty,
+                },
+            ),
+            (
+                site_coord(),
+                ShardError::NothingToSpy {
+                    coord: site_coord(),
+                    kind: Occupancy::Site,
+                },
+            ),
+            (
+                pirate_coord(),
+                ShardError::Intent(IntentError::Fleet(crate::FleetError::UnknownOutpost)),
+            ),
+        ];
+        for (dest, err) in refused {
+            let id = dest.to_string();
+            assert_eq!(shard.spy(&mut empires, map, spy_cmd(dest, &id)), Err(err));
+            assert!(empires["tenant-a"].missions.is_empty());
+            assert_eq!(empires["tenant-a"].fleet.get(ShipKind::EspionageProbe), 4);
+        }
+        let a = empires.get_mut("tenant-a").unwrap();
+        assert_eq!(
+            a.launch_spy(spy_cmd(B_HOME, "local").ships, B_HOME, 100, SPY_START),
+            Err(crate::FleetError::UnknownOutpost)
+        );
     }
 }

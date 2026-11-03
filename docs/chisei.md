@@ -75,6 +75,19 @@ the next position. `seat_home` writes the home only on a coord that is still
 spy and shard raids pick a `tenant` coord from it. The tenant view keeps the
 coarser `you`, `occupied`, `empty` tags.
 
+`ShardSession::spy` flies the probe hull with a hold of zero. At a `tenant`
+coord the host stops catch-up at the probe's arrival, reads that planet's
+stock and parked fleet, and writes a `SpyReport` with the espionage sensor
+error for the range, the tier the probe score earned, and light-time from
+the spy's home before it is delivered. The report is marked for the intel
+compartment, so the player and intel-cleared staff read it and the tenant
+view shows it as intel, never the target's save. When a lone catch-up (a
+`submit` or a raid) ran the spy or the target past the arrival, the next
+host catch-up reads the target as it is then and stamps the report with
+that time. An
+`outpost` coord keeps the local spy, `you` is refused, and `empty` and `site`
+have nothing to spy. Local `launch_spy` still takes outposts only.
+
 An idempotency id is remembered for the longer of the command and attack
 windows (`ShardConfig::seen_ttl_secs`); an older id is forgotten and may
 apply again. On restart the host restores the ids, command windows and
