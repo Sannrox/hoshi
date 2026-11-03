@@ -2063,6 +2063,7 @@ fn apply(
                         "phase": c.phase,
                         "eta_secs": c.eta_secs,
                         "ships": c.ships,
+                        "delay_secs": c.delay_secs,
                     }))
                     .collect::<Vec<_>>()
             );

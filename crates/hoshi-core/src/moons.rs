@@ -2,6 +2,10 @@
 
 use crate::combat::{CombatReport, next_u64};
 use crate::fleets::{Coord, Mission};
+use crate::intel::{
+    apply_count_error, light_delay_secs, light_range_au, sensor_error, signed_unit,
+};
+use crate::research::ModifierKind;
 use crate::ships::{Fleet, ShipKind};
 use crate::state::{GameState, Resources};
 use serde::Deserialize;
@@ -76,14 +80,18 @@ impl Moon {
     }
 }
 
+/// One fleet a phalanx sees. `id` is the mission id; the announced home
+/// raid has no mission and reads `None` with phase `raid`. `delay_secs` is
+/// the light-time stamped on the reading; own mission tracks read 0.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PhalanxContact {
-    pub id: u64,
+    pub id: Option<u64>,
     pub origin: Coord,
     pub dest: Coord,
     pub phase: String,
     pub eta_secs: u64,
     pub ships: u32,
+    pub delay_secs: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -412,16 +420,70 @@ impl GameState {
             }
             let ships: u32 = ShipKind::ALL.iter().map(|&k| mission.ships.get(k)).sum();
             out.push(PhalanxContact {
-                id: mission.id,
+                id: Some(mission.id),
                 origin: mission.origin,
                 dest: mission.dest,
                 phase: mission.phase.as_key().into(),
                 eta_secs: mission.phase_ends_at.saturating_sub(now),
                 ships,
+                delay_secs: 0,
             });
         }
+        out.extend(self.phalanx_raid_contact(parent, now));
         Ok(out)
     }
+
+    /// The announced home raid as the phalanx at `parent` sees it, derived at
+    /// scan time and never stored. Like passive rival sensors it is a noisy
+    /// present-time glance stamped with the light delay from the nearest
+    /// pirate outpost: the ETA is the raid clock, and the ship count carries
+    /// the probe sensor error over that range. The noise is seeded per raid
+    /// so rescans agree, and a non-zero error never echoes the scheduler's
+    /// exact fleet.
+    fn phalanx_raid_contact(&self, parent: Coord, now: u64) -> Option<PhalanxContact> {
+        if !self.config.raid.enabled
+            || system_steps(parent, self.home) > self.config.moons.phalanx_range_systems
+        {
+            return None;
+        }
+        let lands = self.upcoming_raid_at()?;
+        let eta_secs = lands.saturating_sub(now);
+        if eta_secs > self.config.raid.min_warning_secs {
+            return None;
+        }
+        let origin = self
+            .outposts
+            .iter()
+            .map(|o| o.coord)
+            .min_by_key(|&c| light_delay_secs(c, parent, &self.config.orbits))?;
+        let range = light_range_au(origin, parent, &self.config.orbits);
+        let quality = 1.0 + self.modifier(ModifierKind::Espionage);
+        let error = sensor_error(range, quality, &self.config.espionage);
+        let exact = self.scheduled_raid_ships();
+        let mut rng = self.galaxy_seed ^ lands ^ coord_key(parent);
+        let unit = signed_unit(&mut rng);
+        let mut ships = apply_count_error(exact, error, unit, false, 0.0);
+        if error > 0.0 && ships == exact {
+            ships = if unit < 0.0 && exact > 0 {
+                exact - 1
+            } else {
+                exact.saturating_add(1)
+            };
+        }
+        Some(PhalanxContact {
+            id: None,
+            origin,
+            dest: self.home,
+            phase: "raid".into(),
+            eta_secs,
+            ships,
+            delay_secs: light_delay_secs(origin, parent, &self.config.orbits),
+        })
+    }
+}
+
+fn coord_key(c: Coord) -> u64 {
+    (u64::from(c.galaxy) << 32) | (u64::from(c.system) << 16) | u64::from(c.position)
 }
 
 fn in_phalanx_range(parent: Coord, mission: &Mission, range: u16) -> bool {
@@ -568,6 +630,82 @@ mod tests {
         let seen = state.phalanx_contacts(Coord::HOME, 0).unwrap();
         assert!(seen.iter().any(|c| c.dest == near), "{seen:?}");
         assert!(seen.iter().all(|c| c.dest != far), "{seen:?}");
+    }
+
+    /// Home moon with a phalanx, one pirate outpost two systems over, and a
+    /// raid of `ships` landing at `lands`.
+    fn raid_watch(cfg: BalanceConfig, seed: u64, lands: u64, ships: u32) -> GameState {
+        let mut state = GameState::with_seed(0, cfg, seed);
+        let mut moon = Moon::new(Coord::HOME);
+        moon.phalanx = 1;
+        state.moons.push(moon);
+        state.outposts.truncate(1);
+        state.outposts[0].coord = Coord {
+            galaxy: 1,
+            system: 3,
+            position: 4,
+        };
+        state.next_raid_at = Some(lands);
+        state.next_raid_ships = Some(ships);
+        state
+    }
+
+    fn raid_contacts(state: &GameState, now: u64) -> Vec<PhalanxContact> {
+        let seen = state.phalanx_contacts(Coord::HOME, now).unwrap();
+        seen.into_iter().filter(|c| c.id.is_none()).collect()
+    }
+
+    #[test]
+    fn phalanx_sees_the_announced_raid_on_the_raid_clock() {
+        let state = raid_watch(moon_cfg(), 3, 10_000, 12);
+        let announced = 10_000 - state.config.raid.min_warning_secs;
+        assert!(raid_contacts(&state, announced - 1).is_empty());
+        let now = announced + 100;
+        let seen = raid_contacts(&state, now);
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        let origin = state.outposts[0].coord;
+        assert_eq!(seen[0].phase, "raid");
+        assert_eq!(seen[0].origin, origin);
+        assert_eq!(seen[0].dest, Coord::HOME);
+        assert_eq!(seen[0].eta_secs, 10_000 - now);
+        assert_eq!(
+            seen[0].delay_secs,
+            light_delay_secs(origin, Coord::HOME, &state.config.orbits)
+        );
+        assert!(seen[0].delay_secs > 0);
+
+        let mut blind = state.clone();
+        blind.moons[0].phalanx = 0;
+        assert!(blind.phalanx_contacts(Coord::HOME, now).unwrap().is_empty());
+    }
+
+    #[test]
+    fn raid_count_is_seeded_noise_not_the_scheduled_fleet() {
+        let mut cfg = moon_cfg();
+        cfg.espionage.error_base = 0.3;
+        let a = raid_watch(cfg.clone(), 9, 10_000, 12);
+        let b = raid_watch(cfg.clone(), 9, 10_000, 12);
+        let first = raid_contacts(&a, 9_000)[0].ships;
+        assert_eq!(first, raid_contacts(&b, 9_000)[0].ships);
+        assert_eq!(first, raid_contacts(&a, 9_500)[0].ships);
+        assert_ne!(first, 12);
+
+        cfg.espionage.error_base = 0.0;
+        cfg.espionage.error_per_au = 0.0;
+        let exact = raid_watch(cfg, 9, 10_000, 12);
+        assert_eq!(raid_contacts(&exact, 9_000)[0].ships, 12);
+    }
+
+    #[test]
+    fn catch_up_keeps_one_raid_contact() {
+        let lands = 3_600;
+        let mut state = raid_watch(moon_cfg(), 5, lands, 12);
+        state.catch_up(lands - 600);
+        let seen = raid_contacts(&state, state.last_tick_unix);
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert_eq!(Some(seen[0].eta_secs), state.raid_countdown_secs());
+        state.catch_up(lands - 60);
+        assert_eq!(raid_contacts(&state, state.last_tick_unix).len(), 1);
     }
 
     fn scout() -> Fleet {

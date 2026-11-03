@@ -194,7 +194,7 @@ silent extra departure; they extend this list.
 | Compressed clocks (upgrades in minutes, not months) | The game is meant to run in a spare terminal while other work happens. |
 | Player commands apply as soon as they are legal | The injected clock is the authority for own actions; remote facts still wait for light-time. |
 | Light delay uses the absolute difference of heliocentric radii | Same radius table as PlanMission; no 3D chord or occlusion. |
-| Passive rival sensors stamp light delay on a noisy present-time glance | Reconstructing the past light cone would store a second empire history. |
+| Passive rival sensors and the moon phalanx's raid contact stamp light delay on a noisy present-time glance | Reconstructing the past light cone would store a second empire history. |
 | No n-body gravity, no eclipses | Catch-up must stay deterministic and fast. |
 | Abstract flight units and ship `speed` points | Existing fleets already fly; a documented scale can replace the points later. |
 | Circular coplanar orbits, mean anomaly 0 at unix epoch | Catch-up stays a closed-form Hohmann estimate, not an integrator. |

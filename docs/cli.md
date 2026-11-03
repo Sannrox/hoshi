@@ -131,7 +131,7 @@ writes a report that arrives after light-time; `state` lists arrived reports wit
 age, source and confidence and attaches the latest arrived report to each
 outpost so attack and invade can read it. `intel` lists every arrived fact;
 `intel provenance <coord> <field>` prints the chain for one field. Pending
-reports and the internal deceived flag never appear. `colonize` takes exactly `colony_ship:1`. `moon build` spends stockpile on a phalanx or jump gate at that planet's moon. `moon jump` moves parked ships instantly between two moons that both have gates. `moon scan` lists fleets the phalanx can see. Extra arguments
+reports and the internal deceived flag never appear. `colonize` takes exactly `colony_ship:1`. `moon build` spends stockpile on a phalanx or jump gate at that planet's moon. `moon jump` moves parked ships instantly between two moons that both have gates. `moon scan` lists fleets the phalanx can see. Once the home raid is announced and home is in range, it adds one `raid` contact (`id` null) from the nearest pirate outpost: the ETA is the raid clock, `ships` is a seeded noisy count from the probe sensor error, and `delay_secs` is the light-time from that outpost. Extra arguments
 on `build`, `research`, and `cancel` are invalid (`state` may take `--as`). Duration is seconds,
 or `30s` / `3m` / `1h` / `1d`.
 
