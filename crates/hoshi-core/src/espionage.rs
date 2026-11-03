@@ -78,6 +78,11 @@ impl Default for EspionageConfig {
     }
 }
 
+/// `arrives_at` of a probe report at another tenant's planet before the shard
+/// host reads that planet. Never delivered. Stays inside the save's signed
+/// integer range.
+pub(crate) const PENDING_ARRIVAL: u64 = i64::MAX as u64;
+
 /// Stored intel from one probe arrival.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpyReport {
@@ -114,6 +119,11 @@ impl SpyReport {
 
     pub fn delivered(&self, now: u64) -> bool {
         now >= self.arrives_at
+    }
+
+    /// Waiting for the shard host to read another tenant's planet.
+    pub fn pending(&self) -> bool {
+        self.arrives_at == PENDING_ARRIVAL
     }
 }
 

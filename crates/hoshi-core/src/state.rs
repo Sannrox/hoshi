@@ -12,7 +12,7 @@ use crate::combat::{
 };
 use crate::daily::{DailyAction, DailyBoard, mine_kind};
 use crate::defences::{DefenceKind, PlanetBattle};
-use crate::espionage::{SpyReport, resolve_spy, reveals};
+use crate::espionage::{PENDING_ARRIVAL, SpyReport, resolve_spy, reveals};
 use crate::expedition::{
     ExpeditionResult, ExpeditionSite, place_expedition_sites, roll_expedition, scaled_weights,
 };
@@ -3148,6 +3148,31 @@ impl GameState {
         if self.outpost(dest).is_none() {
             return Err(FleetError::UnknownOutpost);
         }
+        self.launch_probes(ships, dest, speed_percent, now_unix)
+    }
+
+    /// Shard host only: send probes to another tenant's planet. The caller
+    /// has checked occupancy. Arrival writes a pending report that
+    /// [`Self::fill_tenant_spy`] completes from the target planet.
+    pub(crate) fn launch_tenant_spy(
+        &mut self,
+        ships: Fleet,
+        dest: Coord,
+        speed_percent: u8,
+        now_unix: u64,
+    ) -> Result<u64, FleetError> {
+        self.catch_up(now_unix);
+        self.launch_probes(ships, dest, speed_percent, now_unix)
+    }
+
+    /// Probe flight with a hold of zero, flagged so Action writes a report.
+    fn launch_probes(
+        &mut self,
+        ships: Fleet,
+        dest: Coord,
+        speed_percent: u8,
+        now_unix: u64,
+    ) -> Result<u64, FleetError> {
         if ships.get(ShipKind::EspionageProbe) == 0 {
             return Err(FleetError::NeedEspionageProbe);
         }
@@ -4662,6 +4687,12 @@ impl GameState {
     }
 
     /// Write a spy report on arrival. Returns true when every ship was lost.
+    ///
+    /// A probe at another tenant's planet (no outpost, not held by this
+    /// empire) writes a pending report marked for the intel compartment.
+    /// Only the shard host can read the target, through [`Self::fill_tenant_spy`].
+    /// Local `launch_spy` targets outposts only, and an outpost leaves the
+    /// map only as a colony, so a single save never takes that branch.
     fn try_spy_at(&mut self, index: usize, done_at: u64) -> bool {
         if !self.missions[index].spy {
             return false;
@@ -4673,49 +4704,99 @@ impl GameState {
         if self.cheats.god_mode {
             outcome.probes_lost = 0;
         }
-        let show_resources = reveals(&outcome.tier, "resources", &self.config.espionage);
-        let show_fleet = reveals(&outcome.tier, "fleet", &self.config.espionage);
-        let show_defences = reveals(&outcome.tier, "defences", &self.config.espionage);
-        let show_garrison = reveals(&outcome.tier, "garrison", &self.config.espionage);
         // Outposts have no parked visiting fleet; orbital ships live in `defences`.
-        let (kind, size, defences, garrison) = match self.outpost(dest) {
-            Some(outpost) => (
-                Some(outpost.kind),
-                Some(outpost.size),
-                outpost.defences,
-                Some(outpost.garrison),
-            ),
-            None => (None, None, Fleet::default(), None),
+        let truth = match self.outpost(dest) {
+            Some(outpost) => Some(SpyTruth {
+                kind: Some(outpost.kind),
+                size: Some(outpost.size),
+                resources: Resources::ZERO,
+                fleet: Fleet::default(),
+                defences: Some(outpost.defences),
+                garrison: Some(outpost.garrison),
+            }),
+            None if self.occupied(dest) => Some(SpyTruth {
+                defences: Some(Fleet::default()),
+                ..SpyTruth::default()
+            }),
+            None => None,
         };
-        let delay = light_delay_secs(self.home, dest, &self.config.orbits);
-        let quality = 1.0 + own;
-        let range = light_range_au(self.home, dest, &self.config.orbits);
-        let error = sensor_error(range, quality, &self.config.espionage);
-        let deceived = outcome.detected;
+        let id = self.next_report_id;
+        self.next_report_id = self.next_report_id.saturating_add(1);
+        let mut report = SpyReport {
+            id,
+            target: dest,
+            created_at: done_at,
+            probes_sent: probes,
+            probes_lost: outcome.probes_lost,
+            detected: outcome.detected,
+            score: outcome.score,
+            tier: outcome.tier,
+            resources: None,
+            fleet: None,
+            defences: None,
+            garrison: None,
+            kind: None,
+            size: None,
+            formation: None,
+            stance: None,
+            source: "probe".into(),
+            observed_at: done_at,
+            arrives_at: PENDING_ARRIVAL,
+            confidence: 0.0,
+            deceived: outcome.detected,
+        };
+        match truth {
+            Some(truth) => self.read_spy(&mut report, truth),
+            None => self.classification.set_marking(
+                crate::ClassifiedKind::Report,
+                &id.to_string(),
+                crate::Marking::new(
+                    crate::Classification::Restricted,
+                    [crate::classification::COMPARTMENT_INTEL.to_string()],
+                ),
+            ),
+        }
+        self.spy_reports.push(report);
+        if !self.cheats.god_mode {
+            self.missions[index]
+                .ships
+                .saturating_sub(ShipKind::EspionageProbe, outcome.probes_lost);
+        }
+        if self.missions[index].ships.is_empty() {
+            self.missions.remove(index);
+            return true;
+        }
+        false
+    }
+
+    /// Noisy readings of `truth` into `report`, gated by its tier. Error is
+    /// the espionage formula for the radial range from home; arrival waits
+    /// for light-time after `observed_at`. Draws from this empire's RNG.
+    fn read_spy(&mut self, report: &mut SpyReport, truth: SpyTruth) {
+        let cfg = &self.config.espionage;
+        let show_resources = reveals(&report.tier, "resources", cfg);
+        let show_fleet = reveals(&report.tier, "fleet", cfg);
+        let show_defences = reveals(&report.tier, "defences", cfg);
+        let show_garrison = reveals(&report.tier, "garrison", cfg);
+        let own = self.modifier(ModifierKind::Espionage);
+        let delay = light_delay_secs(self.home, report.target, &self.config.orbits);
+        let range = light_range_au(self.home, report.target, &self.config.orbits);
+        let error = sensor_error(range, 1.0 + own, &self.config.espionage);
+        let deceived = report.deceived;
         let decoy = self.config.espionage.decoy_bias;
-        let resources = show_resources.then_some(noisy_resources(
-            Resources::ZERO,
-            error,
-            deceived,
-            decoy,
-            &mut self.rng_seed,
-        ));
-        let fleet = show_fleet.then_some(noisy_fleet(
-            Fleet::default(),
-            error,
-            deceived,
-            decoy,
-            &mut self.rng_seed,
-        ));
-        let defences = show_defences.then_some(noisy_fleet(
-            defences,
-            error,
-            deceived,
-            decoy,
-            &mut self.rng_seed,
-        ));
-        let garrison = if show_garrison {
-            garrison.map(|n| {
+        // Each reading draws even when its tier hides it, so the RNG stream
+        // does not depend on the tier.
+        let resources =
+            noisy_resources(truth.resources, error, deceived, decoy, &mut self.rng_seed);
+        let fleet = noisy_fleet(truth.fleet, error, deceived, decoy, &mut self.rng_seed);
+        let defences = truth
+            .defences
+            .map(|grid| noisy_fleet(grid, error, deceived, decoy, &mut self.rng_seed));
+        report.resources = show_resources.then_some(resources);
+        report.fleet = show_fleet.then_some(fleet);
+        report.defences = defences.filter(|_| show_defences);
+        report.garrison = if show_garrison {
+            truth.garrison.map(|n| {
                 crate::intel::apply_count_error(
                     n,
                     error,
@@ -4727,50 +4808,51 @@ impl GameState {
         } else {
             None
         };
-        let confidence = intel_confidence(error, 0, outcome.detected, &self.config.espionage);
-        let id = self.next_report_id;
-        self.next_report_id = self.next_report_id.saturating_add(1);
-        self.spy_reports.push(SpyReport {
-            id,
-            target: dest,
-            created_at: done_at,
-            probes_sent: probes,
-            probes_lost: outcome.probes_lost,
-            detected: outcome.detected,
-            score: outcome.score,
-            tier: outcome.tier.clone(),
-            resources,
-            fleet,
-            defences,
-            garrison,
-            kind,
-            size,
-            formation: if show_fleet {
-                Some(crate::Formation::Neutral.as_key().into())
-            } else {
-                None
-            },
-            stance: if show_fleet {
-                Some(crate::Stance::Neutral.as_key().into())
-            } else {
-                None
-            },
-            source: "probe".into(),
-            observed_at: done_at,
-            arrives_at: done_at.saturating_add(delay),
-            confidence,
-            deceived,
-        });
-        if !self.cheats.god_mode {
-            self.missions[index]
-                .ships
-                .saturating_sub(ShipKind::EspionageProbe, outcome.probes_lost);
+        report.kind = truth.kind;
+        report.size = truth.size;
+        if show_fleet {
+            report.formation = Some(crate::Formation::Neutral.as_key().into());
+            report.stance = Some(crate::Stance::Neutral.as_key().into());
         }
-        if self.missions[index].ships.is_empty() {
-            self.missions.remove(index);
-            return true;
+        report.confidence = intel_confidence(error, 0, report.detected, &self.config.espionage);
+        report.arrives_at = report.observed_at.saturating_add(delay);
+    }
+
+    /// Shard host only: complete pending report `id` from the target planet's
+    /// stock and parked fleet as of `seen_at`. A target that ran ahead of
+    /// the arrival on its own is read as it is, and the report is stamped
+    /// with that later time. `None` means no tenant holds that coord any
+    /// more, so the probe saw an empty planet. A report whose light-time
+    /// already passed is delivered now.
+    pub(crate) fn fill_tenant_spy(
+        &mut self,
+        id: u64,
+        planet: Option<(Resources, Fleet)>,
+        seen_at: u64,
+    ) {
+        let Some(pos) = self
+            .spy_reports
+            .iter()
+            .position(|report| report.id == id && report.pending())
+        else {
+            return;
+        };
+        let (resources, fleet) = planet.unwrap_or((Resources::ZERO, Fleet::default()));
+        let mut report = self.spy_reports.remove(pos);
+        report.observed_at = report.observed_at.max(seen_at);
+        self.read_spy(
+            &mut report,
+            SpyTruth {
+                resources,
+                fleet,
+                ..SpyTruth::default()
+            },
+        );
+        let (at, text, detected) = (report.arrives_at, spy_event_text(&report), report.detected);
+        self.spy_reports.insert(pos, report);
+        if at <= self.last_tick_unix {
+            self.deliver_spy_line(at, text, detected);
         }
-        false
     }
 
     /// Fight outpost defences. Returns true when the attacking fleet is gone.
@@ -5556,6 +5638,7 @@ impl GameState {
     fn next_intel_at(&self) -> Option<u64> {
         self.spy_reports
             .iter()
+            .filter(|report| !report.pending())
             .map(|report| report.arrives_at)
             .filter(|&at| at > self.last_tick_unix)
             .min()
@@ -5570,17 +5653,21 @@ impl GameState {
             .cloned()
             .collect();
         for report in due {
-            let text = spy_event_text(&report);
-            if self
-                .events
-                .iter()
-                .any(|event| event.at == now && event.text == text)
-            {
-                continue;
-            }
-            self.maybe_leak_spy(now, report.detected);
-            self.push_event(now, text);
+            self.deliver_spy_line(now, spy_event_text(&report), report.detected);
         }
+    }
+
+    /// Log one arrived report once, opening a leak when it was detected.
+    fn deliver_spy_line(&mut self, now: u64, text: String, detected: bool) {
+        if self
+            .events
+            .iter()
+            .any(|event| event.at == now && event.text == text)
+        {
+            return;
+        }
+        self.maybe_leak_spy(now, detected);
+        self.push_event(now, text);
     }
 
     pub fn record_history(&mut self, draft: crate::HistoryDraft) -> u64 {
@@ -7622,10 +7709,40 @@ impl GameState {
     }
 }
 
+/// What one probe arrival found, before sensor error.
+struct SpyTruth {
+    kind: Option<PlanetType>,
+    size: Option<u8>,
+    resources: Resources,
+    fleet: Fleet,
+    /// `None` when the target has no orbital ship grid to read.
+    defences: Option<Fleet>,
+    garrison: Option<u32>,
+}
+
+impl Default for SpyTruth {
+    /// An empty planet: no stock, no ships, nothing more to read.
+    fn default() -> Self {
+        Self {
+            kind: None,
+            size: None,
+            resources: Resources::ZERO,
+            fleet: Fleet::default(),
+            defences: None,
+            garrison: None,
+        }
+    }
+}
+
 fn spy_event_text(report: &SpyReport) -> String {
     let detected = if report.detected { "yes" } else { "no" };
+    let place = if report.kind.is_some() {
+        "outpost"
+    } else {
+        "planet"
+    };
     format!(
-        "outpost {}: spy. score {:.0} {}. detected {detected}. lost {}/{}",
+        "{place} {}: spy. score {:.0} {}. detected {detected}. lost {}/{}",
         report.target, report.score, report.tier, report.probes_lost, report.probes_sent
     )
 }
