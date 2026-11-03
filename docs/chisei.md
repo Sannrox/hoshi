@@ -50,19 +50,23 @@ A live shard (not this in-process backend) wraps those moves in
 `ShardSession`: the host clock is the only time source, a client timestamp is
 ignored, each identity is rate limited, intents carry an idempotency id, and
 bridge pulses need an HMAC-SHA256 the host keys. Unsigned or altered pulses
-are rejected. Player raids today catch up both empires, then resolve instantly against
-that snapshot with the same fleet combat as local play.
-[ADR 0019](decisions/0019-shard-raids-are-missions-with-flight.md) moves
-raids to missions with flight; `ShardSession::raid` still resolves at
-admit time until that follow-up. A young defender is
-protected; an attacker has a per-identity attack cap; plunder uses the
-defender's share then cap. A tenant read is `ShardSession::view`: own
+are rejected. A player raid is a mission with flight
+([ADR 0019](decisions/0019-shard-raids-are-missions-with-flight.md)):
+`ShardSession::launch_raid` flies the fleet at another tenant's home on the
+current flight time, fuel, and speed rules, and the attacker can recall it
+while outbound. A `you`, `empty`, `outpost`, or `site` dest or a tenant
+colony is refused at launch, and so are a young defender (newbie
+protection) and an attacker past its per-identity attack cap. Nothing
+fights at launch. At arrival the host catches the defender up and resolves
+the same fleet combat as local play against its parked home fleet; plunder
+uses the defender's share then cap, no more than the survivors' holds, and
+the survivors fly it home as cargo. A tenant read is `ShardSession::view`: own
 planets, fleets, and stock, plus spy intel that has already arrived, plus
 each raid on home still in its combat log (ships lost, stock taken, debris
 left), never RNG, pirate timers, or another tenant's parked fleet and
 stockpile. A raid writes that log on the defender's save, so the next read
-shows it and later reads keep it. The attacker reads its plunder from the
-raid result. The
+shows it and later reads keep it. The attacker's save logs the fight too and
+its mission carries the plunder until it lands. The
 local TUI and CLI do not use this gate.
 
 Join places a home with `place_home`: given the host's `ShardMap` (seed and
@@ -81,15 +85,18 @@ same `outpost` and the same pile. Tenant saves keep no shard debris; each
 catch-up lends the pile to one tenant and takes it back with its harvests
 and new wreckage. The host persists `ShardCommons::to_bytes` beside the
 tenant saves and restores it through `ShardSession::commons_mut`.
-`ShardSession::settle` (and `view`, `colonize`, `spy`, `recycle`, which
-settle first) steps every empire to each colony and recycler arrival in time
-order, and at one instant in identity order. Two colony ships may launch at
+`ShardSession::settle` (and `view`, `colonize`, `spy`, `recycle`,
+`launch_raid`, which settle first) steps every empire to each colony,
+recycler, and raid arrival in time order, and at one instant in identity
+order; a raid's defender steps to the arrival before the fight. Two colony ships may launch at
 one `empty` coord; the first arrival founds, and a ship that finds the coord
 held by then turns back with the colony ship. Recyclers launched with
 `ShardSession::recycle` harvest the shared pile in arrival order, each
-taking at most its hold from what is left. `submit` and `raid` catch up
-without the other empires, so they refuse with `Unsettled` while a colony or
-recycler arrival is due; the host settles and retries. The expedition dest
+taking at most its hold from what is left. `submit` catches up without the
+other empires, so it refuses with `Unsettled` while a colony, recycler, or
+raid arrival of that empire, or another tenant's raid on its home, is due;
+the host settles and retries. The session keeps each target's next raid
+arrival in its bookkeeping, so the refusal holds across a restart. The expedition dest
 and the NPC regional book are still per save.
 
 `ShardSession::spy` flies the probe hull with a hold of zero. At a `tenant`
@@ -99,7 +106,7 @@ error for the range, the tier the probe score earned, and light-time from
 the spy's home before it is delivered. The report is marked for the intel
 compartment, so the player and intel-cleared staff read it and the tenant
 view shows it as intel, never the target's save. When a lone catch-up (a
-`submit` or a raid) ran the spy or the target past the arrival, the next
+`submit`) ran the spy or the target past the arrival, the next
 host catch-up reads the target as it is then and stamps the report with
 that time. An
 `outpost` coord keeps the local spy, `you` is refused, and `empty` and `site`

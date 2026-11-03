@@ -165,7 +165,10 @@ pub struct Mission {
     /// Cargo delivered on Action when `transport` is set.
     pub cargo: crate::state::Resources,
     pub transport: bool,
-    /// Action fights the outpost's orbital defences.
+    /// Action fights the outpost's orbital defences. On a shard, an attack
+    /// at a dest that is neither an outpost nor this empire's own planet is
+    /// a raid on another tenant: the host fights it at arrival and Return
+    /// credits the plunder in `cargo`.
     pub attack: bool,
     /// Action lands troops. Refused while defences remain.
     pub invade: bool,
