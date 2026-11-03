@@ -246,6 +246,18 @@ impl GameState {
         self.add_battle_debris(at, parent, atk, def);
     }
 
+    /// Debris one fight leaves behind, by the same hull-loss rule as
+    /// [`Self::note_fight_debris`]. Zero when moons are off.
+    pub fn fight_debris(&self, report: &CombatReport) -> f64 {
+        if !self.config.moons.enabled {
+            return 0.0;
+        }
+        let hull = |kind| self.config.ships.get(kind).hull;
+        let atk = hull_lost(report.attacker_before, report.attacker_after, hull);
+        let def = hull_lost(report.defender_before, report.defender_after, hull);
+        ((atk + def) * self.config.moons.debris_per_hull).max(0.0)
+    }
+
     pub fn add_battle_debris(&mut self, at: u64, parent: Coord, atk_lost: f64, def_lost: f64) {
         if !self.config.moons.enabled {
             return;
