@@ -234,9 +234,9 @@ pub use self_play::{
 };
 pub use shard::{
     Occupancy, ShardBookkeeping, ShardCommand, ShardCommons, ShardConfig, ShardError, ShardMap,
-    ShardMission, ShardPlanet, ShardRaid, ShardRaidAftermath, ShardRaidResult, ShardRecycle,
-    ShardSession, ShardSites, ShardSlot, ShardSpy, ShardTarget, ShardView, SignedBridgeEvent,
-    load_tenants, occupancy, place_home, seat_home, targets,
+    ShardMission, ShardPlanet, ShardRaid, ShardRaidAftermath, ShardRecycle, ShardSession,
+    ShardSites, ShardSlot, ShardSpy, ShardTarget, ShardView, SignedBridgeEvent, load_tenants,
+    occupancy, place_home, seat_home, targets,
 };
 pub use ships::{
     Fleet, SHIP_KINDS, ShipCatalog, ShipCatalogError, ShipError, ShipJob, ShipKind, ShipSpec,

@@ -3165,6 +3165,26 @@ impl GameState {
         self.launch_probes(ships, dest, speed_percent, now_unix)
     }
 
+    /// Shard host only: fly `ships` at another tenant's home with a hold of
+    /// zero. The caller has checked occupancy, newbie protection and the
+    /// attack cap. Without an outpost at `dest` this save's own Action
+    /// fights nothing; the host fights at arrival through
+    /// [`Self::land_tenant_raid`].
+    pub(crate) fn launch_tenant_raid(
+        &mut self,
+        ships: Fleet,
+        dest: Coord,
+        speed_percent: u8,
+        now_unix: u64,
+    ) -> Result<u64, FleetError> {
+        self.launch_fleet(ships, dest, speed_percent, 0, now_unix)?;
+        let Some(mission) = self.missions.last_mut() else {
+            return Err(FleetError::EmptyFleet);
+        };
+        mission.attack = true;
+        Ok(mission.id)
+    }
+
     /// Probe flight with a hold of zero, flagged so Action writes a report.
     fn launch_probes(
         &mut self,
@@ -4464,6 +4484,18 @@ impl GameState {
                             ),
                         );
                     }
+                    // Only a shard raid's survivors carry cargo on an attack.
+                    if mission.attack && cargo_has_mass(mission.cargo) {
+                        self.credit_at(mission.origin, mission.cargo);
+                        self.note_delivery(
+                            done_at,
+                            format!(
+                                "raiders brought {} home to {}",
+                                format_cargo(mission.cargo),
+                                mission.origin
+                            ),
+                        );
+                    }
                 }
             }
         }
@@ -4865,6 +4897,39 @@ impl GameState {
         if at <= self.last_tick_unix {
             self.deliver_spy_line(at, text, detected);
         }
+    }
+
+    /// Shard host only: raid mission `id` fought at `at` with `report`.
+    /// Survivors keep flying and carry `plunder` home as cargo; a fleet with
+    /// no survivors is gone. The fight is logged on this save too.
+    pub(crate) fn land_tenant_raid(
+        &mut self,
+        id: u64,
+        report: CombatReport,
+        plunder: Resources,
+        at: u64,
+    ) {
+        let Some(index) = self.missions.iter().position(|m| m.id == id) else {
+            return;
+        };
+        let dest = self.missions[index].dest;
+        let (winner, rounds, survivors) = (report.winner, report.rounds, report.attacker_after);
+        self.push_combat_log(at, report);
+        if survivors.is_empty() {
+            self.missions.remove(index);
+            self.push_event(at, format!("raid on {dest}: fleet lost"));
+            return;
+        }
+        self.missions[index].ships = survivors;
+        self.missions[index].cargo = plunder;
+        self.push_event(
+            at,
+            format!(
+                "raid on {dest}: {} after {rounds} rounds, plunder {}",
+                winner.as_key(),
+                plunder.brief()
+            ),
+        );
     }
 
     /// Fight outpost defences. Returns true when the attacking fleet is gone.

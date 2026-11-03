@@ -15,7 +15,7 @@ use crate::activity::{ActivityApply, ActivityPulse};
 use crate::classification::ClassifiedKind;
 use crate::clock::Clock;
 use crate::combat::{
-    CombatReport, CombatWinner, plunder_from, rapid_fire_table, resolve_combat, stats_from_catalog,
+    CombatWinner, fill_hold, plunder_from, rapid_fire_table, resolve_combat, stats_from_catalog,
 };
 use crate::fleets::{Coord, Mission, MissionPhase};
 use crate::intel::IntelFact;
@@ -79,13 +79,15 @@ pub struct SignedBridgeEvent {
     pub mac: [u8; 32],
 }
 
-/// Snapshot raid: attacker and defender after catch-up at the host clock.
+/// Raid fleet from `identity` to another tenant's home at `dest`. See
+/// [`ShardSession::launch_raid`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShardRaid {
-    pub attacker_id: String,
-    pub defender_id: String,
+    pub identity: String,
     pub idempotency_id: String,
-    pub client_now_unix: Option<u64>,
+    pub ships: Fleet,
+    pub dest: Coord,
+    pub speed_percent: u8,
 }
 
 /// Probe wave from `identity` to `dest`. See [`ShardSession::spy`].
@@ -107,13 +109,6 @@ pub struct ShardRecycle {
     pub ships: Fleet,
     pub dest: Coord,
     pub speed_percent: u8,
-}
-
-/// Combat report plus plunder moved from defender to attacker.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ShardRaidResult {
-    pub report: CombatReport,
-    pub plunder: Resources,
 }
 
 /// One owned world on a tenant read. Other empires never appear here.
@@ -447,9 +442,15 @@ pub enum ShardError {
         coord: Coord,
         kind: Occupancy,
     },
-    /// Colonize or a planet raid dest is `Tenant`, `Outpost`, or `Site`, or
-    /// a join seat is no longer `Empty`.
+    /// Colonize dest is `Tenant`, `Outpost`, or `Site`, or a join seat is
+    /// no longer `Empty`.
     Occupied {
+        coord: Coord,
+        kind: Occupancy,
+    },
+    /// A raid dest is not another tenant's home: `Empty`, an `Outpost`, a
+    /// `Site`, or a tenant colony.
+    NotATenantHome {
         coord: Coord,
         kind: Occupancy,
     },
@@ -459,7 +460,7 @@ pub enum ShardError {
     Bookkeeping(String),
     /// Restored commons bytes are not a version this build reads.
     Commons(String),
-    /// A colony or recycler of `identity` arrives by the host clock. A lone
+    /// A colony, recycler, or raid of `identity` arrives by the host clock. A lone
     /// catch-up cannot see the shard map, so the host calls
     /// [`ShardSession::settle`] first and retries.
     Unsettled {
@@ -506,6 +507,9 @@ impl fmt::Display for ShardError {
             ),
             ShardError::Occupied { coord, kind } => {
                 write!(f, "{coord} is {}", kind.as_key())
+            }
+            ShardError::NotATenantHome { coord, kind } => {
+                write!(f, "{coord} is {}, not a tenant home to raid", kind.as_key())
             }
             ShardError::ColonizeNeedsMap => {
                 write!(f, "colonize needs the shard map")
@@ -556,6 +560,10 @@ struct BookkeepingDoc {
     seen: Vec<SeenRow>,
     windows: BTreeMap<String, Vec<u64>>,
     attacks: BTreeMap<String, Vec<u64>>,
+    /// Absent in bytes from a build before shard raids flew; the next
+    /// settle rebuilds it.
+    #[serde(default)]
+    inbound: Vec<([u16; 3], u64)>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -577,6 +585,9 @@ pub struct ShardSession<C> {
     /// Host time of the last full prune. See [`Self::prune_due`].
     pruned_at: u64,
     commons: ShardCommons,
+    /// Earliest unresolved raid arrival per target home. A lone `submit`
+    /// on that home cannot see the attacker's mission, so it reads this.
+    inbound: BTreeMap<Coord, u64>,
 }
 
 impl<C: Clock> ShardSession<C> {
@@ -590,6 +601,7 @@ impl<C: Clock> ShardSession<C> {
             attacks: BTreeMap::new(),
             pruned_at: 0,
             commons: ShardCommons::default(),
+            inbound: BTreeMap::new(),
         }
     }
 
@@ -620,9 +632,9 @@ impl<C: Clock> ShardSession<C> {
     /// `cmd.client_now_unix` is accepted so a caller can send a wall clock
     /// and is never read. `Intent::Colonize` is refused: this method has one
     /// empire, so it cannot see another tenant, a pirate outpost, or a site.
-    /// Hosts call [`Self::colonize`]. A colony or recycler arrival due by the
-    /// host clock is refused as [`ShardError::Unsettled`] before anything
-    /// moves.
+    /// Hosts call [`Self::colonize`]. A colony, recycler, or raid arrival due
+    /// by the host clock, or another tenant's raid due on this home, is
+    /// refused as [`ShardError::Unsettled`] before anything moves.
     pub fn submit(&mut self, state: &mut GameState, cmd: ShardCommand) -> Result<(), ShardError> {
         state
             .require_fair_play()
@@ -648,7 +660,8 @@ impl<C: Clock> ShardSession<C> {
         if self.is_seen(&seen_key, now) {
             return Ok(());
         }
-        if race_due(state, now) {
+        let raid_due = self.inbound.get(&state.home).is_some_and(|&at| at <= now);
+        if raid_due || race_due(state, now) {
             return Err(ShardError::Unsettled {
                 identity: cmd.identity,
             });
@@ -685,114 +698,83 @@ impl<C: Clock> ShardSession<C> {
         Ok(state.apply_activity(event.pulse, now))
     }
 
-    /// Catch up both empires on the host clock, then resolve a snapshot raid.
+    /// Launch a raid from `cmd.identity` at another tenant's home after
+    /// catching every empire up at the host clock.
     ///
-    /// The defender's save logs the fight as a raid on home, with plunder,
-    /// and takes the debris at its home coord. Its next [`Self::view`]
-    /// reads that log. The attacker learns its plunder from the result.
-    /// Like [`Self::submit`], a colony or recycler arrival due on either
-    /// empire is refused as [`ShardError::Unsettled`].
-    pub fn raid(
+    /// The fleet flies on the current fleet rules (flight time, fuel, speed
+    /// percent) with a hold of zero, and the attacker may recall it while
+    /// outbound. Nothing fights at launch. At arrival the host catches the
+    /// target up and resolves combat against its parked home fleet (see
+    /// [`catch_up_empires`]); survivors fly home with the plunder as cargo.
+    /// `You` is refused as [`ShardError::SameEmpire`]; `Empty`, `Outpost`,
+    /// `Site`, and a tenant colony as [`ShardError::NotATenantHome`]. Newbie
+    /// protection and the attack cap gate the launch. A refusal launches
+    /// nothing, and a retried id launches once.
+    pub fn launch_raid(
         &mut self,
-        attacker: &mut GameState,
-        defender: &mut GameState,
+        empires: &mut BTreeMap<String, GameState>,
         cmd: ShardRaid,
-    ) -> Result<ShardRaidResult, ShardError> {
-        attacker
-            .require_fair_play()
-            .and_then(|()| defender.require_fair_play())
-            .map_err(|e| ShardError::Intent(crate::IntentError::Cheat(e)))?;
-        if cmd.attacker_id.is_empty() || cmd.defender_id.is_empty() {
+    ) -> Result<(), ShardError> {
+        let identity = cmd.identity.as_str();
+        if identity.is_empty() {
             return Err(ShardError::EmptyIdentity);
         }
         if cmd.idempotency_id.is_empty() {
             return Err(ShardError::EmptyIdempotency);
         }
-        if cmd.attacker_id == cmd.defender_id {
-            return Err(ShardError::SameEmpire);
-        }
-        let _ = cmd.client_now_unix;
+        let Some(state) = empires.get(identity) else {
+            return Err(ShardError::UnknownIdentity {
+                identity: cmd.identity,
+            });
+        };
+        state
+            .require_fair_play()
+            .map_err(|e| ShardError::Intent(IntentError::Cheat(e)))?;
         let now = self.clock.now_unix();
         self.prune_due(now);
-        let seen_key = (cmd.attacker_id.clone(), cmd.idempotency_id.clone());
+        let seen_key = (cmd.identity.clone(), cmd.idempotency_id.clone());
         if self.is_seen(&seen_key, now) {
-            return Ok(ShardRaidResult {
-                report: empty_report(attacker.fleet, defender.fleet),
-                plunder: Resources::ZERO,
+            return Ok(());
+        }
+        self.catch_up_shard(empires, now);
+        let kind = occupancy(identity, empires, self.commons.sites(), cmd.dest);
+        if kind == Occupancy::You {
+            return Err(ShardError::SameEmpire);
+        }
+        let Some((defender_id, defender)) = empires
+            .iter()
+            .find(|(id, state)| *id != identity && state.home == cmd.dest)
+        else {
+            return Err(ShardError::NotATenantHome {
+                coord: cmd.dest,
+                kind,
             });
-        }
-        for (identity, state) in [
-            (&cmd.attacker_id, &*attacker),
-            (&cmd.defender_id, &*defender),
-        ] {
-            if race_due(state, now) {
-                return Err(ShardError::Unsettled {
-                    identity: identity.clone(),
-                });
-            }
-        }
-        for state in [&mut *attacker, &mut *defender] {
-            with_shared_debris(&mut self.commons.debris, state, |state| state.catch_up(now));
-        }
+        };
+        defender
+            .require_fair_play()
+            .map_err(|e| ShardError::Intent(IntentError::Cheat(e)))?;
         if now.saturating_sub(defender.prestige.current.started_at) < self.config.newbie_secs {
             return Err(ShardError::NewbieProtected {
-                identity: cmd.defender_id,
+                identity: defender_id.clone(),
             });
         }
-        self.admit(&cmd.attacker_id, now)?;
-        self.admit_attack(&cmd.attacker_id, now)?;
-        let mut rng = attacker.rng_seed;
-        let report = resolve_combat(
-            attacker.fleet,
-            defender.fleet,
-            &stats_from_catalog(&attacker.config.ships),
-            &stats_from_catalog(&defender.config.ships),
-            attacker.config.raid.max_rounds,
-            &rapid_fire_table(&attacker.config.ships),
-            &mut rng,
-        );
-        attacker.rng_seed = rng;
-        attacker.fleet = report.attacker_after;
-        defender.fleet = report.defender_after;
-        let plunder = if report.winner == CombatWinner::Attacker {
-            plunder_from(
-                defender.plunderable(),
-                defender.config.raid.plunder_share,
-                defender.config.raid.plunder_cap,
-            )
-        } else {
-            Resources::ZERO
-        };
-        defender.resources = defender.resources.saturating_sub(plunder);
-        attacker.resources = attacker.resources.saturating_add(plunder);
-        defender.push_combat_log(now, report.clone());
-        if let Some(log) = defender.combat_logs.last_mut() {
-            log.raid_plunder = Some(plunder);
-        }
-        with_shared_debris(&mut self.commons.debris, defender, |defender| {
-            defender.note_fight_debris(now, defender.home, &report);
-        });
+        self.admit(identity, now)?;
+        self.check_attack(identity, now)?;
+        let state = empires
+            .get_mut(identity)
+            .ok_or_else(|| ShardError::UnknownIdentity {
+                identity: identity.to_string(),
+            })?;
+        state
+            .launch_tenant_raid(cmd.ships, cmd.dest, cmd.speed_percent, now)
+            .map_err(|e| ShardError::Intent(IntentError::Fleet(e)))?;
+        self.attacks
+            .entry(cmd.identity.clone())
+            .or_default()
+            .push(now);
+        self.inbound = inbound_raids(empires);
         self.seen.insert(seen_key, now);
-        Ok(ShardRaidResult { report, plunder })
-    }
-
-    /// Snapshot raid aimed at a planet coord.
-    ///
-    /// `Tenant`, `Outpost`, and `Site` are refused before combat, so fleets
-    /// stay put. `Empty` and `You` continue into [`Self::raid`].
-    pub fn raid_planet(
-        &mut self,
-        attacker: &mut GameState,
-        defender: &mut GameState,
-        dest: Coord,
-        empires: &BTreeMap<String, GameState>,
-        cmd: ShardRaid,
-    ) -> Result<ShardRaidResult, ShardError> {
-        let kind = occupancy(&cmd.attacker_id, empires, self.commons.sites(), dest);
-        if kind.blocks_planet_dest() {
-            return Err(ShardError::Occupied { coord: dest, kind });
-        }
-        self.raid(attacker, defender, cmd)
+        Ok(())
     }
 
     /// Colonize `dest` for `identity` when occupancy allows it.
@@ -839,7 +821,7 @@ impl<C: Clock> ShardSession<C> {
                 .require_fair_play()
                 .map_err(|e| ShardError::Intent(IntentError::Cheat(e)))?;
         }
-        catch_up_empires(empires, &mut self.commons, now);
+        self.catch_up_shard(empires, now);
         let kind = occupancy(identity, empires, self.commons.sites(), dest);
         if kind.blocks_planet_dest() {
             return Err(ShardError::Occupied { coord: dest, kind });
@@ -896,7 +878,7 @@ impl<C: Clock> ShardSession<C> {
         if self.is_seen(&seen_key, now) {
             return Ok(());
         }
-        catch_up_empires(empires, &mut self.commons, now);
+        self.catch_up_shard(empires, now);
         let kind = occupancy(identity, empires, self.commons.sites(), cmd.dest);
         match kind {
             Occupancy::You => return Err(ShardError::SameEmpire),
@@ -964,7 +946,7 @@ impl<C: Clock> ShardSession<C> {
         if self.is_seen(&seen_key, now) {
             return Ok(());
         }
-        catch_up_empires(empires, &mut self.commons, now);
+        self.catch_up_shard(empires, now);
         self.admit(identity, now)?;
         let state = empires
             .get_mut(identity)
@@ -981,16 +963,18 @@ impl<C: Clock> ShardSession<C> {
 
     /// Catch every empire up at the host clock on the shared map.
     ///
-    /// Empires step together to each colony and recycler arrival, in time
-    /// order and, at one instant, in identity order. A colony ship whose
+    /// Empires step together to each colony, recycler, and raid arrival, in
+    /// time order and, at one instant, in identity order, except that a
+    /// raid's target steps to its arrival first. A colony ship whose
     /// dest another tenant, an outpost, or a site holds by then turns back
     /// with the ship; the first arrival founds. A recycler harvests the
-    /// shared stock that earlier arrivals left. [`Self::view`],
-    /// [`Self::colonize`], [`Self::spy`] and [`Self::recycle`] settle first;
-    /// a host calls this before [`Self::submit`] or [`Self::raid`] when they
-    /// refuse with [`ShardError::Unsettled`].
+    /// shared stock that earlier arrivals left. A raid fights the target's
+    /// home as it is at arrival. [`Self::view`], [`Self::colonize`],
+    /// [`Self::spy`], [`Self::recycle`] and [`Self::launch_raid`] settle
+    /// first; a host calls this before [`Self::submit`] when it refuses with
+    /// [`ShardError::Unsettled`].
     pub fn settle(&mut self, empires: &mut BTreeMap<String, GameState>) {
-        catch_up_empires(empires, &mut self.commons, self.clock.now_unix());
+        self.catch_up_shard(empires, self.clock.now_unix());
     }
 
     /// Catch every empire up at the host clock, then return `identity`'s view.
@@ -1021,7 +1005,7 @@ impl<C: Clock> ShardSession<C> {
                 .require_fair_play()
                 .map_err(|e| ShardError::Intent(crate::IntentError::Cheat(e)))?;
         }
-        catch_up_empires(empires, &mut self.commons, now);
+        self.catch_up_shard(empires, now);
         match shard_view(identity, empires, self.commons.sites()) {
             Some(view) => Ok(view),
             None => Err(ShardError::UnknownIdentity {
@@ -1046,6 +1030,11 @@ impl<C: Clock> ShardSession<C> {
                 .collect(),
             windows: self.windows.clone(),
             attacks: self.attacks.clone(),
+            inbound: self
+                .inbound
+                .iter()
+                .map(|(&coord, &at)| (coord_row(coord), at))
+                .collect(),
         };
         serde_json::to_vec(&doc)
             .map(ShardBookkeeping)
@@ -1071,8 +1060,20 @@ impl<C: Clock> ShardSession<C> {
             .collect();
         self.windows = doc.windows;
         self.attacks = doc.attacks;
+        self.inbound = doc
+            .inbound
+            .into_iter()
+            .map(|(row, at)| (row_coord(row), at))
+            .collect();
         self.prune(self.clock.now_unix());
         Ok(())
+    }
+
+    /// Catch every empire up to `now` on the shared map, then note the raids
+    /// still in flight for [`Self::submit`].
+    fn catch_up_shard(&mut self, empires: &mut BTreeMap<String, GameState>, now: u64) {
+        catch_up_empires(empires, &mut self.commons, now);
+        self.inbound = inbound_raids(empires);
     }
 
     /// Whether `key` applied less than [`ShardConfig::seen_ttl_secs`] ago.
@@ -1109,7 +1110,9 @@ impl<C: Clock> ShardSession<C> {
         });
     }
 
-    fn admit_attack(&mut self, identity: &str, now: u64) -> Result<(), ShardError> {
+    /// Refuse when `identity` has used its attack cap in the window. Records
+    /// nothing: the caller stamps the attack once the fleet launched.
+    fn check_attack(&mut self, identity: &str, now: u64) -> Result<(), ShardError> {
         let window = self.config.attack_window_secs.max(1);
         let limit = self.config.attack_limit;
         if limit == 0 {
@@ -1118,8 +1121,10 @@ impl<C: Clock> ShardSession<C> {
                 retry_after_secs: window,
             });
         }
-        let stamps = self.attacks.entry(identity.to_string()).or_default();
         let start = now.saturating_sub(window);
+        let Some(stamps) = self.attacks.get_mut(identity) else {
+            return Ok(());
+        };
         stamps.retain(|&t| t > start);
         if stamps.len() as u32 >= limit {
             let oldest = stamps.first().copied().unwrap_or(now);
@@ -1129,7 +1134,6 @@ impl<C: Clock> ShardSession<C> {
                 retry_after_secs,
             });
         }
-        stamps.push(now);
         Ok(())
     }
 
@@ -1310,16 +1314,16 @@ pub fn targets(
 }
 
 /// Catch every empire up to `now` on the shared map, stopping at each
-/// colony and recycler arrival (see [`ShardSession::settle`]) and at each
-/// probe arrival at another tenant's planet, so the host reads that planet
-/// as it was then.
+/// colony, recycler, and raid arrival (see [`ShardSession::settle`]) and at
+/// each probe arrival at another tenant's planet, so the host reads that
+/// planet as it was then.
 ///
 /// One long gap and many short ones read the same numbers. A lone
-/// catch-up (a `submit` or a raid) can run either side past a probe
-/// arrival: the probe then leaves a pending report, or the target is
-/// already ahead. Either way the report is filled from the target as it is
-/// now and stamped with the target's time, never back-dated to the arrival.
-/// A lone catch-up never runs past a colony or recycler arrival; it is
+/// catch-up (a `submit`) can run the target past a probe arrival: the
+/// report is then filled from the target as it is now and stamped with the
+/// target's time, never back-dated to the arrival. A raid on a target that
+/// ran ahead fights it as it is now in the same way. A lone catch-up never
+/// runs an empire past its own colony, recycler, or raid arrival; it is
 /// refused as [`ShardError::Unsettled`].
 fn catch_up_empires(
     empires: &mut BTreeMap<String, GameState>,
@@ -1327,6 +1331,7 @@ fn catch_up_empires(
     now: u64,
 ) {
     while let Some(at) = next_stop(empires, now) {
+        resolve_raids(empires, commons, at);
         step_empires(empires, commons, at);
         fill_tenant_spies(empires);
     }
@@ -1335,38 +1340,142 @@ fn catch_up_empires(
 }
 
 /// Step each empire to `at` in identity order on the shared map.
-///
-/// Before a tenant steps, its colony ships arriving by `at` at a coord
-/// another tenant, an outpost, or a site holds turn back, so a tenant
-/// earlier in order that founds at the same instant wins the coord. The
-/// shared debris is lent to the tenant for its step and taken back with
-/// its harvests and new wreckage, so the next tenant sees what is left.
 fn step_empires(empires: &mut BTreeMap<String, GameState>, commons: &mut ShardCommons, at: u64) {
     let identities: Vec<String> = empires.keys().cloned().collect();
     for identity in &identities {
-        let taken: Vec<u64> = empires
-            .get(identity)
-            .map(|state| {
-                state
-                    .missions
-                    .iter()
-                    .filter(|mission| mission.colonize && due_by(state, mission, at))
-                    .filter(|mission| {
-                        occupancy(identity, empires, commons.sites(), mission.dest)
-                            .blocks_planet_dest()
-                    })
-                    .map(|mission| mission.id)
-                    .collect()
-            })
-            .unwrap_or_default();
-        let Some(state) = empires.get_mut(identity) else {
+        step_one(identity, empires, commons, at);
+    }
+}
+
+/// Step `identity` to `at` on the shared map.
+///
+/// First its colony ships arriving by `at` at a coord another tenant, an
+/// outpost, or a site holds turn back, so a tenant earlier in order that
+/// founds at the same instant wins the coord. The shared debris is lent to
+/// the tenant for its step and taken back with its harvests and new
+/// wreckage, so the next tenant sees what is left.
+fn step_one(
+    identity: &str,
+    empires: &mut BTreeMap<String, GameState>,
+    commons: &mut ShardCommons,
+    at: u64,
+) {
+    let taken: Vec<u64> = empires
+        .get(identity)
+        .map(|state| {
+            state
+                .missions
+                .iter()
+                .filter(|mission| mission.colonize && due_by(state, mission, at))
+                .filter(|mission| {
+                    occupancy(identity, empires, commons.sites(), mission.dest).blocks_planet_dest()
+                })
+                .map(|mission| mission.id)
+                .collect()
+        })
+        .unwrap_or_default();
+    let Some(state) = empires.get_mut(identity) else {
+        return;
+    };
+    for id in taken {
+        state.turn_back_colony(id, at);
+    }
+    with_shared_debris(&mut commons.debris, state, |state| state.catch_up(at));
+}
+
+/// Fight every raid arriving at `at`, before its attacker steps there.
+///
+/// The target steps to `at` first, ahead of identity order, so the fight
+/// reads its home as it is at the arrival. The fight draws from the
+/// target's RNG, which is at the arrival on every path, while the attacker
+/// may still be at an earlier stop. Its own step then only turns the
+/// survivors home with the plunder. A raid at a coord no tenant holds as
+/// home any more flies home with nothing.
+fn resolve_raids(empires: &mut BTreeMap<String, GameState>, commons: &mut ShardCommons, at: u64) {
+    let raids: Vec<(String, u64, Coord)> = empires
+        .iter()
+        .flat_map(|(id, state)| {
+            state
+                .missions
+                .iter()
+                .filter(|mission| tenant_raid(state, mission) && due_by(state, mission, at))
+                .map(|mission| (id.clone(), mission.id, mission.dest))
+        })
+        .collect();
+    for (attacker_id, mission_id, dest) in raids {
+        let Some(defender_id) = empires
+            .iter()
+            .find(|(id, state)| **id != attacker_id && state.home == dest)
+            .map(|(id, _)| id.clone())
+        else {
             continue;
         };
-        for id in taken {
-            state.turn_back_colony(id, at);
+        step_one(&defender_id, empires, commons, at);
+        let Some(mut defender) = empires.remove(&defender_id) else {
+            continue;
+        };
+        if let Some(attacker) = empires.get_mut(&attacker_id) {
+            fight_raid(attacker, mission_id, &mut defender, &mut commons.debris, at);
         }
-        with_shared_debris(&mut commons.debris, state, |state| state.catch_up(at));
+        empires.insert(defender_id, defender);
     }
+}
+
+/// Resolve raid mission `mission_id` against `defender`'s parked home fleet
+/// with the same fleet combat as local play.
+///
+/// A won fight carries off the defender's plunder share then cap, no more
+/// than the survivors' holds take. The defender logs the fight as a raid on
+/// home with that plunder and takes the debris at home on the shared map.
+fn fight_raid(
+    attacker: &mut GameState,
+    mission_id: u64,
+    defender: &mut GameState,
+    debris: &mut BTreeMap<Coord, f64>,
+    at: u64,
+) {
+    let Some(ships) = attacker
+        .missions
+        .iter()
+        .find(|mission| mission.id == mission_id)
+        .map(|mission| mission.ships)
+    else {
+        return;
+    };
+    let fought_at = defender.last_tick_unix;
+    let mut rng = defender.rng_seed;
+    let report = resolve_combat(
+        ships,
+        defender.fleet,
+        &stats_from_catalog(&attacker.config.ships),
+        &stats_from_catalog(&defender.config.ships),
+        attacker.config.raid.max_rounds,
+        &rapid_fire_table(&attacker.config.ships),
+        &mut rng,
+    );
+    defender.rng_seed = rng;
+    defender.fleet = report.defender_after;
+    let plunder = if report.winner == CombatWinner::Attacker {
+        fill_hold(
+            plunder_from(
+                defender.plunderable(),
+                defender.config.raid.plunder_share,
+                defender.config.raid.plunder_cap,
+            ),
+            attacker.cargo_capacity(report.attacker_after),
+        )
+    } else {
+        Resources::ZERO
+    };
+    defender.resources = defender.resources.saturating_sub(plunder);
+    defender.push_combat_log(fought_at, report.clone());
+    if let Some(log) = defender.combat_logs.last_mut() {
+        log.raid_plunder = Some(plunder);
+    }
+    with_shared_debris(debris, defender, |defender| {
+        defender.note_fight_debris(fought_at, defender.home, &report);
+    });
+    attacker.land_tenant_raid(mission_id, report, plunder, at);
 }
 
 /// Run `f` on `state` with the shared debris stock in its debris map, then
@@ -1385,8 +1494,8 @@ fn with_shared_debris<T>(
     out
 }
 
-/// Earliest stop due by `now` and not yet reached: a colony or recycler
-/// Action, or a probe Action at a planet its owner does not hold.
+/// Earliest stop due by `now` and not yet reached: a colony, recycler, or
+/// raid Action, or a probe Action at a planet its owner does not hold.
 fn next_stop(empires: &BTreeMap<String, GameState>, now: u64) -> Option<u64> {
     empires
         .values()
@@ -1397,9 +1506,8 @@ fn next_stop(empires: &BTreeMap<String, GameState>, now: u64) -> Option<u64> {
                 .filter(|mission| {
                     mission.colonize
                         || mission.recycle
-                        || (mission.spy
-                            && state.outpost(mission.dest).is_none()
-                            && !tenant_holds(state, mission.dest))
+                        || tenant_raid(state, mission)
+                        || (mission.spy && aims_at_tenant(state, mission))
                 })
                 .filter_map(action_at)
                 .filter(|&at| at > state.last_tick_unix && at <= now)
@@ -1407,13 +1515,41 @@ fn next_stop(empires: &BTreeMap<String, GameState>, now: u64) -> Option<u64> {
         .min()
 }
 
-/// Whether `state` has a colony or recycler Action due by `now` that its
-/// own catch-up would run without the shard map.
+/// Earliest arrival of each raid still outbound, by target home.
+fn inbound_raids(empires: &BTreeMap<String, GameState>) -> BTreeMap<Coord, u64> {
+    let mut inbound = BTreeMap::new();
+    for state in empires.values() {
+        for mission in state.missions.iter().filter(|m| tenant_raid(state, m)) {
+            if let Some(at) = action_at(mission) {
+                inbound
+                    .entry(mission.dest)
+                    .and_modify(|earliest: &mut u64| *earliest = (*earliest).min(at))
+                    .or_insert(at);
+            }
+        }
+    }
+    inbound
+}
+
+/// Whether `state` has a colony, recycler, or raid Action due by `now` that
+/// its own catch-up would run without the shard map.
 fn race_due(state: &GameState, now: u64) -> bool {
-    state
-        .missions
-        .iter()
-        .any(|mission| (mission.colonize || mission.recycle) && due_by(state, mission, now))
+    state.missions.iter().any(|mission| {
+        (mission.colonize || mission.recycle || tenant_raid(state, mission))
+            && due_by(state, mission, now)
+    })
+}
+
+/// `mission` flies at a coord that is neither an outpost of `state` nor its
+/// own planet, so only another tenant can be there.
+fn aims_at_tenant(state: &GameState, mission: &Mission) -> bool {
+    state.outpost(mission.dest).is_none() && !tenant_holds(state, mission.dest)
+}
+
+/// A raid from [`ShardSession::launch_raid`]: local attacks only launch at
+/// outposts, and an outpost leaves the map only as the attacker's colony.
+fn tenant_raid(state: &GameState, mission: &Mission) -> bool {
+    mission.attack && aims_at_tenant(state, mission)
 }
 
 /// `mission`'s Action is after `state`'s clock and no later than `at`.
@@ -1547,21 +1683,6 @@ fn occupancy_slots(
             tag: target.kind.view_tag().to_string(),
         })
         .collect()
-}
-
-fn empty_report(attacker: Fleet, defender: Fleet) -> CombatReport {
-    CombatReport {
-        rounds: 0,
-        attacker_before: attacker,
-        defender_before: defender,
-        attacker_after: attacker,
-        defender_after: defender,
-        winner: CombatWinner::Draw,
-        ground: None,
-        seed: 0,
-        frames: Vec::new(),
-        layered: false,
-    }
 }
 
 fn canonical_pulse(pulse: ActivityPulse) -> Vec<u8> {
@@ -2048,99 +2169,6 @@ mod tests {
         state
     }
 
-    fn raid_cmd(attacker: &str, defender: &str, id: &str) -> ShardRaid {
-        ShardRaid {
-            attacker_id: attacker.into(),
-            defender_id: defender.into(),
-            idempotency_id: id.into(),
-            client_now_unix: Some(99_999),
-        }
-    }
-
-    #[test]
-    fn shard_raid_matches_the_single_player_resolver() {
-        let mut shard = raid_session(1_000, 0, 3);
-        let mut attacker = armed(1_000, 8);
-        let mut defender = armed(1_000, 3);
-        let atk_fleet = attacker.fleet;
-        let def_fleet = defender.fleet;
-        let mut rng = attacker.rng_seed;
-        let expected = resolve_combat(
-            atk_fleet,
-            def_fleet,
-            &stats_from_catalog(&attacker.config.ships),
-            &stats_from_catalog(&defender.config.ships),
-            attacker.config.raid.max_rounds,
-            &rapid_fire_table(&attacker.config.ships),
-            &mut rng,
-        );
-        let result = shard
-            .raid(&mut attacker, &mut defender, raid_cmd("a", "b", "r1"))
-            .unwrap();
-        assert_eq!(result.report, expected);
-        assert_eq!(attacker.fleet, expected.attacker_after);
-        assert_eq!(defender.fleet, expected.defender_after);
-    }
-
-    #[test]
-    fn newbie_protection_blocks_then_expires() {
-        let mut shard = raid_session(1_000, 3_600, 3);
-        let mut attacker = armed(1_000, 8);
-        let mut defender = armed(1_000, 3);
-        let err = shard
-            .raid(&mut attacker, &mut defender, raid_cmd("a", "b", "early"))
-            .unwrap_err();
-        assert!(matches!(
-            err,
-            ShardError::NewbieProtected { identity } if identity == "b"
-        ));
-        assert_eq!(attacker.fleet.get(ShipKind::LightFighter), 8);
-        shard.clock.advance(3_600);
-        shard
-            .raid(&mut attacker, &mut defender, raid_cmd("a", "b", "later"))
-            .unwrap();
-    }
-
-    #[test]
-    fn attack_cap_rejects_the_next_raid() {
-        let mut shard = raid_session(1_000, 0, 1);
-        let mut attacker = armed(1_000, 8);
-        let mut defender = armed(1_000, 3);
-        shard
-            .raid(&mut attacker, &mut defender, raid_cmd("a", "b", "r1"))
-            .unwrap();
-        let err = shard
-            .raid(&mut attacker, &mut defender, raid_cmd("a", "b", "r2"))
-            .unwrap_err();
-        assert!(matches!(
-            err,
-            ShardError::AttackCapped { identity, .. } if identity == "a"
-        ));
-    }
-
-    #[test]
-    fn shard_raid_applies_plunder_share_then_cap() {
-        let mut shard = raid_session(1_000, 0, 3);
-        let mut attacker = armed(1_000, 20);
-        let mut defender = armed(1_000, 1);
-        defender.resources.iron = 200.0;
-        defender.config.raid.plunder_share = 0.5;
-        defender.config.raid.plunder_cap = Resources::from_parts(40.0, 0.0, 0.0);
-        defender.config.raid.protected_share = 0.0;
-        let stock = defender.resources;
-        let reachable = defender.plunderable();
-        let before = attacker.resources;
-        let result = shard
-            .raid(&mut attacker, &mut defender, raid_cmd("a", "b", "loot"))
-            .unwrap();
-        assert_eq!(result.report.winner, CombatWinner::Attacker);
-        let expected = plunder_from(reachable, 0.5, defender.config.raid.plunder_cap);
-        assert_eq!(result.plunder, expected);
-        assert_eq!(result.plunder.iron, 40.0);
-        assert_eq!(attacker.resources, before.saturating_add(expected));
-        assert_eq!(defender.resources, stock.saturating_sub(expected));
-    }
-
     const B_HOME: Coord = Coord {
         galaxy: 1,
         system: 9,
@@ -2580,49 +2608,6 @@ mod tests {
     }
 
     #[test]
-    fn planet_raid_dest_refuses_tenant_outpost_and_site() {
-        let mut shard = raid_session(1_000, 0, 3);
-        let mut attacker = armed(1_000, 20);
-        let mut defender = armed(1_000, 1);
-        defender.home = B_HOME;
-        let atk = attacker.fleet.get(ShipKind::LightFighter);
-        let def = defender.fleet.get(ShipKind::LightFighter);
-        let mut empires = BTreeMap::new();
-        empires.insert("a".into(), attacker.clone());
-        empires.insert("b".into(), defender.clone());
-        place_sites(&mut shard);
-        for (dest, id, kind) in [
-            (B_HOME, "home", Occupancy::Tenant),
-            (pirate_coord(), "outpost", Occupancy::Outpost),
-            (site_coord(), "site", Occupancy::Site),
-        ] {
-            let err = shard
-                .raid_planet(
-                    &mut attacker,
-                    &mut defender,
-                    dest,
-                    &empires,
-                    raid_cmd("a", "b", id),
-                )
-                .unwrap_err();
-            assert_eq!(err, ShardError::Occupied { coord: dest, kind });
-            assert_eq!(attacker.fleet.get(ShipKind::LightFighter), atk);
-            assert_eq!(defender.fleet.get(ShipKind::LightFighter), def);
-        }
-        let result = shard
-            .raid_planet(
-                &mut attacker,
-                &mut defender,
-                empty_slot(),
-                &empires,
-                raid_cmd("a", "b", "empty"),
-            )
-            .unwrap();
-        assert_eq!(result.report.winner, CombatWinner::Attacker);
-        assert!(defender.fleet.get(ShipKind::LightFighter) < def);
-    }
-
-    #[test]
     fn tenant_view_json_tags_occupancy_without_the_other_identity() {
         let mut shard = session(1_000);
         place_sites(&mut shard);
@@ -2778,85 +2763,6 @@ mod tests {
         let dump = format!("{list:?}");
         assert!(!dump.contains("tenant-b"), "{dump}");
         assert!(!dump.contains(&format!("{B_IRON}")), "{dump}");
-    }
-
-    /// Attacker at B_HOME with battleships, defender at home with fighters.
-    fn raided(
-        atk_battleships: u32,
-        def_fighters: u32,
-    ) -> (
-        ShardSession<FakeClock>,
-        BTreeMap<String, GameState>,
-        ShardRaidResult,
-    ) {
-        let mut shard = raid_session(1_000, 0, 3);
-        let mut attacker = armed(1_000, 0);
-        attacker.home = B_HOME;
-        attacker.fleet.add(ShipKind::Battleship, atk_battleships);
-        let mut defender = armed(1_000, def_fighters);
-        defender.config.moons.form_chance_per_debris = 0.0;
-        let result = shard
-            .raid(&mut attacker, &mut defender, raid_cmd("a", "b", "r1"))
-            .unwrap();
-        let mut empires = BTreeMap::new();
-        empires.insert("a".to_string(), attacker);
-        empires.insert("b".to_string(), defender);
-        (shard, empires, result)
-    }
-
-    #[test]
-    fn defender_view_names_losses_plunder_and_debris_not_the_raider_fleet() {
-        let (mut shard, mut empires, result) = raided(20, 2);
-        assert_eq!(result.report.winner, CombatWinner::Attacker);
-        assert!(result.plunder.iron > 0.0);
-        let view = shard.view("b", &mut empires).unwrap();
-        let [raid] = view.raids.as_slice() else {
-            panic!("one raid: {:?}", view.raids);
-        };
-        assert_eq!(raid.at, 1_000);
-        assert_eq!(raid.lost.get(ShipKind::LightFighter), 2);
-        assert_eq!(raid.lost.total(), 2);
-        assert_eq!(raid.plunder, result.plunder);
-        assert!(raid.debris > 0.0);
-        assert_eq!(Some(&raid.debris), shard.commons().debris.get(&Coord::HOME));
-        assert!(empires["b"].debris.is_empty());
-        let text = serde_json::to_string(&view.to_json()).unwrap();
-        assert!(text.contains("\"light_fighter\":2"), "{text}");
-        assert!(!text.contains("battleship"), "{text}");
-        assert_eq!(view.fleet.get(ShipKind::Battleship), 0);
-    }
-
-    #[test]
-    fn held_raid_reports_ships_lost_without_plunder() {
-        let (mut shard, mut empires, result) = raided(1, 40);
-        assert_eq!(result.report.winner, CombatWinner::Defender);
-        assert_eq!(result.plunder, Resources::ZERO);
-        let view = shard.view("b", &mut empires).unwrap();
-        let [raid] = view.raids.as_slice() else {
-            panic!("one raid: {:?}", view.raids);
-        };
-        assert!(raid.lost.get(ShipKind::LightFighter) > 0);
-        assert_eq!(
-            raid.lost,
-            result
-                .report
-                .defender_before
-                .losses_to(result.report.defender_after)
-        );
-        assert_eq!(raid.plunder, Resources::ZERO);
-    }
-
-    #[test]
-    fn raid_aftermath_stays_through_catch_up_and_repeat_reads() {
-        let (mut shard, mut empires, _) = raided(20, 2);
-        shard.clock.advance(3_600);
-        let first = shard.view("b", &mut empires).unwrap();
-        let again = shard.view("b", &mut empires).unwrap();
-        assert_eq!(first.at, 4_600);
-        assert_eq!(first.raids.len(), 1);
-        assert_eq!(first.raids, again.raids);
-        let attacker = shard.view("a", &mut empires).unwrap();
-        assert!(attacker.raids.is_empty());
     }
 
     const SPY_START: u64 = 1_000;
@@ -3125,24 +3031,375 @@ mod tests {
         assert!(shard.commons().debris[&dest].abs() < 1e-9);
     }
 
+    const RAID_START: u64 = 1_000;
+
+    /// Tenant "a" at home with `atk_battleships` and fuel; tenant "b" at
+    /// `B_HOME` with `def_fighters` and no moon roll.
+    fn raid_empires(atk_battleships: u32, def_fighters: u32) -> BTreeMap<String, GameState> {
+        let mut a = armed(RAID_START, 0);
+        a.fleet.add(ShipKind::Battleship, atk_battleships);
+        a.resources.deuterium = 5_000.0;
+        let mut b = armed(RAID_START, def_fighters);
+        b.home = B_HOME;
+        b.config.moons.form_chance_per_debris = 0.0;
+        let mut empires = BTreeMap::new();
+        empires.insert("a".to_string(), a);
+        empires.insert("b".to_string(), b);
+        empires
+    }
+
+    fn raid_cmd(battleships: u32, dest: Coord, id: &str) -> ShardRaid {
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::Battleship, battleships);
+        ShardRaid {
+            identity: "a".into(),
+            idempotency_id: id.into(),
+            ships,
+            dest,
+            speed_percent: 100,
+        }
+    }
+
+    /// Launch all of a's battleships at b's home. Returns the arrival.
+    fn launch(
+        shard: &mut ShardSession<FakeClock>,
+        empires: &mut BTreeMap<String, GameState>,
+    ) -> u64 {
+        let battleships = empires["a"].fleet.get(ShipKind::Battleship);
+        shard
+            .launch_raid(empires, raid_cmd(battleships, B_HOME, "r1"))
+            .unwrap();
+        action_at(&empires["a"].missions[0]).unwrap()
+    }
+
+    #[test]
+    fn raid_fights_once_at_arrival_and_the_defender_view_lists_it() {
+        let mut shard = raid_session(RAID_START, 0, 3);
+        let mut empires = raid_empires(20, 2);
+        let arrive = launch(&mut shard, &mut empires);
+        let mission = &empires["a"].missions[0];
+        assert!(mission.attack);
+        assert_eq!(mission.hold_secs, 0);
+        assert!(mission.fuel_paid > 0.0);
+        assert!(arrive > RAID_START);
+
+        shard.clock.set(arrive - 1);
+        let early = shard.view("b", &mut empires).unwrap();
+        assert!(early.raids.is_empty());
+        assert_eq!(early.fleet.get(ShipKind::LightFighter), 2);
+
+        shard.clock.set(arrive);
+        let a = empires.get_mut("a").unwrap();
+        assert_eq!(
+            shard.submit(a, build_cmd("a", "build", None)),
+            Err(ShardError::Unsettled {
+                identity: "a".into()
+            })
+        );
+        let view = shard.view("b", &mut empires).unwrap();
+        let [raid] = view.raids.as_slice() else {
+            panic!("one raid: {:?}", view.raids);
+        };
+        assert_eq!(raid.at, arrive);
+        assert_eq!(raid.lost.get(ShipKind::LightFighter), 2);
+        assert_eq!(raid.lost.total(), 2);
+        assert!(raid.plunder.iron > 0.0);
+        assert_eq!(raid.plunder, empires["a"].missions[0].cargo);
+        assert!(raid.debris > 0.0);
+        assert_eq!(Some(&raid.debris), shard.commons().debris.get(&B_HOME));
+        assert!(empires["b"].debris.is_empty());
+        let text = serde_json::to_string(&view.to_json()).unwrap();
+        assert!(text.contains("\"light_fighter\":2"), "{text}");
+        assert!(!text.contains("battleship"), "{text}");
+        assert_eq!(shard.view("b", &mut empires).unwrap().raids, view.raids);
+        assert!(shard.view("a", &mut empires).unwrap().raids.is_empty());
+    }
+
+    #[test]
+    fn raid_matches_the_single_player_resolver_at_arrival() {
+        let mut shard = raid_session(RAID_START, 0, 3);
+        let mut empires = raid_empires(8, 30);
+        let arrive = launch(&mut shard, &mut empires);
+        let mut target = empires["b"].clone();
+        target.catch_up(arrive);
+        let a = &empires["a"];
+        let mut rng = target.rng_seed;
+        let expected = resolve_combat(
+            a.missions[0].ships,
+            target.fleet,
+            &stats_from_catalog(&a.config.ships),
+            &stats_from_catalog(&target.config.ships),
+            a.config.raid.max_rounds,
+            &rapid_fire_table(&a.config.ships),
+            &mut rng,
+        );
+        shard.clock.set(arrive);
+        shard.settle(&mut empires);
+        let b = &empires["b"];
+        assert_eq!(b.combat_logs.last().map(|log| &log.report), Some(&expected));
+        assert_eq!(b.fleet, expected.defender_after);
+        assert_eq!(b.rng_seed, rng);
+        let survivors = empires["a"].missions.first().map(|mission| mission.ships);
+        let expected_survivors =
+            (!expected.attacker_after.is_empty()).then_some(expected.attacker_after);
+        assert_eq!(survivors, expected_survivors);
+    }
+
+    #[test]
+    fn held_raid_loses_ships_and_takes_nothing() {
+        let mut shard = raid_session(RAID_START, 0, 3);
+        let mut empires = raid_empires(1, 40);
+        let arrive = launch(&mut shard, &mut empires);
+        shard.clock.set(arrive);
+        let view = shard.view("b", &mut empires).unwrap();
+        let [raid] = view.raids.as_slice() else {
+            panic!("one raid: {:?}", view.raids);
+        };
+        let log = empires["b"].combat_logs.last().unwrap();
+        assert_eq!(log.report.winner, CombatWinner::Defender);
+        assert_eq!(
+            raid.lost,
+            log.report
+                .defender_before
+                .losses_to(log.report.defender_after)
+        );
+        assert_eq!(raid.plunder, Resources::ZERO);
+        assert!(empires["a"].missions.is_empty());
+    }
+
+    #[test]
+    fn survivors_land_the_plunder_at_home_on_return() {
+        let mut shard = raid_session(RAID_START, 0, 3);
+        let mut empires = raid_empires(20, 2);
+        let arrive = launch(&mut shard, &mut empires);
+        shard.clock.set(arrive);
+        shard.settle(&mut empires);
+        let mission = &empires["a"].missions[0];
+        assert_eq!(mission.phase, MissionPhase::Return);
+        let (plunder, back) = (mission.cargo, mission.phase_ends_at);
+        assert!(plunder.iron > 0.0);
+
+        shard.clock.set(back - 1);
+        shard.settle(&mut empires);
+        let mut unladen = empires["a"].clone();
+        unladen.missions[0].cargo = Resources::ZERO;
+        unladen.catch_up(back);
+        shard.clock.set(back);
+        shard.settle(&mut empires);
+        let a = &empires["a"];
+        assert!(a.missions.is_empty());
+        assert_eq!(a.fleet.get(ShipKind::Battleship), 20);
+        for kind in crate::ResourceKind::ALL {
+            let landed = a.resources.get(kind) - unladen.resources.get(kind);
+            assert!((landed - plunder.get(kind)).abs() < 1e-6, "{kind:?}");
+        }
+    }
+
+    /// Both empires after launching at `RAID_START` and viewing at `steps`.
+    fn raid_run(steps: &[u64]) -> BTreeMap<String, GameState> {
+        let mut shard = raid_session(RAID_START, 0, 3);
+        let mut empires = raid_empires(20, 2);
+        launch(&mut shard, &mut empires);
+        for &at in steps {
+            shard.clock.set(at);
+            shard.view("a", &mut empires).unwrap();
+        }
+        empires
+    }
+
+    #[test]
+    fn raid_catch_up_across_the_flight_matches_stepped_views() {
+        let end = RAID_START + 48 * 3_600;
+        let once = raid_run(&[end]);
+        let steps: Vec<u64> = (RAID_START + 7..end).step_by(397).chain([end]).collect();
+        let stepped = raid_run(&steps);
+        assert!(once["a"].missions.is_empty());
+        for id in ["a", "b"] {
+            let (x, y) = (&once[id], &stepped[id]);
+            assert_eq!(x.fleet, y.fleet, "{id}");
+            assert_eq!(x.rng_seed, y.rng_seed, "{id}");
+            assert_eq!(x.combat_logs.len(), 1, "{id}");
+            assert_eq!(x.combat_logs[0].report, y.combat_logs[0].report, "{id}");
+            // Production splits float sums at each step; stock may drift in the last bits.
+            for kind in crate::ResourceKind::ALL {
+                assert!(
+                    (x.resources.get(kind) - y.resources.get(kind)).abs() < 1e-6,
+                    "{id} {kind:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_target_submit_waits_for_an_inbound_raid_across_a_restart() {
+        let mut shard = raid_session(RAID_START, 0, 3);
+        let mut empires = raid_empires(20, 2);
+        let arrive = launch(&mut shard, &mut empires);
+        let saved = shard.export_bookkeeping().unwrap();
+        let mut shard = raid_session(RAID_START, 0, 3);
+        shard.restore_bookkeeping(&saved).unwrap();
+        shard.clock.set(arrive);
+        let build = ShardCommand {
+            intent: Intent::Build {
+                planet: B_HOME,
+                building: BuildingKind::MetalMine,
+                actor: Actor::Player,
+            },
+            ..build_cmd("b", "build", None)
+        };
+        let b = empires.get_mut("b").unwrap();
+        let before = b.clone();
+        assert_eq!(
+            shard.submit(b, build.clone()),
+            Err(ShardError::Unsettled {
+                identity: "b".into()
+            })
+        );
+        assert_eq!(*b, before);
+        shard.settle(&mut empires);
+        assert_eq!(empires["b"].combat_logs.len(), 1);
+        let b = empires.get_mut("b").unwrap();
+        shard.submit(b, build).unwrap();
+    }
+
+    #[test]
+    fn recalled_raid_comes_home_without_a_fight() {
+        let mut shard = raid_session(RAID_START, 0, 3);
+        let mut empires = raid_empires(20, 2);
+        let arrive = launch(&mut shard, &mut empires);
+        let id = empires["a"].missions[0].id;
+        shard.clock.set((RAID_START + arrive) / 2);
+        let recall = ShardCommand {
+            identity: "a".into(),
+            idempotency_id: "recall".into(),
+            intent: Intent::Recall { mission: id },
+            client_now_unix: None,
+        };
+        shard.submit(empires.get_mut("a").unwrap(), recall).unwrap();
+        shard.clock.set(arrive + 3_600);
+        let view = shard.view("b", &mut empires).unwrap();
+        assert!(view.raids.is_empty());
+        assert_eq!(view.fleet.get(ShipKind::LightFighter), 2);
+        let a = &empires["a"];
+        assert!(a.missions.is_empty());
+        assert_eq!(a.fleet.get(ShipKind::Battleship), 20);
+        assert!(a.combat_logs.is_empty());
+        assert!(empires["b"].combat_logs.is_empty());
+    }
+
+    #[test]
+    fn raid_refuses_you_empty_outpost_site_and_colony_and_launches_nothing() {
+        let mut shard = raid_session(RAID_START, 0, 1);
+        place_sites(&mut shard);
+        let mut empires = raid_empires(20, 2);
+        let colony = Coord {
+            position: 3,
+            ..B_HOME
+        };
+        let b = empires.remove("b").unwrap();
+        empires.insert("b".into(), with_colony(b, colony));
+        let not_home = |coord, kind| ShardError::NotATenantHome { coord, kind };
+        let refused = [
+            (Coord::HOME, ShardError::SameEmpire),
+            (empty_slot(), not_home(empty_slot(), Occupancy::Empty)),
+            (pirate_coord(), not_home(pirate_coord(), Occupancy::Outpost)),
+            (site_coord(), not_home(site_coord(), Occupancy::Site)),
+            (colony, not_home(colony, Occupancy::Tenant)),
+        ];
+        for (dest, err) in refused {
+            let cmd = raid_cmd(20, dest, &dest.to_string());
+            assert_eq!(shard.launch_raid(&mut empires, cmd), Err(err));
+            assert!(empires["a"].missions.is_empty());
+            assert_eq!(empires["a"].fleet.get(ShipKind::Battleship), 20);
+        }
+        // Refusals spent no attack: the one raid the cap allows still launches.
+        shard
+            .launch_raid(&mut empires, raid_cmd(20, B_HOME, "home"))
+            .unwrap();
+    }
+
+    #[test]
+    fn newbie_protection_blocks_the_launch_then_expires() {
+        let mut shard = raid_session(RAID_START, 3_600, 3);
+        let mut empires = raid_empires(20, 2);
+        assert_eq!(
+            shard.launch_raid(&mut empires, raid_cmd(20, B_HOME, "early")),
+            Err(ShardError::NewbieProtected {
+                identity: "b".into()
+            })
+        );
+        assert!(empires["a"].missions.is_empty());
+        assert_eq!(empires["a"].fleet.get(ShipKind::Battleship), 20);
+        shard.clock.advance(3_600);
+        shard
+            .launch_raid(&mut empires, raid_cmd(20, B_HOME, "later"))
+            .unwrap();
+        assert_eq!(empires["a"].missions.len(), 1);
+    }
+
+    #[test]
+    fn a_retried_raid_launches_once_and_a_new_one_hits_the_attack_cap() {
+        let mut shard = raid_session(RAID_START, 0, 1);
+        let mut empires = raid_empires(20, 2);
+        for _ in 0..2 {
+            shard
+                .launch_raid(&mut empires, raid_cmd(10, B_HOME, "r1"))
+                .unwrap();
+        }
+        assert_eq!(empires["a"].missions.len(), 1);
+        assert_eq!(empires["a"].fleet.get(ShipKind::Battleship), 10);
+        let err = shard
+            .launch_raid(&mut empires, raid_cmd(10, B_HOME, "r2"))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ShardError::AttackCapped { identity, .. } if identity == "a"
+        ));
+        assert_eq!(empires["a"].missions.len(), 1);
+    }
+
+    #[test]
+    fn raid_plunder_takes_the_share_then_cap_into_the_hold() {
+        let mut shard = raid_session(RAID_START, 0, 3);
+        let mut empires = raid_empires(20, 1);
+        let b = empires.get_mut("b").unwrap();
+        b.resources.iron = 200.0;
+        b.config.raid.plunder_share = 0.5;
+        b.config.raid.plunder_cap = Resources::from_parts(40.0, 0.0, 0.0);
+        b.config.raid.protected_share = 0.0;
+        let arrive = launch(&mut shard, &mut empires);
+        let mut target = empires["b"].clone();
+        target.catch_up(arrive);
+        shard.clock.set(arrive);
+        shard.settle(&mut empires);
+        let mission = &empires["a"].missions[0];
+        let expected = fill_hold(
+            plunder_from(target.plunderable(), 0.5, target.config.raid.plunder_cap),
+            empires["a"].cargo_capacity(mission.ships),
+        );
+        assert_eq!(mission.cargo, expected);
+        assert_eq!(expected.iron, 40.0);
+        assert_eq!(
+            empires["b"].resources,
+            target.resources.saturating_sub(expected)
+        );
+    }
+
     #[test]
     fn raid_wreckage_joins_the_shared_pile_for_the_moon_roll() {
-        let mut shard = raid_session(1_000, 0, 3);
-        let mut attacker = armed(1_000, 0);
-        attacker.home = B_HOME;
-        attacker.fleet.add(ShipKind::Battleship, 20);
-        let mut defender = armed(1_000, 2);
-        let moons = &mut defender.config.moons;
+        let mut shard = raid_session(RAID_START, 0, 3);
+        let mut empires = raid_empires(20, 2);
+        let moons = &mut empires.get_mut("b").unwrap().config.moons;
         moons.form_chance_per_debris = 1.0;
         moons.form_chance_cap = 1.0;
         let pile = moons.form_threshold;
-        shard.commons_mut().debris.insert(Coord::HOME, pile);
-        shard
-            .raid(&mut attacker, &mut defender, raid_cmd("a", "b", "r1"))
-            .unwrap();
-        assert!(defender.moon_at(Coord::HOME).is_some());
-        assert_eq!(shard.commons().debris[&Coord::HOME], 0.0);
-        assert!(defender.debris.is_empty());
+        shard.commons_mut().debris.insert(B_HOME, pile);
+        let arrive = launch(&mut shard, &mut empires);
+        shard.clock.set(arrive);
+        shard.settle(&mut empires);
+        assert!(empires["b"].moon_at(B_HOME).is_some());
+        assert_eq!(shard.commons().debris[&B_HOME], 0.0);
+        assert!(empires["b"].debris.is_empty());
     }
 
     #[test]
