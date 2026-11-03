@@ -2911,6 +2911,7 @@ impl App {
                 self.history_pane = HistoryPane::List;
             }
             Screen::Staff => self.revoke_selected_leader(now_unix),
+            Screen::Ops => self.dissolve_ops_vehicle(now_unix),
             Screen::Achievements
             | Screen::Daily
             | Screen::Goals
@@ -2919,7 +2920,6 @@ impl App {
             | Screen::Diplomacy
             | Screen::Laws
             | Screen::Reports
-            | Screen::Ops
             | Screen::Finance
             | Screen::Kpis
             | Screen::Incidents
@@ -3178,7 +3178,10 @@ impl App {
                 Screen::Maintenance => {
                     format!("{select}  {confirm} schedule")
                 }
-                Screen::Ops => select,
+                Screen::Ops => format!(
+                    "{select}  {confirm} plan  {} register  {cancel} dissolve",
+                    k.primary(Binding::Increase)
+                ),
                 Screen::Map => format!(
                     "{}{}{}{} cursor  {confirm} dispatch  {} detail",
                     k.primary(Binding::CursorLeft),
@@ -6421,6 +6424,55 @@ mod tests {
         app.handle_key(KeyCode::Enter, 1_000);
         assert!(app.mission_form.is_none(), "{}", app.status);
         assert_eq!(app.state.planned.len(), 1, "{}", app.status);
+    }
+
+    #[test]
+    fn ops_cancel_dissolves_an_idle_vehicle_back_into_the_parked_fleet() {
+        let mut state = GameState::new(1_000);
+        state.fleet.add(ShipKind::SmallCargo, 2);
+        let parked = state.fleet;
+        let mut app = App::new(state);
+        app.open(Screen::Ops);
+        app.handle_key(KeyCode::Char('+'), 1_000);
+        assert_eq!(app.state.vehicles.len(), 1, "{}", app.status);
+        let text = render_text(&app, 160, 40);
+        assert!(text.contains("x  dissolve"), "{text}");
+        let id = app.state.vehicles[0].id;
+        app.selected = 0;
+        app.handle_key(KeyCode::Char('x'), 1_000);
+        assert!(app.state.vehicles.is_empty(), "{}", app.status);
+        assert_eq!(app.state.fleet, parked);
+        assert_eq!(
+            app.status,
+            format!("dissolved vehicle #{id} at {}", Coord::HOME)
+        );
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn ops_cancel_refuses_to_dissolve_a_vehicle_with_a_planned_mission() {
+        let mut state = GameState::new(1_000);
+        state.fleet.add(ShipKind::SmallCargo, 1);
+        state.resources.deuterium = 5_000.0;
+        let mut app = App::new(state);
+        app.open(Screen::Ops);
+        app.handle_key(KeyCode::Char('+'), 1_000);
+        app.map_position = 2;
+        app.selected = 0;
+        app.handle_key(KeyCode::Enter, 1_000);
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert_eq!(app.state.planned.len(), 1, "{}", app.status);
+        let fleet = app.state.fleet;
+        app.selected = 0;
+        app.handle_key(KeyCode::Char('x'), 1_000);
+        assert_eq!(app.state.vehicles.len(), 1);
+        assert_eq!(app.state.planned.len(), 1);
+        assert_eq!(app.state.fleet, fleet);
+        let id = app.state.vehicles[0].id;
+        assert_eq!(
+            app.status,
+            hoshi_core::PlanError::DoubleBook { id }.to_string()
+        );
     }
 
     #[test]
