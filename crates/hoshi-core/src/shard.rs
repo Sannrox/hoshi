@@ -17,7 +17,7 @@ use crate::clock::Clock;
 use crate::combat::{
     CombatReport, CombatWinner, plunder_from, rapid_fire_table, resolve_combat, stats_from_catalog,
 };
-use crate::fleets::{Coord, MissionPhase};
+use crate::fleets::{Coord, Mission, MissionPhase};
 use crate::intel::IntelFact;
 use crate::intent::{Intent, IntentError, apply, propose};
 use crate::leaders::Actor;
@@ -98,6 +98,17 @@ pub struct ShardSpy {
     pub speed_percent: u8,
 }
 
+/// Recyclers from `identity` to the shared debris at `dest`. See
+/// [`ShardSession::recycle`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShardRecycle {
+    pub identity: String,
+    pub idempotency_id: String,
+    pub ships: Fleet,
+    pub dest: Coord,
+    pub speed_percent: u8,
+}
+
 /// Combat report plus plunder moved from defender to attacker.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShardRaidResult {
@@ -137,9 +148,9 @@ pub struct ShardRaidAftermath {
     pub debris: f64,
 }
 
-/// Pirate outposts and open expedition sites. Sites stay empty until that
-/// catalog exists. These lists are the shard map, not each save's private
-/// outpost table.
+/// Pirate outposts and open expedition sites, borrowed from
+/// [`ShardCommons`]. Sites stay empty until that catalog exists. These
+/// lists are the shard map, not each save's private outpost table.
 #[derive(Debug, Clone, Copy)]
 pub struct ShardSites<'a> {
     pub outposts: &'a [Coord],
@@ -153,6 +164,89 @@ impl ShardSites<'static> {
             outposts: &[],
             sites: &[],
         }
+    }
+}
+
+/// What sits on the shard map and belongs to no tenant: pirate outposts,
+/// open sites, and battle debris per coord.
+///
+/// The [`ShardSession`] holds the shard's one copy, so every tenant reads
+/// the same outpost and the same debris stock. A tenant save keeps no shard
+/// debris: each catch-up lends the stock to one tenant at a time and takes
+/// it back with that tenant's harvests and new wreckage. The host persists
+/// [`Self::to_bytes`] beside the tenant saves and puts it back with
+/// [`ShardSession::commons_mut`] on restart.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ShardCommons {
+    pub outposts: Vec<Coord>,
+    pub sites: Vec<Coord>,
+    pub debris: BTreeMap<Coord, f64>,
+}
+
+const COMMONS_VERSION: u32 = 1;
+
+#[derive(Serialize, Deserialize)]
+struct CommonsDoc {
+    version: u32,
+    outposts: Vec<[u16; 3]>,
+    sites: Vec<[u16; 3]>,
+    debris: Vec<([u16; 3], f64)>,
+}
+
+fn coord_row(coord: Coord) -> [u16; 3] {
+    [coord.galaxy, coord.system, coord.position]
+}
+
+fn row_coord([galaxy, system, position]: [u16; 3]) -> Coord {
+    Coord {
+        galaxy,
+        system,
+        position,
+    }
+}
+
+impl ShardCommons {
+    /// Occupancy view of the outposts and sites.
+    pub fn sites(&self) -> ShardSites<'_> {
+        ShardSites {
+            outposts: &self.outposts,
+            sites: &self.sites,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Result<Vec<u8>, ShardError> {
+        let doc = CommonsDoc {
+            version: COMMONS_VERSION,
+            outposts: self.outposts.iter().copied().map(coord_row).collect(),
+            sites: self.sites.iter().copied().map(coord_row).collect(),
+            debris: self
+                .debris
+                .iter()
+                .map(|(&coord, &amount)| (coord_row(coord), amount))
+                .collect(),
+        };
+        serde_json::to_vec(&doc).map_err(|e| ShardError::Commons(e.to_string()))
+    }
+
+    /// Read bytes from [`Self::to_bytes`]. Another version is refused.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, ShardError> {
+        let doc: CommonsDoc =
+            serde_json::from_slice(bytes).map_err(|e| ShardError::Commons(e.to_string()))?;
+        if doc.version != COMMONS_VERSION {
+            return Err(ShardError::Commons(format!(
+                "version {} is not {COMMONS_VERSION}",
+                doc.version
+            )));
+        }
+        Ok(Self {
+            outposts: doc.outposts.into_iter().map(row_coord).collect(),
+            sites: doc.sites.into_iter().map(row_coord).collect(),
+            debris: doc
+                .debris
+                .into_iter()
+                .map(|(row, amount)| (row_coord(row), amount))
+                .collect(),
+        })
     }
 }
 
@@ -363,6 +457,14 @@ pub enum ShardError {
     ColonizeNeedsMap,
     /// Restored bookkeeping bytes are not a version this build reads.
     Bookkeeping(String),
+    /// Restored commons bytes are not a version this build reads.
+    Commons(String),
+    /// A colony or recycler of `identity` arrives by the host clock. A lone
+    /// catch-up cannot see the shard map, so the host calls
+    /// [`ShardSession::settle`] first and retries.
+    Unsettled {
+        identity: String,
+    },
     /// The home walk has no `Empty` slot left.
     NoEmptySlot,
     /// `identity` already has a home elsewhere on the shard.
@@ -409,6 +511,10 @@ impl fmt::Display for ShardError {
                 write!(f, "colonize needs the shard map")
             }
             ShardError::Bookkeeping(msg) => write!(f, "shard bookkeeping: {msg}"),
+            ShardError::Commons(msg) => write!(f, "shard commons: {msg}"),
+            ShardError::Unsettled { identity } => {
+                write!(f, "{identity} has an arrival due; settle the shard first")
+            }
             ShardError::NoEmptySlot => write!(f, "shard map has no empty slot"),
             ShardError::AlreadySeated { identity } => {
                 write!(f, "{identity} already has a home on the shard")
@@ -470,6 +576,7 @@ pub struct ShardSession<C> {
     attacks: BTreeMap<String, Vec<u64>>,
     /// Host time of the last full prune. See [`Self::prune_due`].
     pruned_at: u64,
+    commons: ShardCommons,
 }
 
 impl<C: Clock> ShardSession<C> {
@@ -482,7 +589,18 @@ impl<C: Clock> ShardSession<C> {
             seen: BTreeMap::new(),
             attacks: BTreeMap::new(),
             pruned_at: 0,
+            commons: ShardCommons::default(),
         }
+    }
+
+    /// The shard map's outposts, sites, and debris.
+    pub fn commons(&self) -> &ShardCommons {
+        &self.commons
+    }
+
+    /// Place outposts and sites, or restore the commons on restart.
+    pub fn commons_mut(&mut self) -> &mut ShardCommons {
+        &mut self.commons
     }
 
     pub fn now_unix(&self) -> u64 {
@@ -502,7 +620,9 @@ impl<C: Clock> ShardSession<C> {
     /// `cmd.client_now_unix` is accepted so a caller can send a wall clock
     /// and is never read. `Intent::Colonize` is refused: this method has one
     /// empire, so it cannot see another tenant, a pirate outpost, or a site.
-    /// Hosts call [`Self::colonize`].
+    /// Hosts call [`Self::colonize`]. A colony or recycler arrival due by the
+    /// host clock is refused as [`ShardError::Unsettled`] before anything
+    /// moves.
     pub fn submit(&mut self, state: &mut GameState, cmd: ShardCommand) -> Result<(), ShardError> {
         state
             .require_fair_play()
@@ -528,10 +648,18 @@ impl<C: Clock> ShardSession<C> {
         if self.is_seen(&seen_key, now) {
             return Ok(());
         }
+        if race_due(state, now) {
+            return Err(ShardError::Unsettled {
+                identity: cmd.identity,
+            });
+        }
         self.admit(&cmd.identity, now)?;
-        state.catch_up(now);
-        let proposal = propose(state, &cmd.intent, now).map_err(ShardError::Intent)?;
-        apply(state, &proposal, now).map_err(ShardError::Intent)?;
+        with_shared_debris(&mut self.commons.debris, state, |state| {
+            state.catch_up(now);
+            let proposal = propose(state, &cmd.intent, now)?;
+            apply(state, &proposal, now)
+        })
+        .map_err(ShardError::Intent)?;
         self.seen.insert(seen_key, now);
         Ok(())
     }
@@ -562,6 +690,8 @@ impl<C: Clock> ShardSession<C> {
     /// The defender's save logs the fight as a raid on home, with plunder,
     /// and takes the debris at its home coord. Its next [`Self::view`]
     /// reads that log. The attacker learns its plunder from the result.
+    /// Like [`Self::submit`], a colony or recycler arrival due on either
+    /// empire is refused as [`ShardError::Unsettled`].
     pub fn raid(
         &mut self,
         attacker: &mut GameState,
@@ -591,8 +721,19 @@ impl<C: Clock> ShardSession<C> {
                 plunder: Resources::ZERO,
             });
         }
-        attacker.catch_up(now);
-        defender.catch_up(now);
+        for (identity, state) in [
+            (&cmd.attacker_id, &*attacker),
+            (&cmd.defender_id, &*defender),
+        ] {
+            if race_due(state, now) {
+                return Err(ShardError::Unsettled {
+                    identity: identity.clone(),
+                });
+            }
+        }
+        for state in [&mut *attacker, &mut *defender] {
+            with_shared_debris(&mut self.commons.debris, state, |state| state.catch_up(now));
+        }
         if now.saturating_sub(defender.prestige.current.started_at) < self.config.newbie_secs {
             return Err(ShardError::NewbieProtected {
                 identity: cmd.defender_id,
@@ -628,7 +769,9 @@ impl<C: Clock> ShardSession<C> {
         if let Some(log) = defender.combat_logs.last_mut() {
             log.raid_plunder = Some(plunder);
         }
-        defender.note_fight_debris(now, defender.home, &report);
+        with_shared_debris(&mut self.commons.debris, defender, |defender| {
+            defender.note_fight_debris(now, defender.home, &report);
+        });
         self.seen.insert(seen_key, now);
         Ok(ShardRaidResult { report, plunder })
     }
@@ -643,10 +786,9 @@ impl<C: Clock> ShardSession<C> {
         defender: &mut GameState,
         dest: Coord,
         empires: &BTreeMap<String, GameState>,
-        sites: ShardSites<'_>,
         cmd: ShardRaid,
     ) -> Result<ShardRaidResult, ShardError> {
-        let kind = occupancy(&cmd.attacker_id, empires, sites, dest);
+        let kind = occupancy(&cmd.attacker_id, empires, self.commons.sites(), dest);
         if kind.blocks_planet_dest() {
             return Err(ShardError::Occupied { coord: dest, kind });
         }
@@ -658,14 +800,14 @@ impl<C: Clock> ShardSession<C> {
     /// Refusal happens before `propose` / `apply`, so a taken coord does not
     /// launch a colony ship. An empty coord uses the same colonize intent as
     /// local play. The check does not reserve the dest: a second colonize of
-    /// that still-empty coord also launches, and each empire settles its own
-    /// mission. Join is not this method: a host calls [`place_home`] and
-    /// [`seat_home`].
+    /// that still-empty coord also launches. At arrival the host checks
+    /// again (see [`Self::settle`]): the first arrival founds, a later one
+    /// turns back with its colony ship. Join is not this method: a host
+    /// calls [`place_home`] and [`seat_home`].
     pub fn colonize(
         &mut self,
         identity: &str,
         empires: &mut BTreeMap<String, GameState>,
-        sites: ShardSites<'_>,
         dest: Coord,
         speed_percent: u8,
         idempotency_id: &str,
@@ -697,8 +839,8 @@ impl<C: Clock> ShardSession<C> {
                 .require_fair_play()
                 .map_err(|e| ShardError::Intent(IntentError::Cheat(e)))?;
         }
-        catch_up_empires(empires, now);
-        let kind = occupancy(identity, empires, sites, dest);
+        catch_up_empires(empires, &mut self.commons, now);
+        let kind = occupancy(identity, empires, self.commons.sites(), dest);
         if kind.blocks_planet_dest() {
             return Err(ShardError::Occupied { coord: dest, kind });
         }
@@ -731,7 +873,6 @@ impl<C: Clock> ShardSession<C> {
     pub fn spy(
         &mut self,
         empires: &mut BTreeMap<String, GameState>,
-        sites: ShardSites<'_>,
         cmd: ShardSpy,
     ) -> Result<(), ShardError> {
         let identity = cmd.identity.as_str();
@@ -755,8 +896,8 @@ impl<C: Clock> ShardSession<C> {
         if self.is_seen(&seen_key, now) {
             return Ok(());
         }
-        catch_up_empires(empires, now);
-        let kind = occupancy(identity, empires, sites, cmd.dest);
+        catch_up_empires(empires, &mut self.commons, now);
+        let kind = occupancy(identity, empires, self.commons.sites(), cmd.dest);
         match kind {
             Occupancy::You => return Err(ShardError::SameEmpire),
             Occupancy::Empty | Occupancy::Site => {
@@ -790,6 +931,68 @@ impl<C: Clock> ShardSession<C> {
         Ok(())
     }
 
+    /// Fly `cmd.identity`'s recyclers to the shared debris at `cmd.dest`
+    /// after catching every empire up at the host clock.
+    ///
+    /// The stock stays on the shard map until arrival, so two tenants may
+    /// launch at one pile. Arrivals harvest in order (see [`Self::settle`]):
+    /// each takes at most its hold from what is left, so the takes sum to
+    /// at most the stock. No debris at `dest` launches nothing.
+    pub fn recycle(
+        &mut self,
+        empires: &mut BTreeMap<String, GameState>,
+        cmd: ShardRecycle,
+    ) -> Result<(), ShardError> {
+        let identity = cmd.identity.as_str();
+        if identity.is_empty() {
+            return Err(ShardError::EmptyIdentity);
+        }
+        if cmd.idempotency_id.is_empty() {
+            return Err(ShardError::EmptyIdempotency);
+        }
+        let Some(state) = empires.get(identity) else {
+            return Err(ShardError::UnknownIdentity {
+                identity: cmd.identity,
+            });
+        };
+        state
+            .require_fair_play()
+            .map_err(|e| ShardError::Intent(IntentError::Cheat(e)))?;
+        let now = self.clock.now_unix();
+        self.prune_due(now);
+        let seen_key = (cmd.identity.clone(), cmd.idempotency_id.clone());
+        if self.is_seen(&seen_key, now) {
+            return Ok(());
+        }
+        catch_up_empires(empires, &mut self.commons, now);
+        self.admit(identity, now)?;
+        let state = empires
+            .get_mut(identity)
+            .ok_or_else(|| ShardError::UnknownIdentity {
+                identity: identity.to_string(),
+            })?;
+        with_shared_debris(&mut self.commons.debris, state, |state| {
+            state.launch_recycle(cmd.dest, cmd.ships, cmd.speed_percent, now)
+        })
+        .map_err(|e| ShardError::Intent(IntentError::Fleet(e)))?;
+        self.seen.insert(seen_key, now);
+        Ok(())
+    }
+
+    /// Catch every empire up at the host clock on the shared map.
+    ///
+    /// Empires step together to each colony and recycler arrival, in time
+    /// order and, at one instant, in identity order. A colony ship whose
+    /// dest another tenant, an outpost, or a site holds by then turns back
+    /// with the ship; the first arrival founds. A recycler harvests the
+    /// shared stock that earlier arrivals left. [`Self::view`],
+    /// [`Self::colonize`], [`Self::spy`] and [`Self::recycle`] settle first;
+    /// a host calls this before [`Self::submit`] or [`Self::raid`] when they
+    /// refuse with [`ShardError::Unsettled`].
+    pub fn settle(&mut self, empires: &mut BTreeMap<String, GameState>) {
+        catch_up_empires(empires, &mut self.commons, self.clock.now_unix());
+    }
+
     /// Catch every empire up at the host clock, then return `identity`'s view.
     ///
     /// The view is a whitelist: own planets, fleets, and stock, plus spy intel
@@ -797,13 +1000,12 @@ impl<C: Clock> ShardSession<C> {
     /// clearance allows, plus what each logged raid on home took. It has no
     /// RNG, pirate timer, or other tenant's parked fleet and stockpile. Local
     /// play does not call this.
-    /// `sites` is the shard's pirate outposts and open expedition sites.
-    /// The site list stays empty until those sites exist.
+    /// Occupancy reads the session's [`ShardCommons`]. The site list stays
+    /// empty until those sites exist.
     pub fn view(
-        &self,
+        &mut self,
         identity: &str,
         empires: &mut BTreeMap<String, GameState>,
-        sites: ShardSites<'_>,
     ) -> Result<ShardView, ShardError> {
         if identity.is_empty() {
             return Err(ShardError::EmptyIdentity);
@@ -819,8 +1021,8 @@ impl<C: Clock> ShardSession<C> {
                 .require_fair_play()
                 .map_err(|e| ShardError::Intent(crate::IntentError::Cheat(e)))?;
         }
-        catch_up_empires(empires, now);
-        match shard_view(identity, empires, sites) {
+        catch_up_empires(empires, &mut self.commons, now);
+        match shard_view(identity, empires, self.commons.sites()) {
             Some(view) => Ok(view),
             None => Err(ShardError::UnknownIdentity {
                 identity: identity.to_string(),
@@ -1107,30 +1309,85 @@ pub fn targets(
         .collect()
 }
 
-/// Catch every empire up to `now`, stopping at each probe arrival at
-/// another tenant's planet so the host reads that planet as it was then.
+/// Catch every empire up to `now` on the shared map, stopping at each
+/// colony and recycler arrival (see [`ShardSession::settle`]) and at each
+/// probe arrival at another tenant's planet, so the host reads that planet
+/// as it was then.
 ///
 /// One long gap and many short ones read the same numbers. A lone
-/// catch-up (a `submit` or a raid) can run either side past the arrival:
-/// the probe then leaves a pending report, or the target is already ahead.
-/// Either way the report is filled from the target as it is now and stamped
-/// with the target's time, never back-dated to the arrival.
-fn catch_up_empires(empires: &mut BTreeMap<String, GameState>, now: u64) {
-    while let Some(at) = next_tenant_probe(empires, now) {
-        for state in empires.values_mut() {
-            state.catch_up(at);
-        }
+/// catch-up (a `submit` or a raid) can run either side past a probe
+/// arrival: the probe then leaves a pending report, or the target is
+/// already ahead. Either way the report is filled from the target as it is
+/// now and stamped with the target's time, never back-dated to the arrival.
+/// A lone catch-up never runs past a colony or recycler arrival; it is
+/// refused as [`ShardError::Unsettled`].
+fn catch_up_empires(
+    empires: &mut BTreeMap<String, GameState>,
+    commons: &mut ShardCommons,
+    now: u64,
+) {
+    while let Some(at) = next_stop(empires, now) {
+        step_empires(empires, commons, at);
         fill_tenant_spies(empires);
     }
-    for state in empires.values_mut() {
-        state.catch_up(now);
-    }
+    step_empires(empires, commons, now);
     fill_tenant_spies(empires);
 }
 
-/// Earliest Action of a probe flying at a planet its owner does not hold,
-/// due by `now` and not yet reached.
-fn next_tenant_probe(empires: &BTreeMap<String, GameState>, now: u64) -> Option<u64> {
+/// Step each empire to `at` in identity order on the shared map.
+///
+/// Before a tenant steps, its colony ships arriving by `at` at a coord
+/// another tenant, an outpost, or a site holds turn back, so a tenant
+/// earlier in order that founds at the same instant wins the coord. The
+/// shared debris is lent to the tenant for its step and taken back with
+/// its harvests and new wreckage, so the next tenant sees what is left.
+fn step_empires(empires: &mut BTreeMap<String, GameState>, commons: &mut ShardCommons, at: u64) {
+    let identities: Vec<String> = empires.keys().cloned().collect();
+    for identity in &identities {
+        let taken: Vec<u64> = empires
+            .get(identity)
+            .map(|state| {
+                state
+                    .missions
+                    .iter()
+                    .filter(|mission| mission.colonize && due_by(state, mission, at))
+                    .filter(|mission| {
+                        occupancy(identity, empires, commons.sites(), mission.dest)
+                            .blocks_planet_dest()
+                    })
+                    .map(|mission| mission.id)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let Some(state) = empires.get_mut(identity) else {
+            continue;
+        };
+        for id in taken {
+            state.turn_back_colony(id, at);
+        }
+        with_shared_debris(&mut commons.debris, state, |state| state.catch_up(at));
+    }
+}
+
+/// Run `f` on `state` with the shared debris stock in its debris map, then
+/// take the whole map back, harvests and new wreckage included. Moon rolls
+/// and recyclers inside `f` see the full pile at a coord.
+fn with_shared_debris<T>(
+    shared: &mut BTreeMap<Coord, f64>,
+    state: &mut GameState,
+    f: impl FnOnce(&mut GameState) -> T,
+) -> T {
+    for (coord, amount) in std::mem::take(shared) {
+        *state.debris.entry(coord).or_insert(0.0) += amount;
+    }
+    let out = f(state);
+    *shared = std::mem::take(&mut state.debris);
+    out
+}
+
+/// Earliest stop due by `now` and not yet reached: a colony or recycler
+/// Action, or a probe Action at a planet its owner does not hold.
+fn next_stop(empires: &BTreeMap<String, GameState>, now: u64) -> Option<u64> {
     empires
         .values()
         .flat_map(|state| {
@@ -1138,20 +1395,39 @@ fn next_tenant_probe(empires: &BTreeMap<String, GameState>, now: u64) -> Option<
                 .missions
                 .iter()
                 .filter(|mission| {
-                    mission.spy
-                        && state.outpost(mission.dest).is_none()
-                        && !tenant_holds(state, mission.dest)
+                    mission.colonize
+                        || mission.recycle
+                        || (mission.spy
+                            && state.outpost(mission.dest).is_none()
+                            && !tenant_holds(state, mission.dest))
                 })
-                .filter_map(|mission| match mission.phase {
-                    MissionPhase::Outbound => {
-                        Some(mission.phase_ends_at.saturating_add(mission.hold_secs))
-                    }
-                    MissionPhase::Action => Some(mission.phase_ends_at),
-                    MissionPhase::Return => None,
-                })
+                .filter_map(action_at)
                 .filter(|&at| at > state.last_tick_unix && at <= now)
         })
         .min()
+}
+
+/// Whether `state` has a colony or recycler Action due by `now` that its
+/// own catch-up would run without the shard map.
+fn race_due(state: &GameState, now: u64) -> bool {
+    state
+        .missions
+        .iter()
+        .any(|mission| (mission.colonize || mission.recycle) && due_by(state, mission, now))
+}
+
+/// `mission`'s Action is after `state`'s clock and no later than `at`.
+fn due_by(state: &GameState, mission: &Mission, at: u64) -> bool {
+    action_at(mission).is_some_and(|t| t > state.last_tick_unix && t <= at)
+}
+
+/// When `mission`'s Action ends: founding, harvest, or a probe read.
+fn action_at(mission: &Mission) -> Option<u64> {
+    match mission.phase {
+        MissionPhase::Outbound => Some(mission.phase_ends_at.saturating_add(mission.hold_secs)),
+        MissionPhase::Action => Some(mission.phase_ends_at),
+        MissionPhase::Return => None,
+    }
 }
 
 /// Fill every pending probe report from the tenant that holds its target,
@@ -1710,7 +1986,7 @@ mod tests {
         assert!(!debug.contains("tenant-a"), "{debug}");
         assert!(!debug.contains("secret-retry-id"), "{debug}");
         let json = shard
-            .view("tenant-a", &mut empires, ShardSites::none())
+            .view("tenant-a", &mut empires)
             .unwrap()
             .to_json()
             .to_string();
@@ -1974,13 +2250,11 @@ mod tests {
 
     #[test]
     fn tenant_view_hides_the_other_empire_and_simulation_secrets() {
-        let shard = session(1_000);
+        let mut shard = session(1_000);
         let mut a = tenant_a(1_000);
         a.spy_reports.push(spy_on_b(1_000, 1_000));
         let mut empires = two_empires(a, tenant_b(1_000));
-        let view = shard
-            .view("tenant-a", &mut empires, ShardSites::none())
-            .unwrap();
+        let view = shard.view("tenant-a", &mut empires).unwrap();
         assert_eq!(view.identity, "tenant-a");
         assert_eq!(view.home, Coord::HOME);
         assert_eq!(view.resources.iron, 111.0);
@@ -2011,13 +2285,11 @@ mod tests {
 
     #[test]
     fn tenant_view_spy_intel_waits_for_light_delay() {
-        let shard = session(1_000);
+        let mut shard = session(1_000);
         let mut a = tenant_a(1_000);
         a.spy_reports.push(spy_on_b(1_000, 1_000 + 50_000));
         let mut empires = two_empires(a, tenant_b(1_000));
-        let view = shard
-            .view("tenant-a", &mut empires, ShardSites::none())
-            .unwrap();
+        let view = shard.view("tenant-a", &mut empires).unwrap();
         assert!(
             view.intel
                 .iter()
@@ -2027,14 +2299,12 @@ mod tests {
 
     #[test]
     fn tenant_view_catch_up_does_not_leak_hidden_fields() {
-        let shard = session(1_000);
+        let mut shard = session(1_000);
         let a = tenant_a(1_000);
         let b = tenant_b(1_000);
         shard.clock.advance(3_600);
         let mut empires = two_empires(a, b);
-        let view = shard
-            .view("tenant-a", &mut empires, ShardSites::none())
-            .unwrap();
+        let view = shard.view("tenant-a", &mut empires).unwrap();
         assert_eq!(view.at, 4_600);
         assert_eq!(empires["tenant-a"].last_tick_unix, 4_600);
         assert_eq!(empires["tenant-b"].last_tick_unix, 4_600);
@@ -2048,18 +2318,14 @@ mod tests {
 
     #[test]
     fn tenant_view_rejects_empty_and_unknown_identity() {
-        let shard = session(1_000);
+        let mut shard = session(1_000);
         let mut empires = two_empires(tenant_a(1_000), tenant_b(1_000));
         assert_eq!(
-            shard
-                .view("", &mut empires, ShardSites::none())
-                .unwrap_err(),
+            shard.view("", &mut empires).unwrap_err(),
             ShardError::EmptyIdentity
         );
         assert_eq!(
-            shard
-                .view("tenant-z", &mut empires, ShardSites::none())
-                .unwrap_err(),
+            shard.view("tenant-z", &mut empires).unwrap_err(),
             ShardError::UnknownIdentity {
                 identity: "tenant-z".into()
             }
@@ -2080,6 +2346,13 @@ mod tests {
             system: 5,
             position: 5,
         }
+    }
+
+    /// Puts `pirate_coord` and `site_coord` on `shard`'s map.
+    fn place_sites(shard: &mut ShardSession<FakeClock>) {
+        let commons = shard.commons_mut();
+        commons.outposts = vec![pirate_coord()];
+        commons.sites = vec![site_coord()];
     }
 
     fn empty_slot() -> Coord {
@@ -2257,8 +2530,7 @@ mod tests {
         a.resources.deuterium = 10_000.0;
         a.fleet.add(ShipKind::ColonyShip, 1);
         let mut empires = two_empires(a, tenant_b(1_000));
-        let outposts = [pirate_coord()];
-        let sites = [site_coord()];
+        place_sites(&mut shard);
         let refused = [
             (B_HOME, "b-home", Occupancy::Tenant),
             (pirate_coord(), "outpost", Occupancy::Outpost),
@@ -2266,34 +2538,14 @@ mod tests {
         ];
         for (dest, id, kind) in refused {
             let err = shard
-                .colonize(
-                    "tenant-a",
-                    &mut empires,
-                    ShardSites {
-                        outposts: &outposts,
-                        sites: &sites,
-                    },
-                    dest,
-                    100,
-                    id,
-                )
+                .colonize("tenant-a", &mut empires, dest, 100, id)
                 .unwrap_err();
             assert_eq!(err, ShardError::Occupied { coord: dest, kind });
             assert_eq!(empires["tenant-a"].fleet.get(ShipKind::ColonyShip), 1);
             assert!(empires["tenant-a"].missions.is_empty());
         }
         shard
-            .colonize(
-                "tenant-a",
-                &mut empires,
-                ShardSites {
-                    outposts: &outposts,
-                    sites: &sites,
-                },
-                empty_slot(),
-                100,
-                "empty",
-            )
+            .colonize("tenant-a", &mut empires, empty_slot(), 100, "empty")
             .unwrap();
         assert_eq!(empires["tenant-a"].missions.len(), 1);
         let mission = &empires["tenant-a"].missions[0];
@@ -2338,8 +2590,7 @@ mod tests {
         let mut empires = BTreeMap::new();
         empires.insert("a".into(), attacker.clone());
         empires.insert("b".into(), defender.clone());
-        let outposts = [pirate_coord()];
-        let sites = [site_coord()];
+        place_sites(&mut shard);
         for (dest, id, kind) in [
             (B_HOME, "home", Occupancy::Tenant),
             (pirate_coord(), "outpost", Occupancy::Outpost),
@@ -2351,10 +2602,6 @@ mod tests {
                     &mut defender,
                     dest,
                     &empires,
-                    ShardSites {
-                        outposts: &outposts,
-                        sites: &sites,
-                    },
                     raid_cmd("a", "b", id),
                 )
                 .unwrap_err();
@@ -2368,10 +2615,6 @@ mod tests {
                 &mut defender,
                 empty_slot(),
                 &empires,
-                ShardSites {
-                    outposts: &outposts,
-                    sites: &sites,
-                },
                 raid_cmd("a", "b", "empty"),
             )
             .unwrap();
@@ -2381,18 +2624,10 @@ mod tests {
 
     #[test]
     fn tenant_view_json_tags_occupancy_without_the_other_identity() {
-        let shard = session(1_000);
+        let mut shard = session(1_000);
+        place_sites(&mut shard);
         let mut empires = two_empires(tenant_a(1_000), tenant_b(1_000));
-        let view = shard
-            .view(
-                "tenant-a",
-                &mut empires,
-                ShardSites {
-                    outposts: &[pirate_coord()],
-                    sites: &[site_coord()],
-                },
-            )
-            .unwrap();
+        let view = shard.view("tenant-a", &mut empires).unwrap();
         let json = view.to_json();
         let text = serde_json::to_string(&json).unwrap();
         assert!(!text.contains("tenant-b"), "{text}");
@@ -2571,10 +2806,10 @@ mod tests {
 
     #[test]
     fn defender_view_names_losses_plunder_and_debris_not_the_raider_fleet() {
-        let (shard, mut empires, result) = raided(20, 2);
+        let (mut shard, mut empires, result) = raided(20, 2);
         assert_eq!(result.report.winner, CombatWinner::Attacker);
         assert!(result.plunder.iron > 0.0);
-        let view = shard.view("b", &mut empires, ShardSites::none()).unwrap();
+        let view = shard.view("b", &mut empires).unwrap();
         let [raid] = view.raids.as_slice() else {
             panic!("one raid: {:?}", view.raids);
         };
@@ -2583,7 +2818,8 @@ mod tests {
         assert_eq!(raid.lost.total(), 2);
         assert_eq!(raid.plunder, result.plunder);
         assert!(raid.debris > 0.0);
-        assert_eq!(Some(&raid.debris), empires["b"].debris.get(&Coord::HOME));
+        assert_eq!(Some(&raid.debris), shard.commons().debris.get(&Coord::HOME));
+        assert!(empires["b"].debris.is_empty());
         let text = serde_json::to_string(&view.to_json()).unwrap();
         assert!(text.contains("\"light_fighter\":2"), "{text}");
         assert!(!text.contains("battleship"), "{text}");
@@ -2592,10 +2828,10 @@ mod tests {
 
     #[test]
     fn held_raid_reports_ships_lost_without_plunder() {
-        let (shard, mut empires, result) = raided(1, 40);
+        let (mut shard, mut empires, result) = raided(1, 40);
         assert_eq!(result.report.winner, CombatWinner::Defender);
         assert_eq!(result.plunder, Resources::ZERO);
-        let view = shard.view("b", &mut empires, ShardSites::none()).unwrap();
+        let view = shard.view("b", &mut empires).unwrap();
         let [raid] = view.raids.as_slice() else {
             panic!("one raid: {:?}", view.raids);
         };
@@ -2612,14 +2848,14 @@ mod tests {
 
     #[test]
     fn raid_aftermath_stays_through_catch_up_and_repeat_reads() {
-        let (shard, mut empires, _) = raided(20, 2);
+        let (mut shard, mut empires, _) = raided(20, 2);
         shard.clock.advance(3_600);
-        let first = shard.view("b", &mut empires, ShardSites::none()).unwrap();
-        let again = shard.view("b", &mut empires, ShardSites::none()).unwrap();
+        let first = shard.view("b", &mut empires).unwrap();
+        let again = shard.view("b", &mut empires).unwrap();
         assert_eq!(first.at, 4_600);
         assert_eq!(first.raids.len(), 1);
         assert_eq!(first.raids, again.raids);
-        let attacker = shard.view("a", &mut empires, ShardSites::none()).unwrap();
+        let attacker = shard.view("a", &mut empires).unwrap();
         assert!(attacker.raids.is_empty());
     }
 
@@ -2659,9 +2895,7 @@ mod tests {
     fn tenant_spy_reads_noisy_stock_and_fleet_after_light_delay() {
         let mut shard = session(SPY_START);
         let mut empires = spy_empires();
-        shard
-            .spy(&mut empires, ShardSites::none(), spy_cmd(B_HOME, "spy"))
-            .unwrap();
+        shard.spy(&mut empires, spy_cmd(B_HOME, "spy")).unwrap();
         let mission = &empires["tenant-a"].missions[0];
         assert!(mission.spy);
         assert_eq!(mission.hold_secs, 0);
@@ -2670,9 +2904,7 @@ mod tests {
         assert!(delay > 0);
 
         shard.clock.set(arrive + delay - 1);
-        let early = shard
-            .view("tenant-a", &mut empires, ShardSites::none())
-            .unwrap();
+        let early = shard.view("tenant-a", &mut empires).unwrap();
         assert!(
             early
                 .intel
@@ -2691,9 +2923,7 @@ mod tests {
         );
 
         shard.clock.advance(1);
-        let view = shard
-            .view("tenant-a", &mut empires, ShardSites::none())
-            .unwrap();
+        let view = shard.view("tenant-a", &mut empires).unwrap();
         let mut truth = tenant_b(SPY_START);
         truth.catch_up(arrive);
         let IntelValue::Number(iron) = *intel_value(&view, "resources.iron") else {
@@ -2716,14 +2946,10 @@ mod tests {
     fn spy_run(steps: &[u64]) -> (Vec<SpyReport>, u64) {
         let mut shard = session(SPY_START);
         let mut empires = spy_empires();
-        shard
-            .spy(&mut empires, ShardSites::none(), spy_cmd(B_HOME, "spy"))
-            .unwrap();
+        shard.spy(&mut empires, spy_cmd(B_HOME, "spy")).unwrap();
         for &at in steps {
             shard.clock.set(at);
-            shard
-                .view("tenant-a", &mut empires, ShardSites::none())
-                .unwrap();
+            shard.view("tenant-a", &mut empires).unwrap();
         }
         let a = &empires["tenant-a"];
         (a.spy_reports.clone(), a.rng_seed)
@@ -2753,16 +2979,12 @@ mod tests {
     fn tenant_spy_on_a_target_that_ran_ahead_is_stamped_with_its_time() {
         let mut shard = session(SPY_START);
         let mut empires = spy_empires();
-        shard
-            .spy(&mut empires, ShardSites::none(), spy_cmd(B_HOME, "spy"))
-            .unwrap();
+        shard.spy(&mut empires, spy_cmd(B_HOME, "spy")).unwrap();
         let arrive = empires["tenant-a"].missions[0].phase_ends_at;
         let ahead = arrive + 600;
         empires.get_mut("tenant-b").unwrap().catch_up(ahead);
         shard.clock.set(ahead + 60);
-        shard
-            .view("tenant-a", &mut empires, ShardSites::none())
-            .unwrap();
+        shard.view("tenant-a", &mut empires).unwrap();
         let report = &empires["tenant-a"].spy_reports[0];
         assert_eq!(report.created_at, arrive);
         assert_eq!(report.observed_at, ahead);
@@ -2774,12 +2996,7 @@ mod tests {
     fn spy_refuses_own_home_empty_and_site_and_keeps_the_outpost_path() {
         let mut shard = session(SPY_START);
         let mut empires = spy_empires();
-        let outposts = [pirate_coord()];
-        let sites = [site_coord()];
-        let map = ShardSites {
-            outposts: &outposts,
-            sites: &sites,
-        };
+        place_sites(&mut shard);
         let refused = [
             (Coord::HOME, ShardError::SameEmpire),
             (
@@ -2803,7 +3020,7 @@ mod tests {
         ];
         for (dest, err) in refused {
             let id = dest.to_string();
-            assert_eq!(shard.spy(&mut empires, map, spy_cmd(dest, &id)), Err(err));
+            assert_eq!(shard.spy(&mut empires, spy_cmd(dest, &id)), Err(err));
             assert!(empires["tenant-a"].missions.is_empty());
             assert_eq!(empires["tenant-a"].fleet.get(ShipKind::EspionageProbe), 4);
         }
@@ -2812,5 +3029,183 @@ mod tests {
             a.launch_spy(spy_cmd(B_HOME, "local").ships, B_HOME, 100, SPY_START),
             Err(crate::FleetError::UnknownOutpost)
         );
+    }
+
+    /// Tenant-a at home and tenant-b at `B_HOME`, each with fuel, `ships`, and
+    /// room for one colony.
+    fn race_empires(ships: Fleet) -> BTreeMap<String, GameState> {
+        let mut a = test_state(1_000);
+        let mut b = test_state(1_000);
+        b.home = B_HOME;
+        for state in [&mut a, &mut b] {
+            state.resources.deuterium = 100_000.0;
+            state.fleet = ships;
+            state.tech_levels.insert("colonization".into(), 1);
+        }
+        two_empires(a, b)
+    }
+
+    fn one(kind: ShipKind) -> Fleet {
+        let mut ships = Fleet::default();
+        ships.add(kind, 1);
+        ships
+    }
+
+    #[test]
+    fn first_colony_arrival_founds_and_the_second_ship_turns_back() {
+        let mut shard = session(1_000);
+        let mut empires = race_empires(one(ShipKind::ColonyShip));
+        // In tenant-b's system, so tenant-b arrives first though it steps second.
+        let dest = Coord {
+            position: 14,
+            ..B_HOME
+        };
+        for identity in ["tenant-a", "tenant-b"] {
+            shard
+                .colonize(identity, &mut empires, dest, 100, "col")
+                .unwrap();
+        }
+        let arrival = |id: &str| action_at(&empires[id].missions[0]).unwrap();
+        let (a_at, b_at) = (arrival("tenant-a"), arrival("tenant-b"));
+        assert!(b_at < a_at);
+
+        shard.clock.set(a_at);
+        shard.settle(&mut empires);
+        let a = &empires["tenant-a"];
+        let b = &empires["tenant-b"];
+        assert_eq!(b.colonies.len(), 1);
+        assert_eq!(b.colonies[0].coord, dest);
+        assert!(a.colonies.is_empty());
+        let [mission] = a.missions.as_slice() else {
+            panic!("tenant-a mission: {:?}", a.missions);
+        };
+        assert_eq!(mission.phase, MissionPhase::Return);
+        assert_eq!(mission.ships.get(ShipKind::ColonyShip), 1);
+        assert_eq!(
+            occupancy("tenant-a", &empires, shard.commons().sites(), dest),
+            Occupancy::Tenant
+        );
+        assert_eq!(
+            occupancy("tenant-b", &empires, shard.commons().sites(), dest),
+            Occupancy::You
+        );
+    }
+
+    #[test]
+    fn two_recyclers_split_one_debris_stock() {
+        let mut shard = session(1_000);
+        let mut empires = race_empires(one(ShipKind::Recycler));
+        let hold = empires["tenant-a"].cargo_capacity(one(ShipKind::Recycler));
+        let stock = 1.5 * hold;
+        let dest = Coord {
+            position: 14,
+            ..B_HOME
+        };
+        shard.commons_mut().debris.insert(dest, stock);
+        for identity in ["tenant-a", "tenant-b"] {
+            let cmd = ShardRecycle {
+                identity: identity.into(),
+                idempotency_id: "rec".into(),
+                ships: one(ShipKind::Recycler),
+                dest,
+                speed_percent: 100,
+            };
+            shard.recycle(&mut empires, cmd).unwrap();
+        }
+        assert_eq!(shard.commons().debris[&dest], stock);
+        assert!(empires.values().all(|state| state.debris.is_empty()));
+        let a_at = action_at(&empires["tenant-a"].missions[0]).unwrap();
+
+        shard.clock.set(a_at);
+        shard.settle(&mut empires);
+        let taken = |id: &str| empires[id].missions[0].cargo.total();
+        assert_eq!(taken("tenant-b"), hold);
+        assert!((taken("tenant-a") - (stock - hold)).abs() < 1e-9);
+        assert!((taken("tenant-a") + taken("tenant-b") - stock).abs() < 1e-9);
+        assert!(shard.commons().debris[&dest].abs() < 1e-9);
+    }
+
+    #[test]
+    fn raid_wreckage_joins_the_shared_pile_for_the_moon_roll() {
+        let mut shard = raid_session(1_000, 0, 3);
+        let mut attacker = armed(1_000, 0);
+        attacker.home = B_HOME;
+        attacker.fleet.add(ShipKind::Battleship, 20);
+        let mut defender = armed(1_000, 2);
+        let moons = &mut defender.config.moons;
+        moons.form_chance_per_debris = 1.0;
+        moons.form_chance_cap = 1.0;
+        let pile = moons.form_threshold;
+        shard.commons_mut().debris.insert(Coord::HOME, pile);
+        shard
+            .raid(&mut attacker, &mut defender, raid_cmd("a", "b", "r1"))
+            .unwrap();
+        assert!(defender.moon_at(Coord::HOME).is_some());
+        assert_eq!(shard.commons().debris[&Coord::HOME], 0.0);
+        assert!(defender.debris.is_empty());
+    }
+
+    #[test]
+    fn two_tenants_see_the_shard_outpost() {
+        let commons = ShardCommons {
+            outposts: vec![pirate_coord()],
+            ..ShardCommons::default()
+        };
+        let empires = two_empires(tenant_a(1_000), tenant_b(1_000));
+        for identity in ["tenant-a", "tenant-b"] {
+            assert!(
+                targets(identity, &empires, commons.sites()).contains(&ShardTarget {
+                    coord: pirate_coord(),
+                    kind: Occupancy::Outpost,
+                }),
+                "{identity}"
+            );
+        }
+    }
+
+    #[test]
+    fn lone_catch_up_past_an_arrival_waits_for_settle() {
+        let mut shard = session(1_000);
+        let mut empires = race_empires(one(ShipKind::ColonyShip));
+        shard
+            .colonize("tenant-a", &mut empires, empty_slot(), 100, "col")
+            .unwrap();
+        shard
+            .clock
+            .set(action_at(&empires["tenant-a"].missions[0]).unwrap());
+        let a = empires.get_mut("tenant-a").unwrap();
+        let before = a.clone();
+        assert_eq!(
+            shard.submit(a, build_cmd("tenant-a", "build", None)),
+            Err(ShardError::Unsettled {
+                identity: "tenant-a".into()
+            })
+        );
+        assert_eq!(*a, before);
+        shard.settle(&mut empires);
+        assert_eq!(empires["tenant-a"].colonies[0].coord, empty_slot());
+        let a = empires.get_mut("tenant-a").unwrap();
+        shard
+            .submit(a, build_cmd("tenant-a", "build", None))
+            .unwrap();
+    }
+
+    #[test]
+    fn commons_bytes_round_trip_and_refuse_another_version() {
+        let mut commons = ShardCommons {
+            outposts: vec![pirate_coord()],
+            sites: vec![site_coord()],
+            ..ShardCommons::default()
+        };
+        commons.debris.insert(empty_slot(), 42.5);
+        let bytes = commons.to_bytes().unwrap();
+        assert_eq!(ShardCommons::from_bytes(&bytes).unwrap(), commons);
+        let other = String::from_utf8(bytes)
+            .unwrap()
+            .replace("\"version\":1", "\"version\":2");
+        assert!(matches!(
+            ShardCommons::from_bytes(other.as_bytes()),
+            Err(ShardError::Commons(_))
+        ));
     }
 }

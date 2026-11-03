@@ -4620,6 +4620,18 @@ impl GameState {
         }
     }
 
+    /// Shard host: colony mission `id` arrives at `at` on a coord another
+    /// empire, an outpost or a site already holds. Its Action founds nothing
+    /// and the colony ship flies home with the mission.
+    pub(crate) fn turn_back_colony(&mut self, id: u64, at: u64) {
+        let Some(mission) = self.missions.iter_mut().find(|m| m.id == id) else {
+            return;
+        };
+        mission.colonize = false;
+        let dest = mission.dest;
+        self.push_event(at, format!("colony ship found {dest} taken; returning"));
+    }
+
     /// Found a colony at Action, or leave the mission to return.
     fn try_colonize_at(&mut self, index: usize, _done_at: u64) -> bool {
         if !self.missions[index].colonize {
