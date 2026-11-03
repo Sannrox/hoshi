@@ -468,20 +468,7 @@ impl GameState {
             .iter()
             .map(|o| o.coord)
             .min_by_key(|&c| light_delay_secs(c, parent, &self.config.orbits))?;
-        let range = light_range_au(origin, parent, &self.config.orbits);
-        let quality = 1.0 + self.modifier(ModifierKind::Espionage);
-        let error = sensor_error(range, quality, &self.config.espionage);
-        let exact = self.scheduled_raid_ships();
-        let mut rng = self.galaxy_seed ^ lands ^ coord_key(parent);
-        let unit = signed_unit(&mut rng);
-        let mut ships = apply_count_error(exact, error, unit, false, 0.0);
-        if error > 0.0 && ships == exact {
-            ships = if unit < 0.0 && exact > 0 {
-                exact - 1
-            } else {
-                exact.saturating_add(1)
-            };
-        }
+        let ships = self.phalanx_count(self.scheduled_raid_ships(), origin, parent, lands);
         Some(PhalanxContact {
             id: None,
             origin,
@@ -491,6 +478,42 @@ impl GameState {
             ships,
             delay_secs: light_delay_secs(origin, parent, &self.config.orbits),
         })
+    }
+
+    /// Hull count this save's phalanx reads on another tenant's `mission`
+    /// landing at `arrives_at`, from the phalanx moon in range nearest the
+    /// fleet's origin by light-time. `None` when no phalanx covers it. The
+    /// noise matches the announced pirate raid, salted by the arrival.
+    pub(crate) fn phalanx_foreign_ships(&self, mission: &Mission, arrives_at: u64) -> Option<u32> {
+        let range = self.config.moons.phalanx_range_systems;
+        let parent = self
+            .moons
+            .iter()
+            .filter(|moon| moon.phalanx > 0 && in_phalanx_range(moon.parent, mission, range))
+            .map(|moon| moon.parent)
+            .min_by_key(|&parent| light_delay_secs(mission.origin, parent, &self.config.orbits))?;
+        Some(self.phalanx_count(mission.ships.total(), mission.origin, parent, arrives_at))
+    }
+
+    /// `exact` hulls as the phalanx at `parent` reads them from `origin`:
+    /// the probe sensor error over that range, seeded per `salt` and moon so
+    /// rescans agree. A non-zero error never echoes `exact`.
+    fn phalanx_count(&self, exact: u32, origin: Coord, parent: Coord, salt: u64) -> u32 {
+        let range = light_range_au(origin, parent, &self.config.orbits);
+        let quality = 1.0 + self.modifier(ModifierKind::Espionage);
+        let error = sensor_error(range, quality, &self.config.espionage);
+        let mut rng = self.galaxy_seed ^ salt ^ coord_key(parent);
+        let unit = signed_unit(&mut rng);
+        let ships = apply_count_error(exact, error, unit, false, 0.0);
+        if error > 0.0 && ships == exact {
+            if unit < 0.0 && exact > 0 {
+                exact - 1
+            } else {
+                exact.saturating_add(1)
+            }
+        } else {
+            ships
+        }
     }
 }
 
