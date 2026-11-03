@@ -91,6 +91,8 @@ pub struct Detail {
     pub requirements: Vec<RequirementLine>,
     pub unlocks: Vec<String>,
     pub exclusive_warning: Option<String>,
+    /// At the level cap: nothing further to build or research.
+    pub complete: bool,
     pub ship: Option<ShipTravel>,
 }
 
@@ -246,6 +248,7 @@ impl GameState {
             requirements,
             unlocks: unlocks_from_building(self, kind),
             exclusive_warning: None,
+            complete: false,
             ship: None,
         })
     }
@@ -253,8 +256,8 @@ impl GameState {
     fn describe_tech(&self, id: &str) -> Option<Detail> {
         let spec = self.config.techs.get(id)?;
         let level = self.tech_level(id);
+        let complete = spec.at_max(level);
         let cost = spec.cost(level);
-        let duration = spec.duration_secs(level);
         let requirements = spec
             .prereq_buildings
             .iter()
@@ -277,27 +280,45 @@ impl GameState {
                 }
             }))
             .collect();
+        let mut description = format!("{} tier {}", spec.branch.as_key(), spec.tier);
+        match spec.max_level {
+            Some(1) => description.push_str(", single-level pick"),
+            Some(max) => description.push_str(&format!(", max level {max}")),
+            None => {}
+        }
+        // At the cap there is no next level: no cost, time or delta, so each
+        // effect reads its current value on both sides.
+        let next = if complete {
+            level
+        } else {
+            level.saturating_add(1)
+        };
         Some(Detail {
             name: spec.name.clone(),
-            description: format!("{} tier {}", spec.branch.as_key(), spec.tier),
+            description,
             level,
-            costs: material_lines(self, cost),
+            costs: if complete {
+                Vec::new()
+            } else {
+                material_lines(self, cost)
+            },
             energy_draw: None,
             heat: None,
-            duration_secs: Some(duration),
-            afford: Some(afford_eta(self, cost)),
+            duration_secs: (!complete).then(|| spec.duration_secs(level)),
+            afford: (!complete).then(|| afford_eta(self, cost)),
             deltas: spec
                 .modifiers
                 .iter()
                 .map(|m| DeltaLine {
                     label: m.kind.label().to_string(),
                     from: format!("{:.2}", m.per_level * f64::from(level)),
-                    to: format!("{:.2}", m.per_level * f64::from(level.saturating_add(1))),
+                    to: format!("{:.2}", m.per_level * f64::from(next)),
                 })
                 .collect(),
             requirements,
             unlocks: unlocks_from_tech(self, id),
             exclusive_warning: exclusive_warning(self, spec),
+            complete,
             ship: None,
         })
     }
@@ -348,6 +369,7 @@ impl GameState {
             requirements,
             unlocks: Vec::new(),
             exclusive_warning: None,
+            complete: false,
             ship: Some(ShipTravel {
                 speed: stats.speed,
                 fuel_per_unit: stats.fuel,
@@ -375,6 +397,7 @@ impl GameState {
             requirements: vec![self.shipyard_line(spec.shipyard)],
             unlocks: Vec::new(),
             exclusive_warning: None,
+            complete: false,
             ship: None,
         }
     }
@@ -440,6 +463,7 @@ impl GameState {
             requirements,
             unlocks: Vec::new(),
             exclusive_warning: None,
+            complete: false,
             ship: None,
         })
     }
@@ -465,6 +489,7 @@ impl GameState {
             requirements: Vec::new(),
             unlocks: Vec::new(),
             exclusive_warning: None,
+            complete: false,
             ship: None,
         })
     }
@@ -597,6 +622,7 @@ impl GameState {
             requirements,
             unlocks: Vec::new(),
             exclusive_warning: None,
+            complete: false,
             ship: None,
         }
     }
@@ -639,6 +665,7 @@ impl GameState {
             requirements: Vec::new(),
             unlocks: Vec::new(),
             exclusive_warning: None,
+            complete: false,
             ship: None,
         })
     }
@@ -667,6 +694,7 @@ impl GameState {
             requirements: Vec::new(),
             unlocks: Vec::new(),
             exclusive_warning: None,
+            complete: false,
             ship: None,
         })
     }
@@ -697,6 +725,7 @@ impl GameState {
             requirements: Vec::new(),
             unlocks: Vec::new(),
             exclusive_warning: None,
+            complete: false,
             ship: None,
         }
     }
@@ -981,6 +1010,85 @@ mod tests {
             .describe(DetailSubject::Tech("energy".into()), None)
             .unwrap();
         assert_eq!(detail.afford, Some(AffordEta::Never));
+    }
+
+    #[test]
+    fn single_level_tech_reads_complete_once_researched() {
+        let mut state = GameState::with_config(0, quiet());
+        let fresh = state
+            .describe(DetailSubject::Tech("deep_core".into()), None)
+            .unwrap();
+        assert!(!fresh.complete);
+        assert!(
+            fresh.description.ends_with("single-level pick"),
+            "{}",
+            fresh.description
+        );
+        assert_eq!(
+            (fresh.deltas[0].from.as_str(), fresh.deltas[0].to.as_str()),
+            ("0.00", "0.08")
+        );
+        state.tech_levels.insert("deep_core".into(), 1);
+        let done = state
+            .describe(DetailSubject::Tech("deep_core".into()), None)
+            .unwrap();
+        assert!(done.complete);
+        assert!(done.costs.is_empty());
+        assert_eq!((done.duration_secs, done.afford), (None, None));
+        assert_eq!(
+            (done.deltas[0].from.as_str(), done.deltas[0].to.as_str()),
+            ("0.08", "0.08")
+        );
+        let energy = state
+            .describe(DetailSubject::Tech("energy".into()), None)
+            .unwrap();
+        assert!(!energy.complete);
+        assert_ne!(energy.deltas[0].from, energy.deltas[0].to);
+    }
+
+    #[test]
+    fn complete_flag_matches_research_refusal_for_every_capped_tech() {
+        let base = GameState::with_config(0, quiet());
+        let capped: Vec<_> = base
+            .config
+            .techs
+            .iter()
+            .filter_map(|spec| spec.max_level.map(|max| (spec.clone(), max)))
+            .collect();
+        assert!(!capped.is_empty());
+        for (spec, max) in capped {
+            for level in [max - 1, max] {
+                let mut state = base.clone();
+                for _ in 0..state.config.techs.ancient_prestige_runs {
+                    state.prestige.runs.push(crate::RunStats::new(1, 0));
+                }
+                for pre in &spec.prereq_buildings {
+                    state.buildings.set(pre.building, pre.level);
+                }
+                for pre in &spec.prereq_techs {
+                    state.tech_levels.insert(pre.id.clone(), pre.level);
+                }
+                state.tech_levels.insert(spec.id.clone(), level);
+                state.resources = Resources::from_parts(1e12, 1e12, 1e12);
+                let detail = state
+                    .describe(DetailSubject::Tech(spec.id.clone()), None)
+                    .unwrap();
+                let refused = state.start_research(&spec.id, 0);
+                assert_eq!(
+                    detail.complete,
+                    matches!(refused, Err(crate::ResearchError::Complete { .. })),
+                    "{} at {level}: {refused:?}",
+                    spec.id
+                );
+                assert_eq!(detail.complete, level == max, "{}", spec.id);
+                if let Err(crate::ResearchError::Complete { .. }) = &refused {
+                    assert_eq!(
+                        refused.unwrap_err().to_string(),
+                        format!("{} is already complete", spec.name)
+                    );
+                }
+            }
+        }
     }
 
     #[test]

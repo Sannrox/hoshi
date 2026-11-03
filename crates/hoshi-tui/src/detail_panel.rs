@@ -13,7 +13,11 @@ pub fn lines(detail: &Detail) -> Vec<String> {
     let mut rows = vec![
         detail.name.clone(),
         detail.description.clone(),
-        format!("level {}", detail.level),
+        if detail.complete {
+            format!("level {} (max)", detail.level)
+        } else {
+            format!("level {}", detail.level)
+        },
     ];
     if !detail.costs.is_empty() {
         rows.push("cost".into());
@@ -44,7 +48,11 @@ pub fn lines(detail: &Detail) -> Vec<String> {
         });
     }
     for delta in &detail.deltas {
-        rows.push(format!("{}  {} -> {}", delta.label, delta.from, delta.to));
+        rows.push(if detail.complete {
+            format!("{}  {}", delta.label, delta.from)
+        } else {
+            format!("{}  {} -> {}", delta.label, delta.from, delta.to)
+        });
     }
     if !detail.requirements.is_empty() {
         rows.push("requires".into());
@@ -101,12 +109,21 @@ pub fn inspector(
     let mut title = vec![Span::styled(detail.name.clone(), t.strong())];
     if levelled {
         title.push(Span::raw("  "));
-        title.push(tag(
-            t,
-            &format!("LV {} → {}", detail.level, detail.level + 1),
-            Intent::Primary,
-            true,
-        ));
+        title.push(if detail.complete {
+            tag(
+                t,
+                &format!("LV {} (max)", detail.level),
+                Intent::Success,
+                true,
+            )
+        } else {
+            tag(
+                t,
+                &format!("LV {} → {}", detail.level, detail.level + 1),
+                Intent::Primary,
+                true,
+            )
+        });
     }
     let mut out = vec![
         section(t, kind),
@@ -126,7 +143,12 @@ pub fn inspector(
     }
     // An unmet requirement blocks it whatever the stock, so it outranks the ETA.
     let blocked = detail.requirements.iter().any(|r| !r.met);
-    if blocked {
+    if detail.complete {
+        props.push((
+            "Status".into(),
+            Line::from(tag(t, "COMPLETE", Intent::Success, true)),
+        ));
+    } else if blocked {
         props.push((
             "Status".into(),
             Line::from(tag(t, "BLOCKED", Intent::Danger, true)),
@@ -216,10 +238,26 @@ pub fn inspector(
             .unwrap_or(0)
             .max(6);
         out.push(Line::styled(
-            format!("{:<w$} {:>6} {:>6} {:>6}", "EFFECT", "NOW", "NEXT", "Δ"),
+            if detail.complete {
+                format!("{:<w$} {:>6}", "EFFECT", "NOW")
+            } else {
+                format!("{:<w$} {:>6} {:>6} {:>6}", "EFFECT", "NOW", "NEXT", "Δ")
+            },
             t.label(),
         ));
         for (i, d) in detail.deltas.iter().enumerate() {
+            // At the cap there is no next level to compare against.
+            if detail.complete {
+                let mut line = Line::from(vec![
+                    Span::styled(format!("{:<w$} ", d.label), t.muted()),
+                    Span::styled(format!("{:>6}", d.from), t.text()),
+                ]);
+                if i % 2 == 0 {
+                    line = line.style(t.surface(crate::ui::Surface::Stripe));
+                }
+                out.push(line);
+                continue;
+            }
             let change = match (d.from.parse::<f64>(), d.to.parse::<f64>()) {
                 (Ok(a), Ok(b)) if (b - a).abs() > f64::EPSILON => {
                     let diff = b - a;
@@ -335,6 +373,7 @@ mod tests {
             }],
             unlocks: Vec::new(),
             exclusive_warning: None,
+            complete: false,
             ship: None,
         }
     }

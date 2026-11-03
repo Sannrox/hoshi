@@ -3566,6 +3566,15 @@ impl App {
             TechNodeState::Hidden => return Some("prestige".into()),
             _ => {}
         }
+        if self
+            .state
+            .config
+            .techs
+            .get(id)
+            .is_some_and(|spec| spec.at_max(self.state.tech_level(id)))
+        {
+            return Some("complete".into());
+        }
         if let Ok(gaps) = self.state.missing_research_prereqs(id)
             && let Some(gap) = gaps.first()
         {
@@ -5117,6 +5126,35 @@ mod tests {
         app.handle_key(KeyCode::Char('l'), 1_000);
         app.handle_key(KeyCode::Char('l'), 1_000);
         assert_eq!(app.tree_branch, TechBranch::Industry);
+    }
+
+    #[test]
+    fn maxed_tech_row_and_inspector_read_complete() {
+        let mut state = GameState::new(1_000);
+        state.buildings.research_lab = 1;
+        state.tech_levels.insert("energy".into(), 1);
+        state.tech_levels.insert("deep_core".into(), 1);
+        state
+            .exclusive_picks
+            .insert("mining_method".into(), "deep_core".into());
+        let mut app = App::new(state);
+        app.selected = app
+            .overview_techs()
+            .iter()
+            .position(|spec| spec.id == "deep_core")
+            .unwrap();
+        let text = render_text(&app, 160, 48);
+        let row = text
+            .lines()
+            .find(|line| line.contains("Deep-core mining 1"))
+            .unwrap();
+        assert!(row.contains("COMPLETE"), "{row}");
+        assert!(!row.contains("READY"), "{row}");
+        assert!(text.contains("LV 1 (max)"), "{text}");
+        assert!(!text.contains("LV 1 → 2"), "{text}");
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.state.research.is_none());
+        assert_eq!(app.status, "Deep-core mining is already complete");
     }
 
     #[test]
