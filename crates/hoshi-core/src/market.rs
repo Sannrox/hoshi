@@ -432,6 +432,12 @@ impl MarketState {
         self.push_history(cfg);
     }
 
+    /// `good`'s mid in iron, the unit every order prices in.
+    pub fn metal_price(&self, good: ResourceKind) -> f64 {
+        let metal = self.price(ResourceKind::Iron).max(1e-9);
+        (self.price(good) / metal).max(1e-9)
+    }
+
     pub fn shock(&mut self, kind: ResourceKind, relative: f64, cfg: &MarketConfig) {
         if relative == 0.0 || !relative.is_finite() {
             return;
@@ -495,6 +501,57 @@ pub struct RegionMarket {
 }
 
 impl RegionMarket {
+    /// A new region at `coord`, its history seeded with today's prices. The
+    /// hub's NPC warehouse starts with the configured stock.
+    pub(crate) fn open(coord: Coord, prices: &MarketState, cfg: &MarketConfig) -> Self {
+        let mut region = RegionMarket {
+            coord,
+            npc_warehouse: if coord == cfg.hub() {
+                Resources::from_parts(cfg.hub_metal, cfg.hub_crystal, cfg.hub_deuterium)
+            } else {
+                Resources::ZERO
+            },
+            player_warehouse: Resources::ZERO,
+            metal_hist: Vec::new(),
+            crystal_hist: Vec::new(),
+            deuterium_hist: Vec::new(),
+            last_crystal: None,
+            last_deuterium: None,
+        };
+        for kind in ResourceKind::QUOTED {
+            region.push_price(kind, prices.price(kind), cfg.history_len.max(1));
+        }
+        region
+    }
+
+    /// Remember the last fill price for `good` in this region.
+    pub(crate) fn note_fill(&mut self, good: ResourceKind, price: f64) {
+        match good {
+            ResourceKind::Silicon => self.last_crystal = Some(price),
+            ResourceKind::Deuterium | ResourceKind::WaterIce | ResourceKind::Helium3 => {
+                self.last_deuterium = Some(price)
+            }
+            ResourceKind::Iron | ResourceKind::RareEarths => {}
+        }
+    }
+
+    /// Push one tick of history: the last fill price where there was one,
+    /// else the mid from `prices`.
+    pub(crate) fn record_mid(&mut self, prices: &MarketState, cfg: &MarketConfig) {
+        let cap = cfg.history_len.max(1);
+        for kind in ResourceKind::QUOTED {
+            let mid = prices.price(kind);
+            let px = match kind {
+                ResourceKind::Silicon => self.last_crystal.unwrap_or(mid),
+                ResourceKind::Deuterium | ResourceKind::WaterIce | ResourceKind::Helium3 => {
+                    self.last_deuterium.unwrap_or(mid)
+                }
+                ResourceKind::Iron | ResourceKind::RareEarths => mid,
+            };
+            self.push_price(kind, px, cap);
+        }
+    }
+
     pub fn history(&self, kind: ResourceKind) -> &[f64] {
         match kind {
             ResourceKind::Iron | ResourceKind::RareEarths => &self.metal_hist,
@@ -521,11 +578,13 @@ impl RegionMarket {
     }
 }
 
+/// One order on a book. `T` names who placed it: [`TraderId`] on a local
+/// save, a tenant or the NPC on a shard's host book.
 #[derive(Debug, Clone, PartialEq)]
-pub struct RestingOrder {
+pub struct RestingOrder<T = TraderId> {
     pub id: u64,
     pub region: Coord,
-    pub trader: TraderId,
+    pub trader: T,
     pub side: OrderSide,
     pub good: ResourceKind,
     pub remaining: f64,
@@ -566,6 +625,327 @@ pub struct Shipment {
     pub trader: TraderId,
     pub delivered: bool,
 }
+
+/// What a trader asks a book for: `amount` of `good` in `region`, at
+/// `limit` iron each or at market when `None`. A `ttl_secs` of zero takes
+/// `[market].order_ttl_secs`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OrderTicket {
+    pub region: Coord,
+    pub side: OrderSide,
+    pub good: ResourceKind,
+    pub amount: f64,
+    pub limit: Option<f64>,
+    pub ttl_secs: u64,
+}
+
+impl<T> RestingOrder<T> {
+    /// Check `ticket` and open order `id` for `trader` at `now`, with its
+    /// escrow priced off `prices`. Debits nothing: the caller takes
+    /// [`Self::escrow`] from the trader before the order goes on the book.
+    pub(crate) fn open(
+        trader: T,
+        ticket: OrderTicket,
+        id: u64,
+        now: u64,
+        prices: &MarketState,
+        cfg: &MarketConfig,
+    ) -> Result<Self, MarketError> {
+        let good = traded_good(ticket.good)?;
+        if !ticket.amount.is_finite() || ticket.amount <= 0.0 {
+            return Err(MarketError::BadAmount);
+        }
+        let price = match ticket.limit {
+            Some(p) if !p.is_finite() || p <= 0.0 => return Err(MarketError::BadAmount),
+            Some(p) => p,
+            None => match ticket.side {
+                OrderSide::Buy => f64::MAX,
+                OrderSide::Sell => 0.0,
+            },
+        };
+        let (escrow_metal, escrow_good) = match ticket.side {
+            OrderSide::Buy => (
+                buy_escrow(good, ticket.amount, ticket.limit, prices, cfg),
+                0.0,
+            ),
+            OrderSide::Sell => (0.0, ticket.amount),
+        };
+        let ttl = if ticket.ttl_secs == 0 {
+            cfg.order_ttl_secs
+        } else {
+            ticket.ttl_secs
+        };
+        Ok(Self {
+            id,
+            region: ticket.region,
+            trader,
+            side: ticket.side,
+            good,
+            remaining: ticket.amount,
+            price,
+            escrow_metal,
+            escrow_good,
+            created_at: now,
+            expires_at: Some(now.saturating_add(ttl)),
+            is_market: ticket.limit.is_none(),
+        })
+    }
+
+    /// What the order holds from its trader: iron for a buy, the good for a sell.
+    pub(crate) fn escrow(&self) -> Resources {
+        let mut lot = Resources {
+            iron: self.escrow_metal,
+            ..Resources::ZERO
+        };
+        if self.escrow_good > 1e-12 {
+            lot.set(self.good, lot.get(self.good) + self.escrow_good);
+        }
+        lot
+    }
+}
+
+/// One match on a book: `qty` of `good` in `region` at `price` iron each.
+/// `refund` is the iron a limit buyer escrowed above the fill price.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Fill<T> {
+    pub buyer: T,
+    pub seller: T,
+    pub region: Coord,
+    pub good: ResourceKind,
+    pub qty: f64,
+    pub price: f64,
+    pub refund: f64,
+}
+
+impl<T> Fill<T> {
+    /// Iron the seller receives.
+    pub fn metal(&self) -> f64 {
+        self.qty * self.price
+    }
+
+    /// The good the buyer receives.
+    pub fn goods(&self) -> Resources {
+        let mut lot = Resources::ZERO;
+        lot.set(self.good, self.qty);
+        lot
+    }
+}
+
+/// What [`match_order`] did: fills in book order, then the orders it
+/// emptied and took off the book with whatever escrow they still hold.
+pub(crate) struct Matched<T> {
+    pub fills: Vec<Fill<T>>,
+    pub emptied: Vec<RestingOrder<T>>,
+}
+
+/// Match order `incoming_id` against the rest of `orders`, price-time.
+///
+/// An order never trades with its own trader or with one `live` refuses.
+/// Each fill updates both orders' remaining and escrow and moves `prices`
+/// by its trade impact, so the next fill reads the moved mid. Nothing is
+/// credited here: the caller settles each [`Fill`] with its traders and
+/// refunds each emptied order. Local saves and the shard host book share
+/// this path.
+pub(crate) fn match_order<T: Clone + PartialEq>(
+    orders: &mut BTreeMap<u64, RestingOrder<T>>,
+    incoming_id: u64,
+    prices: &mut MarketState,
+    cfg: &MarketConfig,
+    live: impl Fn(&T) -> bool,
+) -> Matched<T> {
+    let mut fills = Vec::new();
+    if let Some(incoming) = orders.get(&incoming_id) {
+        let mut rest: Vec<&RestingOrder<T>> = orders
+            .values()
+            .filter(|o| {
+                o.id != incoming.id
+                    && o.region == incoming.region
+                    && o.good == incoming.good
+                    && o.side != incoming.side
+                    && o.trader != incoming.trader
+                    && live(&o.trader)
+                    && o.remaining > 1e-9
+                    && crosses(incoming, o)
+            })
+            .collect();
+        rest.sort_by(|oa, ob| match incoming.side {
+            OrderSide::Buy => oa
+                .price
+                .partial_cmp(&ob.price)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(oa.id.cmp(&ob.id)),
+            OrderSide::Sell => ob
+                .price
+                .partial_cmp(&oa.price)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(oa.id.cmp(&ob.id)),
+        });
+        let rest: Vec<u64> = rest.into_iter().map(|o| o.id).collect();
+        for rest_id in rest {
+            let (Some(incoming), Some(resting)) = (orders.get(&incoming_id), orders.get(&rest_id))
+            else {
+                break;
+            };
+            if incoming.remaining <= 1e-9 {
+                break;
+            }
+            if resting.remaining <= 1e-9 || !crosses(incoming, resting) {
+                continue;
+            }
+            let price = fill_price(incoming, resting, prices.metal_price(incoming.good));
+            let qty = incoming.remaining.min(resting.remaining);
+            if qty <= 1e-9 || !price.is_finite() || price <= 0.0 {
+                continue;
+            }
+            if let Some(fill) = fill_orders(orders, incoming_id, rest_id, qty, price) {
+                prices.apply_trade_impact(
+                    &TradeQuote {
+                        pay: ResourceKind::Iron,
+                        recv: fill.good,
+                        pay_amount: fill.metal(),
+                        recv_amount: fill.qty,
+                        fee: 0.0,
+                        slip: 0.0,
+                    },
+                    cfg,
+                );
+                fills.push(fill);
+            }
+        }
+    }
+    let gone: Vec<u64> = orders
+        .iter()
+        .filter(|(_, o)| o.remaining <= 1e-9)
+        .map(|(id, _)| *id)
+        .collect();
+    let emptied = gone.iter().filter_map(|id| orders.remove(id)).collect();
+    Matched { fills, emptied }
+}
+
+/// Move `qty` at `price` between two crossing orders, capped by what the
+/// buyer's escrow affords.
+fn fill_orders<T: Clone>(
+    orders: &mut BTreeMap<u64, RestingOrder<T>>,
+    left_id: u64,
+    right_id: u64,
+    mut qty: f64,
+    price: f64,
+) -> Option<Fill<T>> {
+    let left = orders.get(&left_id)?;
+    let (buy_id, sell_id) = if left.side == OrderSide::Buy {
+        (left_id, right_id)
+    } else {
+        (right_id, left_id)
+    };
+    let buy = orders.get(&buy_id)?;
+    let seller = orders.get(&sell_id)?.trader.clone();
+    if !price.is_finite() || price <= 0.0 {
+        return None;
+    }
+    let affordable = buy.escrow_metal / price;
+    if qty > affordable + 1e-12 {
+        qty = affordable;
+    }
+    if qty <= 1e-9 {
+        return None;
+    }
+    let refund = if buy.is_market {
+        0.0
+    } else {
+        ((buy.price - price) * qty).max(0.0)
+    };
+    let fill = Fill {
+        buyer: buy.trader.clone(),
+        seller,
+        region: buy.region,
+        good: buy.good,
+        qty,
+        price,
+        refund,
+    };
+    if let Some(order) = orders.get_mut(&buy_id) {
+        order.remaining = (order.remaining - qty).max(0.0);
+        order.escrow_metal = (order.escrow_metal - fill.metal() - refund).max(0.0);
+    }
+    if let Some(order) = orders.get_mut(&sell_id) {
+        order.remaining = (order.remaining - qty).max(0.0);
+        order.escrow_good = (order.escrow_good - qty).max(0.0);
+    }
+    Some(fill)
+}
+
+/// Iron a buy escrows: the limit times the amount, or at market the
+/// amount at the highest price the band allows.
+fn buy_escrow(
+    good: ResourceKind,
+    amount: f64,
+    limit: Option<f64>,
+    prices: &MarketState,
+    cfg: &MarketConfig,
+) -> f64 {
+    match limit {
+        Some(price) if price.is_finite() && price > 0.0 => amount * price,
+        Some(_) => 0.0,
+        None => amount * prices.metal_price(good) * cfg.max_mult.max(1.0),
+    }
+}
+
+/// `Insufficient` for the first kind `have` cannot cover in `cost`.
+pub(crate) fn covers(have: Resources, cost: Resources) -> Result<(), MarketError> {
+    for kind in ResourceKind::ALL {
+        let need = cost.get(kind);
+        if need > 1e-12 && have.get(kind) + 1e-9 < need {
+            return Err(MarketError::Insufficient {
+                missing: need - have.get(kind),
+                kind,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// The NPC's quotes for `good` at `venue` on a market tick: a sell just
+/// above mid when its warehouse `stock` holds an order's worth, and a buy
+/// just below mid when it holds the iron. Both price off one mid.
+pub(crate) fn npc_tickets(
+    venue: Coord,
+    good: ResourceKind,
+    stock: Resources,
+    prices: &MarketState,
+    cfg: &MarketConfig,
+) -> Vec<OrderTicket> {
+    let size = cfg.npc_order_size;
+    let mid = prices.metal_price(good);
+    let has_good = stock.get(good);
+    let mut tickets = Vec::new();
+    if has_good + 1e-9 >= size {
+        tickets.push(OrderTicket {
+            region: venue,
+            side: OrderSide::Sell,
+            good,
+            amount: size.min(has_good),
+            limit: Some(mid * 1.02),
+            ttl_secs: cfg.order_ttl_secs,
+        });
+    }
+    if stock.iron + 1e-9 >= size * mid * 0.98 {
+        tickets.push(OrderTicket {
+            region: venue,
+            side: OrderSide::Buy,
+            good,
+            amount: size,
+            limit: Some(mid * 0.98),
+            ttl_secs: cfg.order_ttl_secs,
+        });
+    }
+    tickets
+}
+
+/// Goods the NPC quotes on each market tick.
+pub(crate) const NPC_GOODS: [ResourceKind; 2] = [ResourceKind::Silicon, ResourceKind::Deuterium];
+
+/// Live NPC orders a venue keeps before the NPC stops quoting there.
+pub(crate) const NPC_VENUE_ORDERS: usize = 4;
 
 fn clamp_price(price: f64, mean: f64, cfg: &MarketConfig) -> f64 {
     let lo = mean * cfg.min_mult;
@@ -831,83 +1211,42 @@ impl GameState {
             return Err(MarketError::Disabled);
         }
         self.ensure_region(region);
-        let good = traded_good(good)?;
-        if !amount.is_finite() || amount <= 0.0 {
-            return Err(MarketError::BadAmount);
-        }
-        let is_market = limit.is_none();
-        let price = match limit {
-            Some(p) => {
-                if !p.is_finite() || p <= 0.0 {
-                    return Err(MarketError::BadAmount);
-                }
-                p
-            }
-            None => match side {
-                OrderSide::Buy => f64::MAX,
-                OrderSide::Sell => 0.0,
-            },
+        let ticket = OrderTicket {
+            region,
+            side,
+            good,
+            amount,
+            limit,
+            ttl_secs,
         };
-        let (escrow_metal, escrow_good) = match side {
-            OrderSide::Buy => (self.buy_order_escrow(good, amount, limit), 0.0),
-            OrderSide::Sell => (0.0, amount),
-        };
-        let escrow = if side == OrderSide::Buy {
-            Resources {
-                iron: escrow_metal,
-                ..Resources::ZERO
-            }
-        } else {
-            let mut pay = Resources::ZERO;
-            pay.set(good, escrow_good);
-            pay
-        };
-        // An order pays from its region, so a short player says which one.
-        self.debit_trader(trader, region, escrow)
-            .map_err(|err| match err {
-                MarketError::Insufficient { missing, kind } if trader == TraderId::Player => {
-                    MarketError::ShortAt {
-                        missing,
-                        kind,
-                        region,
-                    }
-                }
-                other => other,
-            })?;
-        self.ensure_region(region);
         let id = self.board.next_order_id.max(1);
+        let order = RestingOrder::open(trader, ticket, id, now, &self.market, &self.config.market)?;
+        match trader {
+            TraderId::Player => self.take_order_escrow(region, order.escrow())?,
+            TraderId::Npc => self.debit_trader(trader, region, order.escrow())?,
+        }
         self.board.next_order_id = id.saturating_add(1);
-        let ttl = if ttl_secs == 0 {
-            self.config.market.order_ttl_secs
-        } else {
-            ttl_secs
-        };
-        let expires_at = now.saturating_add(ttl);
-        self.board.orders.insert(
+        let is_market = order.is_market;
+        self.board.orders.insert(id, order);
+        let matched = match_order(
+            &mut self.board.orders,
             id,
-            RestingOrder {
-                id,
-                region,
-                trader,
-                side,
-                good,
-                remaining: amount,
-                price,
-                escrow_metal,
-                escrow_good,
-                created_at: now,
-                expires_at: Some(expires_at),
-                is_market,
-            },
+            &mut self.market,
+            &self.config.market,
+            |_| true,
         );
-        self.match_incoming(id, now);
+        for fill in &matched.fills {
+            self.settle_fill(fill, now);
+        }
+        for order in &matched.emptied {
+            self.refund_order(order);
+        }
         if let Some(order) = self.board.orders.get(&id)
             && order.is_market
             && order.remaining > 1e-9
         {
-            let leftover = order.id;
             let unfilled = (order.remaining - amount).abs() <= 1e-9;
-            self.cancel_order(leftover, now);
+            self.cancel_order(id, now);
             // A player's market order that traded nothing is refused, not
             // reported as placed; the cancel already returned the escrow.
             if unfilled && trader == TraderId::Player {
@@ -915,196 +1254,114 @@ impl GameState {
             }
         }
         if trader == TraderId::Player {
-            self.push_event(
-                now,
-                format!(
-                    "market: {} {} {:.0} {} at {}",
-                    side.as_key(),
-                    if is_market { "market" } else { "limit" },
-                    amount,
-                    good.label(),
-                    region
-                ),
-            );
-            self.record_history(crate::HistoryDraft {
-                at: now,
-                kind: crate::HistoryKind::Trade,
-                actor: "player".into(),
-                action: "place_order".into(),
-                objects: vec![
-                    format!("order:{id}"),
-                    region.to_string(),
-                    good.as_key().into(),
-                ],
-                outcome: side.as_key().into(),
-                ..crate::HistoryDraft::default()
-            });
+            self.note_order_placed(id, ticket, is_market, now);
         }
         Ok(id)
     }
 
-    fn match_incoming(&mut self, incoming_id: u64, now: u64) {
-        let Some(incoming) = self.board.orders.get(&incoming_id).cloned() else {
-            return;
-        };
-        let mut rest: Vec<u64> = self
-            .board
-            .orders
-            .values()
-            .filter(|o| {
-                o.id != incoming.id
-                    && o.region == incoming.region
-                    && o.good == incoming.good
-                    && o.side != incoming.side
-                    && o.trader != incoming.trader
-                    && o.remaining > 1e-9
-                    && crosses(&incoming, o)
+    /// Take a player order's escrow from its region: that planet plus the
+    /// region's warehouse. A short player is told which region.
+    pub(crate) fn take_order_escrow(
+        &mut self,
+        region: Coord,
+        escrow: Resources,
+    ) -> Result<(), MarketError> {
+        self.debit_trader(TraderId::Player, region, escrow)
+            .map_err(|err| match err {
+                MarketError::Insufficient { missing, kind } => MarketError::ShortAt {
+                    missing,
+                    kind,
+                    region,
+                },
+                other => other,
             })
-            .map(|o| o.id)
-            .collect();
-        rest.sort_by(|&a, &b| {
-            let oa = &self.board.orders[&a];
-            let ob = &self.board.orders[&b];
-            match incoming.side {
-                OrderSide::Buy => oa
-                    .price
-                    .partial_cmp(&ob.price)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then(oa.id.cmp(&ob.id)),
-                OrderSide::Sell => ob
-                    .price
-                    .partial_cmp(&oa.price)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then(oa.id.cmp(&ob.id)),
-            }
-        });
-        for rest_id in rest {
-            let Some(incoming) = self.board.orders.get(&incoming_id).cloned() else {
-                break;
-            };
-            if incoming.remaining <= 1e-9 {
-                break;
-            }
-            let Some(resting) = self.board.orders.get(&rest_id).cloned() else {
-                continue;
-            };
-            if resting.remaining <= 1e-9 || !crosses(&incoming, &resting) {
-                continue;
-            }
-            let mid = self.metal_price(incoming.good);
-            let price = fill_price(&incoming, &resting, mid);
-            let qty = incoming.remaining.min(resting.remaining);
-            if qty <= 1e-9 || !price.is_finite() || price <= 0.0 {
-                continue;
-            }
-            self.settle_fill(incoming_id, rest_id, qty, price, now);
-        }
-        self.drop_empty_orders();
     }
 
-    fn settle_fill(&mut self, left_id: u64, right_id: u64, mut qty: f64, price: f64, now: u64) {
-        let (buy_id, sell_id) = {
-            let left = &self.board.orders[&left_id];
-            if left.side == OrderSide::Buy {
-                (left_id, right_id)
-            } else {
-                (right_id, left_id)
-            }
-        };
-        let buy = self.board.orders[&buy_id].clone();
-        let sell = self.board.orders[&sell_id].clone();
-        if !price.is_finite() || price <= 0.0 {
-            return;
-        }
-        let affordable = buy.escrow_metal / price;
-        if qty > affordable + 1e-12 {
-            qty = affordable;
-        }
-        if qty <= 1e-9 {
-            return;
-        }
-        let metal = qty * price;
-        let refund = if buy.is_market {
-            0.0
-        } else {
-            ((buy.price - price) * qty).max(0.0)
-        };
-        if let Some(order) = self.board.orders.get_mut(&buy_id) {
-            order.remaining = (order.remaining - qty).max(0.0);
-            order.escrow_metal = (order.escrow_metal - metal - refund).max(0.0);
-        }
-        if let Some(order) = self.board.orders.get_mut(&sell_id) {
-            order.remaining = (order.remaining - qty).max(0.0);
-            order.escrow_good = (order.escrow_good - qty).max(0.0);
-        }
-        let mut good_lot = Resources::ZERO;
-        good_lot.set(buy.good, qty);
-        self.credit_trader(buy.trader, buy.region, good_lot);
-        if refund > 1e-12 {
+    /// Log the player's new order. A shard host book calls this for the
+    /// placing tenant too.
+    pub(crate) fn note_order_placed(
+        &mut self,
+        id: u64,
+        ticket: OrderTicket,
+        is_market: bool,
+        now: u64,
+    ) {
+        self.push_event(
+            now,
+            format!(
+                "market: {} {} {:.0} {} at {}",
+                ticket.side.as_key(),
+                if is_market { "market" } else { "limit" },
+                ticket.amount,
+                ticket.good.label(),
+                ticket.region
+            ),
+        );
+        self.record_history(crate::HistoryDraft {
+            at: now,
+            kind: crate::HistoryKind::Trade,
+            actor: "player".into(),
+            action: "place_order".into(),
+            objects: vec![
+                format!("order:{id}"),
+                ticket.region.to_string(),
+                ticket.good.as_key().into(),
+            ],
+            outcome: ticket.side.as_key().into(),
+            ..crate::HistoryDraft::default()
+        });
+    }
+
+    fn settle_fill(&mut self, fill: &Fill<TraderId>, now: u64) {
+        self.credit_trader(fill.buyer, fill.region, fill.goods());
+        if fill.refund > 1e-12 {
             self.credit_trader(
-                buy.trader,
-                buy.region,
+                fill.buyer,
+                fill.region,
                 Resources {
-                    iron: refund,
+                    iron: fill.refund,
                     ..Resources::ZERO
                 },
             );
         }
         self.credit_trader(
-            sell.trader,
-            sell.region,
+            fill.seller,
+            fill.region,
             Resources {
-                iron: metal,
+                iron: fill.metal(),
                 ..Resources::ZERO
             },
         );
-        if let Some(region) = self.board.regions.get_mut(&buy.region) {
-            match buy.good {
-                ResourceKind::Silicon => region.last_crystal = Some(price),
-                ResourceKind::Deuterium | ResourceKind::WaterIce | ResourceKind::Helium3 => {
-                    region.last_deuterium = Some(price)
-                }
-                ResourceKind::Iron | ResourceKind::RareEarths => {}
-            }
+        if let Some(region) = self.board.regions.get_mut(&fill.region) {
+            region.note_fill(fill.good, fill.price);
         }
-        let impact = TradeQuote {
-            pay: ResourceKind::Iron,
-            recv: buy.good,
-            pay_amount: metal,
-            recv_amount: qty,
-            fee: 0.0,
-            slip: 0.0,
-        };
-        self.market.apply_trade_impact(&impact, &self.config.market);
-        if buy.trader == TraderId::Player || sell.trader == TraderId::Player {
-            self.apply_faction_delta("traders", |f| f.trade_delta, "trade", now);
-            self.note_daily(crate::DailyAction::Trade, now);
-            self.push_event(
-                now,
-                format!(
-                    "market: fill {:.1} {} @ {:.3} iron in {}",
-                    qty,
-                    buy.good.label(),
-                    price,
-                    buy.region
-                ),
-            );
+        if fill.buyer == TraderId::Player || fill.seller == TraderId::Player {
+            self.note_fill(fill.good, fill.qty, fill.price, fill.region, now);
         }
     }
 
-    fn drop_empty_orders(&mut self) {
-        let gone: Vec<u64> = self
-            .board
-            .orders
-            .iter()
-            .filter(|(_, o)| o.remaining <= 1e-9)
-            .map(|(id, _)| *id)
-            .collect();
-        for id in gone {
-            if let Some(order) = self.board.orders.remove(&id) {
-                self.refund_order(&order);
-            }
-        }
+    /// The player's side of a fill: trader standing, the daily trade, and
+    /// the log line. A shard host book calls this for each tenant side.
+    pub(crate) fn note_fill(
+        &mut self,
+        good: ResourceKind,
+        qty: f64,
+        price: f64,
+        region: Coord,
+        now: u64,
+    ) {
+        self.apply_faction_delta("traders", |f| f.trade_delta, "trade", now);
+        self.note_daily(crate::DailyAction::Trade, now);
+        self.push_event(
+            now,
+            format!(
+                "market: fill {:.1} {} @ {:.3} iron in {}",
+                qty,
+                good.label(),
+                price,
+                region
+            ),
+        );
     }
 
     fn cancel_order(&mut self, id: u64, _now: u64) {
@@ -1380,34 +1637,20 @@ impl GameState {
                 .values()
                 .filter(|o| o.trader == TraderId::Npc && o.region == venue && o.remaining > 1e-9)
                 .count();
-            if live_npc >= 4 {
+            if live_npc >= NPC_VENUE_ORDERS {
                 continue;
             }
-            for good in [ResourceKind::Silicon, ResourceKind::Deuterium] {
-                let mid = self.metal_price(good);
-                let has_good = self.trader_stock(TraderId::Npc, venue).get(good);
-                let has_metal = self.trader_stock(TraderId::Npc, venue).iron;
-                if has_good + 1e-9 >= size {
+            for good in NPC_GOODS {
+                let stock = self.trader_stock(TraderId::Npc, venue);
+                for t in npc_tickets(venue, good, stock, &self.market, &self.config.market) {
                     let _ = self.place_order_as(
                         TraderId::Npc,
-                        venue,
-                        OrderSide::Sell,
-                        good,
-                        size.min(has_good),
-                        Some(mid * 1.02),
-                        self.config.market.order_ttl_secs,
-                        at,
-                    );
-                }
-                if has_metal + 1e-9 >= size * mid * 0.98 {
-                    let _ = self.place_order_as(
-                        TraderId::Npc,
-                        venue,
-                        OrderSide::Buy,
-                        good,
-                        size,
-                        Some(mid * 0.98),
-                        self.config.market.order_ttl_secs,
+                        t.region,
+                        t.side,
+                        t.good,
+                        t.amount,
+                        t.limit,
+                        t.ttl_secs,
                         at,
                     );
                 }
@@ -1456,58 +1699,20 @@ impl GameState {
     }
 
     fn record_region_mids(&mut self) {
-        let cap = self.config.market.history_len.max(1);
-        let mids: Vec<(ResourceKind, f64)> = ResourceKind::QUOTED
-            .iter()
-            .map(|&kind| (kind, self.market.price(kind)))
-            .collect();
         for region in self.board.regions.values_mut() {
-            for (kind, mid) in &mids {
-                let px = match kind {
-                    ResourceKind::Silicon => region.last_crystal.unwrap_or(*mid),
-                    ResourceKind::Deuterium | ResourceKind::WaterIce | ResourceKind::Helium3 => {
-                        region.last_deuterium.unwrap_or(*mid)
-                    }
-                    ResourceKind::Iron | ResourceKind::RareEarths => *mid,
-                };
-                region.push_price(*kind, px, cap);
-            }
+            region.record_mid(&self.market, &self.config.market);
         }
     }
 
     fn ensure_region(&mut self, coord: Coord) {
-        if self.board.regions.contains_key(&coord) {
-            return;
+        if !self.board.regions.contains_key(&coord) {
+            let region = RegionMarket::open(coord, &self.market, &self.config.market);
+            self.board.regions.insert(coord, region);
         }
-        let cap = self.config.market.history_len.max(1);
-        let mut region = RegionMarket {
-            coord,
-            npc_warehouse: Resources::ZERO,
-            player_warehouse: Resources::ZERO,
-            metal_hist: Vec::new(),
-            crystal_hist: Vec::new(),
-            deuterium_hist: Vec::new(),
-            last_crystal: None,
-            last_deuterium: None,
-        };
-        region.npc_warehouse = if coord == self.config.market.hub() {
-            Resources::from_parts(
-                self.config.market.hub_metal,
-                self.config.market.hub_crystal,
-                self.config.market.hub_deuterium,
-            )
-        } else {
-            Resources::ZERO
-        };
-        for kind in ResourceKind::QUOTED {
-            region.push_price(kind, self.market.price(kind), cap);
-        }
-        self.board.regions.insert(coord, region);
     }
 
     fn metal_price(&self, good: ResourceKind) -> f64 {
-        let metal = self.market.price(ResourceKind::Iron).max(1e-9);
-        (self.market.price(good) / metal).max(1e-9)
+        self.market.metal_price(good)
     }
 
     /// The player's stock a market order in `region` trades from: that
@@ -1523,11 +1728,7 @@ impl GameState {
         amount: f64,
         limit: Option<f64>,
     ) -> f64 {
-        match limit {
-            Some(price) if price.is_finite() && price > 0.0 => amount * price,
-            Some(_) => 0.0,
-            None => amount * self.metal_price(good) * self.config.market.max_mult.max(1.0),
-        }
+        buy_escrow(good, amount, limit, &self.market, &self.config.market)
     }
 
     pub(crate) fn shipment_fuel(&self, origin: Coord, dest: Coord, cargo: Resources) -> f64 {
@@ -1567,22 +1768,13 @@ impl GameState {
         }
     }
 
-    fn debit_trader(
+    pub(crate) fn debit_trader(
         &mut self,
         trader: TraderId,
         coord: Coord,
         cost: Resources,
     ) -> Result<(), MarketError> {
-        let have = self.trader_stock(trader, coord);
-        for kind in ResourceKind::ALL {
-            let need = cost.get(kind);
-            if need > 1e-12 && have.get(kind) + 1e-9 < need {
-                return Err(MarketError::Insufficient {
-                    missing: need - have.get(kind),
-                    kind,
-                });
-            }
-        }
+        covers(self.trader_stock(trader, coord), cost)?;
         if trader == TraderId::Player {
             self.take_player_at(coord, cost);
         } else {
@@ -1618,7 +1810,7 @@ impl GameState {
         }
     }
 
-    fn credit_trader(&mut self, trader: TraderId, coord: Coord, found: Resources) {
+    pub(crate) fn credit_trader(&mut self, trader: TraderId, coord: Coord, found: Resources) {
         if trader == TraderId::Player
             && (coord == self.home || self.colonies.iter().any(|c| c.coord == coord))
         {
@@ -1673,14 +1865,14 @@ impl GameState {
     }
 }
 
-fn crosses(incoming: &RestingOrder, resting: &RestingOrder) -> bool {
+fn crosses<T>(incoming: &RestingOrder<T>, resting: &RestingOrder<T>) -> bool {
     match incoming.side {
         OrderSide::Buy => incoming.price + 1e-12 >= resting.price,
         OrderSide::Sell => incoming.price <= resting.price + 1e-12,
     }
 }
 
-fn fill_price(incoming: &RestingOrder, resting: &RestingOrder, mid: f64) -> f64 {
+fn fill_price<T>(incoming: &RestingOrder<T>, resting: &RestingOrder<T>, mid: f64) -> f64 {
     if resting.is_market && incoming.is_market {
         mid
     } else if resting.is_market {

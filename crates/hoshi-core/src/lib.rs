@@ -53,6 +53,7 @@ mod scenario;
 mod season;
 mod self_play;
 mod shard;
+mod shard_market;
 mod ships;
 mod signals;
 mod simulate;
@@ -189,8 +190,8 @@ pub use maintenance::{
 };
 pub use market::{
     ContractKind, ContractStatus, MarketBoard, MarketConfig, MarketContract, MarketError,
-    MarketState, MerchantVisit, OrderSide, RegionMarket, RestingOrder, Shipment, TradeQuote,
-    TraderId,
+    MarketState, MerchantVisit, OrderSide, OrderTicket, RegionMarket, RestingOrder, Shipment,
+    TradeQuote, TraderId,
 };
 pub use moons::{Moon, MoonConfig, MoonError, MoonFacility, PhalanxContact};
 pub use ontology::{
@@ -234,10 +235,11 @@ pub use self_play::{
 };
 pub use shard::{
     Occupancy, ShardBookkeeping, ShardCommand, ShardCommons, ShardConfig, ShardError, ShardInbound,
-    ShardMap, ShardMission, ShardPlanet, ShardRaid, ShardRaidAftermath, ShardRecycle, ShardSession,
-    ShardSites, ShardSlot, ShardSpy, ShardTarget, ShardView, SignedBridgeEvent, load_tenants,
-    occupancy, place_home, seat_home, targets,
+    ShardMap, ShardMission, ShardOrder, ShardPlanet, ShardRaid, ShardRaidAftermath, ShardRecycle,
+    ShardSession, ShardSites, ShardSlot, ShardSpy, ShardTarget, ShardView, SignedBridgeEvent,
+    load_tenants, occupancy, place_home, seat_home, targets,
 };
+pub use shard_market::{ShardBook, ShardBookOrder, ShardMarket};
 pub use ships::{
     Fleet, SHIP_KINDS, ShipCatalog, ShipCatalogError, ShipError, ShipJob, ShipKind, ShipSpec,
     ShipStats,

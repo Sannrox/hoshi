@@ -107,16 +107,35 @@ held by then turns back with the colony ship. Recyclers launched with
 `ShardSession::recycle` harvest the shared pile in arrival order, each
 taking at most its hold from what is left. `submit` catches up without the
 other empires, so it refuses with `Unsettled` while a colony, recycler, or
-raid arrival of that empire, or another tenant's raid on its home, is due;
+raid arrival of that empire, another tenant's raid on its home, or a
+market tick or expiry while it has an order on the regional book, is due;
 the host settles and retries. The session keeps each target's next raid
-arrival in its bookkeeping, so the refusal holds across a restart. The NPC
-regional book is still per save.
+arrival in its bookkeeping, so the refusal holds across a restart.
+
+One regional market: `ShardCommons` holds one NPC book per region that
+every tenant trades on. `ShardSession::place_order` takes the escrow from
+the tenant's stock in that region (the planet there plus its own
+warehouse) and matches price-time against the NPC and other tenants'
+resting orders, with the same matching and pricing as local play. Order
+ids are unique per shard and each order carries its tenant, so a fill pays
+the seller's iron and the buyer's goods into each save in that region at
+the host clock; goods still reach another region only by shipment. A
+resting order expires back to its tenant. The NPC price walk and quotes
+tick once per `[market].tick_secs` on the host clock, in the hub and each
+tenant home, from an RNG the first join seeds with the `ShardMap` seed, so
+`ShardSession::book` reads the same mids and history for every tenant.
+That read lists the region's resting orders with the reader's own marked
+and no other identity. `submit` refuses `Intent::PlaceOrder` with
+`OrderNeedsBook`. Contracts, shipments, and over-the-counter trades stay
+on each save's private board.
 
 The shard has one expedition coord. The host places it once with
 `ShardCommons::place_expedition`: the last `Empty` slot on the `ShardMap` home
 walk outside the frontier galaxy, so the seed and bounds alone fix it on a new
-shard. It persists in the `ShardCommons` bytes (version 2; version 1 bytes read
-with none, and the host places it after restoring them). `submit` flies an
+shard. It persists in the `ShardCommons` bytes (version 2 added it; version 1
+bytes read with none, and the host places it after restoring them).
+Version 3 added the market book; older bytes read with it closed, and the
+next join opens it. `submit` flies an
 `Intent::Expedition` without a site to that coord at the current flight rules,
 so a farther tenant pays more fuel and time, and refuses with
 `NoExpeditionCoord` until the host has placed it. Occupancy reads the coord as
@@ -156,18 +175,20 @@ A shard host makes these calls, in this order. The executable reference is
 which runs under the default `cargo test`.
 
 1. **Create.** `ShardSession::new` with the host clock, the bridge MAC key,
-   and a `ShardConfig`. Pick a `ShardMap` once per shard; place outposts,
+   and a `ShardConfig` whose `market` is the tenants' `[market]`. Pick a `ShardMap` once per shard; place outposts,
    sites, and the expedition coord through `commons_mut`.
 2. **Join.** `ShardSession::join` per identity, up to `tenant_cap`. A
-   reconnect returns the same home.
+   reconnect returns the same home. The first join opens the market book.
 3. **Act.** `submit` for intents, `launch_raid`, `spy`, `colonize`, and
-   `recycle` for shard missions, each with an idempotency id. Client
+   `recycle` for shard missions, `place_order` for the market book, each
+   with an idempotency id. Client
    timestamps are ignored. When `submit` refuses with `Unsettled`, call
    `settle` and retry the same id.
-4. **Settle.** `settle` steps every empire to the host clock. The mission
-   calls and `view` settle first.
-5. **Read.** `view` per identity. A tenant never reads another tenant's
-   `GameState`.
+4. **Settle.** `settle` steps every empire and the market book to the
+   host clock. The mission calls, `place_order`, `view`, and `book` settle
+   first.
+5. **Read.** `view` per identity, and `book` for a region's market. A
+   tenant never reads another tenant's `GameState`.
 6. **Persist.** Each tenant's `GameState` through `hoshi-storage`
    (`save_state`; the save keeps the seated home), plus
    `export_bookkeeping` and `commons().to_bytes()` beside them.
