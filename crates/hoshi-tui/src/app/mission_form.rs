@@ -115,7 +115,7 @@ impl App {
     }
 
     /// The register panel that replaces the Ops list: one `picked / parked`
-    /// row per ship kind, then the vehicle and what stays parked.
+    /// row per ship kind, then the vehicle (ships, dry mass) and what stays parked.
     pub(super) fn ops_register_lines(&self, form: &RegisterForm) -> Vec<Line<'static>> {
         let t = &self.theme;
         let parked = self.state.parked_fleet(form.planet).unwrap_or_default();
@@ -147,7 +147,11 @@ impl App {
         }
         lines.push(Line::default());
         lines.push(Line::styled(
-            format!("vehicle: {}", form.picked.label()),
+            format!(
+                "vehicle: {}  dry {:.1} t",
+                form.picked.label(),
+                self.state.fleet_dry_kg(form.picked) / 1_000.0
+            ),
             t.text(),
         ));
         lines.push(Line::styled(

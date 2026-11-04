@@ -743,14 +743,13 @@ impl GameState {
         })
     }
 
-    fn vehicle_dry_kg(&self, vehicle: &Vehicle) -> f64 {
+    /// Dry mass in kg of a vehicle made of `ships`, as mission fuel uses it.
+    pub fn fleet_dry_kg(&self, ships: Fleet) -> f64 {
         let cfg = &self.config.orbits;
         ShipKind::ALL
             .iter()
             .map(|&kind| {
-                f64::from(vehicle.ships.get(kind))
-                    * self.config.ships.get(kind).hull
-                    * cfg.kg_per_hull
+                f64::from(ships.get(kind)) * self.config.ships.get(kind).hull * cfg.kg_per_hull
             })
             .sum()
     }
@@ -790,7 +789,7 @@ impl GameState {
         need_dv: f64,
     ) -> Result<(f64, f64), PlanError> {
         let cfg = &self.config.orbits;
-        let dry = self.vehicle_dry_kg(vehicle) + payload.mass_kg(cfg.kg_per_cargo);
+        let dry = self.fleet_dry_kg(vehicle.ships) + payload.mass_kg(cfg.kg_per_cargo);
         let ve = self.vehicle_ve(vehicle);
         let fuel = fuel_mass_for_dv(ve, dry, need_dv);
         let available = rocket_delta_v(ve, dry + fuel, dry);

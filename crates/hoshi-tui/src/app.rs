@@ -6508,7 +6508,15 @@ mod tests {
         assert!(panel.contains("register vehicle at 1:1:1"), "{panel}");
         assert!(panel.contains("1 / 2"), "{panel}");
         assert!(panel.contains("0 / 3"), "{panel}");
-        assert!(panel.contains("vehicle: 1 small cargo"), "{panel}");
+        let mut want = Fleet::default();
+        want.add(ShipKind::SmallCargo, 1);
+        let dry = app.state.config.ships.get(ShipKind::SmallCargo).hull
+            * app.state.config.orbits.kg_per_hull
+            / 1_000.0;
+        assert!(
+            panel.contains(&format!("vehicle: 1 small cargo  dry {dry:.1} t")),
+            "{panel}"
+        );
         assert!(
             panel.contains("left parked: 1 small cargo, 3 light fighter"),
             "{panel}"
@@ -6519,8 +6527,6 @@ mod tests {
         app.handle_key(KeyCode::Enter, 1_000);
         assert!(app.ops_register.is_none(), "{}", app.status);
         assert_eq!(app.state.vehicles.len(), 1, "{}", app.status);
-        let mut want = Fleet::default();
-        want.add(ShipKind::SmallCargo, 1);
         assert_eq!(app.state.vehicles[0].ships, want);
         let mut parked = Fleet::default();
         parked.add(ShipKind::SmallCargo, 1);
