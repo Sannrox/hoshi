@@ -1860,6 +1860,12 @@ impl App {
     }
 
     fn ops_view(&self) -> ListView {
+        if let Some(form) = &self.ops_register {
+            return ListView {
+                head: self.ops_register_lines(form),
+                ..ListView::default()
+            };
+        }
         let t = &self.theme;
         let now = self.state.last_tick_unix;
         let schedule = self.state.mission_schedule(now);
@@ -1876,7 +1882,7 @@ impl App {
                 Intent::Primary,
                 "No vehicles registered",
                 &format!(
-                    "Press {} to register the ships parked at {} as a vehicle, then {} on it to plan a mission.",
+                    "Press {} to register a vehicle from the ships parked at {}, then {} on it to plan a mission.",
                     self.keymap.primary(Binding::Increase),
                     self.selected_coord(),
                     self.keymap.primary(Binding::Confirm),

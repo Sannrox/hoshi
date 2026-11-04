@@ -163,6 +163,8 @@ pub struct App {
     pub updates: Option<crate::update_ui::UpdateUi>,
     dismantle_confirm: Option<(Coord, BuildingKind)>,
     mission_form: Option<mission_form::MissionForm>,
+    /// Fleet › Ops register panel, open after `+` until Enter or cancel.
+    ops_register: Option<mission_form::RegisterForm>,
     pub support: Option<crate::support_ui::SupportUi>,
     cheat_prompt: Option<String>,
     bug: Option<crate::bug_ui::BugUi>,
@@ -258,6 +260,7 @@ impl App {
             updates: None,
             dismantle_confirm: None,
             mission_form: None,
+            ops_register: None,
             help_open: false,
             help_commands: false,
             screen: Screen::Cockpit,
@@ -664,6 +667,9 @@ impl App {
         if self.mission_form.is_some() {
             return self.handle_mission_form(code, now_unix);
         }
+        if self.ops_register.is_some() {
+            return self.handle_ops_register(code, now_unix);
+        }
 
         if self.help_open && code == KeyCode::Char('b') {
             return Action::ReportBug;
@@ -912,9 +918,7 @@ impl App {
             Some(Binding::Increase) if self.screen == Screen::Staff => {
                 self.recruit_selected_leader(now_unix);
             }
-            Some(Binding::Increase) if self.screen == Screen::Ops => {
-                self.register_ops_vehicle(now_unix);
-            }
+            Some(Binding::Increase) if self.screen == Screen::Ops => self.open_ops_register(),
             Some(Binding::Increase) if self.screen == Screen::Shipyard => {
                 self.ship_batch = (self.ship_batch + 1).min(MAX_SHIP_BATCH);
             }
@@ -1067,6 +1071,7 @@ impl App {
         self.dispatch = None;
         self.pending_invasion = None;
         self.history_pane = HistoryPane::List;
+        self.ops_register = None;
     }
 
     /// Open the console, or say cheats are off. Overview binds the key
@@ -3178,6 +3183,11 @@ impl App {
                 Screen::Maintenance => {
                     format!("{select}  {confirm} schedule")
                 }
+                Screen::Ops if self.ops_register.is_some() => format!(
+                    "{confirm} register  {}/{} count  {cancel} back",
+                    k.primary(Binding::Increase),
+                    k.primary(Binding::Decrease)
+                ),
                 Screen::Ops => format!(
                     "{select}  {confirm} plan  {} register  {cancel} dissolve",
                     k.primary(Binding::Increase)
@@ -6447,7 +6457,7 @@ mod tests {
         let empty = render_text(&app, 120, 40);
         assert!(empty.contains("Press + to register"), "{empty}");
         assert!(!empty.contains("hoshi vehicle register"), "{empty}");
-        app.handle_key(KeyCode::Char('+'), 1_000);
+        register_parked(&mut app, &[1]);
         assert_eq!(app.state.vehicles.len(), 1, "{}", app.status);
         assert!(
             app.state.fleet.is_empty(),
@@ -6464,6 +6474,82 @@ mod tests {
         assert_eq!(app.state.planned.len(), 1, "{}", app.status);
     }
 
+    /// Ops `+` opens the register panel; pick `counts[i]` of the i-th parked
+    /// kind, then Enter.
+    fn register_parked(app: &mut App, counts: &[u32]) {
+        app.handle_key(KeyCode::Char('+'), 1_000);
+        for &n in counts {
+            for _ in 0..n {
+                app.handle_key(KeyCode::Char('+'), 1_000);
+            }
+            app.handle_key(KeyCode::Char('j'), 1_000);
+        }
+        app.handle_key(KeyCode::Enter, 1_000);
+    }
+
+    fn mixed_home() -> App {
+        let mut state = GameState::new(1_000);
+        state.fleet.add(ShipKind::SmallCargo, 2);
+        state.fleet.add(ShipKind::LightFighter, 3);
+        let mut app = App::new(state);
+        app.open(Screen::Ops);
+        app
+    }
+
+    #[test]
+    fn ops_register_panel_takes_only_the_picked_ships() {
+        let mut app = mixed_home();
+        app.handle_key(KeyCode::Char('+'), 1_000);
+        app.handle_key(KeyCode::Char('+'), 1_000);
+        app.handle_key(KeyCode::Char('+'), 1_000);
+        app.handle_key(KeyCode::Char('+'), 1_000);
+        app.handle_key(KeyCode::Char('-'), 1_000);
+        let panel = render_text(&app, 160, 40);
+        assert!(panel.contains("register vehicle at 1:1:1"), "{panel}");
+        assert!(panel.contains("1 / 2"), "{panel}");
+        assert!(panel.contains("0 / 3"), "{panel}");
+        assert!(panel.contains("vehicle: 1 small cargo"), "{panel}");
+        assert!(
+            panel.contains("left parked: 1 small cargo, 3 light fighter"),
+            "{panel}"
+        );
+        for hint in ["enter  register", "+/-  count", "x  back"] {
+            assert!(panel.contains(hint), "{panel}");
+        }
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.ops_register.is_none(), "{}", app.status);
+        assert_eq!(app.state.vehicles.len(), 1, "{}", app.status);
+        let mut want = Fleet::default();
+        want.add(ShipKind::SmallCargo, 1);
+        assert_eq!(app.state.vehicles[0].ships, want);
+        let mut parked = Fleet::default();
+        parked.add(ShipKind::SmallCargo, 1);
+        parked.add(ShipKind::LightFighter, 3);
+        assert_eq!(app.state.fleet, parked);
+    }
+
+    #[test]
+    fn ops_register_again_makes_a_second_vehicle_from_the_rest() {
+        let mut app = mixed_home();
+        register_parked(&mut app, &[1]);
+        register_parked(&mut app, &[1, 3]);
+        assert_eq!(app.state.vehicles.len(), 2, "{}", app.status);
+        assert_eq!(app.state.vehicles[1].ships.total(), 4);
+        assert!(app.state.fleet.is_empty());
+    }
+
+    #[test]
+    fn ops_register_with_nothing_picked_shows_the_core_refusal() {
+        let mut app = mixed_home();
+        register_parked(&mut app, &[]);
+        assert!(app.state.vehicles.is_empty());
+        assert!(app.ops_register.is_some());
+        assert_eq!(app.status, hoshi_core::PlanError::EmptyFleet.to_string());
+        app.handle_key(KeyCode::Char('x'), 1_000);
+        assert!(app.ops_register.is_none());
+        assert_eq!(app.state.fleet.total(), 5);
+    }
+
     #[test]
     fn ops_cancel_dissolves_an_idle_vehicle_back_into_the_parked_fleet() {
         let mut state = GameState::new(1_000);
@@ -6471,7 +6557,7 @@ mod tests {
         let parked = state.fleet;
         let mut app = App::new(state);
         app.open(Screen::Ops);
-        app.handle_key(KeyCode::Char('+'), 1_000);
+        register_parked(&mut app, &[2]);
         assert_eq!(app.state.vehicles.len(), 1, "{}", app.status);
         let text = render_text(&app, 160, 40);
         assert!(text.contains("x  dissolve"), "{text}");
@@ -6494,7 +6580,7 @@ mod tests {
         state.resources.deuterium = 5_000.0;
         let mut app = App::new(state);
         app.open(Screen::Ops);
-        app.handle_key(KeyCode::Char('+'), 1_000);
+        register_parked(&mut app, &[1]);
         app.map_position = 2;
         app.selected = 0;
         app.handle_key(KeyCode::Enter, 1_000);

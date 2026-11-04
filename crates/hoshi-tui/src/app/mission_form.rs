@@ -16,6 +16,16 @@ const CARGO: [ResourceKind; 3] = [
 ];
 const FIELDS: usize = 5;
 
+/// The Ops register panel: which ships parked at `planet` form the new
+/// vehicle. `kinds` is fixed when the panel opens so rows do not move.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct RegisterForm {
+    planet: Coord,
+    kinds: Vec<ShipKind>,
+    picked: Fleet,
+    row: usize,
+}
+
 /// The plan form for one vehicle. Fields: destination, customer, transfer,
 /// cargo resource, cargo amount.
 #[derive(Debug, Clone, PartialEq)]
@@ -37,14 +47,114 @@ impl MissionForm {
 }
 
 impl App {
-    /// `+` on Ops: park every ship at the selected planet in a new vehicle.
-    pub(super) fn register_ops_vehicle(&mut self, now: u64) {
+    /// `+` on Ops opens the register panel for the ships parked at the
+    /// selected planet, every count at 0.
+    pub(super) fn open_ops_register(&mut self) {
         let planet = self.selected_coord();
-        let ships = self.state.parked_fleet(planet).unwrap_or_default();
-        self.status = match self.state.register_vehicle(planet, ships, now) {
-            Ok(id) => format!("registered vehicle #{id} at {planet}"),
+        let parked = self.state.parked_fleet(planet).unwrap_or_default();
+        self.ops_register = Some(RegisterForm {
+            planet,
+            kinds: ShipKind::ALL
+                .into_iter()
+                .filter(|&kind| parked.get(kind) > 0)
+                .collect(),
+            picked: Fleet::default(),
+            row: 0,
+        });
+    }
+
+    /// Keys while the register panel is open: rows, counts, register, back.
+    pub(super) fn handle_ops_register(&mut self, code: KeyCode, now: u64) -> Action {
+        if self.keymap.matches(Binding::Quit, code) {
+            return Action::Quit;
+        }
+        if self.keymap.matches(Binding::Cancel, code) {
+            self.ops_register = None;
+            return Action::None;
+        }
+        if self.keymap.matches(Binding::Confirm, code) {
+            self.submit_ops_register(now);
+            return Action::None;
+        }
+        let Some(form) = self.ops_register.as_mut() else {
+            return Action::None;
+        };
+        let rows = form.kinds.len().max(1);
+        let parked = self.state.parked_fleet(form.planet).unwrap_or_default();
+        let kind = form.kinds.get(form.row).copied();
+        if self.keymap.matches(Binding::SelectNext, code) {
+            form.row = (form.row + 1) % rows;
+        } else if self.keymap.matches(Binding::SelectPrev, code) {
+            form.row = (form.row + rows - 1) % rows;
+        } else if let Some(kind) = kind {
+            if self.keymap.matches(Binding::Increase, code)
+                && form.picked.get(kind) < parked.get(kind)
+            {
+                form.picked.add(kind, 1);
+            } else if self.keymap.matches(Binding::Decrease, code) {
+                form.picked.saturating_sub(kind, 1);
+            }
+        }
+        Action::None
+    }
+
+    /// Enter on the register panel: the same core action as
+    /// `hoshi vehicle register`, with exactly the picked ships.
+    fn submit_ops_register(&mut self, now: u64) {
+        let Some(form) = &self.ops_register else {
+            return;
+        };
+        let planet = form.planet;
+        self.status = match self.state.register_vehicle(planet, form.picked, now) {
+            Ok(id) => {
+                self.ops_register = None;
+                format!("registered vehicle #{id} at {planet}")
+            }
             Err(error) => error.to_string(),
         };
+    }
+
+    /// The register panel that replaces the Ops list: one `picked / parked`
+    /// row per ship kind, then the vehicle and what stays parked.
+    pub(super) fn ops_register_lines(&self, form: &RegisterForm) -> Vec<Line<'static>> {
+        let t = &self.theme;
+        let parked = self.state.parked_fleet(form.planet).unwrap_or_default();
+        let mut lines = vec![Line::styled(
+            format!("── register vehicle at {} ──", form.planet),
+            t.label(),
+        )];
+        if form.kinds.is_empty() {
+            lines.push(Line::styled(
+                format!("no ships parked at {}", form.planet),
+                t.muted(),
+            ));
+        }
+        for (i, &kind) in form.kinds.iter().enumerate() {
+            let marker = if i == form.row { "▌" } else { " " };
+            lines.push(Line::styled(
+                format!(
+                    "{marker}{:<20} {} / {}",
+                    kind.to_string(),
+                    form.picked.get(kind),
+                    parked.get(kind)
+                ),
+                t.text(),
+            ));
+        }
+        let mut left = parked;
+        for kind in ShipKind::ALL {
+            left.saturating_sub(kind, form.picked.get(kind));
+        }
+        lines.push(Line::default());
+        lines.push(Line::styled(
+            format!("vehicle: {}", form.picked.label()),
+            t.text(),
+        ));
+        lines.push(Line::styled(
+            format!("left parked: {}", left.label()),
+            t.muted(),
+        ));
+        lines
     }
 
     /// Cancel on an Ops vehicle row dissolves it, the same core action as
