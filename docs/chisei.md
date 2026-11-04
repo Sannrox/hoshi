@@ -176,6 +176,10 @@ which runs under the default `cargo test`.
    the migrating loader. The next `settle` and `view` match a host that
    never stopped.
 
+Story flags, daily slots, and victory are per tenant, and the shard stays
+open after a victory; prestige reset is local only
+([ADR 0021](decisions/0021-shard-progression-is-per-tenant.md)).
+
 ## Arena
 
 ```sh

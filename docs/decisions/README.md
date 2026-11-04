@@ -22,3 +22,4 @@
 | [0018](0018-hoshi-storage-crate.md) | Persistence lives in hoshi-storage | Accepted |
 | [0019](0019-shard-raids-are-missions-with-flight.md) | Shard raids are missions with flight | Accepted |
 | [0020](0020-shard-identity-is-a-host-tenant.md) | Shard identity is a host tenant | Accepted |
+| [0021](0021-shard-progression-is-per-tenant.md) | Shard progression is per tenant | Accepted |
