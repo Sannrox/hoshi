@@ -1262,8 +1262,16 @@ impl App {
     /// transport, flight time and fuel. Also returns the selected row's line.
     fn dispatch_lines(&self, form: &DispatchForm) -> (Vec<Line<'static>>, usize) {
         let t = &self.theme;
-        let dest = form.dest;
-        let place = if self.state.owned_coords().contains(&dest) {
+        let (origin, dest) = (form.origin, form.dest);
+        let fleet = self.state.fleet_at(origin).unwrap_or_default();
+        let stock = self
+            .state
+            .resources_at(origin)
+            .copied()
+            .unwrap_or(Resources::ZERO);
+        let place = if dest == self.state.home {
+            "home"
+        } else if self.state.owned_coords().contains(&dest) {
             "colony"
         } else if let Some(out) = self.state.outpost(dest) {
             out.kind.as_key()
@@ -1285,12 +1293,13 @@ impl App {
             section(t, "dispatch"),
             Line::from(vec![
                 Span::styled(format!("to {dest}"), t.strong()),
+                Span::styled(format!(" from {origin}"), t.muted()),
                 Span::raw("  "),
                 tag(t, &place.to_uppercase(), Intent::Neutral, true),
             ]),
             Line::from({
                 let mut spans = vec![Span::styled("mission ", t.muted())];
-                for mission in self.dispatch_missions(dest) {
+                for mission in self.dispatch_missions(origin, dest) {
                     if mission == form.mission {
                         spans.push(tag(t, mission.label(), Intent::Primary, true));
                     } else {
@@ -1309,7 +1318,7 @@ impl App {
             .unwrap_or(0);
         let mut selected_line = 0;
         for (i, &kind) in ShipKind::ALL.iter().enumerate() {
-            let have = self.state.fleet.get(kind);
+            let have = fleet.get(kind);
             let picked = form.ships.get(kind);
             let on = i == form.selected;
             if on {
@@ -1365,7 +1374,7 @@ impl App {
                     ));
                 }
                 spans.push(Span::styled(
-                    format!("  of {:.0}", self.state.resources.get(kind).floor()),
+                    format!("  of {:.0}", stock.get(kind).floor()),
                     t.muted(),
                 ));
                 lines.push(Line::from(spans));
@@ -1395,9 +1404,9 @@ impl App {
             ));
         } else {
             let flight = if form.mission == Mission::Recycle {
-                self.state.recycle_flight(form.ships, dest, 100)
+                self.state.recycle_flight(origin, form.ships, dest, 100)
             } else {
-                self.state.flight_time_and_fuel(form.ships, dest, 100)
+                self.state.flight_from(origin, dest, form.ships, 100)
             };
             match flight {
                 Ok((eta, fuel)) => {
@@ -1419,12 +1428,12 @@ impl App {
                     } else {
                         0.0
                     };
-                    if fuel + cargo_d > self.state.resources.deuterium {
+                    if fuel + cargo_d > stock.deuterium {
                         lines.extend(callout_lines(
                             t,
                             Intent::Danger,
                             "not enough deuterium",
-                            &format!("have {:.0} D", self.state.resources.deuterium),
+                            &format!("have {:.0} D", stock.deuterium),
                         ));
                     }
                 }
@@ -1442,7 +1451,7 @@ impl App {
         } else {
             vec![keycap(t, "⏎"), Span::styled(" launch  ", t.muted())]
         };
-        if self.dispatch_missions(dest).len() > 1 {
+        if self.dispatch_missions(origin, dest).len() > 1 {
             keys.extend([keycap(t, "space"), Span::styled(" mission  ", t.muted())]);
         }
         keys.extend([keycap(t, "x"), Span::styled(" close", t.muted())]);

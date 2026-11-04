@@ -100,9 +100,11 @@ const MAP_SYSTEM_MAX: u16 = 81;
 const MAP_SLOT_COUNT: u16 = 16;
 
 /// Star map dispatch form. `selected` walks the ship rows, then (for a
-/// transport) the [`DISPATCH_CARGO`] rows; `cargo` is lifted from home.
+/// transport) the [`DISPATCH_CARGO`] rows. Ships, fuel and `cargo` come
+/// from `origin`, the planet selected when the form opened.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct DispatchForm {
+    origin: Coord,
     dest: Coord,
     ships: Fleet,
     cargo: Resources,
@@ -113,8 +115,9 @@ struct DispatchForm {
 }
 
 impl DispatchForm {
-    fn new(dest: Coord, mission: Mission) -> Self {
+    fn new(origin: Coord, dest: Coord, mission: Mission) -> Self {
         Self {
+            origin,
             dest,
             ships: Fleet::default(),
             cargo: Resources::ZERO,
@@ -2502,7 +2505,8 @@ impl App {
         };
         let mut ships = Fleet::default();
         ships.add(ShipKind::EspionageProbe, 1);
-        match self.state.launch_spy(ships, dest, 100, now_unix) {
+        let origin = self.selected_coord();
+        match self.state.launch_spy(origin, ships, dest, 100, now_unix) {
             Ok(_) => self.status = format!("probe launched to {dest}"),
             Err(e) => self.status = e.to_string(),
         }
@@ -2614,14 +2618,17 @@ impl App {
         form.selected = ((form.selected as i32 + delta).rem_euclid(len)) as usize;
     }
 
-    /// `+`/`-` on the selected row: a ship count up to the home fleet, or a
-    /// cargo amount (market-sized steps) up to home stock.
+    /// `+`/`-` on the selected row: a ship count up to the origin's fleet,
+    /// or a cargo amount (market-sized steps) up to the origin's stock.
     fn nudge_dispatch_ships(&mut self, delta: i32) {
         let Some(form) = self.dispatch.as_mut() else {
             return;
         };
         if let Some(kind) = form.cargo_row() {
-            let have = self.state.resources.get(kind).floor().max(0.0);
+            let have = self
+                .state
+                .resources_at(form.origin)
+                .map_or(0.0, |stock| stock.get(kind).floor().max(0.0));
             let cur = form.cargo.get(kind);
             let next = if delta > 0 {
                 cur + trade_step(cur)
@@ -2632,7 +2639,10 @@ impl App {
             return;
         }
         let kind = ShipKind::ALL[form.selected];
-        let have = self.state.fleet.get(kind);
+        let have = self
+            .state
+            .fleet_at(form.origin)
+            .map_or(0, |fleet| fleet.get(kind));
         let cur = form.ships.get(kind);
         let next = (cur as i32 + delta).clamp(0, have as i32) as u32;
         let mut ships = form.ships;
@@ -2641,12 +2651,12 @@ impl App {
         } else {
             ships.saturating_sub(kind, cur - next);
         }
-        let (dest, mission) = (form.dest, form.mission);
+        let (origin, dest, mission) = (form.origin, form.dest, form.mission);
         // A mission the player picked stays; the default follows the ships.
         let mission = if form.mission_picked {
             mission
         } else {
-            self.default_dispatch_mission(dest, ships)
+            self.default_dispatch_mission(origin, dest, ships)
                 .unwrap_or(mission)
         };
         if let Some(form) = self.dispatch.as_mut() {
@@ -2657,8 +2667,13 @@ impl App {
 
     /// The mission dispatch to `dest` starts on for `ships`: the first fit,
     /// except that probes alone spy wherever spying fits.
-    fn default_dispatch_mission(&self, dest: Coord, ships: Fleet) -> Option<Mission> {
-        let missions = self.dispatch_missions(dest);
+    fn default_dispatch_mission(
+        &self,
+        origin: Coord,
+        dest: Coord,
+        ships: Fleet,
+    ) -> Option<Mission> {
+        let missions = self.dispatch_missions(origin, dest);
         let probes_only = ships.total() > 0 && ships.total() == ships.get(ShipKind::EspionageProbe);
         if probes_only && missions.contains(&Mission::Spy) {
             return Some(Mission::Spy);
@@ -2671,22 +2686,22 @@ impl App {
             self.confirm_dispatch(now_unix);
             return;
         }
-        let dest = self.map_cursor();
-        let Some(&mission) = self.dispatch_missions(dest).first() else {
-            // Home only opens dispatch to recycle its own raid debris.
+        let (origin, dest) = (self.selected_coord(), self.map_cursor());
+        let Some(&mission) = self.dispatch_missions(origin, dest).first() else {
+            // The origin only opens dispatch to recycle its own debris.
             self.status = "same location".into();
             return;
         };
-        self.dispatch = Some(DispatchForm::new(dest, mission));
+        self.dispatch = Some(DispatchForm::new(origin, dest, mission));
         self.status.clear();
     }
 
-    /// Missions that fit `dest`, the default first: the expedition slot,
-    /// an outpost (invade first once its defences are gone), a seen signal
-    /// to hold, an own colony to supply from home, or anywhere else to
-    /// settle. Debris adds recycle, so home with wreckage gets one; otherwise
-    /// home has none.
-    fn dispatch_missions(&self, dest: Coord) -> Vec<Mission> {
+    /// Missions from `origin` that fit `dest`, the default first: the
+    /// expedition slot, an outpost (invade first once its defences are
+    /// gone), a seen signal to hold, another own planet to supply, or
+    /// anywhere else to settle. Debris adds recycle, so the origin with
+    /// wreckage gets one; otherwise the origin has none.
+    fn dispatch_missions(&self, origin: Coord, dest: Coord) -> Vec<Mission> {
         let mut missions = if dest == self.state.expedition_dest() {
             vec![Mission::Expedition]
         } else if let Some(outpost) = self.state.outpost(dest) {
@@ -2703,7 +2718,7 @@ impl App {
             vec![Mission::Expedition]
         } else if self.seen_signal_at(dest).is_some() {
             vec![Mission::Hold]
-        } else if dest == self.state.home {
+        } else if dest == origin {
             Vec::new()
         } else if self.state.owned_coords().contains(&dest) {
             vec![Mission::Transport]
@@ -2772,7 +2787,7 @@ impl App {
         let Some(form) = self.dispatch else {
             return;
         };
-        let missions = self.dispatch_missions(form.dest);
+        let missions = self.dispatch_missions(form.origin, form.dest);
         if missions.is_empty() {
             // Home's debris was cleared while the form was open.
             self.status = "same location".into();
@@ -2803,31 +2818,34 @@ impl App {
             );
             return;
         }
-        let (ships, dest) = (form.ships, form.dest);
+        let (origin, ships, dest) = (form.origin, form.ships, form.dest);
         let launched = match form.mission {
             Mission::Transport => {
                 if form.cargo.total() <= 0.0 {
                     self.status = "transport needs cargo: pick amounts with +/-".into();
                     return;
                 }
-                let home = self.state.home;
                 self.state
-                    .launch_transport(home, dest, ships, form.cargo, 100, now_unix)
+                    .launch_transport(origin, dest, ships, form.cargo, 100, now_unix)
             }
-            Mission::Attack => self.state.launch_attack(ships, dest, 100, now_unix),
-            Mission::Spy => self.state.launch_spy(ships, dest, 100, now_unix),
-            Mission::Invade => self.state.launch_invasion(ships, dest, 100, now_unix),
+            Mission::Attack => self.state.launch_attack(origin, ships, dest, 100, now_unix),
+            Mission::Spy => self.state.launch_spy(origin, ships, dest, 100, now_unix),
+            Mission::Invade => self
+                .state
+                .launch_invasion(origin, ships, dest, 100, now_unix),
             Mission::Colonize => {
                 if ships.get(ShipKind::ColonyShip) != 1 || ships.total() != 1 {
                     self.status = "colonize needs exactly one colony ship".into();
                     return;
                 }
-                self.state.launch_colony(dest, 100, now_unix)
+                self.state.launch_colony(origin, dest, 100, now_unix)
             }
-            Mission::Recycle => self.state.launch_recycle(dest, ships, 100, now_unix),
+            Mission::Recycle => self
+                .state
+                .launch_recycle(origin, dest, ships, 100, now_unix),
             // A signal that resolved while the form was open is refused by core.
             Mission::Hold => match self.state.open_signal_at(dest).map(|signal| signal.id) {
-                Some(id) => self.state.hold_signal(id, ships, 100, now_unix),
+                Some(id) => self.state.hold_signal(origin, id, ships, 100, now_unix),
                 None => {
                     self.status = format!("no open signal at {dest}");
                     return;
@@ -2839,9 +2857,10 @@ impl App {
                 // never redirected to the config slot.
                 if let Some(site_id) = self.state.site_at(dest).map(|site| site.id) {
                     self.state
-                        .launch_expedition_site(site_id, ships, hold, 100, now_unix)
+                        .launch_expedition_site(origin, site_id, ships, hold, 100, now_unix)
                 } else {
-                    self.state.launch_expedition(ships, hold, 100, now_unix)
+                    self.state
+                        .launch_expedition(origin, ships, hold, 100, now_unix)
                 }
             }
         };
@@ -2877,7 +2896,7 @@ impl App {
         }
         match self
             .state
-            .launch_invasion(form.ships, form.dest, 100, now_unix)
+            .launch_invasion(form.origin, form.ships, form.dest, 100, now_unix)
         {
             Ok(_) => {
                 self.status = format!("invasion of {} approved", form.dest);
@@ -6914,7 +6933,9 @@ mod tests {
         let mut state = GameState::new(1_000);
         state.fleet.add(ShipKind::SmallCargo, 1);
         state.resources.deuterium = 10_000.0;
-        state.launch_fleet(ships, dest, 100, 0, 1_000).unwrap();
+        state
+            .launch_fleet(state.home, ships, dest, 100, 0, 1_000)
+            .unwrap();
         let eta = state.missions[0]
             .phase_ends_at
             .saturating_sub(state.last_tick_unix);
@@ -6939,9 +6960,12 @@ mod tests {
         let home = state.home;
         state.fleet.add(ShipKind::Recycler, 1);
         let mut app = App::new(state);
-        assert!(app.dispatch_missions(home).is_empty());
+        assert!(app.dispatch_missions(app.state.home, home).is_empty());
         app.state.debris.insert(home, 200.0);
-        assert_eq!(app.dispatch_missions(home), vec![Mission::Recycle]);
+        assert_eq!(
+            app.dispatch_missions(app.state.home, home),
+            vec![Mission::Recycle]
+        );
         open_dispatch(&mut app, home, ShipKind::Recycler, 1);
         let text = render_text(&app, 100, 40);
         assert!(text.contains("ETA"), "{text}");
@@ -6999,7 +7023,11 @@ mod tests {
         app.open(Screen::Map);
         app.dispatch = Some(DispatchForm {
             selected: ShipKind::ALL.iter().position(|k| *k == kind).unwrap(),
-            ..DispatchForm::new(dest, app.dispatch_missions(dest)[0])
+            ..DispatchForm::new(
+                app.selected_coord(),
+                dest,
+                app.dispatch_missions(app.selected_coord(), dest)[0],
+            )
         });
         for _ in 0..count {
             app.handle_key(KeyCode::Char('+'), 1_000);
@@ -7018,9 +7046,15 @@ mod tests {
         app.handle_key(KeyCode::Char('s'), 1_000);
         let signal = app.state.signals[0].clone();
         assert!(app.status.starts_with("scan sent"), "{}", app.status);
-        assert_ne!(app.dispatch_missions(signal.coord), vec![Mission::Hold]);
+        assert_ne!(
+            app.dispatch_missions(app.state.home, signal.coord),
+            vec![Mission::Hold]
+        );
         app.state.catch_up(signal.seen_at);
-        assert_eq!(app.dispatch_missions(signal.coord), vec![Mission::Hold]);
+        assert_eq!(
+            app.dispatch_missions(app.state.home, signal.coord),
+            vec![Mission::Hold]
+        );
         open_dispatch(&mut app, signal.coord, ShipKind::LightFighter, 10);
         app.handle_key(KeyCode::Enter, signal.seen_at);
         assert_eq!(
@@ -7058,7 +7092,7 @@ mod tests {
         state.debris.insert(dest, 300.0);
         let mut app = App::new(state);
         assert_eq!(
-            app.dispatch_missions(dest),
+            app.dispatch_missions(app.state.home, dest),
             vec![Mission::Colonize, Mission::Recycle]
         );
         open_dispatch(&mut app, dest, ShipKind::Recycler, 1);
@@ -7305,6 +7339,52 @@ mod tests {
         assert_eq!(app.dispatch.unwrap().mission, Mission::Spy);
         app.handle_key(KeyCode::Enter, 1_000);
         assert!(app.state.missions[0].spy, "{}", app.status);
+    }
+
+    #[test]
+    fn dispatch_with_a_colony_selected_launches_from_the_colony() {
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 2,
+        };
+        let colony = Coord {
+            position: 3,
+            ..dest
+        };
+        let mut state = GameState::new(1_000);
+        state.fleet.add(ShipKind::LightFighter, 5);
+        let mut fleet = Fleet::default();
+        fleet.add(ShipKind::LightFighter, 3);
+        state.colonies.push(Colony {
+            coord: colony,
+            kind: PlanetType::Rocky,
+            size: 120,
+            resources: Resources::from_parts(0.0, 0.0, 10_000.0),
+            buildings: Buildings::default(),
+            fleet,
+            defences: hoshi_core::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: std::collections::BTreeMap::new(),
+        });
+        let mut defences = Fleet::default();
+        defences.add(ShipKind::LightFighter, 1);
+        outpost_at(&mut state, dest, defences);
+        let mut app = App::new(state);
+        app.planet_index = 1;
+        // One more step than the colony holds: the home fleet does not count.
+        open_dispatch(&mut app, dest, ShipKind::LightFighter, 4);
+        assert_eq!(app.dispatch.unwrap().ships, fleet);
+        let overlay = render_text(&app, 100, 40);
+        assert!(overlay.contains("from 1:1:3"), "{overlay}");
+
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert_eq!(app.state.missions[0].origin, colony, "{}", app.status);
+        assert!(app.state.colonies[0].fleet.is_empty());
+        assert!(app.state.colonies[0].resources.deuterium < 10_000.0);
+        assert_eq!(app.state.fleet.get(ShipKind::LightFighter), 5);
     }
 
     #[test]

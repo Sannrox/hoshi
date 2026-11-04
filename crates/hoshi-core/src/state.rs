@@ -2459,7 +2459,8 @@ impl GameState {
         self.flight_from(self.home, dest, ships, speed_percent)
     }
 
-    pub(crate) fn flight_from(
+    /// Outbound flight time and fuel for `ships` flying `origin` to `dest`.
+    pub fn flight_from(
         &self,
         origin: Coord,
         dest: Coord,
@@ -2494,9 +2495,11 @@ impl GameState {
         ))
     }
 
-    /// Detach ships from the planet, pay deuterium, and start outbound.
+    /// Detach ships from `origin`, pay deuterium there, and start outbound.
+    /// Survivors return to `origin`.
     pub fn launch_fleet(
         &mut self,
+        origin: Coord,
         ships: Fleet,
         dest: Coord,
         speed_percent: u8,
@@ -2504,14 +2507,24 @@ impl GameState {
         now_unix: u64,
     ) -> Result<(), FleetError> {
         self.catch_up(now_unix);
-        let (outbound_secs, fuel) = self.flight_time_and_fuel(ships, dest, speed_percent)?;
-        self.launch_with_flight(ships, dest, speed_percent, hold_secs, outbound_secs, fuel)
+        let (outbound_secs, fuel) = self.flight_from(origin, dest, ships, speed_percent)?;
+        self.launch_with_flight(
+            origin,
+            ships,
+            dest,
+            speed_percent,
+            hold_secs,
+            outbound_secs,
+            fuel,
+        )
     }
 
-    /// Check ships, slots and fuel, then record the mission with a flight
-    /// already priced by the caller.
+    /// Check `origin`'s ships, the slots and `origin`'s fuel, then record the
+    /// mission with a flight already priced by the caller.
+    #[allow(clippy::too_many_arguments)]
     fn launch_with_flight(
         &mut self,
+        origin: Coord,
         ships: Fleet,
         dest: Coord,
         speed_percent: u8,
@@ -2523,9 +2536,10 @@ impl GameState {
         if ships.is_empty() {
             return Err(FleetError::EmptyFleet);
         }
+        let fleet = self.fleet_at(origin).ok_or(FleetError::UnknownPlanet)?;
         for kind in ShipKind::ALL {
             let need = ships.get(kind);
-            let have = self.fleet.get(kind);
+            let have = fleet.get(kind);
             if have < need {
                 return Err(FleetError::MissingShips { kind, need, have });
             }
@@ -2535,22 +2549,21 @@ impl GameState {
         if used >= cap {
             return Err(FleetError::NoSlots { used, cap });
         }
-        if self.resources.deuterium + 1e-9 < fuel {
+        let res = self.resources_at_mut(origin)?;
+        if res.deuterium + 1e-9 < fuel {
             return Err(FleetError::InsufficientFuel {
-                missing: (fuel - self.resources.deuterium).max(0.0),
+                missing: (fuel - res.deuterium).max(0.0),
                 cost: fuel,
             });
         }
-        self.resources.deuterium = (self.resources.deuterium - fuel).max(0.0);
-        for kind in ShipKind::ALL {
-            self.fleet.saturating_sub(kind, ships.get(kind));
-        }
+        res.deuterium = (res.deuterium - fuel).max(0.0);
+        self.take_ships_at(origin, ships)?;
         let id = self.next_mission_id;
         self.next_mission_id = self.next_mission_id.saturating_add(1);
         self.missions.push(Mission {
             id,
             ships,
-            origin: self.home,
+            origin,
             dest,
             speed_percent,
             phase: MissionPhase::Outbound,
@@ -2609,17 +2622,18 @@ impl GameState {
         }
     }
 
-    /// Send a fleet to the expedition slot for `hold_secs`. The outcome seed is stored
-    /// on the mission so a reload cannot re-roll it.
+    /// Send a fleet from `origin` to the expedition slot for `hold_secs`. The
+    /// outcome seed is stored on the mission so a reload cannot re-roll it.
     pub fn launch_expedition(
         &mut self,
+        origin: Coord,
         ships: Fleet,
         hold_secs: u64,
         speed_percent: u8,
         now_unix: u64,
     ) -> Result<u64, FleetError> {
         let dest = self.expedition_dest();
-        self.launch_expedition_to(dest, ships, hold_secs, speed_percent, now_unix)
+        self.launch_expedition_to(origin, dest, ships, hold_secs, speed_percent, now_unix)
     }
 
     /// [`Self::launch_expedition`] to `dest` instead of the home-system slot.
@@ -2627,6 +2641,7 @@ impl GameState {
     /// follow from the distance to it.
     pub fn launch_expedition_to(
         &mut self,
+        origin: Coord,
         dest: Coord,
         ships: Fleet,
         hold_secs: u64,
@@ -2648,7 +2663,7 @@ impl GameState {
         if used >= cap {
             return Err(FleetError::NoExpeditionSlots { used, cap });
         }
-        self.launch_fleet(ships, dest, speed_percent, hold_secs, now_unix)?;
+        self.launch_fleet(origin, ships, dest, speed_percent, hold_secs, now_unix)?;
         let id = {
             let Some(mission) = self.missions.last_mut() else {
                 return Err(FleetError::EmptyFleet);
@@ -2694,6 +2709,7 @@ impl GameState {
     /// A resolved site is refused. The config-slot action is [`Self::launch_expedition`].
     pub fn launch_expedition_site(
         &mut self,
+        origin: Coord,
         site_id: u64,
         ships: Fleet,
         hold_secs: u64,
@@ -2731,7 +2747,7 @@ impl GameState {
         if used >= cap {
             return Err(FleetError::NoExpeditionSlots { used, cap });
         }
-        self.launch_fleet(ships, dest, speed_percent, hold_secs, now_unix)?;
+        self.launch_fleet(origin, ships, dest, speed_percent, hold_secs, now_unix)?;
         let id = {
             let Some(mission) = self.missions.last_mut() else {
                 return Err(FleetError::EmptyFleet);
@@ -3177,20 +3193,23 @@ impl GameState {
         }
     }
 
-    /// Send one colony ship. Settlement is attempted on Action; failure returns the ship.
+    /// Send one colony ship from `origin`. Settlement is attempted on Action;
+    /// failure returns the ship to `origin`.
     pub fn launch_colony(
         &mut self,
+        origin: Coord,
         dest: Coord,
         speed_percent: u8,
         now_unix: u64,
     ) -> Result<u64, FleetError> {
         self.catch_up(now_unix);
-        if self.fleet.get(ShipKind::ColonyShip) == 0 {
+        let fleet = self.fleet_at(origin).ok_or(FleetError::UnknownPlanet)?;
+        if fleet.get(ShipKind::ColonyShip) == 0 {
             return Err(FleetError::NeedColonyShip);
         }
         let mut ships = Fleet::default();
         ships.add(ShipKind::ColonyShip, 1);
-        self.launch_fleet(ships, dest, speed_percent, 0, now_unix)?;
+        self.launch_fleet(origin, ships, dest, speed_percent, 0, now_unix)?;
         let Some(mission) = self.missions.last_mut() else {
             return Err(FleetError::EmptyFleet);
         };
@@ -3198,9 +3217,10 @@ impl GameState {
         Ok(mission.id)
     }
 
-    /// Send a fleet to fight an outpost's orbital defences.
+    /// Send a fleet from `origin` to fight an outpost's orbital defences.
     pub fn launch_attack(
         &mut self,
+        origin: Coord,
         ships: Fleet,
         dest: Coord,
         speed_percent: u8,
@@ -3210,7 +3230,7 @@ impl GameState {
         if self.outpost(dest).is_none() {
             return Err(FleetError::UnknownOutpost);
         }
-        self.launch_fleet(ships, dest, speed_percent, 0, now_unix)?;
+        self.launch_fleet(origin, ships, dest, speed_percent, 0, now_unix)?;
         let Some(mission) = self.missions.last_mut() else {
             return Err(FleetError::EmptyFleet);
         };
@@ -3218,9 +3238,11 @@ impl GameState {
         Ok(mission.id)
     }
 
-    /// Land troop transports. Refused while any orbital defences remain.
+    /// Land troop transports from `origin`. Refused while any orbital
+    /// defences remain.
     pub fn launch_invasion(
         &mut self,
+        origin: Coord,
         ships: Fleet,
         dest: Coord,
         speed_percent: u8,
@@ -3241,7 +3263,7 @@ impl GameState {
         if used >= cap {
             return Err(FleetError::ColonyCap { used, cap });
         }
-        self.launch_fleet(ships, dest, speed_percent, 0, now_unix)?;
+        self.launch_fleet(origin, ships, dest, speed_percent, 0, now_unix)?;
         let Some(mission) = self.missions.last_mut() else {
             return Err(FleetError::EmptyFleet);
         };
@@ -3249,9 +3271,11 @@ impl GameState {
         Ok(mission.id)
     }
 
-    /// Send probes to an outpost. Arrival writes a report; detection may destroy probes.
+    /// Send probes from `origin` to an outpost. Arrival writes a report;
+    /// detection may destroy probes.
     pub fn launch_spy(
         &mut self,
+        origin: Coord,
         ships: Fleet,
         dest: Coord,
         speed_percent: u8,
@@ -3261,7 +3285,7 @@ impl GameState {
         if self.outpost(dest).is_none() {
             return Err(FleetError::UnknownOutpost);
         }
-        self.launch_probes(ships, dest, speed_percent, now_unix)
+        self.launch_probes(origin, ships, dest, speed_percent, now_unix)
     }
 
     /// Shard host only: send probes to another tenant's planet. The caller
@@ -3275,7 +3299,7 @@ impl GameState {
         now_unix: u64,
     ) -> Result<u64, FleetError> {
         self.catch_up(now_unix);
-        self.launch_probes(ships, dest, speed_percent, now_unix)
+        self.launch_probes(self.home, ships, dest, speed_percent, now_unix)
     }
 
     /// Shard host only: fly `ships` at another tenant's home with a hold of
@@ -3290,7 +3314,7 @@ impl GameState {
         speed_percent: u8,
         now_unix: u64,
     ) -> Result<u64, FleetError> {
-        self.launch_fleet(ships, dest, speed_percent, 0, now_unix)?;
+        self.launch_fleet(self.home, ships, dest, speed_percent, 0, now_unix)?;
         let Some(mission) = self.missions.last_mut() else {
             return Err(FleetError::EmptyFleet);
         };
@@ -3301,6 +3325,7 @@ impl GameState {
     /// Probe flight with a hold of zero, flagged so Action writes a report.
     fn launch_probes(
         &mut self,
+        origin: Coord,
         ships: Fleet,
         dest: Coord,
         speed_percent: u8,
@@ -3309,7 +3334,7 @@ impl GameState {
         if ships.get(ShipKind::EspionageProbe) == 0 {
             return Err(FleetError::NeedEspionageProbe);
         }
-        self.launch_fleet(ships, dest, speed_percent, 0, now_unix)?;
+        self.launch_fleet(origin, ships, dest, speed_percent, 0, now_unix)?;
         let Some(mission) = self.missions.last_mut() else {
             return Err(FleetError::EmptyFleet);
         };
@@ -3317,11 +3342,13 @@ impl GameState {
         Ok(mission.id)
     }
 
-    /// Fly recyclers to `dest` (home orbit included) to lift battle debris. On arrival they take
-    /// at most their own hold and the debris left; the cargo comes home as
-    /// iron and silicon split by `moons.debris_iron_share`.
+    /// Fly recyclers from `origin` to `dest` (`origin`'s own orbit included)
+    /// to lift battle debris. On arrival they take at most their own hold and
+    /// the debris left; the cargo comes back to `origin` as iron and silicon
+    /// split by `moons.debris_iron_share`.
     pub fn launch_recycle(
         &mut self,
+        origin: Coord,
         dest: Coord,
         ships: Fleet,
         speed_percent: u8,
@@ -3334,8 +3361,8 @@ impl GameState {
         if ships.get(ShipKind::Recycler) == 0 {
             return Err(FleetError::NeedRecycler);
         }
-        let (outbound_secs, fuel) = self.recycle_flight(ships, dest, speed_percent)?;
-        self.launch_with_flight(ships, dest, speed_percent, 0, outbound_secs, fuel)?;
+        let (outbound_secs, fuel) = self.recycle_flight(origin, ships, dest, speed_percent)?;
+        self.launch_with_flight(origin, ships, dest, speed_percent, 0, outbound_secs, fuel)?;
         let Some(mission) = self.missions.last_mut() else {
             return Err(FleetError::EmptyFleet);
         };
@@ -3343,16 +3370,18 @@ impl GameState {
         Ok(mission.id)
     }
 
-    /// Outbound time and fuel for a recycle trip. Home orbit has no flight:
-    /// the launch overhead each way and no fuel. Anywhere else flies.
+    /// Outbound time and fuel for a recycle trip from `origin`. Its own orbit
+    /// has no flight: the launch overhead each way and no fuel. Anywhere
+    /// else flies.
     pub fn recycle_flight(
         &self,
+        origin: Coord,
         ships: Fleet,
         dest: Coord,
         speed_percent: u8,
     ) -> Result<(u64, f64), FleetError> {
-        if dest != self.home {
-            return self.flight_time_and_fuel(ships, dest, speed_percent);
+        if dest != origin {
+            return self.flight_from(origin, dest, ships, speed_percent);
         }
         if ships.is_empty() {
             return Err(FleetError::EmptyFleet);
@@ -4683,7 +4712,7 @@ impl GameState {
             }
             ExpeditionResult::Resources(found) => {
                 self.settle_ledger(Term::Transfer);
-                self.credit_capped(found);
+                self.credit_at(self.missions[index].origin, found);
                 self.settle_ledger(Term::Other);
                 self.push_event(done_at, format!("expedition: found {}", found.brief()));
                 false
@@ -4938,7 +4967,7 @@ impl GameState {
             deceived: outcome.detected,
         };
         match truth {
-            Some(truth) => self.read_spy(&mut report, truth),
+            Some(truth) => self.read_spy(self.missions[index].origin, &mut report, truth),
             None => self.classification.set_marking(
                 crate::ClassifiedKind::Report,
                 &id.to_string(),
@@ -4971,17 +5000,17 @@ impl GameState {
     }
 
     /// Noisy readings of `truth` into `report`, gated by its tier. Error is
-    /// the espionage formula for the radial range from home; arrival waits
-    /// for light-time after `observed_at`. Draws from this empire's RNG.
-    fn read_spy(&mut self, report: &mut SpyReport, truth: SpyTruth) {
+    /// the espionage formula for the radial range from `origin`, the planet
+    /// the probes flew from; arrival waits for light-time after `observed_at`. Draws from this empire's RNG.
+    fn read_spy(&mut self, origin: Coord, report: &mut SpyReport, truth: SpyTruth) {
         let cfg = &self.config.espionage;
         let show_resources = reveals(&report.tier, "resources", cfg);
         let show_fleet = reveals(&report.tier, "fleet", cfg);
         let show_defences = reveals(&report.tier, "defences", cfg);
         let show_garrison = reveals(&report.tier, "garrison", cfg);
         let own = self.modifier(ModifierKind::Espionage);
-        let delay = light_delay_secs(self.home, report.target, &self.config.orbits);
-        let range = light_range_au(self.home, report.target, &self.config.orbits);
+        let delay = light_delay_secs(origin, report.target, &self.config.orbits);
+        let range = light_range_au(origin, report.target, &self.config.orbits);
         let error = sensor_error(range, 1.0 + own, &self.config.espionage);
         let deceived = report.deceived;
         let decoy = self.config.espionage.decoy_bias;
@@ -5041,7 +5070,9 @@ impl GameState {
         let (resources, fleet) = planet.unwrap_or((Resources::ZERO, Fleet::default()));
         let mut report = self.spy_reports.remove(pos);
         report.observed_at = report.observed_at.max(seen_at);
+        // Shard probes launch from home only.
         self.read_spy(
+            self.home,
             &mut report,
             SpyTruth {
                 resources,
@@ -9940,7 +9971,7 @@ modifiers = []
     fn recall_mid_outbound_returns_in_elapsed_time() {
         let mut state = flying_state(0);
         state
-            .launch_fleet(scout_fleet(), far_dest(), 100, 0, 0)
+            .launch_fleet(state.home, scout_fleet(), far_dest(), 100, 0, 0)
             .unwrap();
         let id = state.missions[0].id;
         let outbound = state.missions[0].outbound_secs;
@@ -9956,7 +9987,7 @@ modifiers = []
     #[test]
     fn arrival_and_return_resolve_across_an_offline_gap() {
         let mut gap = flying_state(0);
-        gap.launch_fleet(scout_fleet(), far_dest(), 100, 0, 0)
+        gap.launch_fleet(gap.home, scout_fleet(), far_dest(), 100, 0, 0)
             .unwrap();
         let outbound = gap.missions[0].outbound_secs;
         gap.catch_up(outbound * 2);
@@ -9964,7 +9995,7 @@ modifiers = []
         assert_eq!(gap.fleet.get(ShipKind::LightFighter), 4);
 
         let mut step = flying_state(0);
-        step.launch_fleet(scout_fleet(), far_dest(), 100, 0, 0)
+        step.launch_fleet(step.home, scout_fleet(), far_dest(), 100, 0, 0)
             .unwrap();
         for t in 1..=outbound * 2 {
             step.catch_up(t);
@@ -9980,16 +10011,16 @@ modifiers = []
         let mut state = flying_state(0);
         assert_eq!(state.fleet_slots(), 1);
         state
-            .launch_fleet(scout_fleet(), far_dest(), 100, 0, 0)
+            .launch_fleet(state.home, scout_fleet(), far_dest(), 100, 0, 0)
             .unwrap();
         let err = state
-            .launch_fleet(scout_fleet(), far_dest(), 100, 0, 0)
+            .launch_fleet(state.home, scout_fleet(), far_dest(), 100, 0, 0)
             .unwrap_err();
         assert_eq!(err, FleetError::NoSlots { used: 1, cap: 1 });
         state.tech_levels.insert("computer".into(), 1);
         assert_eq!(state.fleet_slots(), 2);
         state
-            .launch_fleet(scout_fleet(), far_dest(), 100, 0, 0)
+            .launch_fleet(state.home, scout_fleet(), far_dest(), 100, 0, 0)
             .unwrap();
         assert_eq!(state.missions.len(), 2);
     }
@@ -10807,7 +10838,7 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
         let mut empty = GameState::with_config(0, colony_config());
         empty.resources.deuterium = 10_000.0;
         assert_eq!(
-            empty.launch_colony(empty_slot(), 100, 0),
+            empty.launch_colony(empty.home, empty_slot(), 100, 0),
             Err(FleetError::NeedColonyShip)
         );
     }
@@ -10816,7 +10847,9 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
     fn over_cap_or_occupied_returns_the_colony_ship() {
         let mut state = colony_ready(0);
         assert_eq!(state.colony_cap(), 1);
-        state.launch_colony(empty_slot(), 100, 0).unwrap();
+        state
+            .launch_colony(state.home, empty_slot(), 100, 0)
+            .unwrap();
         let outbound = state.missions[0].outbound_secs;
         state.catch_up(outbound * 2);
         assert!(state.colonies.is_empty());
@@ -10825,14 +10858,18 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
 
         state.tech_levels.insert("colonization".into(), 1);
         let now = state.last_tick_unix;
-        state.launch_colony(empty_slot(), 100, now).unwrap();
+        state
+            .launch_colony(state.home, empty_slot(), 100, now)
+            .unwrap();
         let outbound = state.missions[0].outbound_secs;
         state.catch_up(now + outbound * 2);
         assert_eq!(state.colonies.len(), 1);
         assert_eq!(state.fleet.get(ShipKind::ColonyShip), 0);
 
         state.fleet.add(ShipKind::ColonyShip, 1);
-        state.launch_colony(empty_slot(), 100, 0).unwrap();
+        state
+            .launch_colony(state.home, empty_slot(), 100, 0)
+            .unwrap();
         let outbound = state.missions[0].outbound_secs;
         state.catch_up(state.last_tick_unix + outbound * 2);
         assert_eq!(state.colonies.len(), 1);
@@ -10860,7 +10897,7 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
         let mut a = colony_ready(0);
         a.galaxy_seed = 11;
         a.tech_levels.insert("colonization".into(), 1);
-        a.launch_colony(empty_slot(), 100, 0).unwrap();
+        a.launch_colony(a.home, empty_slot(), 100, 0).unwrap();
         let outbound = a.missions[0].outbound_secs;
         a.catch_up(outbound * 2);
         let expected = planet_profile(11, empty_slot(), a.generator_version);
@@ -10869,7 +10906,7 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
         let mut b = colony_ready(0);
         b.galaxy_seed = 11;
         b.tech_levels.insert("colonization".into(), 1);
-        b.launch_colony(empty_slot(), 100, 0).unwrap();
+        b.launch_colony(b.home, empty_slot(), 100, 0).unwrap();
         b.catch_up(outbound * 2);
         assert_eq!(a.colonies[0].kind, b.colonies[0].kind);
         assert_eq!(a.colonies[0].size, b.colonies[0].size);
@@ -10895,7 +10932,7 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
     fn offline_arrival_founds_the_colony_at_the_landing_time() {
         let mut gap = colony_ready(0);
         gap.tech_levels.insert("colonization".into(), 1);
-        gap.launch_colony(empty_slot(), 100, 0).unwrap();
+        gap.launch_colony(gap.home, empty_slot(), 100, 0).unwrap();
         let outbound = gap.missions[0].outbound_secs;
         gap.catch_up(outbound * 10);
         assert_eq!(gap.colonies.len(), 1);
@@ -10903,7 +10940,7 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
 
         let mut step = colony_ready(0);
         step.tech_levels.insert("colonization".into(), 1);
-        step.launch_colony(empty_slot(), 100, 0).unwrap();
+        step.launch_colony(step.home, empty_slot(), 100, 0).unwrap();
         for t in 1..=outbound * 10 {
             step.catch_up(t);
         }
@@ -11192,10 +11229,10 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
         state.config.expedition.base_slots = 2;
         let site_id = state.sites[0].id;
         state
-            .launch_expedition_site(site_id, scout_fleet(), 10, 100, 0)
+            .launch_expedition_site(state.home, site_id, scout_fleet(), 10, 100, 0)
             .unwrap();
         let err = state
-            .launch_expedition_site(site_id, scout_fleet(), 10, 100, 0)
+            .launch_expedition_site(state.home, site_id, scout_fleet(), 10, 100, 0)
             .unwrap_err();
         assert_eq!(err, FleetError::SiteBusy { id: site_id });
         assert_eq!(state.missions.len(), 1);
@@ -11227,7 +11264,7 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
             })
             .expect("a resource seed");
         state
-            .launch_expedition_site(site_id, ships, 10, 100, 0)
+            .launch_expedition_site(state.home, site_id, ships, 10, 100, 0)
             .unwrap();
         state.missions[0].expedition_seed = Some(seed);
         state.buildings.metal_mine = 0;
@@ -11242,9 +11279,65 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
         assert!(state.sites[0].outcome.is_some());
         state.fleet.add(ShipKind::LightFighter, 10);
         let err = state
-            .launch_expedition_site(site_id, scout_fleet(), 10, 100, state.last_tick_unix)
+            .launch_expedition_site(
+                state.home,
+                site_id,
+                scout_fleet(),
+                10,
+                100,
+                state.last_tick_unix,
+            )
             .unwrap_err();
         assert_eq!(err, FleetError::SiteResolved { id: site_id });
+    }
+
+    #[test]
+    fn a_colony_expedition_find_lands_in_that_colony() {
+        let mut state = expedition_state(0);
+        let site_id = state.sites[0].id;
+        state.sites[0].iron = 10.0;
+        state.sites[0].silicon = 0.0;
+        state.sites[0].deuterium = 0.0;
+        state.sites[0].ships = 0;
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::LightFighter, 10);
+        let seed = (0..10_000u64)
+            .find(|seed| {
+                matches!(
+                    roll_expedition(
+                        *seed,
+                        &ships,
+                        0,
+                        10,
+                        &state.config.expedition,
+                        &state.config.ships,
+                    ),
+                    ExpeditionResult::Resources(_)
+                )
+            })
+            .expect("a resource seed");
+        let site = state.sites[0].coord;
+        let colony = (2..16)
+            .map(|position| Coord {
+                position,
+                ..state.home
+            })
+            .find(|&c| c != state.home && c != site && state.site_at(c).is_none())
+            .unwrap();
+        plant_colony(&mut state, colony);
+        state.colonies[0].resources.iron = 0.0;
+        state.colonies[0].fleet = ships;
+        state
+            .launch_expedition_site(colony, site_id, ships, 10, 100, 0)
+            .unwrap();
+        state.missions[0].expedition_seed = Some(seed);
+        state.buildings.metal_mine = 0;
+        state.resources.iron = 0.0;
+        state.catch_up(state.missions[0].outbound_secs);
+        let paid = 10.0 - state.sites[0].iron;
+        assert!(paid > 0.0, "{paid}");
+        assert!(state.colonies[0].resources.iron >= paid);
+        assert_eq!(state.resources.iron, 0.0);
     }
 
     #[test]
@@ -11270,7 +11363,7 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
             })
             .expect("a delay seed");
         state
-            .launch_expedition_site(site_id, ships, 10, 100, 0)
+            .launch_expedition_site(state.home, site_id, ships, 10, 100, 0)
             .unwrap();
         state.missions[0].expedition_seed = Some(seed);
         let outbound = state.missions[0].outbound_secs;
@@ -11286,7 +11379,7 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
             let mut ships = Fleet::default();
             ships.add(ShipKind::LightFighter, 10);
             state
-                .launch_expedition_site(site_id, ships, 10, 100, 0)
+                .launch_expedition_site(state.home, site_id, ships, 10, 100, 0)
                 .unwrap();
             state.missions[0].expedition_seed = Some(7);
         };
@@ -11336,7 +11429,7 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
             ships.add(ShipKind::LightFighter, 10);
             ships.add(ShipKind::Explorer, 1);
             state
-                .launch_expedition_site(site_id, ships, 10, 100, 0)
+                .launch_expedition_site(state.home, site_id, ships, 10, 100, 0)
                 .unwrap();
             state.missions[0].expedition_seed = Some(7);
         };
@@ -11379,7 +11472,9 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
     }
 
     fn recycle_until_home(state: &mut GameState, dest: Coord, ships: Fleet) {
-        state.launch_recycle(dest, ships, 100, 0).unwrap();
+        state
+            .launch_recycle(state.home, dest, ships, 100, 0)
+            .unwrap();
         let back = state.missions[0].phase_ends_at + 2 * state.missions[0].outbound_secs + 1;
         state.catch_up(back);
         assert!(state.missions.is_empty());
@@ -11447,14 +11542,14 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
         let mut recyclers = Fleet::default();
         recyclers.add(ShipKind::Recycler, 1);
         assert_eq!(
-            state.launch_recycle(dest, recyclers, 100, 0),
+            state.launch_recycle(state.home, dest, recyclers, 100, 0),
             Err(FleetError::NoDebris)
         );
         state.debris.insert(dest, 100.0);
         let mut cargo = Fleet::default();
         cargo.add(ShipKind::LargeCargo, 1);
         assert_eq!(
-            state.launch_recycle(dest, cargo, 100, 0),
+            state.launch_recycle(state.home, dest, cargo, 100, 0),
             Err(FleetError::NeedRecycler)
         );
     }
@@ -11497,7 +11592,9 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
             let (mut state, dest) = recycle_state(30_000.0);
             let mut ships = Fleet::default();
             ships.add(ShipKind::Recycler, 1);
-            state.launch_recycle(dest, ships, 100, 0).unwrap();
+            state
+                .launch_recycle(state.home, dest, ships, 100, 0)
+                .unwrap();
             let back = state.missions[0].phase_ends_at + 2 * state.missions[0].outbound_secs + 1;
             if stepped {
                 for now in 1..=back {
@@ -11751,7 +11848,9 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
             let mut ships = Fleet::default();
             ships.add(ShipKind::LightFighter, 10);
             let now = state.last_tick_unix;
-            let mission = state.hold_signal(signal.id, ships, 100, now).unwrap();
+            let mission = state
+                .hold_signal(state.home, signal.id, ships, 100, now)
+                .unwrap();
             let outbound = state.missions[0].outbound_secs;
             let back = signal.deadline + outbound + 1;
             if stepped {
@@ -11811,13 +11910,13 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
         let mut ships = Fleet::default();
         ships.add(ShipKind::LightFighter, 1);
         assert_eq!(
-            state.hold_signal(id, ships, 100, 0),
+            state.hold_signal(state.home, id, ships, 100, 0),
             Err(FleetError::UnknownSignal { id })
         );
         let deadline = state.signal(id).unwrap().deadline;
         let now = deadline - 1;
         assert!(matches!(
-            state.hold_signal(id, ships, 100, now),
+            state.hold_signal(state.home, id, ships, 100, now),
             Err(FleetError::SignalTooLate { .. })
         ));
         assert!(state.missions.is_empty());
@@ -11827,7 +11926,9 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
     fn slot_expedition_still_reaches_the_config_position() {
         let mut state = expedition_state(0);
         state.sites.clear();
-        state.launch_expedition(scout_fleet(), 10, 100, 0).unwrap();
+        state
+            .launch_expedition(state.home, scout_fleet(), 10, 100, 0)
+            .unwrap();
         assert_eq!(state.missions[0].dest, state.expedition_dest());
         assert!(state.missions[0].site_id.is_none());
     }
@@ -11844,7 +11945,9 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
         };
         state.sites.clear();
         state.resources.iron = 10_000.0;
-        state.launch_expedition(scout_fleet(), 10, 100, 0).unwrap();
+        state
+            .launch_expedition(state.home, scout_fleet(), 10, 100, 0)
+            .unwrap();
         let mission = &state.missions[0];
         let seed = (0..100_000u64)
             .find(|&seed| {
@@ -11957,7 +12060,9 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
     #[test]
     fn expedition_result_lands_in_the_event_log() {
         let mut state = expedition_state(0);
-        state.launch_expedition(scout_fleet(), 10, 100, 0).unwrap();
+        state
+            .launch_expedition(state.home, scout_fleet(), 10, 100, 0)
+            .unwrap();
         let outbound = state.missions[0].outbound_secs;
         state.catch_up(outbound);
         assert!(
@@ -11974,9 +12079,11 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
     fn expedition_slots_follow_astrophysics() {
         let mut state = expedition_state(0);
         assert_eq!(state.expedition_slots(), 1);
-        state.launch_expedition(scout_fleet(), 10, 100, 0).unwrap();
+        state
+            .launch_expedition(state.home, scout_fleet(), 10, 100, 0)
+            .unwrap();
         let err = state
-            .launch_expedition(scout_fleet(), 10, 100, 0)
+            .launch_expedition(state.home, scout_fleet(), 10, 100, 0)
             .unwrap_err();
         assert_eq!(err, FleetError::NoExpeditionSlots { used: 1, cap: 1 });
         state.tech_levels.insert("astrophysics".into(), 1);
@@ -11999,7 +12106,9 @@ modifiers = [{ kind = "expedition_slots", per_level = 1.0 }]
         )
         .unwrap();
         assert_eq!(state.expedition_slots(), 2);
-        state.launch_expedition(scout_fleet(), 10, 100, 0).unwrap();
+        state
+            .launch_expedition(state.home, scout_fleet(), 10, 100, 0)
+            .unwrap();
         assert_eq!(
             state
                 .missions
@@ -12658,7 +12767,7 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         assert!(state.outpost(dest).unwrap().defences.total() > 0);
         state.fleet.add(ShipKind::TroopTransport, 2);
         assert_eq!(
-            state.launch_invasion(troops(2), dest, 100, 0),
+            state.launch_invasion(state.home, troops(2), dest, 100, 0),
             Err(FleetError::DefencesRemain)
         );
         assert_eq!(state.colonies.len(), 0);
@@ -12701,7 +12810,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         low.resources.deuterium = 10_000.0;
         let dest = low.outposts[0].coord;
         low.fleet.add(ShipKind::EspionageProbe, 1);
-        low.launch_spy(probes(1), dest, 100, 0).unwrap();
+        low.launch_spy(low.home, probes(1), dest, 100, 0).unwrap();
         fly_home(&mut low);
         let one = low.latest_report(dest).expect("report");
         assert_eq!(one.tier, "activity");
@@ -12719,7 +12828,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         let garrison = high.outposts[0].garrison;
         let defences = high.outposts[0].defences;
         high.fleet.add(ShipKind::EspionageProbe, 1);
-        high.launch_spy(probes(1), dest, 100, 0).unwrap();
+        high.launch_spy(high.home, probes(1), dest, 100, 0).unwrap();
         fly_home(&mut high);
         let full = high.latest_report(dest).expect("report");
         assert_eq!(full.tier, "garrison");
@@ -12748,7 +12857,9 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         state.resources.deuterium = 10_000.0;
         let dest = state.outposts[0].coord;
         state.fleet.add(ShipKind::EspionageProbe, 1);
-        state.launch_spy(probes(1), dest, 100, 0).unwrap();
+        state
+            .launch_spy(state.home, probes(1), dest, 100, 0)
+            .unwrap();
         let observed = state.missions[0].phase_ends_at + state.missions[0].hold_secs;
         let home_at = observed + state.missions[0].outbound_secs;
         let delay = crate::light_delay_secs(state.home, dest, &state.config.orbits);
@@ -12787,7 +12898,9 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         state.resources.deuterium = 10_000.0;
         let dest = state.outposts[0].coord;
         state.fleet.add(ShipKind::EspionageProbe, 1);
-        state.launch_spy(probes(1), dest, 100, 0).unwrap();
+        state
+            .launch_spy(state.home, probes(1), dest, 100, 0)
+            .unwrap();
         let observed = state.missions[0].phase_ends_at + state.missions[0].hold_secs;
         let home_at = observed + state.missions[0].outbound_secs;
         let delay = crate::light_delay_secs(state.home, dest, &state.config.orbits);
@@ -12812,8 +12925,8 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         let dest = a.outposts[0].coord;
         a.fleet.add(ShipKind::EspionageProbe, 6);
         b.fleet.add(ShipKind::EspionageProbe, 6);
-        a.launch_spy(probes(6), dest, 100, 0).unwrap();
-        b.launch_spy(probes(6), dest, 100, 0).unwrap();
+        a.launch_spy(a.home, probes(6), dest, 100, 0).unwrap();
+        b.launch_spy(b.home, probes(6), dest, 100, 0).unwrap();
         fly_home(&mut a);
         fly_home(&mut b);
         deliver_intel(&mut a);
@@ -12842,7 +12955,9 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         let delay = crate::light_delay_secs(state.home, dest, &state.config.orbits);
         assert!(delay > 0);
         state.fleet.add(ShipKind::EspionageProbe, 1);
-        state.launch_spy(probes(1), dest, 100, 0).unwrap();
+        state
+            .launch_spy(state.home, probes(1), dest, 100, 0)
+            .unwrap();
         state.catch_up(state.missions[0].phase_ends_at);
         assert!(state.latest_report(dest).is_none());
         assert!(
@@ -12985,7 +13100,9 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         let dest = state.outposts[0].coord;
         let truth = state.outposts[0].garrison;
         state.fleet.add(ShipKind::EspionageProbe, 1);
-        state.launch_spy(probes(1), dest, 100, 0).unwrap();
+        state
+            .launch_spy(state.home, probes(1), dest, 100, 0)
+            .unwrap();
         fly_home(&mut state);
         deliver_intel(&mut state);
         let report = state.latest_report(dest).expect("report");
@@ -13006,7 +13123,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         let mut ships = Fleet::default();
         ships.add(ShipKind::LightFighter, 1);
         assert_eq!(
-            state.launch_spy(ships, dest, 100, 0),
+            state.launch_spy(state.home, ships, dest, 100, 0),
             Err(FleetError::NeedEspionageProbe)
         );
     }
@@ -13029,8 +13146,8 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         b.outposts[0].garrison = 4;
         a.fleet.add(ShipKind::TroopTransport, 3);
         b.fleet.add(ShipKind::TroopTransport, 3);
-        a.launch_invasion(troops(3), dest, 100, 0).unwrap();
-        b.launch_invasion(troops(3), dest, 100, 0).unwrap();
+        a.launch_invasion(a.home, troops(3), dest, 100, 0).unwrap();
+        b.launch_invasion(b.home, troops(3), dest, 100, 0).unwrap();
         fly_home(&mut a);
         fly_home(&mut b);
         let report_a = a
@@ -13069,7 +13186,9 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         };
         let proposal = crate::propose(&state, &intent, 0).unwrap();
         crate::apply(&mut state, &proposal, 0).unwrap();
-        state.launch_invasion(troops(1), dest, 100, 0).unwrap();
+        state
+            .launch_invasion(state.home, troops(1), dest, 100, 0)
+            .unwrap();
         fly_home(&mut state);
         assert!(state.colonies.is_empty());
         assert_eq!(state.fleet.get(ShipKind::TroopTransport), 1);
@@ -13086,12 +13205,14 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         state.fleet.add(ShipKind::TroopTransport, 2);
         assert_eq!(state.colony_cap(), 1);
         assert_eq!(
-            state.launch_invasion(troops(2), dest, 100, 0),
+            state.launch_invasion(state.home, troops(2), dest, 100, 0),
             Err(FleetError::ColonyCap { used: 1, cap: 1 })
         );
         state.tech_levels.insert("colonization".into(), 1);
         assert_eq!(state.colony_cap(), 2);
-        state.launch_invasion(troops(2), dest, 100, 0).unwrap();
+        state
+            .launch_invasion(state.home, troops(2), dest, 100, 0)
+            .unwrap();
         fly_home(&mut state);
         assert_eq!(state.colonies.len(), 1);
         assert_eq!(state.colonies[0].coord, dest);
@@ -13101,7 +13222,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         state.outposts[0].defences = Fleet::default();
         state.fleet.add(ShipKind::TroopTransport, 2);
         assert_eq!(
-            state.launch_invasion(troops(2), dest2, 100, 0),
+            state.launch_invasion(state.home, troops(2), dest2, 100, 0),
             Err(FleetError::ColonyCap { used: 2, cap: 2 })
         );
     }
@@ -13115,7 +13236,9 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         state.outposts[0].defences = Fleet::default();
         state.outposts[0].rare = Some("rich_vein".into());
         state.fleet.add(ShipKind::TroopTransport, 2);
-        state.launch_invasion(troops(2), dest, 100, 0).unwrap();
+        state
+            .launch_invasion(state.home, troops(2), dest, 100, 0)
+            .unwrap();
         fly_home(&mut state);
         assert_eq!(state.colonies[0].rare.as_deref(), Some("rich_vein"));
         let bonus = state.rare_bonus_at(dest).expect("rare bonus");
@@ -13159,7 +13282,9 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
             .get(ShipKind::LightFighter);
         assert_eq!(start_ships, 1);
         state.fleet.add(ShipKind::LightFighter, 8);
-        state.launch_attack(fighters(8), dest, 100, 0).unwrap();
+        state
+            .launch_attack(state.home, fighters(8), dest, 100, 0)
+            .unwrap();
         fly_home(&mut state);
         assert_eq!(
             state.outpost(dest).unwrap().defences.total(),
@@ -13179,6 +13304,44 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
             rebuilt > start_ships,
             "rebuilt={rebuilt} start={start_ships}"
         );
+    }
+
+    #[test]
+    fn attack_from_a_colony_flies_its_ships_and_fuel_and_lands_back_there() {
+        let mut state = GameState::with_config(0, outpost_config());
+        let dest = state.outposts[0].coord;
+        let colony = (2..16)
+            .map(|position| Coord {
+                position,
+                ..state.home
+            })
+            .find(|&c| c != state.home && c != dest && state.outpost(c).is_none())
+            .unwrap();
+        plant_colony(&mut state, colony);
+        state.colonies[0].fleet.add(ShipKind::LightFighter, 8);
+        state.fleet.add(ShipKind::LightFighter, 3);
+        let home_stock = state.resources;
+        let colony_deut = state.colonies[0].resources.deuterium;
+        let (outbound, fuel) = state.flight_from(colony, dest, fighters(8), 100).unwrap();
+
+        state
+            .launch_attack(colony, fighters(8), dest, 100, 0)
+            .unwrap();
+
+        assert_eq!(state.missions[0].origin, colony);
+        assert_eq!(state.missions[0].outbound_secs, outbound);
+        assert!(state.colonies[0].fleet.is_empty());
+        assert!((state.colonies[0].resources.deuterium - (colony_deut - fuel)).abs() < 1e-9);
+        assert_eq!(state.fleet, fighters(3));
+        assert_eq!(state.resources, home_stock);
+
+        state.catch_up(state.missions[0].phase_ends_at);
+        assert_eq!(state.missions[0].phase, MissionPhase::Return);
+        let survivors = state.missions[0].ships;
+        assert!(!survivors.is_empty());
+        fly_home(&mut state);
+        assert_eq!(state.colonies[0].fleet, survivors);
+        assert_eq!(state.fleet, fighters(3));
     }
 
     fn prestige_test_config() -> BalanceConfig {
@@ -14161,7 +14324,9 @@ label = "Skip"
         let dest = state.outposts[0].coord;
         state.outposts[0].defences = Fleet::default();
         state.fleet.add(ShipKind::TroopTransport, 2);
-        state.launch_invasion(troops(2), dest, 100, 0).unwrap();
+        state
+            .launch_invasion(state.home, troops(2), dest, 100, 0)
+            .unwrap();
         fly_home(&mut state);
         close(state.diplomacy.standing("pirates"), -15.0);
         assert!(

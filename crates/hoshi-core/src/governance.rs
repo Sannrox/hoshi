@@ -216,22 +216,26 @@ pub fn spend_of(state: &GameState, intent: &Intent, _now: u64) -> f64 {
             .map(|spec| stock_of(spec.cost(state.next_research_level(tech))))
             .unwrap_or(0.0),
         Intent::Launch {
+            origin,
             ships,
             dest,
             speed_percent,
             ..
         }
         | Intent::Invade {
+            origin,
             ships,
             dest,
             speed_percent,
         }
         | Intent::Spy {
+            origin,
             ships,
             dest,
             speed_percent,
-        } => fuel_of(state, *ships, *dest, *speed_percent),
+        } => fuel_of(state, *origin, *ships, *dest, *speed_percent),
         Intent::Expedition {
+            origin,
             ships,
             site,
             speed_percent,
@@ -241,7 +245,9 @@ pub fn spend_of(state: &GameState, intent: &Intent, _now: u64) -> f64 {
                 Some(id) => state.sites.iter().find(|s| s.id == *id).map(|s| s.coord),
                 None => Some(state.expedition_dest()),
             };
-            dest.map_or(0.0, |dest| fuel_of(state, *ships, dest, *speed_percent))
+            dest.map_or(0.0, |dest| {
+                fuel_of(state, *origin, *ships, dest, *speed_percent)
+            })
         }
         Intent::QueueShips { kind, count, .. } => {
             stock_of(state.config.ships.get(*kind).unit_cost()) * f64::from(*count)
@@ -250,12 +256,13 @@ pub fn spend_of(state: &GameState, intent: &Intent, _now: u64) -> f64 {
             stock_of(state.config.defences.get(*kind).unit_cost()) * f64::from(*count)
         }
         Intent::Colonize {
+            origin,
             dest,
             speed_percent,
         } => {
             let mut ships = Fleet::default();
             ships.add(ShipKind::ColonyShip, 1);
-            fuel_of(state, ships, *dest, *speed_percent)
+            fuel_of(state, *origin, ships, *dest, *speed_percent)
         }
         Intent::PlaceOrder {
             amount,
@@ -304,9 +311,16 @@ fn stock_of(resources: Resources) -> f64 {
     resources.total()
 }
 
-fn fuel_of(state: &GameState, ships: Fleet, dest: Coord, speed_percent: u8) -> f64 {
+/// Launch fuel from `origin`, home when the intent names none.
+fn fuel_of(
+    state: &GameState,
+    origin: Option<Coord>,
+    ships: Fleet,
+    dest: Coord,
+    speed_percent: u8,
+) -> f64 {
     state
-        .flight_time_and_fuel(ships, dest, speed_percent)
+        .flight_from(origin.unwrap_or(state.home), dest, ships, speed_percent)
         .map(|(_, fuel)| fuel)
         .unwrap_or(0.0)
 }
@@ -547,6 +561,7 @@ mod tests {
             position: 4,
         };
         let intent = Intent::Launch {
+            origin: None,
             ships: Fleet::default(),
             dest,
             speed_percent: 100,
@@ -578,6 +593,7 @@ mod tests {
         let mut ships = Fleet::default();
         ships.add(ShipKind::TroopTransport, 1);
         let intent = Intent::Invade {
+            origin: None,
             ships,
             dest,
             speed_percent: 100,
@@ -613,6 +629,7 @@ mod tests {
         let intent = build_mine();
         assert_eq!(route_model(&state, &intent), ModelTier::Cheap);
         let invade = Intent::Invade {
+            origin: None,
             ships: Fleet::default(),
             dest: Coord::HOME,
             speed_percent: 100,

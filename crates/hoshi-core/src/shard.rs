@@ -819,6 +819,7 @@ impl<C: Clock> ShardSession<C> {
             match (&cmd.intent, expedition) {
                 (
                     Intent::Expedition {
+                        origin,
                         ships,
                         hold_secs,
                         speed_percent,
@@ -826,7 +827,14 @@ impl<C: Clock> ShardSession<C> {
                     },
                     Some(dest),
                 ) => state
-                    .launch_expedition_to(dest, *ships, *hold_secs, *speed_percent, now)
+                    .launch_expedition_to(
+                        origin.unwrap_or(state.home),
+                        dest,
+                        *ships,
+                        *hold_secs,
+                        *speed_percent,
+                        now,
+                    )
                     .map(|_| ())
                     .map_err(IntentError::Fleet),
                 (intent, _) => {
@@ -1034,6 +1042,7 @@ impl<C: Clock> ShardSession<C> {
                 identity: identity.to_string(),
             })?;
         let intent = Intent::Colonize {
+            origin: None,
             dest,
             speed_percent,
         };
@@ -1103,6 +1112,7 @@ impl<C: Clock> ShardSession<C> {
                 .map_err(|e| ShardError::Intent(IntentError::Fleet(e)))?;
         } else {
             let intent = Intent::Spy {
+                origin: None,
                 ships: cmd.ships,
                 dest: cmd.dest,
                 speed_percent: cmd.speed_percent,
@@ -1155,7 +1165,7 @@ impl<C: Clock> ShardSession<C> {
                 identity: identity.to_string(),
             })?;
         with_shared_debris(&mut self.commons.debris, state, |state| {
-            state.launch_recycle(cmd.dest, cmd.ships, cmd.speed_percent, now)
+            state.launch_recycle(state.home, cmd.dest, cmd.ships, cmd.speed_percent, now)
         })
         .map_err(|e| ShardError::Intent(IntentError::Fleet(e)))?;
         self.seen.insert(seen_key, now);
@@ -2938,6 +2948,7 @@ mod tests {
                     identity: "tenant-a".into(),
                     idempotency_id: "col".into(),
                     intent: Intent::Colonize {
+                        origin: None,
                         dest: empty_slot(),
                         speed_percent: 100,
                     },
@@ -3312,7 +3323,13 @@ mod tests {
         }
         let a = empires.get_mut("tenant-a").unwrap();
         assert_eq!(
-            a.launch_spy(spy_cmd(B_HOME, "local").ships, B_HOME, 100, SPY_START),
+            a.launch_spy(
+                a.home,
+                spy_cmd(B_HOME, "local").ships,
+                B_HOME,
+                100,
+                SPY_START
+            ),
             Err(crate::FleetError::UnknownOutpost)
         );
     }
@@ -4036,6 +4053,7 @@ mod tests {
             identity: identity.into(),
             idempotency_id: "exp".into(),
             intent: Intent::Expedition {
+                origin: None,
                 ships: one(ShipKind::LightFighter),
                 site: None,
                 hold_secs,
@@ -4097,6 +4115,7 @@ mod tests {
         let mut local = local;
         local
             .launch_expedition(
+                local.home,
                 one(ShipKind::LightFighter),
                 local.config.expedition.min_hold_secs,
                 100,

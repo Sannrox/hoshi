@@ -35,17 +35,23 @@ pub enum Intent {
     Research {
         tech: String,
     },
+    /// `origin` is the owned planet whose ships and fuel fly; `None` is
+    /// home, as before launches carried an origin. The same holds for
+    /// `Colonize`, `Invade`, `Spy` and `Expedition`.
     Launch {
+        origin: Option<Coord>,
         ships: Fleet,
         dest: Coord,
         speed_percent: u8,
         hold_secs: u64,
     },
     Colonize {
+        origin: Option<Coord>,
         dest: Coord,
         speed_percent: u8,
     },
     Invade {
+        origin: Option<Coord>,
         ships: Fleet,
         dest: Coord,
         speed_percent: u8,
@@ -147,12 +153,14 @@ pub enum Intent {
         mission: u64,
     },
     Spy {
+        origin: Option<Coord>,
         ships: Fleet,
         dest: Coord,
         speed_percent: u8,
     },
     /// `site: None` flies into deep space; `Some` targets a known site.
     Expedition {
+        origin: Option<Coord>,
         ships: Fleet,
         site: Option<u64>,
         hold_secs: u64,
@@ -292,25 +300,33 @@ fn proposal_id(intent: &Intent, now_unix: u64, tick: u64) -> String {
         ),
         Intent::Research { tech } => format!("research:{now_unix}:{tick}:{tech}"),
         Intent::Launch {
+            origin,
             ships,
             dest,
             speed_percent,
             hold_secs,
         } => format!(
-            "launch:{now_unix}:{tick}:{dest}:{speed_percent}:{hold_secs}:{}",
-            fleet_sig(ships)
+            "launch:{now_unix}:{tick}:{dest}:{speed_percent}:{hold_secs}:{}{}",
+            fleet_sig(ships),
+            origin_sig(*origin)
         ),
         Intent::Colonize {
+            origin,
             dest,
             speed_percent,
-        } => format!("colonize:{now_unix}:{tick}:{dest}:{speed_percent}"),
+        } => format!(
+            "colonize:{now_unix}:{tick}:{dest}:{speed_percent}{}",
+            origin_sig(*origin)
+        ),
         Intent::Invade {
+            origin,
             ships,
             dest,
             speed_percent,
         } => format!(
-            "invade:{now_unix}:{tick}:{dest}:{speed_percent}:{}",
-            fleet_sig(ships)
+            "invade:{now_unix}:{tick}:{dest}:{speed_percent}:{}{}",
+            fleet_sig(ships),
+            origin_sig(*origin)
         ),
         Intent::PlaceOrder {
             region,
@@ -432,26 +448,37 @@ fn proposal_id(intent: &Intent, now_unix: u64, tick: u64) -> String {
         }
         Intent::Recall { mission } => format!("recall:{now_unix}:{tick}:{mission}"),
         Intent::Spy {
+            origin,
             ships,
             dest,
             speed_percent,
         } => format!(
-            "spy:{now_unix}:{tick}:{dest}:{speed_percent}:{}",
-            fleet_sig(ships)
+            "spy:{now_unix}:{tick}:{dest}:{speed_percent}:{}{}",
+            fleet_sig(ships),
+            origin_sig(*origin)
         ),
         Intent::Expedition {
+            origin,
             ships,
             site,
             hold_secs,
             speed_percent,
         } => format!(
-            "expedition:{now_unix}:{tick}:{}:{hold_secs}:{speed_percent}:{}",
+            "expedition:{now_unix}:{tick}:{}:{hold_secs}:{speed_percent}:{}{}",
             site.map(|id| id.to_string())
                 .unwrap_or_else(|| "deep".into()),
-            fleet_sig(ships)
+            fleet_sig(ships),
+            origin_sig(*origin)
         ),
         Intent::ChooseStory { choice } => format!("choose_story:{now_unix}:{tick}:{choice}"),
     }
+}
+
+/// Empty for a home launch, so its proposal id reads as before origins.
+fn origin_sig(origin: Option<Coord>) -> String {
+    origin
+        .map(|coord| format!(":from:{coord}"))
+        .unwrap_or_default()
 }
 
 fn fleet_sig(fleet: &Fleet) -> String {
@@ -497,26 +524,47 @@ fn apply_inner(state: &mut GameState, intent: &Intent, now_unix: u64) -> Result<
             .queue_research(tech, now_unix)
             .map_err(IntentError::Research),
         Intent::Launch {
+            origin,
             ships,
             dest,
             speed_percent,
             hold_secs,
         } => state
-            .launch_fleet(*ships, *dest, *speed_percent, *hold_secs, now_unix)
+            .launch_fleet(
+                origin.unwrap_or(state.home),
+                *ships,
+                *dest,
+                *speed_percent,
+                *hold_secs,
+                now_unix,
+            )
             .map_err(IntentError::Fleet),
         Intent::Colonize {
+            origin,
             dest,
             speed_percent,
         } => state
-            .launch_colony(*dest, *speed_percent, now_unix)
+            .launch_colony(
+                origin.unwrap_or(state.home),
+                *dest,
+                *speed_percent,
+                now_unix,
+            )
             .map(|_| ())
             .map_err(IntentError::Fleet),
         Intent::Invade {
+            origin,
             ships,
             dest,
             speed_percent,
         } => state
-            .launch_invasion(*ships, *dest, *speed_percent, now_unix)
+            .launch_invasion(
+                origin.unwrap_or(state.home),
+                *ships,
+                *dest,
+                *speed_percent,
+                now_unix,
+            )
             .map(|_| ())
             .map_err(IntentError::Fleet),
         Intent::PlaceOrder {
@@ -652,23 +700,41 @@ fn apply_inner(state: &mut GameState, intent: &Intent, now_unix: u64) -> Result<
             .recall_fleet(*mission, now_unix)
             .map_err(IntentError::Fleet),
         Intent::Spy {
+            origin,
             ships,
             dest,
             speed_percent,
         } => state
-            .launch_spy(*ships, *dest, *speed_percent, now_unix)
+            .launch_spy(
+                origin.unwrap_or(state.home),
+                *ships,
+                *dest,
+                *speed_percent,
+                now_unix,
+            )
             .map(|_| ())
             .map_err(IntentError::Fleet),
         Intent::Expedition {
+            origin,
             ships,
             site,
             hold_secs,
             speed_percent,
-        } => match site {
-            Some(id) => {
-                state.launch_expedition_site(*id, *ships, *hold_secs, *speed_percent, now_unix)
+        } => {
+            let origin = origin.unwrap_or(state.home);
+            match site {
+                Some(id) => state.launch_expedition_site(
+                    origin,
+                    *id,
+                    *ships,
+                    *hold_secs,
+                    *speed_percent,
+                    now_unix,
+                ),
+                None => {
+                    state.launch_expedition(origin, *ships, *hold_secs, *speed_percent, now_unix)
+                }
             }
-            None => state.launch_expedition(*ships, *hold_secs, *speed_percent, now_unix),
         }
         .map(|_| ())
         .map_err(IntentError::Fleet),
@@ -698,6 +764,7 @@ mod tests {
             }
             .as_key(),
             Intent::Launch {
+                origin: None,
                 ships: Fleet::default(),
                 dest: Coord::HOME,
                 speed_percent: 100,
@@ -705,11 +772,13 @@ mod tests {
             }
             .as_key(),
             Intent::Colonize {
+                origin: None,
                 dest: Coord::HOME,
                 speed_percent: 100,
             }
             .as_key(),
             Intent::Invade {
+                origin: None,
                 ships: Fleet::default(),
                 dest: Coord::HOME,
                 speed_percent: 100,
@@ -819,12 +888,14 @@ mod tests {
             .as_key(),
             Intent::Recall { mission: 1 }.as_key(),
             Intent::Spy {
+                origin: None,
                 ships: Fleet::default(),
                 dest: Coord::HOME,
                 speed_percent: 100,
             }
             .as_key(),
             Intent::Expedition {
+                origin: None,
                 ships: Fleet::default(),
                 site: None,
                 hold_secs: 0,
@@ -1025,13 +1096,14 @@ mod tests {
         assert!(same_as_direct(
             s,
             Intent::Expedition {
+                origin: None,
                 ships,
                 site: None,
                 hold_secs: hold,
                 speed_percent: 100,
             },
             0,
-            |g| g.launch_expedition(ships, hold, 100, 0).is_ok(),
+            |g| g.launch_expedition(g.home, ships, hold, 100, 0).is_ok(),
         ));
         let mission = s.missions[0].id;
         assert!(same_as_direct(s, Intent::Recall { mission }, 10, |g| g
@@ -1047,12 +1119,13 @@ mod tests {
         assert!(!same_as_direct(
             s,
             Intent::Spy {
+                origin: None,
                 ships: probes,
                 dest: nowhere,
                 speed_percent: 100,
             },
             10,
-            |g| g.launch_spy(probes, nowhere, 100, 10).is_ok(),
+            |g| g.launch_spy(g.home, probes, nowhere, 100, 10).is_ok(),
         ));
         s.catch_up(1_800);
         assert_eq!(
@@ -1070,6 +1143,60 @@ mod tests {
     }
 
     #[test]
+    fn launch_without_an_origin_flies_from_home_and_with_one_from_that_colony() {
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.enabled = false;
+        let mut state = GameState::with_config(1_000, cfg);
+        let colony = Coord {
+            position: 9,
+            ..state.home
+        };
+        let dest = Coord {
+            position: 12,
+            ..state.home
+        };
+        state.colonies.push(crate::Colony {
+            coord: colony,
+            kind: crate::PlanetType::Rocky,
+            size: 120,
+            resources: Resources::from_parts(0.0, 0.0, 10_000.0),
+            buildings: crate::Buildings::default(),
+            fleet: Fleet::default(),
+            defences: crate::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: std::collections::BTreeMap::new(),
+        });
+        let mut scout = Fleet::default();
+        scout.add(ShipKind::SmallCargo, 1);
+        state.fleet = scout;
+        state.colonies[0].fleet = scout;
+        state.resources.deuterium = 10_000.0;
+        let launch = |origin| Intent::Launch {
+            origin,
+            ships: scout,
+            dest,
+            speed_percent: 100,
+            hold_secs: 0,
+        };
+
+        let mut home = state.clone();
+        let proposal = propose(&home, &launch(None), 1_000).unwrap();
+        apply(&mut home, &proposal, 1_000).unwrap();
+        assert_eq!(home.missions[0].origin, home.home);
+        assert!(home.fleet.is_empty());
+        assert_eq!(home.colonies[0].fleet, scout);
+
+        let mut away = state;
+        let proposal = propose(&away, &launch(Some(colony)), 1_000).unwrap();
+        apply(&mut away, &proposal, 1_000).unwrap();
+        assert_eq!(away.missions[0].origin, colony);
+        assert_eq!(away.fleet, scout);
+        assert!(away.colonies[0].fleet.is_empty());
+    }
+
+    #[test]
     fn colonize_intent_needs_a_colony_ship() {
         let mut cfg = BalanceConfig::default();
         cfg.raid.enabled = false;
@@ -1082,6 +1209,7 @@ mod tests {
         let err = propose(
             &state,
             &Intent::Colonize {
+                origin: None,
                 dest,
                 speed_percent: 100,
             },
@@ -1099,6 +1227,7 @@ mod tests {
         propose(
             &ready,
             &Intent::Colonize {
+                origin: None,
                 dest,
                 speed_percent: 100,
             },

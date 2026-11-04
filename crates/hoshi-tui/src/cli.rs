@@ -1229,21 +1229,17 @@ fn apply(
             mission,
             ships,
         } => {
-            if *from != state.home {
-                return Err(CliError::Refused(
-                    "fleet send from a colony is not available".into(),
-                ));
-            }
             match mission {
                 MissionKind::Attack => {
                     let _ = state
-                        .launch_attack(*ships, *to, 100, now)
+                        .launch_attack(*from, *ships, *to, 100, now)
                         .map_err(|e| CliError::Refused(e.to_string()))?;
                 }
                 MissionKind::Invade => {
                     governed(
                         state,
                         Intent::Invade {
+                            origin: Some(*from),
                             ships: *ships,
                             dest: *to,
                             speed_percent: 100,
@@ -1260,6 +1256,7 @@ fn apply(
                     governed(
                         state,
                         Intent::Colonize {
+                            origin: Some(*from),
                             dest: *to,
                             speed_percent: 100,
                         },
@@ -1273,12 +1270,12 @@ fn apply(
                     }
                     let hold = state.config.expedition.min_hold_secs;
                     let _ = state
-                        .launch_expedition(*ships, hold, 100, now)
+                        .launch_expedition(*from, *ships, hold, 100, now)
                         .map_err(|e| CliError::Refused(e.to_string()))?;
                 }
                 MissionKind::Spy => {
                     let _ = state
-                        .launch_spy(*ships, *to, 100, now)
+                        .launch_spy(*from, *ships, *to, 100, now)
                         .map_err(|e| CliError::Refused(e.to_string()))?;
                 }
             }

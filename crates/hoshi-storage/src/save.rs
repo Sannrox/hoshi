@@ -9846,6 +9846,7 @@ mod tests {
         wing.add(hoshi_core::ShipKind::LightFighter, 2);
         state
             .launch_fleet(
+                state.home,
                 wing,
                 hoshi_core::Coord {
                     galaxy: 1,
@@ -10031,7 +10032,9 @@ label = "Leave it"
         state.resources.deuterium = 10_000.0;
         let mut ships = Fleet::default();
         ships.add(ShipKind::Recycler, 1);
-        state.launch_recycle(dest, ships, 100, 100).unwrap();
+        state
+            .launch_recycle(state.home, dest, ships, 100, 100)
+            .unwrap();
         save_state(&mut conn, &state).unwrap();
         let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
         assert!(loaded.missions[0].recycle);
@@ -10219,7 +10222,9 @@ label = "Leave it"
         state.config.expedition.max_hold_secs = 10_000;
         let mut ships = Fleet::default();
         ships.add(ShipKind::LightFighter, 4);
-        state.launch_expedition(ships, 10, 100, 100).unwrap();
+        state
+            .launch_expedition(state.home, ships, 10, 100, 100)
+            .unwrap();
         let dest = state.expedition_dest();
         assert_eq!(state.missions[0].dest, dest);
         save_state(&mut conn, &state).unwrap();
@@ -12522,7 +12527,7 @@ label = "Leave it"
     fn reloading_the_save_does_not_change_a_pending_expedition() {
         let mut original = expedition_state(0);
         original
-            .launch_expedition(scout_fleet(), 10, 100, 0)
+            .launch_expedition(original.home, scout_fleet(), 10, 100, 0)
             .unwrap();
         let mut conn = open_save(std::path::Path::new(":memory:")).unwrap();
         save_state(&mut conn, &original).unwrap();
