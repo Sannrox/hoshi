@@ -1437,6 +1437,14 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             until_unix INTEGER NOT NULL CHECK (until_unix >= 0),
             fee REAL NOT NULL CHECK (fee >= 0 AND fee < 1))"""
         )
+    elif version == 62:
+        for column in ("home_galaxy", "home_system", "home_position"):
+            add_column(
+                conn,
+                "meta",
+                column,
+                f"ALTER TABLE meta ADD COLUMN {column} INTEGER NOT NULL DEFAULT 1",
+            )
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"

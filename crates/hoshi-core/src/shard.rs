@@ -4,7 +4,8 @@
 //! the MAC key, and per-identity command windows, then calls the same
 //! `propose` / `apply` path as the CLI.
 //!
-//! Host duties on restart: persist [`ShardSession::export_bookkeeping`] next
+//! The host call order is in `docs/chisei.md` ("Host contract"). Host
+//! duties on restart: persist [`ShardSession::export_bookkeeping`] next
 //! to the tenant saves and hand it back through
 //! [`ShardSession::restore_bookkeeping`], so a retried submit after reconnect
 //! still hits its idempotency id. Load tenants with [`load_tenants`], one at a
@@ -42,6 +43,9 @@ pub struct ShardConfig {
     pub newbie_secs: u64,
     pub attack_window_secs: u64,
     pub attack_limit: u32,
+    /// Most tenants one shard seats; ADR 0005 caps the player list. A new
+    /// identity past it is refused by [`ShardSession::join`].
+    pub tenant_cap: u32,
 }
 
 impl ShardConfig {
@@ -61,6 +65,7 @@ impl Default for ShardConfig {
             newbie_secs: 24 * 3600,
             attack_window_secs: 24 * 3600,
             attack_limit: 3,
+            tenant_cap: 16,
         }
     }
 }
@@ -553,6 +558,10 @@ pub enum ShardError {
     AlreadySeated {
         identity: String,
     },
+    /// The shard already seats [`ShardConfig::tenant_cap`] tenants.
+    ShardFull {
+        cap: u32,
+    },
 }
 
 impl fmt::Display for ShardError {
@@ -607,6 +616,7 @@ impl fmt::Display for ShardError {
             ShardError::AlreadySeated { identity } => {
                 write!(f, "{identity} already has a home on the shard")
             }
+            ShardError::ShardFull { cap } => write!(f, "shard is full at {cap} tenants"),
         }
     }
 }
@@ -888,6 +898,36 @@ impl<C: Clock> ShardSession<C> {
         Ok(())
     }
 
+    /// Join `identity` to the shard and return its home.
+    ///
+    /// A seated identity resumes: its home comes back and nothing is built
+    /// or written. A new identity past [`ShardConfig::tenant_cap`] is refused
+    /// as [`ShardError::ShardFull`] before anything is written. Otherwise the
+    /// host settles, places the home with [`place_home`], builds the empire
+    /// for that coord with `build`, and seats it with [`seat_home`].
+    pub fn join(
+        &mut self,
+        identity: &str,
+        map: ShardMap,
+        empires: &mut BTreeMap<String, GameState>,
+        build: impl FnOnce(Coord) -> GameState,
+    ) -> Result<Coord, ShardError> {
+        if identity.is_empty() {
+            return Err(ShardError::EmptyIdentity);
+        }
+        if let Some(seated) = empires.get(identity) {
+            return Ok(seated.home);
+        }
+        let cap = self.config.tenant_cap;
+        if empires.len() >= cap as usize {
+            return Err(ShardError::ShardFull { cap });
+        }
+        self.settle(empires);
+        let coord = place_home(map, empires, self.commons.sites())?;
+        seat_home(identity, build(coord), coord, empires, self.commons.sites())?;
+        Ok(coord)
+    }
+
     /// Colonize `dest` for `identity` when occupancy allows it.
     ///
     /// Refusal happens before `propose` / `apply`, so a taken coord does not
@@ -896,7 +936,7 @@ impl<C: Clock> ShardSession<C> {
     /// that still-empty coord also launches. At arrival the host checks
     /// again (see [`Self::settle`]): the first arrival founds, a later one
     /// turns back with its colony ship. Join is not this method: a host
-    /// calls [`place_home`] and [`seat_home`].
+    /// calls [`Self::join`].
     pub fn colonize(
         &mut self,
         identity: &str,
@@ -2896,6 +2936,42 @@ mod tests {
             place_home(tiny, &empires, ShardSites::none()).unwrap_err(),
             ShardError::NoEmptySlot
         );
+    }
+
+    #[test]
+    fn join_past_the_tenant_cap_is_refused_and_a_seated_tenant_resumes() {
+        let mut shard = ShardSession::new(
+            FakeClock::new(1_000),
+            KEY,
+            ShardConfig {
+                tenant_cap: 1,
+                ..ShardConfig::default()
+            },
+        );
+        let mut empires = BTreeMap::new();
+        let home = shard
+            .join("tenant-a", WALK, &mut empires, |_| test_state(1_000))
+            .unwrap();
+        assert_eq!(
+            home,
+            place_home(WALK, &BTreeMap::new(), ShardSites::none()).unwrap()
+        );
+        assert_eq!(empires["tenant-a"].home, home);
+        let before = empires.clone();
+        assert_eq!(
+            shard.join("tenant-b", WALK, &mut empires, |_| unreachable!(
+                "refused before build"
+            )),
+            Err(ShardError::ShardFull { cap: 1 })
+        );
+        assert_eq!(empires, before, "a refused join writes nothing");
+        assert_eq!(
+            shard.join("tenant-a", WALK, &mut empires, |_| unreachable!(
+                "resume builds nothing"
+            )),
+            Ok(home)
+        );
+        assert_eq!(empires, before);
     }
 
     #[test]
