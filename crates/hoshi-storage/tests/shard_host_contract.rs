@@ -7,9 +7,9 @@
 //! rebuilt from those bytes must settle and read like one that never stopped.
 
 use hoshi_core::{
-    Actor, BalanceConfig, BuildingKind, Clock, Fleet, GameState, Intent, ShardBookkeeping,
-    ShardCommand, ShardCommons, ShardConfig, ShardError, ShardMap, ShardRaid, ShardSession,
-    ShipKind, load_tenants,
+    Actor, BalanceConfig, BuildingKind, Clock, Fleet, GameState, Intent, OrderSide, OrderTicket,
+    ResourceKind, ShardBookkeeping, ShardCommand, ShardCommons, ShardConfig, ShardError, ShardMap,
+    ShardOrder, ShardRaid, ShardSession, ShipKind, load_tenants,
 };
 use hoshi_storage::{load_state, open_save, save_state};
 use std::cell::Cell;
@@ -63,6 +63,7 @@ fn config() -> ShardConfig {
     ShardConfig {
         newbie_secs: NEWBIE_SECS,
         tenant_cap: 2,
+        market: rules().market,
         ..ShardConfig::default()
     }
 }
@@ -133,6 +134,24 @@ fn submit(host: &mut Host, cmd: ShardCommand) -> Result<(), ShardError> {
         }
         other => other,
     }
+}
+
+/// b's resting silicon sell on the shard book at its home, priced so
+/// nobody fills it before the restart.
+fn rest_order(host: &mut Host) {
+    let cmd = ShardOrder {
+        identity: "b".into(),
+        idempotency_id: "sell-1".into(),
+        ticket: OrderTicket {
+            region: host.empires["b"].home,
+            side: OrderSide::Sell,
+            good: ResourceKind::Silicon,
+            amount: 10.0,
+            limit: Some(100.0),
+            ttl_secs: 7 * 86_400,
+        },
+    };
+    host.shard.place_order(&mut host.empires, cmd).unwrap();
 }
 
 /// Launch a's raid after the newbie window and return its arrival from b's view.
@@ -295,13 +314,15 @@ fn restore(persisted: Persisted, dir: &TempDir, now: u64) -> Host {
 
 #[test]
 fn restart_from_persisted_state_settles_and_reads_like_a_host_that_never_stopped() {
-    // Same deterministic history on both hosts, with the raid still in flight.
+    // Same deterministic history on both hosts, with the raid still in
+    // flight and b's order resting on the shard book.
     let mut steady = two_tenant_host();
     let mut stopped = two_tenant_host();
     let mut arrivals = Vec::new();
     for host in [&mut steady, &mut stopped] {
         let cmd = build(host, "b", "mine-1", None);
         submit(host, cmd).unwrap();
+        rest_order(host);
         arrivals.push(launch_after_newbie(host));
     }
     let [arrives_at, other] = arrivals[..] else {
@@ -340,6 +361,18 @@ fn restart_from_persisted_state_settles_and_reads_like_a_host_that_never_stopped
     assert_eq!(
         restarted.empires["b"].build_queue, steady.empires["b"].build_queue,
         "the retried id stays applied once"
+    );
+    let b_home = steady.empires["b"].home;
+    let book = steady.shard.book("a", b_home, &mut steady.empires).unwrap();
+    assert!(
+        matches!(book.orders.as_slice(), [order] if !order.own && order.remaining == 10.0),
+        "b's order rests once: {:?}",
+        book.orders
+    );
+    assert_eq!(
+        restarted.shard.book("a", b_home, &mut restarted.empires),
+        Ok(book),
+        "the open order and the NPC walk survive the restart"
     );
     assert_eq!(restarted.shard.commons(), steady.shard.commons());
 }

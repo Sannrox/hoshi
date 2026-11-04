@@ -24,6 +24,8 @@ use crate::frontier::FrontierConfig;
 use crate::intel::IntelFact;
 use crate::intent::{Intent, IntentError, apply, propose};
 use crate::leaders::Actor;
+use crate::market::{MarketConfig, OrderTicket};
+use crate::shard_market::{BookDoc, ShardBook, ShardMarket};
 use crate::ships::{Fleet, ShipKind};
 use crate::state::{GameState, Resources};
 use hmac::{Hmac, Mac};
@@ -35,7 +37,7 @@ use std::fmt;
 type HmacSha256 = Hmac<Sha256>;
 
 /// Commands admitted per identity inside `command_window_secs`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ShardConfig {
     pub command_window_secs: u64,
     pub command_limit: u32,
@@ -46,6 +48,9 @@ pub struct ShardConfig {
     /// Most tenants one shard seats; ADR 0005 caps the player list. A new
     /// identity past it is refused by [`ShardSession::join`].
     pub tenant_cap: u32,
+    /// Rules of the host's regional book. A host passes the same
+    /// `[market]` its tenant saves load with.
+    pub market: MarketConfig,
 }
 
 impl ShardConfig {
@@ -66,6 +71,7 @@ impl Default for ShardConfig {
             attack_window_secs: 24 * 3600,
             attack_limit: 3,
             tenant_cap: 16,
+            market: MarketConfig::default_active(),
         }
     }
 }
@@ -116,6 +122,15 @@ pub struct ShardRecycle {
     pub ships: Fleet,
     pub dest: Coord,
     pub speed_percent: u8,
+}
+
+/// An order from `identity` for the shard's regional book. See
+/// [`ShardSession::place_order`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShardOrder {
+    pub identity: String,
+    pub idempotency_id: String,
+    pub ticket: OrderTicket,
 }
 
 /// One owned world on a tenant read. Other empires never appear here.
@@ -187,7 +202,8 @@ impl ShardSites<'static> {
 }
 
 /// What sits on the shard map and belongs to no tenant: pirate outposts,
-/// open sites, the expedition coord, and battle debris per coord.
+/// open sites, the expedition coord, battle debris per coord, and the
+/// regional market book.
 ///
 /// The [`ShardSession`] holds the shard's one copy, so every tenant reads
 /// the same outpost and the same debris stock. A tenant save keeps no shard
@@ -204,11 +220,15 @@ pub struct ShardCommons {
     /// [`ShardSession::submit`] refuses such a launch.
     pub expedition: Option<Coord>,
     pub debris: BTreeMap<Coord, f64>,
+    /// One NPC book per region that every tenant trades on. See
+    /// [`ShardSession::place_order`].
+    pub market: ShardMarket,
 }
 
-/// Version 2 added `expedition`. Version 1 bytes still read, with none set.
-const COMMONS_VERSION: u32 = 2;
-const COMMONS_VERSION_NO_EXPEDITION: u32 = 1;
+/// Version 3 added the market book, version 2 `expedition`. Older bytes
+/// still read, with a closed book and no expedition coord.
+const COMMONS_VERSION: u32 = 3;
+const COMMONS_READS: [u32; 3] = [1, 2, COMMONS_VERSION];
 
 #[derive(Serialize, Deserialize)]
 struct CommonsDoc {
@@ -218,6 +238,8 @@ struct CommonsDoc {
     #[serde(default)]
     expedition: Option<[u16; 3]>,
     debris: Vec<([u16; 3], f64)>,
+    #[serde(default)]
+    market: Option<BookDoc>,
 }
 
 fn coord_row(coord: Coord) -> [u16; 3] {
@@ -281,16 +303,18 @@ impl ShardCommons {
                 .iter()
                 .map(|(&coord, &amount)| (coord_row(coord), amount))
                 .collect(),
+            market: self.market.to_doc(),
         };
         serde_json::to_vec(&doc).map_err(|e| ShardError::Commons(e.to_string()))
     }
 
-    /// Read bytes from [`Self::to_bytes`], or version 1 bytes from a build
-    /// before the expedition coord. Another version is refused.
+    /// Read bytes from [`Self::to_bytes`], or version 1 or 2 bytes from a
+    /// build before the expedition coord or the market book. Another
+    /// version is refused.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ShardError> {
         let doc: CommonsDoc =
             serde_json::from_slice(bytes).map_err(|e| ShardError::Commons(e.to_string()))?;
-        if doc.version != COMMONS_VERSION && doc.version != COMMONS_VERSION_NO_EXPEDITION {
+        if !COMMONS_READS.contains(&doc.version) {
             return Err(ShardError::Commons(format!(
                 "version {} is not {COMMONS_VERSION}",
                 doc.version
@@ -305,6 +329,7 @@ impl ShardCommons {
                 .into_iter()
                 .map(|(row, amount)| (row_coord(row), amount))
                 .collect(),
+            market: ShardMarket::from_doc(doc.market).map_err(ShardError::Commons)?,
         })
     }
 }
@@ -542,9 +567,10 @@ pub enum ShardError {
     Bookkeeping(String),
     /// Restored commons bytes are not a version this build reads.
     Commons(String),
-    /// A colony, recycler, or raid of `identity` arrives by the host clock. A lone
-    /// catch-up cannot see the shard map, so the host calls
-    /// [`ShardSession::settle`] first and retries.
+    /// A colony, recycler, or raid of `identity` arrives by the host clock,
+    /// or the regional book has a tick or expiry due while `identity` has an
+    /// order on it. A lone catch-up cannot see the shard map or the book, so
+    /// the host calls [`ShardSession::settle`] first and retries.
     Unsettled {
         identity: String,
     },
@@ -562,6 +588,12 @@ pub enum ShardError {
     ShardFull {
         cap: u32,
     },
+    /// `submit` cannot see the shard's regional book. Orders go through
+    /// [`ShardSession::place_order`].
+    OrderNeedsBook,
+    /// The regional book opens at the next [`ShardSession::join`]; restored
+    /// bytes from a build before it have none yet.
+    NoBook,
 }
 
 impl fmt::Display for ShardError {
@@ -617,6 +649,8 @@ impl fmt::Display for ShardError {
                 write!(f, "{identity} already has a home on the shard")
             }
             ShardError::ShardFull { cap } => write!(f, "shard is full at {cap} tenants"),
+            ShardError::OrderNeedsBook => write!(f, "market orders need the shard book"),
+            ShardError::NoBook => write!(f, "shard market book opens at the next join"),
         }
     }
 }
@@ -730,8 +764,9 @@ impl<C: Clock> ShardSession<C> {
     /// flies to the shard's one expedition coord, not the tenant's own slot,
     /// and is refused as [`ShardError::NoExpeditionCoord`] until the host
     /// places it. A colony, recycler, or raid arrival due by the host clock,
-    /// or another tenant's raid due on this home, is refused as
-    /// [`ShardError::Unsettled`] before anything moves.
+    /// another tenant's raid due on this home, or a market tick or expiry
+    /// due while the tenant has an order on the regional book, is refused
+    /// as [`ShardError::Unsettled`] before anything moves.
     pub fn submit(&mut self, state: &mut GameState, cmd: ShardCommand) -> Result<(), ShardError> {
         state
             .require_fair_play()
@@ -743,6 +778,9 @@ impl<C: Clock> ShardSession<C> {
         }
         if matches!(cmd.intent, Intent::Colonize { .. }) {
             return Err(ShardError::ColonizeNeedsMap);
+        }
+        if matches!(cmd.intent, Intent::PlaceOrder { .. }) {
+            return Err(ShardError::OrderNeedsBook);
         }
         let expedition = match cmd.intent {
             Intent::Expedition { site: None, .. } => Some(
@@ -766,7 +804,11 @@ impl<C: Clock> ShardSession<C> {
             return Ok(());
         }
         let raid_due = self.inbound.get(&state.home).is_some_and(|&at| at <= now);
-        if raid_due || race_due(state, now) {
+        let book_due = self
+            .commons
+            .market
+            .due_for(&cmd.identity, now, &self.config.market);
+        if raid_due || book_due || race_due(state, now) {
             return Err(ShardError::Unsettled {
                 identity: cmd.identity,
             });
@@ -900,6 +942,10 @@ impl<C: Clock> ShardSession<C> {
 
     /// Join `identity` to the shard and return its home.
     ///
+    /// The first join, or the first after restoring commons bytes from a
+    /// build before the market book, opens the regional book at the host
+    /// clock with the RNG seeded by `map.seed`.
+    ///
     /// A seated identity resumes: its home comes back and nothing is built
     /// or written. A new identity past [`ShardConfig::tenant_cap`] is refused
     /// as [`ShardError::ShardFull`] before anything is written. Otherwise the
@@ -915,8 +961,11 @@ impl<C: Clock> ShardSession<C> {
         if identity.is_empty() {
             return Err(ShardError::EmptyIdentity);
         }
+        let now = self.clock.now_unix();
         if let Some(seated) = empires.get(identity) {
-            return Ok(seated.home);
+            let home = seated.home;
+            self.commons.market.open(map.seed, now, &self.config.market);
+            return Ok(home);
         }
         let cap = self.config.tenant_cap;
         if empires.len() >= cap as usize {
@@ -925,6 +974,7 @@ impl<C: Clock> ShardSession<C> {
         self.settle(empires);
         let coord = place_home(map, empires, self.commons.sites())?;
         seat_home(identity, build(coord), coord, empires, self.commons.sites())?;
+        self.commons.market.open(map.seed, now, &self.config.market);
         Ok(coord)
     }
 
@@ -1112,6 +1162,83 @@ impl<C: Clock> ShardSession<C> {
         Ok(())
     }
 
+    /// Place `cmd.ticket` for `cmd.identity` on the shard's regional book
+    /// after catching every empire up at the host clock.
+    ///
+    /// One book per region serves every tenant. The escrow comes from the
+    /// tenant's stock in that region (the planet there plus its own
+    /// warehouse), and the order matches price-time against the NPC and
+    /// other tenants' resting orders, never the tenant's own. A fill pays
+    /// the seller's iron and the buyer's goods into each tenant's save in
+    /// that region at the host clock; goods still move between regions only
+    /// by shipment. A resting order expires back to its tenant. A market
+    /// order that trades nothing is refused and returns its escrow. A
+    /// retried idempotency id applies once. Refused as [`ShardError::NoBook`]
+    /// until a join opens the book.
+    pub fn place_order(
+        &mut self,
+        empires: &mut BTreeMap<String, GameState>,
+        cmd: ShardOrder,
+    ) -> Result<(), ShardError> {
+        let identity = cmd.identity.as_str();
+        if identity.is_empty() {
+            return Err(ShardError::EmptyIdentity);
+        }
+        if cmd.idempotency_id.is_empty() {
+            return Err(ShardError::EmptyIdempotency);
+        }
+        let Some(state) = empires.get(identity) else {
+            return Err(ShardError::UnknownIdentity {
+                identity: cmd.identity,
+            });
+        };
+        state
+            .require_fair_play()
+            .map_err(|e| ShardError::Intent(IntentError::Cheat(e)))?;
+        if !self.commons.market.is_open() {
+            return Err(ShardError::NoBook);
+        }
+        let now = self.clock.now_unix();
+        self.prune_due(now);
+        let seen_key = (cmd.identity.clone(), cmd.idempotency_id.clone());
+        if self.is_seen(&seen_key, now) {
+            return Ok(());
+        }
+        self.catch_up_shard(empires, now);
+        self.admit(identity, now)?;
+        self.commons
+            .market
+            .place(identity, cmd.ticket, empires, now, &self.config.market)?;
+        self.seen.insert(seen_key, now);
+        Ok(())
+    }
+
+    /// Catch every empire up at the host clock, then return `region`'s
+    /// book as `identity` reads it: the shard's mids, the region's price
+    /// history, and its resting orders with the tenant's own marked. Other
+    /// orders carry no identity, and NPC warehouses stay hidden.
+    pub fn book(
+        &mut self,
+        identity: &str,
+        region: Coord,
+        empires: &mut BTreeMap<String, GameState>,
+    ) -> Result<ShardBook, ShardError> {
+        if identity.is_empty() {
+            return Err(ShardError::EmptyIdentity);
+        }
+        if !empires.contains_key(identity) {
+            return Err(ShardError::UnknownIdentity {
+                identity: identity.to_string(),
+            });
+        }
+        let now = self.clock.now_unix();
+        self.catch_up_shard(empires, now);
+        self.commons
+            .market
+            .read(identity, region, now)
+            .ok_or(ShardError::NoBook)
+    }
+
     /// Catch every empire up at the host clock on the shared map.
     ///
     /// Empires step together to each colony, recycler, and raid arrival, in
@@ -1120,9 +1247,11 @@ impl<C: Clock> ShardSession<C> {
     /// dest another tenant, an outpost, or a site holds by then turns back
     /// with the ship; the first arrival founds. A recycler harvests the
     /// shared stock that earlier arrivals left. A raid fights the target's
-    /// home as it is at arrival. [`Self::view`], [`Self::colonize`],
-    /// [`Self::spy`], [`Self::recycle`] and [`Self::launch_raid`] settle
-    /// first; a host calls this before [`Self::submit`] when it refuses with
+    /// home as it is at arrival. The regional book runs its NPC ticks and
+    /// order expiries at their instants. [`Self::view`], [`Self::book`],
+    /// [`Self::colonize`], [`Self::spy`], [`Self::recycle`],
+    /// [`Self::place_order`] and [`Self::launch_raid`] settle first; a host
+    /// calls this before [`Self::submit`] when it refuses with
     /// [`ShardError::Unsettled`].
     pub fn settle(&mut self, empires: &mut BTreeMap<String, GameState>) {
         self.catch_up_shard(empires, self.clock.now_unix());
@@ -1225,7 +1354,7 @@ impl<C: Clock> ShardSession<C> {
     /// Catch every empire up to `now` on the shared map, then note the raids
     /// still in flight for [`Self::submit`].
     fn catch_up_shard(&mut self, empires: &mut BTreeMap<String, GameState>, now: u64) {
-        catch_up_empires(empires, &mut self.commons, now);
+        catch_up_empires(empires, &mut self.commons, &self.config.market, now);
         self.inbound = inbound_raids(empires);
     }
 
@@ -1470,7 +1599,8 @@ pub fn targets(
 /// Catch every empire up to `now` on the shared map, stopping at each
 /// colony, recycler, and raid arrival (see [`ShardSession::settle`]) and at
 /// each probe arrival at another tenant's planet, so the host reads that
-/// planet as it was then.
+/// planet as it was then. The regional book runs at each NPC tick and
+/// tenant order expiry after every empire has stepped there.
 ///
 /// One long gap and many short ones read the same numbers. A lone
 /// catch-up (a `submit`) can run the target past a probe arrival: the
@@ -1482,14 +1612,24 @@ pub fn targets(
 fn catch_up_empires(
     empires: &mut BTreeMap<String, GameState>,
     commons: &mut ShardCommons,
+    market: &MarketConfig,
     now: u64,
 ) {
-    while let Some(at) = next_stop(empires, now) {
+    let next = |empires: &BTreeMap<String, GameState>, commons: &ShardCommons| {
+        let stops = [
+            next_stop(empires, now),
+            commons.market.next_due(now, market),
+        ];
+        stops.into_iter().flatten().min()
+    };
+    while let Some(at) = next(empires, commons) {
         resolve_raids(empires, commons, at);
         step_empires(empires, commons, at);
+        commons.market.advance(at, empires, market);
         fill_tenant_spies(empires);
     }
     step_empires(empires, commons, now);
+    commons.market.advance(now, empires, market);
     fill_tenant_spies(empires);
 }
 
@@ -3784,7 +3924,7 @@ mod tests {
         assert_eq!(ShardCommons::from_bytes(&bytes).unwrap(), commons);
         let other = String::from_utf8(bytes)
             .unwrap()
-            .replace("\"version\":2", "\"version\":3");
+            .replace("\"version\":3", "\"version\":4");
         assert!(matches!(
             ShardCommons::from_bytes(other.as_bytes()),
             Err(ShardError::Commons(_))
