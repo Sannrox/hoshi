@@ -1795,6 +1795,7 @@ mod tests {
             fleet: hoshi_core::Fleet::default(),
             defences: hoshi_core::DefenceGrid::default(),
             build_queue: Vec::new(),
+            ship_queue: Vec::new(),
             rare: None,
             goods: Default::default(),
         });

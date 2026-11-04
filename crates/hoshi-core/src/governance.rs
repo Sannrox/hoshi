@@ -243,10 +243,10 @@ pub fn spend_of(state: &GameState, intent: &Intent, _now: u64) -> f64 {
             };
             dest.map_or(0.0, |dest| fuel_of(state, *ships, dest, *speed_percent))
         }
-        Intent::QueueShips { kind, count } => {
+        Intent::QueueShips { kind, count, .. } => {
             stock_of(state.config.ships.get(*kind).unit_cost()) * f64::from(*count)
         }
-        Intent::QueueDefences { kind, count } => {
+        Intent::QueueDefences { kind, count, .. } => {
             stock_of(state.config.defences.get(*kind).unit_cost()) * f64::from(*count)
         }
         Intent::Colonize {

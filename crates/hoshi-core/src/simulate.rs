@@ -139,6 +139,7 @@ pub fn energy_recovery(
             fleet: Fleet::default(),
             defences: crate::DefenceGrid::default(),
             build_queue: Vec::new(),
+            ship_queue: Vec::new(),
             rare: None,
             goods: BTreeMap::new(),
         });
@@ -858,6 +859,7 @@ mod energy_tests {
                 fleet: Fleet::default(),
                 defences: crate::DefenceGrid::default(),
                 build_queue: Vec::new(),
+                ship_queue: Vec::new(),
                 rare: None,
                 goods: BTreeMap::new(),
             };
@@ -917,6 +919,7 @@ mod energy_tests {
                     fleet: Fleet::default(),
                     defences: crate::DefenceGrid::default(),
                     build_queue: Vec::new(),
+                    ship_queue: Vec::new(),
                     rare: None,
                     goods: BTreeMap::new(),
                 });
@@ -2311,6 +2314,7 @@ fn finish_conquest(
             fleet: Fleet::default(),
             defences: crate::DefenceGrid::default(),
             build_queue: Vec::new(),
+            ship_queue: Vec::new(),
             rare: None,
             goods: Default::default(),
         });

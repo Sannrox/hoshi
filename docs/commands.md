@@ -1433,7 +1433,7 @@ Area: cli.
 
 ## ship
 
-Queue ships or defences in the home shipyard as one batch.
+Queue ships or defences in that planet's shipyard as one batch.
 
 ```text
 hoshi ship PLANET SHIP-OR-DEFENCE [COUNT]

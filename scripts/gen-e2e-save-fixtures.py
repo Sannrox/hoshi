@@ -1445,6 +1445,9 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
                 column,
                 f"ALTER TABLE meta ADD COLUMN {column} INTEGER NOT NULL DEFAULT 1",
             )
+    elif version == 63:
+        # Colony shipyard queues reuse ship_queue, keyed by planet_id already.
+        pass
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"

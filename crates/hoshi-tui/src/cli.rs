@@ -86,7 +86,7 @@ crate::help::catalog_commands! {
         building: BuildingKind,
         actor: Actor,
     },
-    #[help("ship", "Queue ships or defences in the home shipyard as one batch.", "ship PLANET SHIP-OR-DEFENCE [COUNT]", "ship home light_fighter 5")]
+    #[help("ship", "Queue ships or defences in that planet's shipyard as one batch.", "ship PLANET SHIP-OR-DEFENCE [COUNT]", "ship home light_fighter 5")]
     Ship { planet: Coord, unit: Unit, count: u32 },
     #[help("trade", "Spot-trade one resource for another at the home market.", "trade PAY RECEIVE AMOUNT", "trade iron deuterium 1000")]
     Trade { pay: ResourceKind, recv: ResourceKind, amount: String },
@@ -1085,14 +1085,9 @@ fn apply(
             unit,
             count,
         } => {
-            if *planet != state.home {
-                return Err(CliError::Refused(
-                    "ships and defences are built in the home shipyard".into(),
-                ));
-            }
             let queued = match unit {
-                Unit::Ship(kind) => state.enqueue_ships(*kind, *count, now),
-                Unit::Defence(kind) => state.enqueue_defence(*kind, *count, now),
+                Unit::Ship(kind) => state.enqueue_ships_at(*planet, *kind, *count, now),
+                Unit::Defence(kind) => state.enqueue_defence_at(*planet, *kind, *count, now),
             };
             queued.map_err(|e| CliError::Refused(e.to_string()))?;
             let key = match unit {
@@ -1103,7 +1098,7 @@ fn apply(
             value["queued"] = json!({
                 "unit": key,
                 "count": count,
-                "queue_len": state.ship_queue.len(),
+                "queue_len": state.ship_queue_at(*planet).map_or(0, <[_]>::len),
             });
             Ok(value)
         }

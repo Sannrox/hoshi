@@ -105,7 +105,7 @@ scale later rebuilds with the player's fighter-equivalent fleet. `rebuild_secs` 
 catch-up interval. `variance` is the ground-combat spread (`0` is an exact
 comparison). `troop_strength` is the landing power of one troop transport.
 `[[outposts.rare]]` rows are the rare-planet bonuses shown on the planet screen.
-`shipyard_speed` speeds the empire shipyard (ships queue at home).
+`shipyard_speed` speeds every planet's shipyard: the best bonus on any owned planet applies to each queue.
 
 ## Orbits
 

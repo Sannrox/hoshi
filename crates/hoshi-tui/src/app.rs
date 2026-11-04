@@ -417,16 +417,15 @@ impl App {
             }
             Screen::Overview => self.tech_id_at(self.selected).map(DetailSubject::Tech),
             Screen::Shipyard => {
+                let planet = self.selected_coord();
                 if self.selected < ShipKind::ALL.len() {
                     ShipKind::ALL
                         .get(self.selected)
-                        .copied()
-                        .map(DetailSubject::Ship)
+                        .map(|&kind| DetailSubject::Ship { kind, planet })
                 } else {
                     DefenceKind::ALL
                         .get(self.selected - ShipKind::ALL.len())
-                        .copied()
-                        .map(DetailSubject::Defence)
+                        .map(|&kind| DetailSubject::Defence { kind, planet })
                 }
             }
             Screen::Wonder => self
@@ -1203,6 +1202,14 @@ impl App {
         coords[i]
     }
 
+    /// Stock on the selected planet, which pays for what is queued there.
+    fn selected_stock(&self) -> Resources {
+        self.state
+            .resources_at(self.selected_coord())
+            .copied()
+            .unwrap_or(self.state.resources)
+    }
+
     pub fn draw(&self, frame: &mut Frame<'_>) {
         let area = frame.area();
         self.last_width.set(area.width);
@@ -1417,7 +1424,7 @@ impl App {
             }
             Hub::Fleet => format!(
                 "{place} {coord} · ship queue {}",
-                self.state.ship_queue.len()
+                self.state.ship_queue_at(coord).map_or(0, <[_]>::len)
             ),
             _ => format!("{place} {coord}"),
         }
@@ -1453,8 +1460,8 @@ impl App {
                 ("building", extra)
             }
             Some(DetailSubject::Tech(_)) => ("tech", Vec::new()),
-            Some(DetailSubject::Ship(_)) => ("ship", Vec::new()),
-            Some(DetailSubject::Defence(_)) => ("defence", Vec::new()),
+            Some(DetailSubject::Ship { .. }) => ("ship", Vec::new()),
+            Some(DetailSubject::Defence { .. }) => ("defence", Vec::new()),
             Some(DetailSubject::Wonder(_)) => ("wonder", Vec::new()),
             Some(DetailSubject::Law(_)) => ("law", Vec::new()),
             Some(DetailSubject::Trade { .. }) => ("trade", Vec::new()),
@@ -2420,8 +2427,12 @@ impl App {
                 }
             }
             Screen::Shipyard => {
+                let coord = self.selected_coord();
                 if let Some(kind) = ShipKind::ALL.get(self.selected).copied() {
-                    match self.state.enqueue_ships(kind, self.ship_batch, now_unix) {
+                    match self
+                        .state
+                        .enqueue_ships_at(coord, kind, self.ship_batch, now_unix)
+                    {
                         Ok(()) => self.status.clear(),
                         Err(e) => self.status = e.to_string(),
                     }
@@ -2431,7 +2442,10 @@ impl App {
                 let Some(kind) = DefenceKind::ALL.get(di).copied() else {
                     return;
                 };
-                match self.state.enqueue_defence(kind, self.ship_batch, now_unix) {
+                match self
+                    .state
+                    .enqueue_defence_at(coord, kind, self.ship_batch, now_unix)
+                {
                     Ok(()) => self.status.clear(),
                     Err(e) => self.status = e.to_string(),
                 }
@@ -2739,12 +2753,13 @@ impl App {
         })
     }
 
-    /// The largest batch of the selected unit the stockpile pays for (at least 1).
+    /// The largest batch of the selected unit the selected planet's stock
+    /// pays for (at least 1).
     fn max_ship_batch(&self) -> u32 {
         let Some((unit, _)) = self.shipyard_batch(1) else {
             return 1;
         };
-        let stock = self.state.resources;
+        let stock = self.selected_stock();
         ResourceKind::ALL
             .iter()
             .filter(|&&kind| unit.get(kind) > 0.0)
@@ -2989,10 +3004,13 @@ impl App {
                     Err(e) => self.status = e.to_string(),
                 }
             }
-            Screen::Shipyard => match self.state.cancel_ships(0, now_unix) {
-                Ok(_) => self.status.clear(),
-                Err(e) => self.status = e.to_string(),
-            },
+            Screen::Shipyard => {
+                let coord = self.selected_coord();
+                match self.state.cancel_ships_at(coord, 0, now_unix) {
+                    Ok(_) => self.status.clear(),
+                    Err(e) => self.status = e.to_string(),
+                }
+            }
             Screen::Overview => match self.state.cancel_research(now_unix) {
                 Ok(_) => self.status.clear(),
                 Err(e) => self.status = e.to_string(),
@@ -3600,14 +3618,19 @@ impl App {
         None
     }
 
+    /// Why the selected planet's yard cannot queue `kind`, if it cannot.
     fn defence_block_reason(&self, kind: DefenceKind, cost: Resources) -> Option<String> {
         let spec = self.state.config.defences.get(kind);
-        // The same level the queue gate and the inspector check.
-        if self.state.available_building_level(BuildingKind::Shipyard) < spec.shipyard {
+        // The same level the queue gate checks.
+        let yard = self
+            .state
+            .available_building_level_at(self.selected_coord(), BuildingKind::Shipyard);
+        if yard < spec.shipyard {
             return Some(format!("need shipyard {}", spec.shipyard));
         }
-        if !self.state.resources.can_afford(cost) {
-            return Some(missing_label(self.state.resources.missing(cost)));
+        let stock = self.selected_stock();
+        if !stock.can_afford(cost) {
+            return Some(missing_label(stock.missing(cost)));
         }
         None
     }
@@ -3624,17 +3647,22 @@ impl App {
         }
     }
 
+    /// Why the selected planet's yard cannot queue `kind`, if it cannot.
     fn ship_block_reason(&self, kind: ShipKind, cost: Resources) -> Option<String> {
         let spec = self.state.config.ships.get(kind);
-        // The same level the queue gate and the inspector check.
-        if self.state.available_building_level(BuildingKind::Shipyard) < spec.shipyard {
+        // The same level the queue gate checks.
+        let yard = self
+            .state
+            .available_building_level_at(self.selected_coord(), BuildingKind::Shipyard);
+        if yard < spec.shipyard {
             return Some(format!("need shipyard {}", spec.shipyard));
         }
         if let Some(gap) = self.state.missing_ship_prereqs(kind).first() {
             return Some(self.need_label(gap));
         }
-        if !self.state.resources.can_afford(cost) {
-            return Some(missing_label(self.state.resources.missing(cost)));
+        let stock = self.selected_stock();
+        if !stock.can_afford(cost) {
+            return Some(missing_label(stock.missing(cost)));
         }
         None
     }
@@ -5566,6 +5594,66 @@ mod tests {
     }
 
     #[test]
+    fn shipyard_follows_the_selected_planet() {
+        let colony = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 2,
+        };
+        let mut state = GameState::new(1_000);
+        state.tech_levels.insert("combustion_drive".into(), 1);
+        state.fleet.add(ShipKind::LightFighter, 4);
+        let mut fleet = Fleet::default();
+        fleet.add(ShipKind::LightFighter, 2);
+        state.colonies.push(Colony {
+            coord: colony,
+            kind: PlanetType::Rocky,
+            size: 120,
+            resources: Resources::from_parts(100_000.0, 100_000.0, 100_000.0),
+            buildings: Buildings {
+                shipyard: 1,
+                ..Buildings::default()
+            },
+            fleet,
+            defences: hoshi_core::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: std::collections::BTreeMap::new(),
+        });
+        let mut app = App::new(state);
+        app.open(Screen::Shipyard);
+        app.selected = ShipKind::ALL
+            .iter()
+            .position(|k| *k == ShipKind::LightFighter)
+            .unwrap();
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("Light fighter        4"), "{text}");
+        assert!(text.contains("NEED SHIPYARD"), "{text}");
+
+        app.handle_key(KeyCode::Char(']'), 1_000);
+        assert_eq!(app.selected_coord(), colony);
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("Light fighter        2"), "{text}");
+        let before = app.state.colonies[0].resources;
+        let home_before = app.state.resources;
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.state.ship_queue.is_empty(), "{}", app.status);
+        assert_eq!(app.state.colonies[0].ship_queue.len(), 1, "{}", app.status);
+        assert!(app.state.colonies[0].resources.iron < before.iron);
+        assert_eq!(app.state.resources, home_before);
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("1/5"), "{text}");
+
+        app.handle_key(KeyCode::Char('x'), 1_000);
+        assert!(
+            app.state.colonies[0].ship_queue.is_empty(),
+            "{}",
+            app.status
+        );
+    }
+
+    #[test]
     fn shipyard_lists_ships_requirements_and_queue() {
         let mut state = GameState::new(1_000);
         state.buildings.shipyard = 1;
@@ -5751,6 +5839,7 @@ mod tests {
             fleet: Fleet::default(),
             defences: hoshi_core::DefenceGrid::default(),
             build_queue: Vec::new(),
+            ship_queue: Vec::new(),
             rare: None,
             goods: std::collections::BTreeMap::new(),
         });
@@ -5792,6 +5881,7 @@ mod tests {
             fleet: Fleet::default(),
             defences: hoshi_core::DefenceGrid::default(),
             build_queue: Vec::new(),
+            ship_queue: Vec::new(),
             rare: Some("rich_vein".into()),
             goods: std::collections::BTreeMap::new(),
         });
@@ -6408,6 +6498,7 @@ mod tests {
             fleet: Fleet::default(),
             defences: hoshi_core::DefenceGrid::default(),
             build_queue: Vec::new(),
+            ship_queue: Vec::new(),
             rare: None,
             goods: Default::default(),
         });
@@ -7014,6 +7105,7 @@ mod tests {
             fleet: Fleet::default(),
             defences: hoshi_core::DefenceGrid::default(),
             build_queue: Vec::new(),
+            ship_queue: Vec::new(),
             rare: None,
             goods: std::collections::BTreeMap::new(),
         });
@@ -7434,6 +7526,7 @@ mod tests {
             fleet: Fleet::default(),
             defences: hoshi_core::DefenceGrid::default(),
             build_queue: Vec::new(),
+            ship_queue: Vec::new(),
             rare: None,
             goods: std::collections::BTreeMap::new(),
         });
@@ -7798,6 +7891,7 @@ mod tests {
                 fleet: Fleet::default(),
                 defences: hoshi_core::DefenceGrid::default(),
                 build_queue: Vec::new(),
+                ship_queue: Vec::new(),
                 rare: None,
                 goods: Default::default(),
             });
@@ -8061,7 +8155,13 @@ mod tests {
         };
         let travel = app
             .state
-            .describe(DetailSubject::Ship(ShipKind::SmallCargo), Some(dest))
+            .describe(
+                DetailSubject::Ship {
+                    kind: ShipKind::SmallCargo,
+                    planet: app.state.home,
+                },
+                Some(dest),
+            )
             .unwrap()
             .ship
             .expect("ship travel");

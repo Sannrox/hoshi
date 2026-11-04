@@ -457,6 +457,7 @@ mod tests {
             fleet: Fleet::default(),
             defences: DefenceGrid::default(),
             build_queue: Vec::new(),
+            ship_queue: Vec::new(),
             rare: None,
             goods: Default::default(),
         });

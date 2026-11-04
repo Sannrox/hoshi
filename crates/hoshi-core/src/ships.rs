@@ -331,6 +331,7 @@ pub enum ShipError {
     InsufficientResources { missing: Resources, cost: Resources },
     EmptySlot { index: usize, len: usize },
     NeedsApproval { id: u64 },
+    UnknownPlanet { coord: crate::Coord },
 }
 
 impl fmt::Display for ShipError {
@@ -367,6 +368,7 @@ impl fmt::Display for ShipError {
             ShipError::NeedsApproval { id } => {
                 write!(f, "spend waits for approval (#{id})")
             }
+            ShipError::UnknownPlanet { coord } => write!(f, "{coord} is not your planet"),
         }
     }
 }

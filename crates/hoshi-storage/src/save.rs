@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 62;
+pub const SCHEMA_VERSION: u32 = 63;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -370,25 +370,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
         )?;
     }
     insert_defences(&tx, 1, state.defences)?;
-    for (i, job) in state.ship_queue.iter().enumerate() {
-        tx.execute(
-            "INSERT INTO ship_queue (
-                planet_id, position, kind, remaining,
-                paid_metal, paid_crystal, paid_deuterium,
-                started_at, completes_at
-             ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                i as i64,
-                job.kind_key(),
-                job.remaining,
-                job.unit_paid.iron,
-                job.unit_paid.silicon,
-                job.unit_paid.deuterium,
-                job.started_at.map(|t| t as i64),
-                job.completes_at.map(|t| t as i64),
-            ],
-        )?;
-    }
+    insert_ship_queue(&tx, 1, &state.ship_queue)?;
     for mission in state.missions.iter() {
         tx.execute(
             "INSERT INTO missions (
@@ -789,6 +771,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
         }
         insert_defences(&tx, planet_id, colony.defences)?;
         insert_build_queue(&tx, planet_id, &colony.build_queue)?;
+        insert_ship_queue(&tx, planet_id, &colony.ship_queue)?;
     }
     if let Some(job) = &state.wonder {
         tx.execute(
@@ -1760,42 +1743,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     state.fleet = fleet;
     state.defences = read_defences(conn, 1)?;
 
-    let mut stmt = conn.prepare(
-        "SELECT kind, remaining, paid_metal, paid_crystal, paid_deuterium, started_at, completes_at
-         FROM ship_queue WHERE planet_id = 1 ORDER BY position",
-    )?;
-    let mut queue = Vec::new();
-    let jobs = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, u32>(1)?,
-            row.get::<_, f64>(2)?,
-            row.get::<_, f64>(3)?,
-            row.get::<_, f64>(4)?,
-            row.get::<_, Option<i64>>(5)?,
-            row.get::<_, Option<i64>>(6)?,
-        ))
-    })?;
-    for job in jobs {
-        let (kind, remaining, metal, crystal, deuterium, started_at, completes_at) = job?;
-        let (ship, defence) = if let Some(ship) = ShipKind::from_key(&kind) {
-            (Some(ship), None)
-        } else if let Some(defence) = DefenceKind::from_key(&kind) {
-            (None, Some(defence))
-        } else {
-            return Err(SaveError::Corrupt("unknown yard kind"));
-        };
-        queue.push(ShipJob {
-            ship,
-            defence,
-            remaining,
-            unit_paid: Resources::from_parts(metal, crystal, deuterium),
-            credits: 0.0,
-            started_at: unix_ts_opt(started_at)?,
-            completes_at: unix_ts_opt(completes_at)?,
-        });
-    }
-    state.ship_queue = queue;
+    state.ship_queue = read_ship_queue(conn, 1)?;
 
     let mut stmt = conn.prepare(
         "SELECT id, origin_g, origin_s, origin_p, dest_g, dest_s, dest_p,
@@ -2145,10 +2093,13 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             fleet,
             defences: read_defences(conn, planet_id)?,
             build_queue: read_build_queue(conn, planet_id)?,
+            ship_queue: read_ship_queue(conn, planet_id)?,
             rare,
             goods: read_goods(conn, planet_id)?,
         });
     }
+    // Job credits name colony queues too, so they apply once colonies exist.
+    apply_job_credits(conn, &mut state)?;
 
     let mut shutdowns =
         conn.prepare("SELECT galaxy, system, position, at, thermal_power FROM reactor_shutdowns")?;
@@ -3768,6 +3719,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     if found < 62 {
         migrate_v62(conn)?;
     }
+    if found < 63 {
+        migrate_v63(conn)?;
+    }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
 }
@@ -4990,6 +4944,14 @@ fn migrate_v50(conn: &Connection) -> Result<(), SaveError> {
             deuterium REAL NOT NULL CHECK (deuterium >= 0)
         );",
     )?;
+    Ok(())
+}
+
+/// v63: each colony keeps its own shipyard queue in `ship_queue`, keyed by
+/// its `planet_id` like its build queue. The table already has that key, so
+/// older saves keep the home rows and load with empty colony queues. The bump
+/// stops an older build from opening a save whose colony rows it would drop.
+fn migrate_v63(_conn: &Connection) -> Result<(), SaveError> {
     Ok(())
 }
 
@@ -8288,6 +8250,75 @@ fn colonies_has_column(conn: &Connection, column: &str) -> Result<bool, SaveErro
     Ok(false)
 }
 
+/// Write one planet's shipyard queue. Home is planet 1, colonies follow.
+fn insert_ship_queue(
+    tx: &rusqlite::Transaction<'_>,
+    planet_id: i64,
+    queue: &[ShipJob],
+) -> Result<(), SaveError> {
+    for (i, job) in queue.iter().enumerate() {
+        tx.execute(
+            "INSERT INTO ship_queue (
+                planet_id, position, kind, remaining,
+                paid_metal, paid_crystal, paid_deuterium,
+                started_at, completes_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                planet_id,
+                i as i64,
+                job.kind_key(),
+                job.remaining,
+                job.unit_paid.iron,
+                job.unit_paid.silicon,
+                job.unit_paid.deuterium,
+                job.started_at.map(|t| t as i64),
+                job.completes_at.map(|t| t as i64),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+/// One planet's shipyard queue. Credits come back from `finance_job_credits`.
+fn read_ship_queue(conn: &Connection, planet_id: i64) -> Result<Vec<ShipJob>, SaveError> {
+    let mut stmt = conn.prepare(
+        "SELECT kind, remaining, paid_metal, paid_crystal, paid_deuterium, started_at, completes_at
+         FROM ship_queue WHERE planet_id = ?1 ORDER BY position",
+    )?;
+    let mut queue = Vec::new();
+    let jobs = stmt.query_map(params![planet_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, u32>(1)?,
+            row.get::<_, f64>(2)?,
+            row.get::<_, f64>(3)?,
+            row.get::<_, f64>(4)?,
+            row.get::<_, Option<i64>>(5)?,
+            row.get::<_, Option<i64>>(6)?,
+        ))
+    })?;
+    for job in jobs {
+        let (kind, remaining, metal, crystal, deuterium, started_at, completes_at) = job?;
+        let (ship, defence) = if let Some(ship) = ShipKind::from_key(&kind) {
+            (Some(ship), None)
+        } else if let Some(defence) = DefenceKind::from_key(&kind) {
+            (None, Some(defence))
+        } else {
+            return Err(SaveError::Corrupt("unknown yard kind"));
+        };
+        queue.push(ShipJob {
+            ship,
+            defence,
+            remaining,
+            unit_paid: Resources::from_parts(metal, crystal, deuterium),
+            credits: 0.0,
+            started_at: unix_ts_opt(started_at)?,
+            completes_at: unix_ts_opt(completes_at)?,
+        });
+    }
+    Ok(queue)
+}
+
 fn read_build_queue(conn: &Connection, planet_id: i64) -> Result<Vec<BuildJob>, SaveError> {
     let mut stmt = conn.prepare(
         "SELECT kind, from_level, paid_metal, paid_crystal, paid_deuterium, started_at, completes_at, operation, work_left
@@ -8400,12 +8431,22 @@ fn persist_finance(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<
             hoshi_core::PendingKind::Research { tech } => {
                 (None, None, Some(tech.as_str()), None, None, None)
             }
-            hoshi_core::PendingKind::Ships { kind, count } => {
-                (None, None, None, Some(kind.as_key()), None, Some(*count))
-            }
-            hoshi_core::PendingKind::Defence { kind, count } => {
-                (None, None, None, None, Some(kind.as_key()), Some(*count))
-            }
+            hoshi_core::PendingKind::Ships { coord, kind, count } => (
+                Some(*coord),
+                None,
+                None,
+                Some(kind.as_key()),
+                None,
+                Some(*count),
+            ),
+            hoshi_core::PendingKind::Defence { coord, kind, count } => (
+                Some(*coord),
+                None,
+                None,
+                None,
+                Some(kind.as_key()),
+                Some(*count),
+            ),
         };
         tx.execute(
             "INSERT INTO finance_pending (
@@ -8469,6 +8510,11 @@ fn persist_job_credits(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Res
     }
     for (idx, job) in state.ship_queue.iter().enumerate() {
         write("ship", idx, None, job.credits)?;
+    }
+    for colony in &state.colonies {
+        for (idx, job) in colony.ship_queue.iter().enumerate() {
+            write("ship", idx, Some(colony.coord), job.credits)?;
+        }
     }
     Ok(())
 }
@@ -9287,9 +9333,18 @@ fn read_finance(conn: &Connection, state: &mut GameState) -> Result<(), SaveErro
             ) = row?;
             let center = hoshi_core::CostCenter::parse(&center)
                 .ok_or(SaveError::Corrupt("finance center"))?;
+            // Before v63 a yard spend stored no planet; those were home's.
+            let coord = match (g, s, p) {
+                (None, None, None) => (
+                    Some(i64::from(state.home.galaxy)),
+                    Some(i64::from(state.home.system)),
+                    Some(i64::from(state.home.position)),
+                ),
+                coord => coord,
+            };
             let kind = decode_pending_kind(
                 &kind,
-                (g, s, p),
+                coord,
                 building.as_deref(),
                 tech.as_deref(),
                 ship.as_deref(),
@@ -9307,7 +9362,6 @@ fn read_finance(conn: &Connection, state: &mut GameState) -> Result<(), SaveErro
         }
         state.finance.pending = pending;
     }
-    apply_job_credits(conn, state)?;
     Ok(())
 }
 
@@ -9357,8 +9411,24 @@ fn apply_job_credits(conn: &Connection, state: &mut GameState) -> Result<(), Sav
                     job.credits = credits;
                 }
             }
+            // A row without a coord is home's, as every row before v63 was.
             "ship" => {
-                if let Some(job) = state.ship_queue.get_mut(idx) {
+                let queue = match (g, s, p) {
+                    (Some(g), Some(s), Some(p)) => {
+                        let coord = hoshi_core::Coord {
+                            galaxy: u16::try_from(g).unwrap_or(0),
+                            system: u16::try_from(s).unwrap_or(0),
+                            position: u16::try_from(p).unwrap_or(0),
+                        };
+                        state
+                            .colonies
+                            .iter_mut()
+                            .find(|c| c.coord == coord)
+                            .map(|c| &mut c.ship_queue)
+                    }
+                    _ => Some(&mut state.ship_queue),
+                };
+                if let Some(job) = queue.and_then(|queue| queue.get_mut(idx)) {
                     job.credits = credits;
                 }
             }
@@ -9377,16 +9447,16 @@ fn decode_pending_kind(
     defence: Option<&str>,
     count: Option<i64>,
 ) -> Result<hoshi_core::PendingKind, SaveError> {
+    let coord = Coord {
+        galaxy: u16::try_from(coord.0.unwrap_or(0))
+            .map_err(|_| SaveError::Corrupt("spend coord"))?,
+        system: u16::try_from(coord.1.unwrap_or(0))
+            .map_err(|_| SaveError::Corrupt("spend coord"))?,
+        position: u16::try_from(coord.2.unwrap_or(0))
+            .map_err(|_| SaveError::Corrupt("spend coord"))?,
+    };
     match kind {
         "build" => {
-            let coord = Coord {
-                galaxy: u16::try_from(coord.0.unwrap_or(0))
-                    .map_err(|_| SaveError::Corrupt("spend coord"))?,
-                system: u16::try_from(coord.1.unwrap_or(0))
-                    .map_err(|_| SaveError::Corrupt("spend coord"))?,
-                position: u16::try_from(coord.2.unwrap_or(0))
-                    .map_err(|_| SaveError::Corrupt("spend coord"))?,
-            };
             let building = BuildingKind::from_key(building.unwrap_or(""))
                 .ok_or(SaveError::Corrupt("spend building"))?;
             Ok(hoshi_core::PendingKind::Build { coord, building })
@@ -9399,14 +9469,14 @@ fn decode_pending_kind(
                 .ok_or(SaveError::Corrupt("spend ship"))?;
             let count =
                 u32::try_from(count.unwrap_or(0)).map_err(|_| SaveError::Corrupt("spend count"))?;
-            Ok(hoshi_core::PendingKind::Ships { kind, count })
+            Ok(hoshi_core::PendingKind::Ships { coord, kind, count })
         }
         "defence" => {
             let kind = hoshi_core::DefenceKind::from_key(defence.unwrap_or(""))
                 .ok_or(SaveError::Corrupt("spend defence"))?;
             let count =
                 u32::try_from(count.unwrap_or(0)).map_err(|_| SaveError::Corrupt("spend count"))?;
-            Ok(hoshi_core::PendingKind::Defence { kind, count })
+            Ok(hoshi_core::PendingKind::Defence { coord, kind, count })
         }
         _ => Err(SaveError::Corrupt("spend kind")),
     }
@@ -9753,6 +9823,7 @@ mod tests {
                 started_at: Some(1_700_000_000),
                 completes_at: Some(1_700_000_040),
             }],
+            ship_queue: Vec::new(),
         });
         let mut route_ships = hoshi_core::Fleet::default();
         route_ships.add(hoshi_core::ShipKind::SmallCargo, 2);
@@ -9995,6 +10066,97 @@ label = "Leave it"
         migrate(&conn).unwrap();
         let old = load_state(&conn, BalanceConfig::default()).unwrap();
         assert!(old.signals.is_empty());
+    }
+
+    /// A home with a stocked colony whose shipyard can build light fighters.
+    fn state_with_colony_yard() -> (GameState, Coord) {
+        let mut state = GameState::new(100);
+        state.buildings.shipyard = 1;
+        state.tech_levels.insert("combustion_drive".into(), 1);
+        state.resources = Resources::from_parts(50_000.0, 50_000.0, 50_000.0);
+        let coord = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 5,
+        };
+        state.colonies.push(hoshi_core::Colony {
+            coord,
+            kind: hoshi_core::PlanetType::Rocky,
+            size: 120,
+            resources: Resources::from_parts(50_000.0, 50_000.0, 50_000.0),
+            buildings: hoshi_core::Buildings {
+                shipyard: 1,
+                ..hoshi_core::Buildings::default()
+            },
+            fleet: hoshi_core::Fleet::default(),
+            defences: hoshi_core::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: BTreeMap::new(),
+        });
+        (state, coord)
+    }
+
+    fn held_yard_spend(id: u64, coord: Coord) -> hoshi_core::PendingSpend {
+        hoshi_core::PendingSpend {
+            id,
+            center: hoshi_core::CostCenter::Fleet,
+            amount: 10.0,
+            actor: "player".into(),
+            kind: hoshi_core::PendingKind::Ships {
+                coord,
+                kind: ShipKind::LightFighter,
+                count: 2,
+            },
+            requested_at: 100,
+        }
+    }
+
+    #[test]
+    fn colony_ship_queues_round_trip_with_credits_and_held_spend_planet() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let (mut state, coord) = state_with_colony_yard();
+        state.enqueue_ships(ShipKind::LightFighter, 1, 100).unwrap();
+        state
+            .enqueue_ships_at(coord, ShipKind::LightFighter, 3, 100)
+            .unwrap();
+        state
+            .enqueue_defence_at(coord, DefenceKind::LightCannon, 2, 100)
+            .unwrap();
+        state.colonies[0].ship_queue[1].credits = 7.5;
+        state.finance.pending.push(held_yard_spend(1, coord));
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.ship_queue, state.ship_queue);
+        assert_eq!(loaded.colonies[0].ship_queue, state.colonies[0].ship_queue);
+        assert_eq!(loaded.finance.pending, state.finance.pending);
+        assert_eq!(loaded, state);
+    }
+
+    #[test]
+    fn a_v62_save_keeps_the_home_yard_and_loads_empty_colony_yards() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let (mut state, _) = state_with_colony_yard();
+        state.enqueue_ships(ShipKind::LightFighter, 2, 100).unwrap();
+        state.ship_queue[0].credits = 4.0;
+        state.finance.pending.push(held_yard_spend(1, state.home));
+        save_state(&mut conn, &state).unwrap();
+        // Before v63 a yard spend carried no planet and credits no coord.
+        conn.execute_batch(
+            "UPDATE finance_pending SET g = NULL, s = NULL, p = NULL;
+             PRAGMA user_version = 62;",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.ship_queue, state.ship_queue);
+        assert!(loaded.colonies[0].ship_queue.is_empty());
+        assert_eq!(loaded.finance.pending, state.finance.pending);
+        let version: u32 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
     }
 
     #[test]
@@ -10579,6 +10741,7 @@ label = "Leave it"
             fleet: hoshi_core::Fleet::default(),
             defences: hoshi_core::DefenceGrid::default(),
             build_queue: Vec::new(),
+            ship_queue: Vec::new(),
             rare: None,
             goods: BTreeMap::from([("water_ice".into(), 7.0)]),
         });
@@ -10757,6 +10920,7 @@ label = "Leave it"
                 grid
             },
             build_queue: Vec::new(),
+            ship_queue: Vec::new(),
             rare: None,
             goods: BTreeMap::new(),
         });
@@ -11836,6 +12000,7 @@ label = "Leave it"
             fleet: hoshi_core::Fleet::default(),
             defences: hoshi_core::DefenceGrid::default(),
             build_queue: Vec::new(),
+            ship_queue: Vec::new(),
             rare: None,
             goods: Default::default(),
         });
@@ -12417,6 +12582,7 @@ label = "Leave it"
                 fleet: Fleet::default(),
                 defences: hoshi_core::DefenceGrid::default(),
                 build_queue: state.build_queue.clone(),
+                ship_queue: Vec::new(),
                 rare: None,
                 goods: std::collections::BTreeMap::new(),
             });

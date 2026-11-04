@@ -613,6 +613,7 @@ condition = { kind = "building_level", id = "not_a_mine", level = 1 }
             fleet: Fleet::default(),
             defences: crate::DefenceGrid::default(),
             build_queue: Vec::new(),
+            ship_queue: Vec::new(),
             rare: None,
             goods: BTreeMap::new(),
         });
