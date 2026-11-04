@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 61;
+pub const SCHEMA_VERSION: u32 = 62;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -281,8 +281,8 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
     )?;
     // RNG seed is stored as the same 64 bits in a signed INTEGER column.
     tx.execute(
-        "INSERT INTO meta (id, last_tick_unix, rng_seed, galaxy_seed, home_kind, home_size, deterministic, outposts_seeded, generator_version, last_story_at, last_market_at, last_diplomacy_at)
-         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8, ?9, ?10)",
+        "INSERT INTO meta (id, last_tick_unix, rng_seed, galaxy_seed, home_kind, home_size, deterministic, outposts_seeded, generator_version, last_story_at, last_market_at, last_diplomacy_at, home_galaxy, home_system, home_position)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             state.last_tick_unix as i64,
             state.rng_seed as i64,
@@ -294,6 +294,9 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
             state.last_story_at as i64,
             state.last_market_at as i64,
             state.last_diplomacy_at as i64,
+            i64::from(state.home.galaxy),
+            i64::from(state.home.system),
+            i64::from(state.home.position),
         ],
     )?;
     tx.execute(
@@ -1609,6 +1612,26 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         PlanetType::from_key(&home_kind).ok_or(SaveError::Corrupt("unknown home planet type"))?;
     state.home_size = u8::try_from(home_size).map_err(|_| SaveError::Corrupt("home size"))?;
     state.deterministic = deterministic != 0;
+    state.home = conn
+        .query_row(
+            "SELECT home_galaxy, home_system, home_position FROM meta WHERE id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .map_err(SaveError::from)
+        .and_then(|(galaxy, system, position)| {
+            Ok(Coord {
+                galaxy: u16_coord(galaxy)?,
+                system: u16_coord(system)?,
+                position: u16_coord(position)?,
+            })
+        })?;
 
     let resources = conn
         .query_row(
@@ -3742,6 +3765,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     if found < 61 {
         migrate_v61(conn)?;
     }
+    if found < 62 {
+        migrate_v62(conn)?;
+    }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
 }
@@ -4964,6 +4990,20 @@ fn migrate_v50(conn: &Connection) -> Result<(), SaveError> {
             deuterium REAL NOT NULL CHECK (deuterium >= 0)
         );",
     )?;
+    Ok(())
+}
+
+/// v62: the home coord. A shard seats a tenant away from `1:1:1`; older
+/// saves were always there, so the columns default to it.
+fn migrate_v62(conn: &Connection) -> Result<(), SaveError> {
+    for column in ["home_galaxy", "home_system", "home_position"] {
+        if !meta_has_column(conn, column)? {
+            conn.execute(
+                &format!("ALTER TABLE meta ADD COLUMN {column} INTEGER NOT NULL DEFAULT 1"),
+                [],
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -9955,6 +9995,34 @@ label = "Leave it"
         migrate(&conn).unwrap();
         let old = load_state(&conn, BalanceConfig::default()).unwrap();
         assert!(old.signals.is_empty());
+    }
+
+    #[test]
+    fn a_seated_home_survives_save_and_a_v61_save_loads_at_one_one_one() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let mut state = GameState::new(100);
+        state.home = Coord {
+            galaxy: 1,
+            system: 4,
+            position: 2,
+        };
+        save_state(&mut conn, &state).unwrap();
+        assert_eq!(
+            load_state(&conn, BalanceConfig::default()).unwrap().home,
+            state.home
+        );
+        conn.execute_batch(
+            "ALTER TABLE meta DROP COLUMN home_galaxy;
+             ALTER TABLE meta DROP COLUMN home_system;
+             ALTER TABLE meta DROP COLUMN home_position;
+             PRAGMA user_version = 61;",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        assert_eq!(
+            load_state(&conn, BalanceConfig::default()).unwrap().home,
+            Coord::HOME
+        );
     }
 
     #[test]

@@ -77,7 +77,12 @@ mission instead. The attacker's save logs the fight too and
 its mission carries the plunder until it lands. The
 local TUI and CLI do not use this gate.
 
-Join places a home with `place_home`: given the host's `ShardMap` (seed and
+A host joins a tenant with `ShardSession::join`. A seated identity resumes
+on its home and nothing is written. A new identity past
+`ShardConfig::tenant_cap` (bundled default 16, the capped player list of
+ADR 0005) is refused with `ShardFull` before anything is built or written.
+Otherwise join settles, places, builds the empire for the placed coord, and
+seats it. It places the home with `place_home`: given the host's `ShardMap` (seed and
 bounds), the empires, and the pirate outposts and open sites, it returns the
 first `Empty` coord on a walk that visits one position in every system before
 the next position. `seat_home` writes the home only on a coord that is still
@@ -143,6 +148,33 @@ The optional governance demo (`hoshi --demo demo governance --seed N`) puts an
 ungoverned CLI player next to a Chisei-governed one. Policies (spend caps,
 no attacks on allies, invasion approval, token budgets) wrap propose/apply.
 See [docs/demo.md](demo.md).
+
+## Host contract
+
+A shard host makes these calls, in this order. The executable reference is
+[`crates/hoshi-storage/tests/shard_host_contract.rs`](../crates/hoshi-storage/tests/shard_host_contract.rs),
+which runs under the default `cargo test`.
+
+1. **Create.** `ShardSession::new` with the host clock, the bridge MAC key,
+   and a `ShardConfig`. Pick a `ShardMap` once per shard; place outposts,
+   sites, and the expedition coord through `commons_mut`.
+2. **Join.** `ShardSession::join` per identity, up to `tenant_cap`. A
+   reconnect returns the same home.
+3. **Act.** `submit` for intents, `launch_raid`, `spy`, `colonize`, and
+   `recycle` for shard missions, each with an idempotency id. Client
+   timestamps are ignored. When `submit` refuses with `Unsettled`, call
+   `settle` and retry the same id.
+4. **Settle.** `settle` steps every empire to the host clock. The mission
+   calls and `view` settle first.
+5. **Read.** `view` per identity. A tenant never reads another tenant's
+   `GameState`.
+6. **Persist.** Each tenant's `GameState` through `hoshi-storage`
+   (`save_state`; the save keeps the seated home), plus
+   `export_bookkeeping` and `commons().to_bytes()` beside them.
+7. **Restore.** A fresh `ShardSession::new`, then `restore_bookkeeping`,
+   `*commons_mut() = ShardCommons::from_bytes(..)`, and `load_tenants` over
+   the migrating loader. The next `settle` and `view` match a host that
+   never stopped.
 
 ## Arena
 
