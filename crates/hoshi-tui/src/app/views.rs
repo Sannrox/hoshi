@@ -1246,8 +1246,21 @@ impl App {
         }
     }
 
-    /// Dispatch form: target, ship steppers, flight time and fuel.
-    pub(super) fn dispatch_lines(&self, form: &DispatchForm) -> Vec<Line<'static>> {
+    /// The dispatch form cut to `height` rows. A short panel scrolls so the
+    /// selected row and the three lines below it (the hold line from any
+    /// cargo row) stay visible.
+    pub(super) fn dispatch_window(&self, form: &DispatchForm, height: usize) -> Vec<Line<'static>> {
+        const BELOW: usize = 3;
+        let (lines, selected) = self.dispatch_lines(form);
+        let offset = (selected + 1 + BELOW)
+            .saturating_sub(height)
+            .min(lines.len().saturating_sub(height));
+        lines.into_iter().skip(offset).collect()
+    }
+
+    /// Dispatch form: target, ship steppers, cargo steppers and hold on a
+    /// transport, flight time and fuel. Also returns the selected row's line.
+    fn dispatch_lines(&self, form: &DispatchForm) -> (Vec<Line<'static>>, usize) {
         let t = &self.theme;
         let dest = form.dest;
         let place = if self.state.owned_coords().contains(&dest) {
@@ -1294,10 +1307,14 @@ impl App {
             .map(|k| humanize(&k.to_string()).len())
             .max()
             .unwrap_or(0);
+        let mut selected_line = 0;
         for (i, &kind) in ShipKind::ALL.iter().enumerate() {
             let have = self.state.fleet.get(kind);
             let picked = form.ships.get(kind);
             let on = i == form.selected;
+            if on {
+                selected_line = lines.len();
+            }
             let name_style = if on {
                 t.strong()
             } else if have == 0 {
@@ -1321,6 +1338,52 @@ impl App {
             }
             spans.push(Span::styled(format!("  of {have}"), t.muted()));
             lines.push(Line::from(spans));
+        }
+        if form.mission == Mission::Transport {
+            lines.push(section(t, "cargo"));
+            for (i, &kind) in DISPATCH_CARGO.iter().enumerate() {
+                let on = form.selected == ShipKind::ALL.len() + i;
+                if on {
+                    selected_line = lines.len();
+                }
+                let amount = form.cargo.get(kind);
+                let mut spans = vec![
+                    Span::styled(if on { "▌" } else { " " }, t.intent(Intent::Primary)),
+                    Span::styled(
+                        format!("{:<w$} ", kind.label()),
+                        if on { t.strong() } else { t.text() },
+                    ),
+                ];
+                if on {
+                    spans.push(keycap(t, "-"));
+                    spans.push(Span::styled(format!(" {amount:>6.0} "), t.strong()));
+                    spans.push(keycap(t, "+"));
+                } else {
+                    spans.push(Span::styled(
+                        format!("   {amount:>6.0}    "),
+                        if amount > 0.0 { t.text() } else { t.faint() },
+                    ));
+                }
+                spans.push(Span::styled(
+                    format!("  of {:.0}", self.state.resources.get(kind).floor()),
+                    t.muted(),
+                ));
+                lines.push(Line::from(spans));
+            }
+            let used = form.cargo.total();
+            let cap = self.state.cargo_capacity(form.ships);
+            lines.push(Line::from(vec![
+                Span::raw(" "),
+                Span::styled("hold ", t.muted()),
+                Span::styled(
+                    format!("{used:.0} / {cap:.0}"),
+                    if used > cap {
+                        t.intent(Intent::Danger)
+                    } else {
+                        t.text()
+                    },
+                ),
+            ]));
         }
         lines.push(Line::default());
         if form.ships.is_empty() {
@@ -1351,7 +1414,12 @@ impl App {
                             ("find", format!("x{factor}")),
                         ]));
                     }
-                    if fuel > self.state.resources.deuterium {
+                    let cargo_d = if form.mission == Mission::Transport {
+                        form.cargo.deuterium
+                    } else {
+                        0.0
+                    };
+                    if fuel + cargo_d > self.state.resources.deuterium {
                         lines.extend(callout_lines(
                             t,
                             Intent::Danger,
@@ -1364,13 +1432,22 @@ impl App {
             }
         }
         lines.push(Line::default());
-        let mut keys = vec![keycap(t, "⏎"), Span::styled(" launch  ", t.muted())];
+        let mut keys = if form.mission == Mission::Transport {
+            vec![
+                keycap(t, "⏎"),
+                Span::styled(" send  ", t.muted()),
+                keycap(t, "+/-"),
+                Span::styled(" amount  ", t.muted()),
+            ]
+        } else {
+            vec![keycap(t, "⏎"), Span::styled(" launch  ", t.muted())]
+        };
         if self.dispatch_missions(dest).len() > 1 {
             keys.extend([keycap(t, "space"), Span::styled(" mission  ", t.muted())]);
         }
         keys.extend([keycap(t, "x"), Span::styled(" close", t.muted())]);
         lines.push(Line::from(keys));
-        lines
+        (lines, selected_line)
     }
 
     fn standing_gauge(&self, standing: f64, min: f64, max: f64) -> Line<'static> {

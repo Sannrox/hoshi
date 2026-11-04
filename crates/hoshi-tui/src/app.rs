@@ -99,18 +99,58 @@ fn trade_step(amount: f64) -> f64 {
 const MAP_SYSTEM_MAX: u16 = 81;
 const MAP_SLOT_COUNT: u16 = 16;
 
+/// Star map dispatch form. `selected` walks the ship rows, then (for a
+/// transport) the [`DISPATCH_CARGO`] rows; `cargo` is lifted from home.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct DispatchForm {
     dest: Coord,
     ships: Fleet,
+    cargo: Resources,
     selected: usize,
     mission: Mission,
 }
 
+impl DispatchForm {
+    fn new(dest: Coord, mission: Mission) -> Self {
+        Self {
+            dest,
+            ships: Fleet::default(),
+            cargo: Resources::ZERO,
+            selected: 0,
+            mission,
+        }
+    }
+
+    /// Selectable rows: every ship kind, plus the cargo rows on a transport.
+    fn rows(&self) -> usize {
+        let cargo = if self.mission == Mission::Transport {
+            DISPATCH_CARGO.len()
+        } else {
+            0
+        };
+        ShipKind::ALL.len() + cargo
+    }
+
+    /// The cargo kind under the cursor, when it sits on a cargo row.
+    fn cargo_row(&self) -> Option<ResourceKind> {
+        self.selected
+            .checked_sub(ShipKind::ALL.len())
+            .and_then(|i| DISPATCH_CARGO.get(i).copied())
+    }
+}
+
+/// Stock a star map transport can carry from home to an own colony.
+const DISPATCH_CARGO: [ResourceKind; 3] = [
+    ResourceKind::Iron,
+    ResourceKind::Silicon,
+    ResourceKind::Deuterium,
+];
+
 /// What a star map dispatch does at its target: the same core actions as
-/// `hoshi fleet send`. Deliveries to own colonies are planned in Fleet › Ops.
+/// `hoshi fleet send`, plus a transport from home to an own colony.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mission {
+    Transport,
     Attack,
     Spy,
     Invade,
@@ -123,6 +163,7 @@ enum Mission {
 impl Mission {
     fn label(self) -> &'static str {
         match self {
+            Self::Transport => "transport",
             Self::Attack => "attack",
             Self::Spy => "spy",
             Self::Invade => "invade",
@@ -1283,7 +1324,8 @@ impl App {
                 );
             }
             if let Some(form) = self.dispatch.as_ref().filter(|_| self.docks_dispatch()) {
-                frame.render_widget(Paragraph::new(self.dispatch_lines(form)), card);
+                let lines = self.dispatch_window(form, usize::from(card.height));
+                frame.render_widget(Paragraph::new(lines), card);
             } else if let Some(detail) = self.current_detail() {
                 let (kind, extra) = self.inspector_context();
                 let levelled = matches!(
@@ -2538,14 +2580,27 @@ impl App {
         let Some(form) = self.dispatch.as_mut() else {
             return;
         };
-        let len = ShipKind::ALL.len() as i32;
+        let len = form.rows() as i32;
         form.selected = ((form.selected as i32 + delta).rem_euclid(len)) as usize;
     }
 
+    /// `+`/`-` on the selected row: a ship count up to the home fleet, or a
+    /// cargo amount (market-sized steps) up to home stock.
     fn nudge_dispatch_ships(&mut self, delta: i32) {
         let Some(form) = self.dispatch.as_mut() else {
             return;
         };
+        if let Some(kind) = form.cargo_row() {
+            let have = self.state.resources.get(kind).floor().max(0.0);
+            let cur = form.cargo.get(kind);
+            let next = if delta > 0 {
+                cur + trade_step(cur)
+            } else {
+                cur - trade_step(cur - 1.0)
+            };
+            form.cargo.set(kind, next.clamp(0.0, have));
+            return;
+        }
         let kind = ShipKind::ALL[form.selected];
         let have = self.state.fleet.get(kind);
         let cur = form.ships.get(kind);
@@ -2565,27 +2620,18 @@ impl App {
         let dest = self.map_cursor();
         let Some(&mission) = self.dispatch_missions(dest).first() else {
             // Home only opens dispatch to recycle its own raid debris.
-            self.status = if dest == self.state.home {
-                "same location".into()
-            } else {
-                format!("{dest} is yours: plan deliveries in Fleet › Ops")
-            };
+            self.status = "same location".into();
             return;
         };
-        self.dispatch = Some(DispatchForm {
-            dest,
-            ships: Fleet::default(),
-            selected: 0,
-            mission,
-        });
+        self.dispatch = Some(DispatchForm::new(dest, mission));
         self.status.clear();
     }
 
     /// Missions that fit `dest`, the default first: the expedition slot,
     /// an outpost (invade first once its defences are gone), a seen signal
-    /// to hold, or anywhere else to settle. Debris adds recycle, so home or an own colony with
-    /// wreckage gets one; otherwise own planets have none (Ops plans their
-    /// deliveries).
+    /// to hold, an own colony to supply from home, or anywhere else to
+    /// settle. Debris adds recycle, so home with wreckage gets one; otherwise
+    /// home has none.
     fn dispatch_missions(&self, dest: Coord) -> Vec<Mission> {
         let mut missions = if dest == self.state.expedition_dest() {
             vec![Mission::Expedition]
@@ -2603,8 +2649,10 @@ impl App {
             vec![Mission::Expedition]
         } else if self.seen_signal_at(dest).is_some() {
             vec![Mission::Hold]
-        } else if self.state.owned_coords().contains(&dest) {
+        } else if dest == self.state.home {
             Vec::new()
+        } else if self.state.owned_coords().contains(&dest) {
+            vec![Mission::Transport]
         } else {
             vec![Mission::Colonize]
         };
@@ -2671,8 +2719,8 @@ impl App {
         };
         let missions = self.dispatch_missions(form.dest);
         if missions.is_empty() {
-            // The target became ours while the form was open.
-            self.status = format!("{} is yours: plan deliveries in Fleet › Ops", form.dest);
+            // Home's debris was cleared while the form was open.
+            self.status = "same location".into();
             self.dispatch = None;
             return;
         }
@@ -2682,6 +2730,8 @@ impl App {
             .unwrap_or(0);
         if let Some(form) = self.dispatch.as_mut() {
             form.mission = missions[(at + 1) % missions.len()];
+            // Leaving transport hides the cargo rows.
+            form.selected = form.selected.min(form.rows() - 1);
         }
     }
 
@@ -2699,6 +2749,15 @@ impl App {
         }
         let (ships, dest) = (form.ships, form.dest);
         let launched = match form.mission {
+            Mission::Transport => {
+                if form.cargo.total() <= 0.0 {
+                    self.status = "transport needs cargo: pick amounts with +/-".into();
+                    return;
+                }
+                let home = self.state.home;
+                self.state
+                    .launch_transport(home, dest, ships, form.cargo, 100, now_unix)
+            }
             Mission::Attack => self.state.launch_attack(ships, dest, 100, now_unix),
             Mission::Spy => self.state.launch_spy(ships, dest, 100, now_unix),
             Mission::Invade => self.state.launch_invasion(ships, dest, 100, now_unix),
@@ -2800,11 +2859,13 @@ impl App {
     }
 
     fn draw_dispatch(&self, frame: &mut Frame<'_>, form: &DispatchForm) {
+        // The dialog body is the screen less its margin, bars and padding.
+        let height = usize::from(frame.area().height.saturating_sub(5));
         self.dialog(
             frame,
             "Dispatch",
             String::new(),
-            self.dispatch_lines(form),
+            self.dispatch_window(form, height),
             &[],
         );
     }
@@ -6716,10 +6777,8 @@ mod tests {
     fn open_dispatch(app: &mut App, dest: Coord, kind: ShipKind, count: u32) {
         app.open(Screen::Map);
         app.dispatch = Some(DispatchForm {
-            dest,
-            ships: Fleet::default(),
             selected: ShipKind::ALL.iter().position(|k| *k == kind).unwrap(),
-            mission: app.dispatch_missions(dest)[0],
+            ..DispatchForm::new(dest, app.dispatch_missions(dest)[0])
         });
         for _ in 0..count {
             app.handle_key(KeyCode::Char('+'), 1_000);
@@ -6798,6 +6857,146 @@ mod tests {
             "{:?}",
             summary.deliveries
         );
+    }
+
+    /// Home with stock and two small cargo ships, plus an empty new colony
+    /// in the home system; the map cursor sits on the colony.
+    fn app_with_new_colony() -> (App, Coord) {
+        let mut state = GameState::new(1_000);
+        state.config.raid.enabled = false;
+        state.next_raid_at = None;
+        state.resources = Resources::from_parts(12_000.0, 6_000.0, 2_000.0);
+        state.fleet.add(ShipKind::SmallCargo, 2);
+        let dest = (2..16)
+            .map(|position| Coord {
+                galaxy: 1,
+                system: state.home.system,
+                position,
+            })
+            .find(|c| state.site_at(*c).is_none() && state.outpost(*c).is_none())
+            .unwrap();
+        state.colonies.push(Colony {
+            coord: dest,
+            kind: PlanetType::Rocky,
+            size: 120,
+            resources: Resources::ZERO,
+            buildings: Buildings::default(),
+            fleet: Fleet::default(),
+            defences: hoshi_core::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            rare: None,
+            goods: std::collections::BTreeMap::new(),
+        });
+        let mut app = App::new(state);
+        app.open(Screen::Map);
+        (app.map_galaxy, app.map_system, app.map_position) =
+            (dest.galaxy, dest.system, dest.position);
+        (app, dest)
+    }
+
+    /// Step the transport cargo row for `kind` up to `amount` with `+`.
+    fn load_cargo(app: &mut App, kind: ResourceKind, amount: f64) {
+        let row = ShipKind::ALL.len() + DISPATCH_CARGO.iter().position(|k| *k == kind).unwrap();
+        app.dispatch.as_mut().unwrap().selected = row;
+        for _ in 0..100 {
+            if app.dispatch.unwrap().cargo.get(kind) >= amount {
+                break;
+            }
+            app.handle_key(KeyCode::Char('+'), 1_000);
+        }
+        assert_eq!(app.dispatch.unwrap().cargo.get(kind), amount);
+    }
+
+    /// Enter on the colony, then one small cargo picked.
+    fn open_transport(app: &mut App) {
+        app.handle_key(KeyCode::Enter, 1_000);
+        let form = app.dispatch.expect("dispatch opens on an own colony");
+        assert_eq!(form.mission, Mission::Transport);
+        app.dispatch.as_mut().unwrap().selected = ShipKind::ALL
+            .iter()
+            .position(|k| *k == ShipKind::SmallCargo)
+            .unwrap();
+        app.handle_key(KeyCode::Char('+'), 1_000);
+    }
+
+    #[test]
+    fn map_enter_on_own_colony_transports_cargo_and_unblocks_a_build() {
+        let (mut app, dest) = app_with_new_colony();
+        open_transport(&mut app);
+        load_cargo(&mut app, ResourceKind::Iron, 1_000.0);
+        load_cargo(&mut app, ResourceKind::Silicon, 500.0);
+        let text = render_text(&app, 100, 48);
+        assert!(text.contains("transport"), "{text}");
+        assert!(text.contains("hold 1500 / 5000"), "{text}");
+        assert!(text.contains("of 12000"), "{text}");
+
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::SmallCargo, 1);
+        let (_, fuel) = app.state.flight_time_and_fuel(ships, dest, 100).unwrap();
+        assert!(fuel < 10.0, "fuel {fuel}");
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.dispatch.is_none(), "{}", app.status);
+        let mission = app.state.missions[0].clone();
+        assert!(mission.transport);
+        assert_eq!(mission.cargo, Resources::from_parts(1_000.0, 500.0, 0.0));
+        assert_eq!(app.state.resources.iron, 11_000.0);
+        assert_eq!(app.state.resources.silicon, 5_500.0);
+        assert!((app.state.resources.deuterium - (2_000.0 - fuel)).abs() < 1e-6);
+
+        let back = mission.phase_ends_at + mission.outbound_secs + 1;
+        app.state.catch_up(back);
+        assert!(app.state.missions.is_empty());
+        assert_eq!(app.state.fleet.get(ShipKind::SmallCargo), 2);
+        let colony = app.state.resources_at(dest).unwrap();
+        assert!(
+            colony.iron >= 1_000.0 && colony.silicon >= 500.0,
+            "{colony:?}"
+        );
+        app.state
+            .enqueue_build_on(dest, BuildingKind::SolarPlant, back)
+            .unwrap();
+    }
+
+    #[test]
+    fn short_terminal_scrolls_dispatch_to_the_selected_cargo_row() {
+        let (mut app, _) = app_with_new_colony();
+        open_transport(&mut app);
+        load_cargo(&mut app, ResourceKind::Silicon, 500.0);
+        app.handle_key(KeyCode::Char('k'), 1_000);
+        // Iron, the first cargo row, keeps the hold line in view.
+        // Overlay dialog, then the inspector dock beside the map.
+        for width in [100, 140] {
+            let text = render_text(&app, width, 24);
+            assert!(text.contains("▌iron"), "{width}:\n{text}");
+            assert!(text.contains("hold 500 / 5000"), "{width}:\n{text}");
+        }
+    }
+
+    #[test]
+    fn transport_without_cargo_is_refused_in_the_form() {
+        let (mut app, _) = app_with_new_colony();
+        open_transport(&mut app);
+        let before = app.state.resources;
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.dispatch.is_some());
+        assert!(app.state.missions.is_empty());
+        assert_eq!(app.state.resources, before);
+        assert!(app.status.contains("needs cargo"), "{}", app.status);
+    }
+
+    #[test]
+    fn transport_over_capacity_shows_core_refusal_and_keeps_the_form() {
+        let (mut app, _) = app_with_new_colony();
+        open_transport(&mut app);
+        load_cargo(&mut app, ResourceKind::Iron, 6_000.0);
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.dispatch.is_some());
+        assert!(app.state.missions.is_empty());
+        let refusal = hoshi_core::FleetError::CargoExceedsCapacity {
+            need: 6_000.0,
+            cap: 5_000.0,
+        };
+        assert_eq!(app.status, refusal.to_string());
     }
 
     #[test]
