@@ -252,6 +252,7 @@ fn scenario_betrayal(seed: u64, work: &Path) -> Result<Scenario, String> {
     ships.add(ShipKind::LightFighter, 2);
     ungoverned.fleet.add(ShipKind::LightFighter, 2);
     let intent = Intent::Launch {
+        origin: None,
         ships,
         dest: ally,
         speed_percent: 100,
@@ -339,6 +340,7 @@ fn scenario_invasion(seed: u64, work: &Path) -> Result<Scenario, String> {
     let mut ships = Fleet::default();
     ships.add(ShipKind::TroopTransport, 2);
     let intent = Intent::Invade {
+        origin: None,
         ships,
         dest,
         speed_percent: 100,

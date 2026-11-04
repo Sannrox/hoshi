@@ -659,9 +659,13 @@ mod tests {
             system: 40,
             position: 1,
         };
-        state.launch_fleet(scout(), near, 100, 0, 0).unwrap();
+        state
+            .launch_fleet(state.home, scout(), near, 100, 0, 0)
+            .unwrap();
         state.fleet.add(ShipKind::LightFighter, 1);
-        state.launch_fleet(scout(), far, 100, 0, 0).unwrap();
+        state
+            .launch_fleet(state.home, scout(), far, 100, 0, 0)
+            .unwrap();
         assert_eq!(state.config.moons.phalanx_range_systems, 5);
         let seen = state.phalanx_contacts(Coord::HOME, 0).unwrap();
         assert!(seen.iter().any(|c| c.dest == near), "{seen:?}");

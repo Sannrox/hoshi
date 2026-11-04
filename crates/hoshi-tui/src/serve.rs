@@ -3748,7 +3748,7 @@ mod tests {
             fleet
         };
         let dest = hoshi_core::Coord::from_key("1:1:8").unwrap();
-        let _ = core.launch_attack(ships, dest, 100, 0);
+        let _ = core.launch_attack(core.home, ships, dest, 100, 0);
 
         assert_eq!(last_http, last_cli);
         assert_eq!(

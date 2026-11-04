@@ -262,11 +262,12 @@ impl GameState {
         Ok(id)
     }
 
-    /// Fly `ships` from home to a seen, open signal and hold until its
+    /// Fly `ships` from `origin` to a seen, open signal and hold until its
     /// deadline. The fleet must arrive before the deadline, and one fleet
     /// holds a signal at a time.
     pub fn hold_signal(
         &mut self,
+        origin: Coord,
         signal_id: u64,
         ships: Fleet,
         speed_percent: u8,
@@ -290,7 +291,7 @@ impl GameState {
         }) {
             return Err(FleetError::SignalBusy { id: signal_id });
         }
-        let (outbound_secs, _) = self.flight_time_and_fuel(ships, signal.coord, speed_percent)?;
+        let (outbound_secs, _) = self.flight_from(origin, signal.coord, ships, speed_percent)?;
         let arrives = now.saturating_add(outbound_secs);
         if arrives >= signal.deadline {
             return Err(FleetError::SignalTooLate {
@@ -300,7 +301,7 @@ impl GameState {
             });
         }
         let hold = signal.deadline - arrives;
-        self.launch_fleet(ships, signal.coord, speed_percent, hold, now)?;
+        self.launch_fleet(origin, ships, signal.coord, speed_percent, hold, now)?;
         let Some(mission_id) = self.missions.last().map(|m| m.id) else {
             return Err(FleetError::EmptyFleet);
         };

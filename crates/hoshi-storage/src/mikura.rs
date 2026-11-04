@@ -414,6 +414,7 @@ mod tests {
         state.fleet.add(ShipKind::ColonyShip, 1);
         state
             .launch_colony(
+                state.home,
                 Coord {
                     galaxy: 1,
                     system: 1,
