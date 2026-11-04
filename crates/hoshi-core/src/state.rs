@@ -310,6 +310,14 @@ struct ChainSite<'a> {
     goods: &'a BTreeMap<String, f64>,
 }
 
+/// One planet's shipyard: its queue and where jobs pay from and deliver to.
+struct YardMut<'a> {
+    queue: &'a mut Vec<ShipJob>,
+    fleet: &'a mut Fleet,
+    defences: &'a mut crate::DefenceGrid,
+    resources: &'a mut Resources,
+}
+
 /// Game state. All time advancement goes through [`GameState::catch_up`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct GameState {
@@ -686,7 +694,7 @@ impl GameState {
                 .filter(|at| *at > self.last_tick_unix);
             let build_at = min_time(min_time(home_build_at, colony_build_at), dismantle_sample);
             let research_at = self.research.as_ref().map(|job| job.completes_at);
-            let ship_at = self.ship_queue.first().and_then(|job| job.completes_at);
+            let ship_at = self.next_ship_at();
             let mission_at = self.missions.iter().map(|m| m.phase_ends_at).min();
             let signal_at = self.next_signal_at();
             let route_at = self.routes.iter().map(|r| r.next_at).min();
@@ -941,7 +949,19 @@ impl GameState {
                 self.start_queued_research(done_at);
             }
             if ship_at == Some(done_at) {
-                self.complete_one_ship(done_at);
+                let due: Vec<Coord> = self
+                    .owned_coords()
+                    .into_iter()
+                    .filter(|&coord| {
+                        self.ship_queue_at(coord)
+                            .and_then(<[ShipJob]>::first)
+                            .and_then(|job| job.completes_at)
+                            == Some(done_at)
+                    })
+                    .collect();
+                for coord in due {
+                    self.complete_one_ship(coord, done_at);
+                }
             }
             self.settle_ledger(Term::Other);
             if mission_at == Some(done_at) {
@@ -2097,155 +2117,226 @@ impl GameState {
         Ok(job.paid)
     }
 
-    /// Pay for a batch and append it to the shipyard queue. Each remaining ship
-    /// in the head batch completes on its own timestamp.
+    /// Pay for a ship batch at home. See [`Self::enqueue_ships_at`].
     pub fn enqueue_ships(
         &mut self,
         kind: ShipKind,
         count: u32,
         now_unix: u64,
     ) -> Result<(), ShipError> {
+        self.enqueue_ships_at(self.home, kind, count, now_unix)
+    }
+
+    /// Pay for a batch from `coord`'s stock and append it to that planet's
+    /// shipyard queue, gated by its shipyard level. Each remaining ship in the
+    /// head batch completes on its own timestamp and joins that planet's fleet.
+    pub fn enqueue_ships_at(
+        &mut self,
+        coord: Coord,
+        kind: ShipKind,
+        count: u32,
+        now_unix: u64,
+    ) -> Result<(), ShipError> {
         self.catch_up(now_unix);
-        let now = self.last_tick_unix;
-        if count == 0 {
-            return Err(ShipError::ZeroCount);
-        }
         let spec = self.config.ships.get(kind);
-        let yard = self.available_building_level(BuildingKind::Shipyard);
-        if yard < spec.shipyard {
-            return Err(ShipError::NeedShipyard {
-                required: spec.shipyard,
-                actual: yard,
-            });
-        }
-        let gaps = self.missing_ship_prereqs(kind);
-        if !gaps.is_empty() {
-            return Err(ShipError::MissingPrerequisites { gaps });
-        }
-        let cap = self.config.max_ship_queue;
-        if self.ship_queue.len() >= cap {
-            return Err(ShipError::QueueFull { cap });
-        }
+        let required = spec.shipyard;
         let unit = spec.unit_cost();
-        let n = f64::from(count);
-        let cost = Resources::from_parts(unit.iron * n, unit.silicon * n, unit.deuterium * n);
-        if !self.resources.can_afford(cost) {
-            return Err(ShipError::InsufficientResources {
-                missing: self.resources.missing(cost),
-                cost,
-            });
-        }
-        let amount = self.value_resources(cost);
-        let centers = crate::finance::military_centers();
-        let pending = crate::PendingKind::Ships { kind, count };
-        if let Err(id) = self.hold_spend(&centers, amount, pending, crate::Actor::Player) {
-            return Err(ShipError::NeedsApproval { id });
-        }
-        self.resources = self.resources.saturating_sub(cost);
-        self.ship_queue.push(ShipJob {
+        let gaps = self.missing_ship_prereqs(kind);
+        let job = ShipJob {
             ship: Some(kind),
             defence: None,
             remaining: count,
             unit_paid: unit,
-            credits: amount,
+            credits: 0.0,
             started_at: None,
             completes_at: None,
-        });
-        if self.ship_queue.len() == 1 {
-            self.start_ship_head(now);
-        }
-        self.record_history(crate::HistoryDraft {
-            at: now,
-            kind: crate::HistoryKind::Ship,
-            actor: "player".into(),
-            action: "queue".into(),
-            objects: vec![kind.as_key().into()],
-            inputs: format!("{count}"),
-            outcome: "queued".into(),
-            cause_key: Some(format!("ship:{}", kind.as_key())),
-            mass: f64::from(count),
-            ..crate::HistoryDraft::default()
-        });
-        self.commit_spend(
-            &centers,
-            amount,
-            &crate::PendingKind::Ships { kind, count },
-            crate::Actor::Player,
-        );
-        Ok(())
+        };
+        let pending = crate::PendingKind::Ships { coord, kind, count };
+        self.enqueue_yard(coord, job, required, gaps, pending)
     }
 
-    /// Pay for a defence batch and append it to the same shipyard queue.
+    /// Pay for a defence batch at home. See [`Self::enqueue_defence_at`].
     pub fn enqueue_defence(
         &mut self,
         kind: DefenceKind,
         count: u32,
         now_unix: u64,
     ) -> Result<(), ShipError> {
+        self.enqueue_defence_at(self.home, kind, count, now_unix)
+    }
+
+    /// Pay for a defence batch from `coord`'s stock and append it to that
+    /// planet's shipyard queue. Finished units guard that planet.
+    pub fn enqueue_defence_at(
+        &mut self,
+        coord: Coord,
+        kind: DefenceKind,
+        count: u32,
+        now_unix: u64,
+    ) -> Result<(), ShipError> {
         self.catch_up(now_unix);
+        let spec = self.config.defences.get(kind);
+        let job = ShipJob {
+            ship: None,
+            defence: Some(kind),
+            remaining: count,
+            unit_paid: spec.unit_cost(),
+            credits: 0.0,
+            started_at: None,
+            completes_at: None,
+        };
+        let pending = crate::PendingKind::Defence { coord, kind, count };
+        self.enqueue_yard(coord, job, spec.shipyard, Vec::new(), pending)
+    }
+
+    /// Gate, pay and append `job` (with `remaining` units) to `coord`'s yard.
+    /// The caller has caught up; `gaps` are its missing tech prerequisites.
+    fn enqueue_yard(
+        &mut self,
+        coord: Coord,
+        mut job: ShipJob,
+        required: u32,
+        gaps: Vec<crate::PrereqGap>,
+        pending: crate::PendingKind,
+    ) -> Result<(), ShipError> {
         let now = self.last_tick_unix;
+        let count = job.remaining;
         if count == 0 {
             return Err(ShipError::ZeroCount);
         }
-        let spec = self.config.defences.get(kind);
-        let yard = self.available_building_level(BuildingKind::Shipyard);
-        if yard < spec.shipyard {
+        let (Some(stock), Some(queue)) = (self.resources_at(coord), self.ship_queue_at(coord))
+        else {
+            return Err(ShipError::UnknownPlanet { coord });
+        };
+        let (stock, queued) = (*stock, queue.len());
+        let yard = self.available_building_level_at(coord, BuildingKind::Shipyard);
+        if yard < required {
             return Err(ShipError::NeedShipyard {
-                required: spec.shipyard,
+                required,
                 actual: yard,
             });
         }
+        if !gaps.is_empty() {
+            return Err(ShipError::MissingPrerequisites { gaps });
+        }
         let cap = self.config.max_ship_queue;
-        if self.ship_queue.len() >= cap {
+        if queued >= cap {
             return Err(ShipError::QueueFull { cap });
         }
-        let unit = spec.unit_cost();
+        let unit = job.unit_paid;
         let n = f64::from(count);
         let cost = Resources::from_parts(unit.iron * n, unit.silicon * n, unit.deuterium * n);
-        if !self.resources.can_afford(cost) {
+        if !stock.can_afford(cost) {
             return Err(ShipError::InsufficientResources {
-                missing: self.resources.missing(cost),
+                missing: stock.missing(cost),
                 cost,
             });
         }
         let amount = self.value_resources(cost);
         let centers = crate::finance::military_centers();
-        let pending = crate::PendingKind::Defence { kind, count };
-        if let Err(id) = self.hold_spend(&centers, amount, pending, crate::Actor::Player) {
+        if let Err(id) = self.hold_spend(&centers, amount, pending.clone(), crate::Actor::Player) {
             return Err(ShipError::NeedsApproval { id });
         }
-        self.resources = self.resources.saturating_sub(cost);
-        self.ship_queue.push(ShipJob {
-            ship: None,
-            defence: Some(kind),
-            remaining: count,
-            unit_paid: unit,
-            credits: amount,
-            started_at: None,
-            completes_at: None,
-        });
-        if self.ship_queue.len() == 1 {
-            self.start_ship_head(now);
+        let cause_key = self.yard_cause(coord, &job);
+        let key = job.kind_key();
+        job.credits = amount;
+        let Some(yard) = self.yard_mut(coord) else {
+            return Err(ShipError::UnknownPlanet { coord });
+        };
+        *yard.resources = yard.resources.saturating_sub(cost);
+        yard.queue.push(job);
+        if yard.queue.len() == 1 {
+            self.start_ship_head(coord, now);
         }
         self.record_history(crate::HistoryDraft {
             at: now,
             kind: crate::HistoryKind::Ship,
             actor: "player".into(),
             action: "queue".into(),
-            objects: vec![kind.as_key().into()],
+            objects: vec![key.into()],
             inputs: format!("{count}"),
             outcome: "queued".into(),
-            cause_key: Some(format!("defence:{}", kind.as_key())),
-            mass: f64::from(count),
+            cause_key,
+            mass: n,
             ..crate::HistoryDraft::default()
         });
-        self.commit_spend(
-            &centers,
-            amount,
-            &crate::PendingKind::Defence { kind, count },
-            crate::Actor::Player,
-        );
+        self.commit_spend(&centers, amount, &pending, crate::Actor::Player);
         Ok(())
+    }
+
+    /// History cause of a yard job. Home keeps the key older saves logged;
+    /// a colony's key names the planet so its jobs pair with their own queue.
+    fn yard_cause(&self, coord: Coord, job: &ShipJob) -> Option<String> {
+        let cause = if job.defence.is_some() {
+            "defence"
+        } else if job.ship.is_some() {
+            "ship"
+        } else {
+            return None;
+        };
+        let key = job.kind_key();
+        Some(if coord == self.home {
+            format!("{cause}:{key}")
+        } else {
+            format!("{cause}:{key}@{coord}")
+        })
+    }
+
+    /// `coord`'s shipyard queue, or `None` when this empire does not hold it.
+    pub fn ship_queue_at(&self, coord: Coord) -> Option<&[ShipJob]> {
+        if coord == self.home {
+            Some(&self.ship_queue)
+        } else {
+            self.colonies
+                .iter()
+                .find(|c| c.coord == coord)
+                .map(|c| c.ship_queue.as_slice())
+        }
+    }
+
+    /// `coord`'s parked fleet, or `None` when this empire does not hold it.
+    pub fn fleet_at(&self, coord: Coord) -> Option<Fleet> {
+        if coord == self.home {
+            Some(self.fleet)
+        } else {
+            self.colonies
+                .iter()
+                .find(|c| c.coord == coord)
+                .map(|c| c.fleet)
+        }
+    }
+
+    /// `coord`'s defences, or `None` when this empire does not hold it.
+    pub fn defences_at(&self, coord: Coord) -> Option<crate::DefenceGrid> {
+        if coord == self.home {
+            Some(self.defences)
+        } else {
+            self.colonies
+                .iter()
+                .find(|c| c.coord == coord)
+                .map(|c| c.defences)
+        }
+    }
+
+    /// Everything one planet's shipyard reads and writes, borrowed together.
+    fn yard_mut(&mut self, coord: Coord) -> Option<YardMut<'_>> {
+        if coord == self.home {
+            return Some(YardMut {
+                queue: &mut self.ship_queue,
+                fleet: &mut self.fleet,
+                defences: &mut self.defences,
+                resources: &mut self.resources,
+            });
+        }
+        self.colonies
+            .iter_mut()
+            .find(|c| c.coord == coord)
+            .map(|c| YardMut {
+                queue: &mut c.ship_queue,
+                fleet: &mut c.fleet,
+                defences: &mut c.defences,
+                resources: &mut c.resources,
+            })
     }
 
     pub fn defence_cost(&self, kind: DefenceKind, count: u32) -> Resources {
@@ -2254,46 +2345,54 @@ impl GameState {
         Resources::from_parts(unit.iron * n, unit.silicon * n, unit.deuterium * n)
     }
 
+    /// Cancel slot `index` of the home yard. See [`Self::cancel_ships_at`].
     pub fn cancel_ships(&mut self, index: usize, now_unix: u64) -> Result<Resources, ShipError> {
+        self.cancel_ships_at(self.home, index, now_unix)
+    }
+
+    /// Cancel slot `index` of `coord`'s yard and refund the units not yet
+    /// built to that planet's stock.
+    pub fn cancel_ships_at(
+        &mut self,
+        coord: Coord,
+        index: usize,
+        now_unix: u64,
+    ) -> Result<Resources, ShipError> {
         self.catch_up(now_unix);
         let now = self.last_tick_unix;
-        let len = self.ship_queue.len();
+        let queue = self
+            .ship_queue_at(coord)
+            .ok_or(ShipError::UnknownPlanet { coord })?;
+        let len = queue.len();
         if index >= len {
             return Err(ShipError::EmptySlot { index, len });
         }
-        if let Some(kind) = self.ship_queue[index].ship {
-            let deque_idx = self
-                .ship_queue
-                .iter()
-                .take(index)
-                .filter(|job| job.ship == Some(kind))
-                .count();
-            self.history
-                .forget_cause_at(&format!("ship:{}", kind.as_key()), deque_idx);
-        } else if let Some(kind) = self.ship_queue[index].defence {
-            let deque_idx = self
-                .ship_queue
-                .iter()
-                .take(index)
-                .filter(|job| job.defence == Some(kind))
-                .count();
-            self.history
-                .forget_cause_at(&format!("defence:{}", kind.as_key()), deque_idx);
+        let target = &queue[index];
+        let deque_idx = queue
+            .iter()
+            .take(index)
+            .filter(|job| job.ship == target.ship && job.defence == target.defence)
+            .count();
+        if let Some(cause) = self.yard_cause(coord, target) {
+            self.history.forget_cause_at(&cause, deque_idx);
         }
-        let job = self.ship_queue.remove(index);
+        let Some(yard) = self.yard_mut(coord) else {
+            return Err(ShipError::UnknownPlanet { coord });
+        };
+        let job = yard.queue.remove(index);
         let n = f64::from(job.remaining);
         let refund = Resources::from_parts(
             job.unit_paid.iron * n,
             job.unit_paid.silicon * n,
             job.unit_paid.deuterium * n,
         );
-        self.resources = self.resources.saturating_add(refund);
+        *yard.resources = yard.resources.saturating_add(refund);
         self.refund_spend(
             &crate::finance::military_centers(),
             self.refund_credits(job.credits, refund),
         );
         if index == 0 {
-            self.start_ship_head(now);
+            self.start_ship_head(coord, now);
         }
         Ok(refund)
     }
@@ -4137,16 +4236,27 @@ impl GameState {
         self.duration_secs(kind, self.projected_level(kind))
     }
 
-    /// The home level of `kind` that queue gates check: the lowest level it
-    /// passes through while queued downgrades run, and 0 while dismantling.
+    /// The home level of `kind` that queue gates check. See
+    /// [`Self::available_building_level_at`].
     pub fn available_building_level(&self, kind: BuildingKind) -> u32 {
-        if self.dismantling(self.home) == Some(kind) {
+        self.available_building_level_at(self.home, kind)
+    }
+
+    /// The level of `kind` on `coord` that queue gates check: the lowest level
+    /// it passes through while queued downgrades run, and 0 while dismantling
+    /// or for a coord this empire does not hold.
+    pub fn available_building_level_at(&self, coord: Coord, kind: BuildingKind) -> u32 {
+        let (Some(buildings), Some(queue)) = (self.buildings_at(coord), self.queue_at(coord))
+        else {
+            return 0;
+        };
+        if self.dismantling(coord) == Some(kind) {
             return 0;
         }
-        (0..=self.build_queue.len())
-            .map(|index| self.projected_level_before(kind, index))
+        (0..=queue.len())
+            .map(|index| projected_on(buildings, queue, kind, index))
             .min()
-            .unwrap_or(self.buildings.get(kind))
+            .unwrap_or(buildings.get(kind))
     }
 
     fn projected_level(&self, kind: BuildingKind) -> u32 {
@@ -4405,8 +4515,8 @@ impl GameState {
         }
     }
 
-    fn start_ship_head(&mut self, now_unix: u64) {
-        let Some(job) = self.ship_queue.first() else {
+    fn start_ship_head(&mut self, coord: Coord, now_unix: u64) {
+        let Some(job) = self.ship_queue_at(coord).and_then(<[ShipJob]>::first) else {
             return;
         };
         if job.completes_at.is_some() {
@@ -4414,9 +4524,18 @@ impl GameState {
         }
         let duration = self.yard_time_secs(job);
         let now = now_unix.max(self.last_tick_unix);
-        let job = &mut self.ship_queue[0];
-        job.started_at = Some(now);
-        job.completes_at = Some(now.saturating_add(duration));
+        if let Some(job) = self.yard_mut(coord).and_then(|yard| yard.queue.first_mut()) {
+            job.started_at = Some(now);
+            job.completes_at = Some(now.saturating_add(duration));
+        }
+    }
+
+    /// Earliest yard head completion across owned planets.
+    fn next_ship_at(&self) -> Option<u64> {
+        self.owned_coords()
+            .into_iter()
+            .filter_map(|coord| self.ship_queue_at(coord)?.first()?.completes_at)
+            .min()
     }
 
     fn advance_missions_at(&mut self, done_at: u64) {
@@ -4718,6 +4837,7 @@ impl GameState {
             fleet: ships,
             defences: crate::DefenceGrid::default(),
             build_queue: Vec::new(),
+            ship_queue: Vec::new(),
             rare,
             goods: BTreeMap::new(),
         });
@@ -5077,6 +5197,7 @@ impl GameState {
             fleet: ships,
             defences: crate::DefenceGrid::default(),
             build_queue: Vec::new(),
+            ship_queue: Vec::new(),
             rare: outpost.rare,
             goods: BTreeMap::new(),
         });
@@ -6697,19 +6818,24 @@ impl GameState {
         Ok(())
     }
 
-    fn complete_one_ship(&mut self, done_at: u64) {
-        let Some(job) = self.ship_queue.first() else {
+    /// Deliver the next unit of `coord`'s yard head into that planet.
+    fn complete_one_ship(&mut self, coord: Coord, done_at: u64) {
+        let Some(job) = self.ship_queue_at(coord).and_then(<[ShipJob]>::first) else {
             return;
         };
         let duration = self.yard_time_secs(job);
+        let cause = self.yard_cause(coord, job);
         let ship = job.ship;
         let defence = job.defence;
+        let Some(yard) = self.yard_mut(coord) else {
+            return;
+        };
         if let Some(kind) = defence {
-            self.defences.add(kind, 1);
+            yard.defences.add(kind, 1);
         } else if let Some(kind) = ship {
-            self.fleet.add(kind, 1);
+            yard.fleet.add(kind, 1);
         }
-        let job = &mut self.ship_queue[0];
+        let job = &mut yard.queue[0];
         let n = job.remaining;
         if n > 0 {
             job.credits *= f64::from(n.saturating_sub(1)) / f64::from(n);
@@ -6720,13 +6846,11 @@ impl GameState {
                 .map(|kind| kind.to_string())
                 .or_else(|| ship.map(|kind| kind.to_string()))
                 .unwrap_or_else(|| "yard job".into());
-            self.ship_queue.remove(0);
-            self.start_ship_head(done_at);
+            let key = job.kind_key();
+            yard.queue.remove(0);
+            self.start_ship_head(coord, done_at);
             self.note_completed(done_at, label);
-            let finished = ship
-                .map(|kind| (kind.as_key(), "ship"))
-                .or_else(|| defence.map(|kind| (kind.as_key(), "defence")));
-            if let Some((key, cause)) = finished {
+            if let Some(cause) = cause {
                 self.record_history(crate::HistoryDraft {
                     at: done_at,
                     kind: crate::HistoryKind::Ship,
@@ -6734,7 +6858,7 @@ impl GameState {
                     action: "complete".into(),
                     objects: vec![key.into()],
                     outcome: "built".into(),
-                    parent_key: Some(format!("{cause}:{key}")),
+                    parent_key: Some(cause),
                     ..crate::HistoryDraft::default()
                 });
             }
@@ -8478,6 +8602,7 @@ mod tests {
             fleet: Fleet::default(),
             defences: crate::DefenceGrid::default(),
             build_queue: Vec::new(),
+            ship_queue: Vec::new(),
             rare: None,
             goods: BTreeMap::new(),
         });
@@ -9628,6 +9753,132 @@ modifiers = []
         assert_eq!(step.last_tick_unix, gap.last_tick_unix);
     }
 
+    /// `yard_state` plus a stocked colony at 1:1:5 with its own shipyard.
+    fn yard_with_colony(now: u64, colony_yard: u32) -> (GameState, Coord) {
+        let mut state = yard_state(now);
+        let coord = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 5,
+        };
+        state.colonies.push(Colony {
+            coord,
+            kind: PlanetType::Rocky,
+            size: 120,
+            resources: Resources::from_parts(50_000.0, 50_000.0, 50_000.0),
+            buildings: Buildings {
+                shipyard: colony_yard,
+                ..Buildings::default()
+            },
+            fleet: Fleet::default(),
+            defences: crate::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: BTreeMap::new(),
+        });
+        (state, coord)
+    }
+
+    #[test]
+    fn colony_yard_pays_from_and_delivers_into_that_colony() {
+        let (mut state, coord) = yard_with_colony(0, 1);
+        let home_before = state.resources;
+        let colony_before = state.colonies[0].resources;
+        state
+            .enqueue_ships_at(coord, ShipKind::LightFighter, 2, 0)
+            .unwrap();
+        state
+            .enqueue_defence_at(coord, DefenceKind::LightCannon, 1, 0)
+            .unwrap();
+        let ships = state.ship_cost(ShipKind::LightFighter, 2);
+        let cannon = state.defence_cost(DefenceKind::LightCannon, 1);
+        assert_eq!(state.resources, home_before);
+        assert!(state.ship_queue.is_empty());
+        assert_eq!(state.colonies[0].ship_queue.len(), 2);
+        for kind in [
+            ResourceKind::Iron,
+            ResourceKind::Silicon,
+            ResourceKind::Deuterium,
+        ] {
+            close(
+                state.colonies[0].resources.get(kind),
+                colony_before.get(kind) - ships.get(kind) - cannon.get(kind),
+            );
+        }
+        assert!(
+            state
+                .dismantle_blockers(coord, BuildingKind::Shipyard, 1, 0)
+                .iter()
+                .any(|r| r.contains("queued production")),
+        );
+
+        let done = state.ship_time_secs(ShipKind::LightFighter) * 2
+            + state.defence_time_secs(DefenceKind::LightCannon);
+        state.catch_up(done);
+        assert_eq!(state.colonies[0].fleet.get(ShipKind::LightFighter), 2);
+        assert_eq!(state.colonies[0].defences.get(DefenceKind::LightCannon), 1);
+        assert!(state.colonies[0].ship_queue.is_empty());
+        assert_eq!(state.fleet.get(ShipKind::LightFighter), 0);
+        assert_eq!(state.defences.get(DefenceKind::LightCannon), 0);
+    }
+
+    #[test]
+    fn colony_yard_is_gated_by_its_own_shipyard_and_refunds_its_own_stock() {
+        let (mut state, coord) = yard_with_colony(0, 0);
+        assert!(matches!(
+            state.enqueue_ships_at(coord, ShipKind::LightFighter, 1, 0),
+            Err(ShipError::NeedShipyard { actual: 0, .. })
+        ));
+        state.colonies[0].buildings.shipyard = 1;
+        let before = state.colonies[0].resources;
+        state
+            .enqueue_ships_at(coord, ShipKind::LightFighter, 3, 0)
+            .unwrap();
+        state.cancel_ships_at(coord, 0, 0).unwrap();
+        assert!(state.colonies[0].ship_queue.is_empty());
+        for kind in ResourceKind::ALL {
+            close(state.colonies[0].resources.get(kind), before.get(kind));
+        }
+        let elsewhere = Coord {
+            galaxy: 9,
+            system: 9,
+            position: 9,
+        };
+        assert!(matches!(
+            state.enqueue_ships_at(elsewhere, ShipKind::LightFighter, 1, 0),
+            Err(ShipError::UnknownPlanet { .. })
+        ));
+    }
+
+    #[test]
+    fn home_and_colony_yards_run_in_parallel_across_an_offline_gap() {
+        let start = |now| {
+            let (mut state, coord) = yard_with_colony(now, 1);
+            state.enqueue_ships(ShipKind::LightFighter, 3, now).unwrap();
+            state
+                .enqueue_ships_at(coord, ShipKind::LightFighter, 4, now)
+                .unwrap();
+            state
+        };
+        let mut gap = start(0);
+        let unit = gap.ship_time_secs(ShipKind::LightFighter);
+        gap.catch_up(unit * 3);
+        assert_eq!(gap.fleet.get(ShipKind::LightFighter), 3);
+        assert_eq!(gap.colonies[0].fleet.get(ShipKind::LightFighter), 3);
+        assert_eq!(gap.colonies[0].ship_queue[0].remaining, 1);
+
+        let mut step = start(0);
+        for t in 1..=unit * 3 {
+            step.catch_up(t);
+        }
+        assert_eq!(step.fleet, gap.fleet);
+        assert_eq!(step.ship_queue, gap.ship_queue);
+        assert_eq!(step.colonies[0].fleet, gap.colonies[0].fleet);
+        assert_eq!(step.colonies[0].ship_queue, gap.colonies[0].ship_queue);
+        assert_eq!(step.last_tick_unix, gap.last_tick_unix);
+    }
+
     #[test]
     fn unaffordable_ship_batch_reports_missing_amounts() {
         let mut state = GameState::new(0);
@@ -9970,6 +10221,7 @@ modifiers = []
             fleet: Fleet::default(),
             defences: crate::DefenceGrid::default(),
             build_queue: Vec::new(),
+            ship_queue: Vec::new(),
             rare: None,
             goods: BTreeMap::new(),
         });
@@ -11227,6 +11479,7 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
             fleet: Fleet::default(),
             defences: crate::DefenceGrid::default(),
             build_queue: Vec::new(),
+            ship_queue: Vec::new(),
             rare: None,
             goods: Default::default(),
         });
@@ -11775,6 +12028,7 @@ modifiers = [{ kind = "expedition_slots", per_level = 1.0 }]
             fleet: Fleet::default(),
             defences: crate::DefenceGrid::default(),
             build_queue: Vec::new(),
+            ship_queue: Vec::new(),
             rare: None,
             goods: BTreeMap::new(),
         });
@@ -12883,6 +13137,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
             fleet: Fleet::default(),
             defences: crate::DefenceGrid::default(),
             build_queue: Vec::new(),
+            ship_queue: Vec::new(),
             rare: Some("shipyard_world".into()),
             goods: BTreeMap::new(),
         });
@@ -13108,6 +13363,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
                 fleet: Fleet::default(),
                 defences: crate::DefenceGrid::default(),
                 build_queue: Vec::new(),
+                ship_queue: Vec::new(),
                 rare: None,
                 goods: BTreeMap::new(),
             });
@@ -13145,6 +13401,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
             fleet: Fleet::default(),
             defences: crate::DefenceGrid::default(),
             build_queue: Vec::new(),
+            ship_queue: Vec::new(),
             rare: None,
             goods: BTreeMap::new(),
         });

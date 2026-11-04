@@ -3,7 +3,7 @@
 use crate::buildings::{BuildJob, Buildings};
 use crate::combat::next_u64;
 use crate::fleets::Coord;
-use crate::ships::Fleet;
+use crate::ships::{Fleet, ShipJob};
 use crate::state::Resources;
 use std::collections::BTreeMap;
 
@@ -129,6 +129,8 @@ pub struct Colony {
     pub fleet: Fleet,
     pub defences: crate::DefenceGrid,
     pub build_queue: Vec<BuildJob>,
+    /// This world's own shipyard queue. Jobs pay from and deliver into this colony.
+    pub ship_queue: Vec<ShipJob>,
     /// Rare-planet bonus id from config, when this world was a special outpost.
     pub rare: Option<String>,
     /// Intermediate goods. Construction parts stay in `resources`.

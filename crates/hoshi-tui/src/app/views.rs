@@ -392,14 +392,14 @@ impl App {
     fn shipyard_view(&self) -> ListView {
         let t = &self.theme;
         let now = self.state.last_tick_unix;
-        let stock = self.state.resources;
+        let coord = self.selected_coord();
+        let stock = self.selected_stock();
+        let queue = self.state.ship_queue_at(coord).unwrap_or(&[]);
+        let fleet = self.state.fleet_at(coord).unwrap_or_default();
+        let defences = self.state.defences_at(coord).unwrap_or_default();
         let mut head = vec![self.props(&[(
             "queue",
-            format!(
-                "{}/{}",
-                self.state.ship_queue.len(),
-                self.state.config.max_ship_queue
-            ),
+            format!("{}/{}", queue.len(), self.state.config.max_ship_queue),
         )])];
         if let Some((cost, secs)) = self.shipyard_batch(self.ship_batch) {
             head.push(Line::from(vec![
@@ -415,7 +415,7 @@ impl App {
                 Span::styled(" max", t.muted()),
             ]));
         }
-        for (i, job) in self.state.ship_queue.iter().enumerate() {
+        for (i, job) in queue.iter().enumerate() {
             let timer = job
                 .completes_at
                 .map(|at| duration(at.saturating_sub(now)))
@@ -434,7 +434,7 @@ impl App {
             let base = self.row_style(reason.is_some());
             let mut row = vec![
                 Line::styled(humanize(&kind.to_string()), base),
-                Line::styled(self.state.fleet.get(kind).to_string(), base),
+                Line::styled(fleet.get(kind).to_string(), base),
             ];
             row.extend(self.cost_cells(cost, stock, base));
             row.push(Line::styled(duration(spec.duration_secs()), base));
@@ -452,7 +452,7 @@ impl App {
             let base = self.row_style(reason.is_some());
             let mut row = vec![
                 Line::styled(humanize(&kind.to_string()), base),
-                Line::styled(self.state.defences.get(kind).to_string(), base),
+                Line::styled(defences.get(kind).to_string(), base),
             ];
             row.extend(self.cost_cells(cost, stock, base));
             row.push(Line::styled(duration(spec.duration_secs()), base));

@@ -182,7 +182,11 @@ impl GameState {
                 }
             }
         }
-        if kind == BuildingKind::Shipyard && coord == self.home && !self.ship_queue.is_empty() {
+        if kind == BuildingKind::Shipyard
+            && self
+                .ship_queue_at(coord)
+                .is_some_and(|queue| !queue.is_empty())
+        {
             reasons.push("shipyard has queued production".into());
         }
         if kind == BuildingKind::FissionReactor {
@@ -796,6 +800,7 @@ mod tests {
             fleet: crate::Fleet::default(),
             defences: crate::DefenceGrid::default(),
             build_queue: Vec::new(),
+            ship_queue: Vec::new(),
             rare: None,
             goods: Default::default(),
         });

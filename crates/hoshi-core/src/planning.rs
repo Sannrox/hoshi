@@ -880,6 +880,7 @@ mod tests {
             resources: Resources::ZERO,
             buildings: crate::Buildings::default(),
             build_queue: Vec::new(),
+            ship_queue: Vec::new(),
             fleet: Fleet::default(),
             defences: crate::DefenceGrid::default(),
             goods: std::collections::BTreeMap::new(),

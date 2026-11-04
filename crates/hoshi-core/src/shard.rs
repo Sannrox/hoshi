@@ -2321,6 +2321,7 @@ mod tests {
             identity: "tenant-a".into(),
             idempotency_id: "fighters".into(),
             intent: Intent::QueueShips {
+                planet: state.home,
                 kind: ShipKind::LightFighter,
                 count: 3,
             },
@@ -2730,6 +2731,7 @@ mod tests {
             fleet: Fleet::default(),
             defences: crate::DefenceGrid::default(),
             build_queue: Vec::new(),
+            ship_queue: Vec::new(),
             rare: None,
             goods: BTreeMap::new(),
         });

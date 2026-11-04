@@ -218,11 +218,14 @@ pub enum PendingKind {
     Research {
         tech: String,
     },
+    /// `coord` is the planet whose yard builds and pays for the batch.
     Ships {
+        coord: Coord,
         kind: ShipKind,
         count: u32,
     },
     Defence {
+        coord: Coord,
         kind: crate::DefenceKind,
         count: u32,
     },
@@ -244,8 +247,12 @@ impl PendingKind {
                 format!("build {} on {coord}", building.as_key())
             }
             PendingKind::Research { tech } => format!("research {tech}"),
-            PendingKind::Ships { kind, count } => format!("queue {count} {}", kind.as_key()),
-            PendingKind::Defence { kind, count } => format!("queue {count} {}", kind.as_key()),
+            PendingKind::Ships { coord, kind, count } => {
+                format!("queue {count} {} on {coord}", kind.as_key())
+            }
+            PendingKind::Defence { coord, kind, count } => {
+                format!("queue {count} {} on {coord}", kind.as_key())
+            }
         }
     }
 }
@@ -669,6 +676,7 @@ impl GameState {
         let ship_paid: Vec<Resources> = self
             .ship_queue
             .iter()
+            .chain(self.colonies.iter().flat_map(|colony| &colony.ship_queue))
             .map(|job| {
                 let n = f64::from(job.remaining);
                 Resources::from_parts(
@@ -817,11 +825,11 @@ impl GameState {
             PendingKind::Research { tech } => self
                 .queue_research(tech, now_unix)
                 .map_err(|e| FinanceError::CannotApply(e.to_string())),
-            PendingKind::Ships { kind, count } => self
-                .enqueue_ships(*kind, *count, now_unix)
+            PendingKind::Ships { coord, kind, count } => self
+                .enqueue_ships_at(*coord, *kind, *count, now_unix)
                 .map_err(|e| FinanceError::CannotApply(e.to_string())),
-            PendingKind::Defence { kind, count } => self
-                .enqueue_defence(*kind, *count, now_unix)
+            PendingKind::Defence { coord, kind, count } => self
+                .enqueue_defence_at(*coord, *kind, *count, now_unix)
                 .map_err(|e| FinanceError::CannotApply(e.to_string())),
         }
     }
@@ -1378,6 +1386,7 @@ mod tests {
             fleet: crate::Fleet::default(),
             defences: crate::DefenceGrid::default(),
             build_queue: Vec::new(),
+            ship_queue: Vec::new(),
             rare: None,
             goods: std::collections::BTreeMap::new(),
         });

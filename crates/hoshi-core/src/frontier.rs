@@ -609,6 +609,7 @@ mod tests {
             fleet: crate::Fleet::default(),
             defences: crate::DefenceGrid::default(),
             build_queue: Vec::new(),
+            ship_queue: Vec::new(),
             rare: None,
             goods: std::collections::BTreeMap::new(),
         };

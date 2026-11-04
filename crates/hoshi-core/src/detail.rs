@@ -14,8 +14,15 @@ pub enum DetailSubject {
         planet: Coord,
     },
     Tech(String),
-    Ship(ShipKind),
-    Defence(DefenceKind),
+    /// A unit as `planet`'s shipyard would build it.
+    Ship {
+        kind: ShipKind,
+        planet: Coord,
+    },
+    Defence {
+        kind: DefenceKind,
+        planet: Coord,
+    },
     Wonder(String),
     Law(String),
     /// A spot trade of `amount` whole units of `pay`.
@@ -126,8 +133,10 @@ impl GameState {
         match subject {
             DetailSubject::Building { kind, planet } => self.describe_building(kind, planet),
             DetailSubject::Tech(id) => self.describe_tech(&id),
-            DetailSubject::Ship(kind) => Some(self.describe_ship(kind, travel_dest)),
-            DetailSubject::Defence(kind) => Some(self.describe_defence(kind)),
+            DetailSubject::Ship { kind, planet } => {
+                Some(self.describe_ship(kind, planet, travel_dest))
+            }
+            DetailSubject::Defence { kind, planet } => Some(self.describe_defence(kind, planet)),
             DetailSubject::Wonder(id) => self.describe_wonder(&id),
             DetailSubject::Law(id) => self.describe_law(&id),
             DetailSubject::Trade { pay, recv, amount } => {
@@ -323,7 +332,7 @@ impl GameState {
         })
     }
 
-    fn describe_ship(&self, kind: ShipKind, travel_dest: Option<Coord>) -> Detail {
+    fn describe_ship(&self, kind: ShipKind, planet: Coord, travel_dest: Option<Coord>) -> Detail {
         let spec = self.config.ships.get(kind);
         let stats = self.ship_stats(kind);
         let cost = spec.unit_cost();
@@ -332,19 +341,20 @@ impl GameState {
         let travel =
             travel_dest.and_then(|dest| self.flight_from(self.home, dest, fleet, 100).ok());
         // Every prerequisite, met and unmet, like buildings and research.
-        let requirements: Vec<RequirementLine> = std::iter::once(self.shipyard_line(spec.shipyard))
-            .chain(spec.prereq_techs.iter().map(|pre| {
-                let actual = self.tech_level(&pre.id);
-                RequirementLine {
-                    text: format!(
-                        "{} {} (have {actual})",
-                        self.display_name(&pre.id),
-                        pre.level
-                    ),
-                    met: actual >= pre.level,
-                }
-            }))
-            .collect();
+        let requirements: Vec<RequirementLine> =
+            std::iter::once(self.shipyard_line(planet, spec.shipyard))
+                .chain(spec.prereq_techs.iter().map(|pre| {
+                    let actual = self.tech_level(&pre.id);
+                    RequirementLine {
+                        text: format!(
+                            "{} {} (have {actual})",
+                            self.display_name(&pre.id),
+                            pre.level
+                        ),
+                        met: actual >= pre.level,
+                    }
+                }))
+                .collect();
         Detail {
             name: spec.name.clone(),
             description: format!("drive {}", self.display_name(&spec.drive)),
@@ -353,7 +363,7 @@ impl GameState {
             energy_draw: None,
             heat: None,
             duration_secs: Some(spec.duration_secs()),
-            afford: Some(afford_eta(self, cost)),
+            afford: Some(afford_eta_at(self, planet, cost)),
             deltas: vec![
                 DeltaLine {
                     label: "attack".into(),
@@ -381,20 +391,20 @@ impl GameState {
         }
     }
 
-    fn describe_defence(&self, kind: DefenceKind) -> Detail {
+    fn describe_defence(&self, kind: DefenceKind, planet: Coord) -> Detail {
         let spec = self.config.defences.get(kind);
         let cost = spec.unit_cost();
         Detail {
             name: spec.name.clone(),
             description: "orbital or ground defence".into(),
-            level: self.defences.get(kind),
+            level: self.defences_at(planet).unwrap_or_default().get(kind),
             costs: material_lines(self, cost),
             energy_draw: None,
             heat: None,
             duration_secs: Some(spec.duration_secs()),
-            afford: Some(afford_eta(self, cost)),
+            afford: Some(afford_eta_at(self, planet, cost)),
             deltas: Vec::new(),
-            requirements: vec![self.shipyard_line(spec.shipyard)],
+            requirements: vec![self.shipyard_line(planet, spec.shipyard)],
             unlocks: Vec::new(),
             exclusive_warning: None,
             complete: false,
@@ -402,10 +412,10 @@ impl GameState {
         }
     }
 
-    /// The shipyard level a ship or defence needs, against the level the
-    /// queue gate uses (0 while the shipyard is being dismantled).
-    fn shipyard_line(&self, required: u32) -> RequirementLine {
-        let actual = self.available_building_level(BuildingKind::Shipyard);
+    /// The shipyard level a ship or defence needs, against the level
+    /// `planet`'s queue gate uses (0 while that shipyard is being dismantled).
+    fn shipyard_line(&self, planet: Coord, required: u32) -> RequirementLine {
+        let actual = self.available_building_level_at(planet, BuildingKind::Shipyard);
         RequirementLine {
             text: format!("{} {required} (have {actual})", BuildingKind::Shipyard),
             met: actual >= required,
@@ -963,7 +973,13 @@ mod tests {
     fn ship_and_defence_list_every_prerequisite_met_or_not() {
         let mut state = GameState::new(0);
         let ship = state
-            .describe(DetailSubject::Ship(ShipKind::SmallCargo), None)
+            .describe(
+                DetailSubject::Ship {
+                    kind: ShipKind::SmallCargo,
+                    planet: state.home,
+                },
+                None,
+            )
             .unwrap();
         let spec = state.config.ships.get(ShipKind::SmallCargo).clone();
         assert_eq!(
@@ -981,14 +997,23 @@ mod tests {
 
         state.buildings.shipyard = spec.shipyard;
         let ship = state
-            .describe(DetailSubject::Ship(ShipKind::SmallCargo), None)
+            .describe(
+                DetailSubject::Ship {
+                    kind: ShipKind::SmallCargo,
+                    planet: state.home,
+                },
+                None,
+            )
             .unwrap();
         assert!(ship.requirements[0].met, "{:?}", ship.requirements);
         assert_eq!(ship.requirements.len(), 1 + spec.prereq_techs.len());
 
         let cannon = state
             .describe(
-                DetailSubject::Defence(crate::DefenceKind::LightCannon),
+                DetailSubject::Defence {
+                    kind: crate::DefenceKind::LightCannon,
+                    planet: state.home,
+                },
                 None,
             )
             .unwrap();
@@ -1116,7 +1141,13 @@ mod tests {
         ships.add(ShipKind::SmallCargo, 1);
         let expected = state.flight_from(state.home, dest, ships, 100).unwrap();
         let detail = state
-            .describe(DetailSubject::Ship(ShipKind::SmallCargo), Some(dest))
+            .describe(
+                DetailSubject::Ship {
+                    kind: ShipKind::SmallCargo,
+                    planet: state.home,
+                },
+                Some(dest),
+            )
             .unwrap();
         let travel = detail.ship.expect("ship block");
         assert_eq!(travel.outbound_secs, Some(expected.0));
@@ -1191,6 +1222,7 @@ mod tests {
             fleet: Fleet::default(),
             defences: crate::DefenceGrid::default(),
             build_queue: Vec::new(),
+            ship_queue: Vec::new(),
             rare: None,
             goods: Default::default(),
         });

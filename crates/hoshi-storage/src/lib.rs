@@ -356,6 +356,7 @@ pub(crate) fn assert_storage_contract(store: &mut dyn Storage) {
         resources: hoshi_core::Resources::ZERO,
         buildings: hoshi_core::Buildings::default(),
         build_queue: Vec::new(),
+        ship_queue: Vec::new(),
         fleet: hoshi_core::Fleet::default(),
         defences: hoshi_core::DefenceGrid::default(),
         goods: std::collections::BTreeMap::new(),

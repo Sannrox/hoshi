@@ -379,6 +379,7 @@ mod tests {
             resources: hoshi_core::Resources::ZERO,
             buildings: hoshi_core::Buildings::default(),
             build_queue: Vec::new(),
+            ship_queue: Vec::new(),
             fleet: Fleet::default(),
             defences: hoshi_core::DefenceGrid::default(),
             goods: std::collections::BTreeMap::new(),

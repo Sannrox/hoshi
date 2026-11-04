@@ -120,11 +120,14 @@ pub enum Intent {
         order_id: u64,
         actor: Actor,
     },
+    /// `planet`'s yard builds the batch and pays for it.
     QueueShips {
+        planet: Coord,
         kind: ShipKind,
         count: u32,
     },
     QueueDefences {
+        planet: Coord,
         kind: DefenceKind,
         count: u32,
     },
@@ -135,7 +138,9 @@ pub enum Intent {
     },
     /// Newest research entry first, the same as the local cancel.
     CancelResearch,
+    /// `index` is the slot in that planet's shipyard queue.
     CancelShips {
+        planet: Coord,
         index: usize,
     },
     Recall {
@@ -398,17 +403,33 @@ fn proposal_id(intent: &Intent, now_unix: u64, tick: u64) -> String {
             "complete_work_order:{now_unix}:{tick}:{order_id}:{}",
             actor.as_key()
         ),
-        Intent::QueueShips { kind, count } => {
-            format!("queue_ships:{now_unix}:{tick}:{}:{count}", kind.as_key())
+        Intent::QueueShips {
+            planet,
+            kind,
+            count,
+        } => {
+            format!(
+                "queue_ships:{now_unix}:{tick}:{planet}:{}:{count}",
+                kind.as_key()
+            )
         }
-        Intent::QueueDefences { kind, count } => {
-            format!("queue_defences:{now_unix}:{tick}:{}:{count}", kind.as_key())
+        Intent::QueueDefences {
+            planet,
+            kind,
+            count,
+        } => {
+            format!(
+                "queue_defences:{now_unix}:{tick}:{planet}:{}:{count}",
+                kind.as_key()
+            )
         }
         Intent::CancelBuild { planet, index } => {
             format!("cancel_build:{now_unix}:{tick}:{planet}:{index}")
         }
         Intent::CancelResearch => format!("cancel_research:{now_unix}:{tick}"),
-        Intent::CancelShips { index } => format!("cancel_ships:{now_unix}:{tick}:{index}"),
+        Intent::CancelShips { planet, index } => {
+            format!("cancel_ships:{now_unix}:{tick}:{planet}:{index}")
+        }
         Intent::Recall { mission } => format!("recall:{now_unix}:{tick}:{mission}"),
         Intent::Spy {
             ships,
@@ -601,11 +622,19 @@ fn apply_inner(state: &mut GameState, intent: &Intent, now_unix: u64) -> Result<
         Intent::CompleteWorkOrder { order_id, actor } => state
             .complete_work_order(*order_id, *actor, now_unix)
             .map_err(IntentError::Maintenance),
-        Intent::QueueShips { kind, count } => state
-            .enqueue_ships(*kind, *count, now_unix)
+        Intent::QueueShips {
+            planet,
+            kind,
+            count,
+        } => state
+            .enqueue_ships_at(*planet, *kind, *count, now_unix)
             .map_err(IntentError::Ship),
-        Intent::QueueDefences { kind, count } => state
-            .enqueue_defence(*kind, *count, now_unix)
+        Intent::QueueDefences {
+            planet,
+            kind,
+            count,
+        } => state
+            .enqueue_defence_at(*planet, *kind, *count, now_unix)
             .map_err(IntentError::Ship),
         Intent::CancelBuild { planet, index } => state
             .cancel_build_on(*planet, *index, now_unix)
@@ -615,8 +644,8 @@ fn apply_inner(state: &mut GameState, intent: &Intent, now_unix: u64) -> Result<
             .cancel_research(now_unix)
             .map(|_| ())
             .map_err(IntentError::Research),
-        Intent::CancelShips { index } => state
-            .cancel_ships(*index, now_unix)
+        Intent::CancelShips { planet, index } => state
+            .cancel_ships_at(*planet, *index, now_unix)
             .map(|_| ())
             .map_err(IntentError::Ship),
         Intent::Recall { mission } => state
@@ -766,11 +795,13 @@ mod tests {
             }
             .as_key(),
             Intent::QueueShips {
+                planet: Coord::HOME,
                 kind: ShipKind::LightFighter,
                 count: 1,
             }
             .as_key(),
             Intent::QueueDefences {
+                planet: Coord::HOME,
                 kind: DefenceKind::LightCannon,
                 count: 1,
             }
@@ -781,7 +812,11 @@ mod tests {
             }
             .as_key(),
             Intent::CancelResearch.as_key(),
-            Intent::CancelShips { index: 0 }.as_key(),
+            Intent::CancelShips {
+                planet: Coord::HOME,
+                index: 0,
+            }
+            .as_key(),
             Intent::Recall { mission: 1 }.as_key(),
             Intent::Spy {
                 ships: Fleet::default(),
@@ -946,6 +981,7 @@ mod tests {
         assert!(same_as_direct(
             s,
             Intent::QueueShips {
+                planet: Coord::HOME,
                 kind: ShipKind::LightFighter,
                 count: 2,
             },
@@ -955,6 +991,7 @@ mod tests {
         assert!(same_as_direct(
             s,
             Intent::QueueDefences {
+                planet: Coord::HOME,
                 kind: DefenceKind::LightCannon,
                 count: 1,
             },
@@ -963,7 +1000,10 @@ mod tests {
         ));
         assert!(same_as_direct(
             s,
-            Intent::CancelShips { index: 1 },
+            Intent::CancelShips {
+                planet: Coord::HOME,
+                index: 1,
+            },
             0,
             |g| g.cancel_ships(1, 0).is_ok(),
         ));
