@@ -70,8 +70,8 @@ Sources, with tradeoffs:
 | Fission | Dense, independent of sunlight. | Fuel and waste; finite stock unless bred. |
 | Fusion | High output at any orbit; D-D first, D-He3 later. | Hard to light; D-D wears the plant with neutrons; helium-3 wants giant-planet or regolith infrastructure. |
 
-Solar follows the inverse-square orbital flux. Fission rejects twice its
-electrical output as heat and throttles to available cooling. Uranium enrichment
+Solar follows the inverse-square flux from the planet's own star. Fission
+rejects twice its electrical output as heat and throttles to available cooling. Uranium enrichment
 loses most ore mass from the usable fuel stream; burned fuel becomes equal mass
 of spent fuel in an on-site pool. Protective shutdowns leave declining decay
 heat, initially 7% of rated thermal power and about 1% after a day. These are
@@ -124,7 +124,9 @@ abstract lengths used by existing fleet send. PlanMission treats map slots as
 scaled astronomical units in `[orbits]` (`inner_au`, `au_per_slot`,
 `system_au_*`, `galaxy_au` times `au_metres`). Bundled slot 1 of system 1 is
 1 AU; slot 6 is 1.5 AU. Fuel for those missions is
-`delta-v = ve * ln(m0/mf)` with payload mass in the wet stack.
+`delta-v = ve * ln(m0/mf)` with payload mass in the wet stack. Solar flux
+uses only the in-system radius (`inner_au` plus `au_per_slot` per slot), so a
+planet in another system is lit by its own star.
 
 ## Heat, waste and pollution
 
@@ -194,6 +196,7 @@ silent extra departure; they extend this list.
 | Compressed clocks (upgrades in minutes, not months) | The game is meant to run in a spare terminal while other work happens. |
 | Player commands apply as soon as they are legal | The injected clock is the authority for own actions; remote facts still wait for light-time. |
 | Light delay uses the absolute difference of heliocentric radii | Same radius table as PlanMission; no 3D chord or occlusion. |
+| Every star has the home star's luminosity | Solar flux depends only on the slot within a system; no star types. |
 | Passive rival sensors, the moon phalanx's raid contact, and its hull count on another tenant's inbound shard raid stamp light delay on a noisy present-time glance | Reconstructing the past light cone would store a second empire history. |
 | No n-body gravity, no eclipses | Catch-up must stay deterministic and fast. |
 | Abstract flight units and ship `speed` points | Existing fleets already fly; a documented scale can replace the points later. |

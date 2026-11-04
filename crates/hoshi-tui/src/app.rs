@@ -7080,6 +7080,53 @@ mod tests {
         );
     }
 
+    #[test]
+    fn planet_detail_shows_own_star_flux_for_a_colony_in_another_system() {
+        let mut state = GameState::new(1_000);
+        let coord = Coord {
+            galaxy: state.home.galaxy,
+            system: state.home.system + 1,
+            position: 4,
+        };
+        state.colonies.push(Colony {
+            coord,
+            kind: PlanetType::Rocky,
+            size: 120,
+            resources: Resources::ZERO,
+            buildings: Buildings {
+                solar_plant: 1,
+                ..Buildings::default()
+            },
+            fleet: Fleet::default(),
+            defences: hoshi_core::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: std::collections::BTreeMap::new(),
+        });
+        let same_slot_at_home = Coord {
+            galaxy: 1,
+            system: 1,
+            position: coord.position,
+        };
+        let want = format!(
+            "solar flux {:.0}%",
+            state.config.orbits.solar_flux(same_slot_at_home) * 100.0
+        );
+        let mut app = App::new(state);
+        app.open(Screen::Planet);
+        app.planet_index = 1;
+        assert_eq!(app.selected_coord(), coord);
+        let energy = app
+            .planet_info_lines()
+            .iter()
+            .map(|line| line.to_string())
+            .find(|line| line.contains("solar flux"))
+            .expect("energy row");
+        assert!(energy.contains(&want), "{energy} want {want}");
+        assert!(!energy.contains("solar flux 0%"), "{energy}");
+    }
+
     /// Home with stock and two small cargo ships, plus an empty new colony
     /// in the home system; the map cursor sits on the colony.
     fn app_with_new_colony() -> (App, Coord) {

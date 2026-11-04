@@ -45,9 +45,12 @@ impl Default for OrbitConfig {
 }
 
 impl OrbitConfig {
-    /// Solar flux relative to 1 AU, using the same radii as mission planning.
+    /// Solar flux relative to 1 AU from the planet's own star.
+    ///
+    /// Uses [`orbital_radius_m`], so slot N gets the same flux in every
+    /// system and galaxy.
     pub fn solar_flux(&self, coord: Coord) -> f64 {
-        (self.au_metres / heliocentric_radius_m(coord, self)).powi(2)
+        (self.au_metres / orbital_radius_m(coord, self)).powi(2)
     }
 
     pub fn ve_for_drive(&self, drive: &str) -> f64 {
@@ -293,13 +296,20 @@ pub struct Hohmann {
     pub semi_major: f64,
 }
 
-/// Heliocentric radius in metres for a map slot.
-///
-/// Slot 1 of system 1 in galaxy 1 is `inner_au`. Later slots add
-/// `au_per_slot`. Later systems add `system_au_base` then `system_au_step`.
-/// Later galaxies add `galaxy_au`.
-pub fn heliocentric_radius_m(coord: Coord, cfg: &OrbitConfig) -> f64 {
+/// Radius in metres from a slot's own star: slot 1 is `inner_au`, later
+/// slots add `au_per_slot`. System and galaxy are ignored. Star-light
+/// physics (solar flux) uses this.
+pub fn orbital_radius_m(coord: Coord, cfg: &OrbitConfig) -> f64 {
     let slot = f64::from(coord.position.saturating_sub(1));
+    (cfg.inner_au + slot * cfg.au_per_slot) * cfg.au_metres
+}
+
+/// Heliocentric radius in metres for a map slot, on one line out from the
+/// home star. Mission planning, fuel and light delay use this.
+///
+/// Starts from [`orbital_radius_m`]. Later systems add `system_au_base` then
+/// `system_au_step`. Later galaxies add `galaxy_au`.
+pub fn heliocentric_radius_m(coord: Coord, cfg: &OrbitConfig) -> f64 {
     let system = coord.system.saturating_sub(1);
     let galaxy = f64::from(coord.galaxy.saturating_sub(1));
     let system_au = if system == 0 {
@@ -307,8 +317,7 @@ pub fn heliocentric_radius_m(coord: Coord, cfg: &OrbitConfig) -> f64 {
     } else {
         cfg.system_au_base + f64::from(system - 1) * cfg.system_au_step
     };
-    let au = cfg.inner_au + slot * cfg.au_per_slot + system_au + galaxy * cfg.galaxy_au;
-    au * cfg.au_metres
+    orbital_radius_m(coord, cfg) + (system_au + galaxy * cfg.galaxy_au) * cfg.au_metres
 }
 
 pub fn mean_motion(mu: f64, radius_m: f64) -> f64 {
@@ -500,6 +509,29 @@ mod tests {
             (mars - 1.5).abs() < 1e-12,
             "bundled slot 6 should be 1.5 AU, got {mars}"
         );
+    }
+
+    #[test]
+    fn solar_flux_depends_only_on_the_slot_in_its_own_system() {
+        let cfg = OrbitConfig::default();
+        for position in [1, 4, 15] {
+            let home_system = cfg.solar_flux(Coord {
+                galaxy: 1,
+                system: 1,
+                position,
+            });
+            for (galaxy, system) in [(1, 2), (1, 9), (3, 1), (4, 7)] {
+                let far = cfg.solar_flux(Coord {
+                    galaxy,
+                    system,
+                    position,
+                });
+                assert!(
+                    (far - home_system).abs() < 1e-12,
+                    "{galaxy}:{system}:{position} flux {far} want {home_system}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -657,6 +657,43 @@ mod tests {
     }
 
     #[test]
+    fn fresh_colony_in_another_system_runs_on_its_own_star() {
+        let mut state = GameState::new(0);
+        for coord in [
+            Coord {
+                galaxy: state.home.galaxy,
+                system: state.home.system + 1,
+                position: 4,
+            },
+            Coord {
+                galaxy: state.home.galaxy + 1,
+                system: 3,
+                position: 4,
+            },
+        ] {
+            state.colonies.push(Colony {
+                coord,
+                kind: PlanetType::Rocky,
+                size: 120,
+                resources: Resources::ZERO,
+                buildings: Buildings {
+                    metal_mine: 1,
+                    solar_plant: 1,
+                    ..Buildings::default()
+                },
+                fleet: Fleet::default(),
+                defences: crate::DefenceGrid::default(),
+                build_queue: Vec::new(),
+                ship_queue: Vec::new(),
+                rare: None,
+                goods: BTreeMap::new(),
+            });
+            let balance = state.energy_balance_at(coord).unwrap();
+            assert!(balance > 0.0, "{coord} balance {balance}");
+        }
+    }
+
+    #[test]
     fn input_shortage_is_the_limiter() {
         let mut cfg = test_config();
         cfg.chains = smelt_only();
