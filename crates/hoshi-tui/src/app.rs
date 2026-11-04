@@ -108,6 +108,8 @@ struct DispatchForm {
     cargo: Resources,
     selected: usize,
     mission: Mission,
+    /// The player cycled the mission; ship changes no longer pick it.
+    mission_picked: bool,
 }
 
 impl DispatchForm {
@@ -118,6 +120,7 @@ impl DispatchForm {
             cargo: Resources::ZERO,
             selected: 0,
             mission,
+            mission_picked: false,
         }
     }
 
@@ -2610,11 +2613,35 @@ impl App {
         let have = self.state.fleet.get(kind);
         let cur = form.ships.get(kind);
         let next = (cur as i32 + delta).clamp(0, have as i32) as u32;
+        let mut ships = form.ships;
         if next > cur {
-            form.ships.add(kind, next - cur);
+            ships.add(kind, next - cur);
         } else {
-            form.ships.saturating_sub(kind, cur - next);
+            ships.saturating_sub(kind, cur - next);
         }
+        let (dest, mission) = (form.dest, form.mission);
+        // A mission the player picked stays; the default follows the ships.
+        let mission = if form.mission_picked {
+            mission
+        } else {
+            self.default_dispatch_mission(dest, ships)
+                .unwrap_or(mission)
+        };
+        if let Some(form) = self.dispatch.as_mut() {
+            form.ships = ships;
+            form.mission = mission;
+        }
+    }
+
+    /// The mission dispatch to `dest` starts on for `ships`: the first fit,
+    /// except that probes alone spy wherever spying fits.
+    fn default_dispatch_mission(&self, dest: Coord, ships: Fleet) -> Option<Mission> {
+        let missions = self.dispatch_missions(dest);
+        let probes_only = ships.total() > 0 && ships.total() == ships.get(ShipKind::EspionageProbe);
+        if probes_only && missions.contains(&Mission::Spy) {
+            return Some(Mission::Spy);
+        }
+        missions.first().copied()
     }
 
     fn activate_map(&mut self, now_unix: u64) {
@@ -2735,6 +2762,7 @@ impl App {
             .unwrap_or(0);
         if let Some(form) = self.dispatch.as_mut() {
             form.mission = missions[(at + 1) % missions.len()];
+            form.mission_picked = true;
             // Leaving transport hides the cargo rows.
             form.selected = form.selected.min(form.rows() - 1);
         }
@@ -4243,6 +4271,9 @@ fn report_overlay_lines(state: &GameState, reports: &[&SpyReport], now: u64) -> 
         }
         if let Some(garrison) = report.garrison {
             lines.push(Line::from(format!("garrison {garrison}")));
+        }
+        if let Some(tier) = report.lacks(&state.config.espionage) {
+            lines.push(Line::from(format!("too few probes for {tier}")));
         }
     }
     lines.push(Line::from("Enter closes"));
@@ -7092,7 +7123,7 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_attacks_an_outpost_and_space_switches_to_spy() {
+    fn dispatch_attacks_an_outpost_and_probes_alone_spy() {
         let dest = Coord {
             galaxy: 1,
             system: 1,
@@ -7119,10 +7150,36 @@ mod tests {
 
         let mut app = App::new(spare);
         open_dispatch(&mut app, dest, ShipKind::EspionageProbe, 1);
-        app.handle_key(KeyCode::Char(' '), 1_000);
         assert_eq!(app.dispatch.unwrap().mission, Mission::Spy);
         app.handle_key(KeyCode::Enter, 1_000);
         assert!(app.state.missions[0].spy, "{}", app.status);
+    }
+
+    #[test]
+    fn a_picked_dispatch_mission_survives_ship_changes() {
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 2,
+        };
+        let mut state = GameState::new(1_000);
+        state.fleet.add(ShipKind::LightFighter, 1);
+        state.fleet.add(ShipKind::EspionageProbe, 1);
+        let mut defences = Fleet::default();
+        defences.add(ShipKind::LightFighter, 1);
+        outpost_at(&mut state, dest, defences);
+        let mut app = App::new(state);
+        open_dispatch(&mut app, dest, ShipKind::LightFighter, 1);
+        assert_eq!(app.dispatch.unwrap().mission, Mission::Attack);
+        app.handle_key(KeyCode::Char(' '), 1_000);
+        assert_eq!(app.dispatch.unwrap().mission, Mission::Spy);
+        let form = app.dispatch.as_mut().unwrap();
+        form.selected = ShipKind::ALL
+            .iter()
+            .position(|k| *k == ShipKind::EspionageProbe)
+            .unwrap();
+        app.handle_key(KeyCode::Char('+'), 1_000);
+        assert_eq!(app.dispatch.unwrap().mission, Mission::Spy);
     }
 
     #[test]

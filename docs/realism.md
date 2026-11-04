@@ -197,6 +197,7 @@ silent extra departure; they extend this list.
 | Passive rival sensors, the moon phalanx's raid contact, and its hull count on another tenant's inbound shard raid stamp light delay on a noisy present-time glance | Reconstructing the past light cone would store a second empire history. |
 | No n-body gravity, no eclipses | Catch-up must stay deterministic and fast. |
 | Abstract flight units and ship `speed` points | Existing fleets already fly; a documented scale can replace the points later. |
+| A probe report on an outpost travels home no later than the probe that carried it | Abstract flight can outrun light-time; intel must not wait days after the probe is parked. A wave destroyed on site, and a shard report on another tenant, still wait for light delay. |
 | Circular coplanar orbits, mean anomaly 0 at unix epoch | Catch-up stays a closed-form Hohmann estimate, not an integrator. |
 | Synodic windows and coast times share `coast_compress` | Real Hohmann months become minutes; inner hops stay shorter than outer hops. |
 | High-energy is a Hohmann scale factor, not a Lambert solver | One extra burn multiplier; still two burns and a coast. Windows use the shortened coast with the same 180° lead. |

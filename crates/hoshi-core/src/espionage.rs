@@ -105,7 +105,8 @@ pub struct SpyReport {
     /// `probe` for a spy wave; `sensor` for a passive rival glance.
     pub source: String,
     pub observed_at: u64,
-    /// Unix time the reading becomes visible at home (observed_at plus light delay).
+    /// Unix time the reading becomes visible at home: observed_at plus light
+    /// delay, or the probes' return home when that is sooner.
     pub arrives_at: u64,
     pub confidence: f64,
     /// Internal: the snapshot was biased after detection. CLI/TUI never print this flag.
@@ -124,6 +125,24 @@ impl SpyReport {
     /// Waiting for the shard host to read another tenant's planet.
     pub fn pending(&self) -> bool {
         self.arrives_at == PENDING_ARRIVAL
+    }
+
+    /// The next tier id when this report reveals no field at all, so the
+    /// log and report can say what the wave was too small to read.
+    pub fn lacks<'a>(&self, cfg: &'a EspionageConfig) -> Option<&'a str> {
+        let revealed = self.resources.is_some()
+            || self.fleet.is_some()
+            || self.defences.is_some()
+            || self.garrison.is_some();
+        if revealed {
+            return None;
+        }
+        let won = cfg.tiers.iter().find(|t| t.id == self.tier)?;
+        cfg.tiers
+            .iter()
+            .filter(|t| t.min_score > won.min_score)
+            .min_by(|a, b| a.min_score.total_cmp(&b.min_score))
+            .map(|t| t.id.as_str())
     }
 }
 

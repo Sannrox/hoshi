@@ -4762,7 +4762,9 @@ impl GameState {
         if self.cheats.god_mode {
             outcome.probes_lost = 0;
         }
-        // Outposts have no parked visiting fleet; orbital ships live in `defences`.
+        // Outposts hold no resource stock and no parked visiting fleet
+        // (orbital ships live in `defences`), so those readings are an
+        // honest zero.
         let truth = match self.outpost(dest) {
             Some(outpost) => Some(SpyTruth {
                 kind: Some(outpost.kind),
@@ -4814,17 +4816,26 @@ impl GameState {
                 ),
             ),
         }
-        self.spy_reports.push(report);
         if !self.cheats.god_mode {
             self.missions[index]
                 .ships
                 .saturating_sub(ShipKind::EspionageProbe, outcome.probes_lost);
         }
-        if self.missions[index].ships.is_empty() {
-            self.missions.remove(index);
-            return true;
+        let gone = self.missions[index].ships.is_empty();
+        // Surviving ships carry the reading home; it is visible no later
+        // than they land. A wave destroyed on site leaves only the light
+        // signal, and a pending tenant report keeps the light delay the
+        // shard host stamps when it fills it. The Return leg the caller
+        // starts lasts `outbound_secs`.
+        if !gone && !report.pending() {
+            let home_at = done_at.saturating_add(self.missions[index].outbound_secs);
+            report.arrives_at = report.arrives_at.min(home_at);
         }
-        false
+        self.spy_reports.push(report);
+        if gone {
+            self.missions.remove(index);
+        }
+        gone
     }
 
     /// Noisy readings of `truth` into `report`, gated by its tier. Error is
@@ -4906,7 +4917,11 @@ impl GameState {
                 ..SpyTruth::default()
             },
         );
-        let (at, text, detected) = (report.arrives_at, spy_event_text(&report), report.detected);
+        let (at, text, detected) = (
+            report.arrives_at,
+            spy_event_text(&report, &self.config.espionage),
+            report.detected,
+        );
         self.spy_reports.insert(pos, report);
         if at <= self.last_tick_unix {
             self.deliver_spy_line(at, text, detected);
@@ -5744,7 +5759,11 @@ impl GameState {
             .cloned()
             .collect();
         for report in due {
-            self.deliver_spy_line(now, spy_event_text(&report), report.detected);
+            self.deliver_spy_line(
+                now,
+                spy_event_text(&report, &self.config.espionage),
+                report.detected,
+            );
         }
     }
 
@@ -7825,15 +7844,19 @@ impl Default for SpyTruth {
     }
 }
 
-fn spy_event_text(report: &SpyReport) -> String {
+fn spy_event_text(report: &SpyReport, cfg: &crate::EspionageConfig) -> String {
     let detected = if report.detected { "yes" } else { "no" };
     let place = if report.kind.is_some() {
         "outpost"
     } else {
         "planet"
     };
+    let lacks = report
+        .lacks(cfg)
+        .map(|tier| format!(". too few probes for {tier}"))
+        .unwrap_or_default();
     format!(
-        "{place} {}: spy. score {:.0} {}. detected {detected}. lost {}/{}",
+        "{place} {}: spy. score {:.0} {}. detected {detected}. lost {}/{}{lacks}",
         report.target, report.score, report.tier, report.probes_lost, report.probes_sent
     )
 }
@@ -12425,21 +12448,13 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         let dest = low.outposts[0].coord;
         low.fleet.add(ShipKind::EspionageProbe, 1);
         low.launch_spy(probes(1), dest, 100, 0).unwrap();
-        let arrives = low.missions[0].phase_ends_at;
-        low.catch_up(arrives);
-        let delay = crate::light_delay_secs(low.home, dest, &low.config.orbits);
-        if delay > 0 {
-            assert!(low.latest_report(dest).is_none());
-            low.catch_up(arrives.saturating_add(delay));
-        }
+        fly_home(&mut low);
         let one = low.latest_report(dest).expect("report");
         assert_eq!(one.tier, "activity");
         assert!(one.resources.is_none());
         assert!(one.garrison.is_none());
         assert!(one.formation.is_none());
         assert!(one.stance.is_none());
-        assert_eq!(one.age_secs(low.last_tick_unix), delay);
-        fly_home(&mut low);
         let aged = low.latest_report(dest).expect("report");
         assert!(aged.age_secs(low.last_tick_unix) > 0);
 
@@ -12452,17 +12467,6 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         high.fleet.add(ShipKind::EspionageProbe, 1);
         high.launch_spy(probes(1), dest, 100, 0).unwrap();
         fly_home(&mut high);
-        let delay = crate::light_delay_secs(high.home, dest, &high.config.orbits);
-        if delay > 0 {
-            assert!(
-                high.visible_events(crate::Actor::Player)
-                    .iter()
-                    .all(|e| !e.text.contains("spy")),
-                "{:?}",
-                high.visible_events(crate::Actor::Player)
-            );
-        }
-        deliver_intel(&mut high);
         let full = high.latest_report(dest).expect("report");
         assert_eq!(full.tier, "garrison");
         assert_eq!(full.resources, Some(Resources::ZERO));
@@ -12478,6 +12482,70 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
             "{:?}",
             high.events
         );
+    }
+
+    #[test]
+    fn probe_report_arrives_with_the_probe_before_light_delay() {
+        let mut cfg = outpost_config();
+        cfg.espionage.destroy_chance = 0.0;
+        cfg.espionage.detect_base = 0.0;
+        cfg.espionage.detect_per_probe = 0.0;
+        let mut state = GameState::with_config(0, cfg);
+        state.resources.deuterium = 10_000.0;
+        let dest = state.outposts[0].coord;
+        state.fleet.add(ShipKind::EspionageProbe, 1);
+        state.launch_spy(probes(1), dest, 100, 0).unwrap();
+        let observed = state.missions[0].phase_ends_at + state.missions[0].hold_secs;
+        let home_at = observed + state.missions[0].outbound_secs;
+        let delay = crate::light_delay_secs(state.home, dest, &state.config.orbits);
+        assert!(observed + delay > home_at, "light must lose the race");
+        state.catch_up(home_at - 1);
+        assert!(state.latest_report(dest).is_none());
+        state.catch_up(home_at);
+        assert!(state.missions.is_empty());
+        assert_eq!(state.fleet.get(ShipKind::EspionageProbe), 1);
+        let report = state
+            .latest_report(dest)
+            .expect("report home with the probe");
+        assert_eq!(report.tier, "activity");
+        assert_eq!(report.arrives_at, home_at);
+        let line = state
+            .events
+            .iter()
+            .find(|e| e.text.contains(": spy."))
+            .expect("spy line");
+        assert_eq!(line.at, home_at);
+        assert!(
+            line.text.ends_with("too few probes for resources"),
+            "{}",
+            line.text
+        );
+    }
+
+    #[test]
+    fn destroyed_probe_report_still_waits_for_light_delay() {
+        let mut cfg = outpost_config();
+        cfg.espionage.destroy_chance = 1.0;
+        cfg.espionage.detect_base = 1.0;
+        cfg.espionage.detect_per_probe = 0.0;
+        cfg.espionage.detect_per_level = 0.0;
+        let mut state = GameState::with_config(0, cfg);
+        state.resources.deuterium = 10_000.0;
+        let dest = state.outposts[0].coord;
+        state.fleet.add(ShipKind::EspionageProbe, 1);
+        state.launch_spy(probes(1), dest, 100, 0).unwrap();
+        let observed = state.missions[0].phase_ends_at + state.missions[0].hold_secs;
+        let home_at = observed + state.missions[0].outbound_secs;
+        let delay = crate::light_delay_secs(state.home, dest, &state.config.orbits);
+        assert!(observed + delay > home_at);
+        state.catch_up(home_at);
+        assert!(state.missions.is_empty());
+        assert_eq!(state.fleet.get(ShipKind::EspionageProbe), 0);
+        assert_eq!(state.spy_reports[0].probes_lost, 1);
+        assert_eq!(state.spy_reports[0].arrives_at, observed + delay);
+        assert!(state.latest_report(dest).is_none());
+        state.catch_up(observed + delay);
+        assert!(state.latest_report(dest).is_some());
     }
 
     #[test]
@@ -12521,7 +12589,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         assert!(delay > 0);
         state.fleet.add(ShipKind::EspionageProbe, 1);
         state.launch_spy(probes(1), dest, 100, 0).unwrap();
-        fly_home(&mut state);
+        state.catch_up(state.missions[0].phase_ends_at);
         assert!(state.latest_report(dest).is_none());
         assert!(
             state.events.iter().all(|event| !event.text.contains("spy")),
