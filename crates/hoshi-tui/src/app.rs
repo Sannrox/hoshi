@@ -1493,9 +1493,13 @@ impl App {
         spans
     }
 
+    /// Header cells for the selected planet: stock, cap and rate per
+    /// resource, then its power balance and heat.
     fn metrics(&self, width: u16) -> Vec<Metric> {
         let t = &self.theme;
         let s = &self.state;
+        let coord = self.selected_coord();
+        let stockpile = s.resources_at(coord).copied().unwrap_or(s.resources);
         let wide = width / 8 >= 14;
         let rate_span = |rate: f64| {
             let style = if rate < 0.0 {
@@ -1517,9 +1521,9 @@ impl App {
         let mut out: Vec<Metric> = ResourceKind::ALL
             .iter()
             .map(|&kind| {
-                let stock = s.resources.get(kind);
-                let cap = s.storage_cap(kind);
-                let rate = s.production_per_hour(kind);
+                let stock = stockpile.get(kind);
+                let cap = s.storage_cap_at(coord, kind);
+                let rate = s.production_per_hour_at(coord, kind).unwrap_or(0.0);
                 let fill = if cap > 0.0 { stock / cap } else { 0.0 };
                 let intent = if fill >= 0.95 {
                     Intent::Warning
@@ -1551,8 +1555,8 @@ impl App {
                 }
             })
             .collect();
-        let waste = s.waste_home();
-        let balance = s.energy_balance();
+        let waste = s.waste_at(coord).unwrap_or_else(|| s.waste_home());
+        let balance = s.energy_balance_at(coord).unwrap_or(0.0);
         let energy_style = if balance < 0.0 {
             t.intent(Intent::Danger)
         } else {
@@ -1569,16 +1573,16 @@ impl App {
             0.0
         };
         if wide {
-            let energy = s.production_report();
+            let place = if coord == s.home { " home" } else { " colony" };
             out.push(Metric {
                 label: "ENERGY".into(),
                 value: Line::from(vec![
                     Span::styled(format!("{balance:+.0}"), energy_style),
-                    Span::styled(" home", t.label()),
+                    Span::styled(place, t.label()),
                 ]),
                 // One story per state: how many planets (home included) run
-                // short, or else how much of the supply is drawn. Compact
-                // numbers keep every digit inside the cell.
+                // short, or else how much of this planet's supply is drawn.
+                // Compact numbers keep every digit inside the cell.
                 foot: match s
                     .owned_coords()
                     .into_iter()
@@ -1588,8 +1592,8 @@ impl App {
                     0 => Line::styled(
                         format!(
                             "{}/{} used",
-                            ui::spans::compact(energy.energy_demand),
-                            ui::spans::compact(energy.energy_supply)
+                            ui::spans::compact(s.energy_consumed_at(coord)),
+                            ui::spans::compact(s.energy_produced_at(coord).unwrap_or(0.0))
                         ),
                         t.label(),
                     ),
@@ -1723,8 +1727,12 @@ impl App {
         }
     }
 
+    /// The selected planet's waste warning above Colony hub windows.
     fn window_callouts(&self, hub: Hub) -> Vec<Line<'static>> {
-        let waste = self.state.waste_home();
+        let waste = self
+            .state
+            .waste_at(self.selected_coord())
+            .unwrap_or_else(|| self.state.waste_home());
         let warn = self.state.config.waste.warn_ratio;
         if hub != Hub::Colony
             || self.screen == Screen::Planet
@@ -1740,7 +1748,7 @@ impl App {
         let mut lines = ui::panels::Callout {
             theme: &self.theme,
             intent,
-            title: Line::from(waste_header_line(&self.state)),
+            title: Line::from(waste_header_line(&self.state, &waste)),
             detail: None,
         }
         .lines();
@@ -4118,8 +4126,7 @@ impl App {
     }
 }
 
-fn waste_header_line(state: &GameState) -> String {
-    let waste = state.waste_home();
+fn waste_header_line(state: &GameState, waste: &hoshi_core::WasteReport) -> String {
     let warn = state.config.waste.warn_ratio;
     let unrest = waste.unrest_factor(state.config.waste.unrest_per_overflow);
     if waste.overflowing() {
@@ -7015,6 +7022,59 @@ mod tests {
         (app.map_galaxy, app.map_system, app.map_position) =
             (dest.galaxy, dest.system, dest.position);
         (app, dest)
+    }
+
+    #[test]
+    fn header_follows_the_selected_planet() {
+        let (mut app, dest) = app_with_new_colony();
+        let colony = &mut app.state.colonies[0];
+        colony.resources = Resources::from_parts(345.0, 67.0, 8.0);
+        colony.buildings.solar_plant = 4;
+        colony.buildings.metal_storage = 2;
+        let cell = |app: &App, label: &str| -> String {
+            let metric = app
+                .metrics(160)
+                .into_iter()
+                .find(|m| m.label == label)
+                .unwrap_or_else(|| panic!("no {label} cell"));
+            metric.value.to_string()
+        };
+        let home = app.state.home;
+        let energy = |coord| {
+            let place = if coord == home { "home" } else { "colony" };
+            format!(
+                "{:+.0} {place}",
+                app.state.energy_balance_at(coord).unwrap()
+            )
+        };
+        let (home_energy, colony_energy) = (energy(home), energy(dest));
+        assert_ne!(home_energy, colony_energy);
+        let colony_cap = ui::spans::compact(app.state.storage_cap_at(dest, ResourceKind::Iron));
+        assert_ne!(
+            colony_cap,
+            ui::spans::compact(app.state.storage_cap(ResourceKind::Iron))
+        );
+
+        app.open(Screen::Planet);
+        app.planet_index = 0;
+        assert!(
+            cell(&app, "IRON").starts_with("12"),
+            "{}",
+            cell(&app, "IRON")
+        );
+        assert_eq!(cell(&app, "ENERGY"), home_energy);
+
+        app.planet_index = 1;
+        assert_eq!(app.selected_coord(), dest);
+        assert_eq!(cell(&app, "IRON"), format!("345 / {colony_cap}"));
+        assert!(cell(&app, "SILICON").starts_with("67 / "));
+        assert_eq!(cell(&app, "ENERGY"), colony_energy);
+        let heat = app.state.waste_at(dest).unwrap();
+        assert_eq!(
+            cell(&app, "HEAT"),
+            format!("{:.0} / {:.0}", heat.heat_load, heat.heat_sink)
+        );
+        assert!(render_text(&app, 160, 40).contains(&dest.to_string()));
     }
 
     /// Step the transport cargo row for `kind` up to `amount` with `+`.

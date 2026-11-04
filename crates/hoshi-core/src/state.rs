@@ -3507,6 +3507,18 @@ impl GameState {
                 .sum::<f64>()
     }
 
+    /// Net hourly rate of `kind` on one owned planet (home or a colony);
+    /// `None` for a coord we do not own.
+    pub fn production_per_hour_at(&self, coord: Coord, kind: ResourceKind) -> Option<f64> {
+        if coord == self.home {
+            return Some(self.production_per_hour(kind));
+        }
+        self.colonies
+            .iter()
+            .find(|colony| colony.coord == coord)
+            .map(|colony| self.colony_production_per_hour(colony, kind))
+    }
+
     fn colony_production_per_hour(&self, colony: &Colony, kind: ResourceKind) -> f64 {
         let buildings = self
             .operational_buildings_at(colony.coord)
@@ -6005,7 +6017,8 @@ impl GameState {
             * self.prod_boost_mult().max(0.0)
     }
 
-    pub(crate) fn storage_cap_at(&self, coord: Coord, kind: ResourceKind) -> f64 {
+    /// Storage cap for `kind` on an owned planet; 0 for a coord we do not own.
+    pub fn storage_cap_at(&self, coord: Coord, kind: ResourceKind) -> f64 {
         let Some(buildings) = self.buildings_at(coord) else {
             return 0.0;
         };
@@ -7763,20 +7776,7 @@ impl GameState {
     }
 
     pub fn storage_cap(&self, kind: ResourceKind) -> f64 {
-        match kind {
-            ResourceKind::Iron | ResourceKind::RareEarths => self
-                .config
-                .metal_storage
-                .capacity(self.buildings.metal_storage),
-            ResourceKind::Silicon => self
-                .config
-                .crystal_storage
-                .capacity(self.buildings.crystal_storage),
-            ResourceKind::Deuterium | ResourceKind::WaterIce | ResourceKind::Helium3 => self
-                .config
-                .deuterium_storage
-                .capacity(self.buildings.deuterium_storage),
-        }
+        self.storage_cap_at(self.home, kind)
     }
 
     fn base_production_per_hour(&self, kind: ResourceKind) -> f64 {
