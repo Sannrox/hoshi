@@ -122,7 +122,7 @@ puts a scan seconds away. Fuel is `sum(count * fuel) * distance / fuel_distance 
 speed%`. A test holds the fastest ship's neighbouring hop (probes excepted, base
 speeds) at `pacing.min_flight_secs` (3 minutes) or more and keeps slot, system and galaxy hops in that order.
 
-`[orbits]` is PlanMission only. `mu_star` and `au_metres` are SI. Slot 1 of system 1 sits at `inner_au` (1 AU in the bundle); each later slot adds `au_per_slot` (slot 6 is 1.5 AU). Later systems add `system_au_base` then `system_au_step`; later galaxies add `galaxy_au`, so a cross-galaxy hop is larger than an in-system hop. `coast_compress` is game seconds per real coast second (synodic waits use the same factor). `kg_per_hull` / `kg_per_cargo` turn ship hull and cargo units into kilograms for the rocket equation; `m3_per_cargo` is payload volume. Exhaust velocity is per drive (`combustion_ve`, `impulse_ve`, `hyperspace_ve`). Gravity-well burns are per planet type. `high_energy_dv` / `high_energy_time` scale Hohmann; `assist_dv` discounts it when a body sits between the two radii. `window_half_secs` and `window_count` size the listed launch windows; `turnaround_secs` books the vehicle after arrival. Existing `fleet send` still uses `[flight]`.
+`[orbits]` is PlanMission plus solar flux. `mu_star` and `au_metres` are SI. Slot 1 of system 1 sits at `inner_au` (1 AU in the bundle); each later slot adds `au_per_slot` (slot 6 is 1.5 AU). Later systems add `system_au_base` then `system_au_step`; later galaxies add `galaxy_au`, so a cross-galaxy hop is larger than an in-system hop. Solar flux ignores the system and galaxy offsets. `coast_compress` is game seconds per real coast second (synodic waits use the same factor). `kg_per_hull` / `kg_per_cargo` turn ship hull and cargo units into kilograms for the rocket equation; `m3_per_cargo` is payload volume. Exhaust velocity is per drive (`combustion_ve`, `impulse_ve`, `hyperspace_ve`). Gravity-well burns are per planet type. `high_energy_dv` / `high_energy_time` scale Hohmann; `assist_dv` discounts it when a body sits between the two radii. `window_half_secs` and `window_count` size the listed launch windows; `turnaround_secs` books the vehicle after arrival. Existing `fleet send` still uses `[flight]`.
 
 ## Daily goals
 
@@ -205,8 +205,10 @@ when a species or path is more than `dominance_max` faster than the median, or
 of the fastest finishes. Thresholds live in `balance.toml`.
 
 
-Solar output uses the orbital radius from `[orbits]`: rated output times
-`(1 AU / radius)^2`, followed by technology and planet modifiers. At 1 AU
+Solar output uses the in-system orbital radius from `[orbits]`
+(`inner_au + (position - 1) * au_per_slot`, no system or galaxy offset): rated
+output times `(1 AU / radius)^2`, followed by technology and planet modifiers.
+Slot N gets the same flux in every system. At 1 AU
 output is unchanged; at 2 AU it is 25%, and at 2.5 AU it is 16%. Ice worlds
 retain their additional 10% penalty. Existing colonies use this rule on load.
 
