@@ -253,6 +253,8 @@ impl ChiseiStorage {
         let tmp = dest.with_extension("toml.tmp");
         std::fs::write(&tmp, encode_graph(&self.graph))?;
         std::fs::rename(&tmp, dest)?;
+        #[cfg(test)]
+        crate::persist_ops::count_graph();
         Ok(())
     }
 
@@ -456,6 +458,8 @@ fn persist_sqlite(path: &Path, state: &GameState) -> Result<(), SaveError> {
     }
     std::fs::rename(&tmp, path)?;
     cleanup_sqlite(&tmp);
+    #[cfg(test)]
+    crate::persist_ops::count_sqlite();
     Ok(())
 }
 
@@ -1105,80 +1109,139 @@ mod tests {
         cleanup_dir(&path);
     }
 
-    /// CPU time of this thread, so sibling tests do not count against the budget.
-    #[cfg(unix)]
-    fn thread_cpu_time() -> std::time::Duration {
-        let mut ts = libc::timespec {
-            tv_sec: 0,
-            tv_nsec: 0,
-        };
-        // SAFETY: `ts` is a valid out-pointer for the duration of the call.
-        unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
-        std::time::Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
+    /// Persist ops from a 50-cycle soak: SQLite saves plus Chisei graph writes.
+    #[derive(Clone, Copy, Debug)]
+    struct PersistWork {
+        sqlite_saves: u32,
+        graph_writes: u32,
     }
 
-    /// Thread CPU time for 50 catch-up, build and save cycles, persisted
-    /// through Chisei or, as the baseline, the default SQLite backend.
-    #[cfg(unix)]
-    fn fifty_build_cycles(chisei: bool) -> std::time::Duration {
+    impl PersistWork {
+        fn units(self) -> u64 {
+            u64::from(self.sqlite_saves.saturating_add(self.graph_writes))
+        }
+    }
+
+    /// Chisei persists sqlite plus graph once per cycle (2x SQLite). Doubling
+    /// that persist path is 4x SQLite, which this cap trips.
+    const PERSIST_WORK_CAP: f64 = 3.0;
+
+    fn persist_work_ratio(chisei: PersistWork, sqlite: PersistWork) -> f64 {
+        chisei.units() as f64 / (sqlite.units() as f64).max(1.0)
+    }
+
+    fn chisei_persist_exceeds_sqlite(chisei: PersistWork, sqlite: PersistWork) -> bool {
+        persist_work_ratio(chisei, sqlite) >= PERSIST_WORK_CAP
+    }
+
+    fn soak_build_intent(i: u32) -> Intent {
+        let building = if i.is_multiple_of(2) {
+            BuildingKind::MetalMine
+        } else {
+            BuildingKind::CrystalMine
+        };
+        Intent::Build {
+            planet: Coord::HOME,
+            building,
+            actor: Actor::Player,
+        }
+    }
+
+    /// Persist work for 50 catch-up, build and save cycles. Counts
+    /// `persist_sqlite` and `write_graph` (and SQLite `save`) at those
+    /// functions, not CPU time or outer call sites.
+    fn fifty_build_cycles(chisei: bool, extra_chisei_saves: u32) -> PersistWork {
         use crate::Storage;
+        crate::persist_ops::reset();
         let mut cfg = BalanceConfig::default();
         cfg.raid.enabled = false;
         let mut state = GameState::with_config(1_000, cfg);
         state.resources.iron = 500_000.0;
         state.resources.silicon = 500_000.0;
         state.resources.deuterium = 500_000.0;
-        let chisei_path = unique_chisei("soak");
-        let sqlite_path = crate::unique_temp_path("hoshi-soak", "sqlite");
-        let mut chi = ChiseiStorage::open(&chisei_path).unwrap();
-        let mut sql = crate::SqliteStorage::open(&sqlite_path).unwrap();
         let clock = FakeClock::new(1_000);
-        let started = thread_cpu_time();
-        for i in 0..50u32 {
-            clock.advance(60);
-            let now = clock.now_unix();
-            state.catch_up(now);
-            let building = if i.is_multiple_of(2) {
-                BuildingKind::MetalMine
-            } else {
-                BuildingKind::CrystalMine
-            };
-            let intent = Intent::Build {
-                planet: Coord::HOME,
-                building,
-                actor: Actor::Player,
-            };
-            if chisei {
-                if chi.apply_intent(&mut state, intent, now).is_err() {
-                    chi.save(&state).unwrap();
+        if chisei {
+            let path = unique_chisei("soak");
+            let mut store = ChiseiStorage::open(&path).unwrap();
+            for i in 0..50u32 {
+                clock.advance(60);
+                let now = clock.now_unix();
+                state.catch_up(now);
+                let intent = soak_build_intent(i);
+                if store.apply_intent(&mut state, intent, now).is_err() {
+                    store.save(&state).unwrap();
                 }
-            } else {
+                assert!(
+                    store.graph_file(store.committed).is_file(),
+                    "chisei save must publish graph.{}",
+                    store.committed
+                );
+                assert!(
+                    store.state_file(store.committed).is_file(),
+                    "chisei save must publish state.{}",
+                    store.committed
+                );
+                for _ in 0..extra_chisei_saves {
+                    store.save(&state).unwrap();
+                }
+            }
+            drop(store);
+            cleanup_dir(&path);
+        } else {
+            let path = crate::unique_temp_path("hoshi-soak", "sqlite");
+            let mut store = crate::SqliteStorage::open(&path).unwrap();
+            for i in 0..50u32 {
+                clock.advance(60);
+                let now = clock.now_unix();
+                state.catch_up(now);
+                let intent = soak_build_intent(i);
                 if let Ok(proposal) = hoshi_core::propose(&state, &intent, now) {
                     let _ = hoshi_core::apply(&mut state, &proposal, now);
                 }
-                sql.save(&state).unwrap();
+                store.save(&state).unwrap();
+                assert!(path.is_file(), "sqlite save must write {path:?}");
             }
+            drop(store);
+            cleanup_sqlite(&path);
         }
-        let elapsed = thread_cpu_time().saturating_sub(started);
-        drop((chi, sql));
-        cleanup_dir(&chisei_path);
-        cleanup_sqlite(&sqlite_path);
-        elapsed
+        PersistWork {
+            sqlite_saves: crate::persist_ops::sqlite_saves(),
+            graph_writes: crate::persist_ops::graph_writes(),
+        }
     }
 
-    /// Chisei's graph projection and write cost about 9.5x a plain SQLite
-    /// save on the same cycles. The guard is a ratio measured on this
-    /// thread, so a slower runner scales both sides; it trips if that work
-    /// roughly doubles.
+    /// Chisei writes sqlite plus a graph revision each cycle. The guard is a
+    /// persist-work ratio, so neighbouring test load cannot trip it; it still
+    /// trips if that persist work doubles.
     #[test]
-    #[cfg(unix)]
-    fn apply_save_stays_within_twenty_times_sqlite_for_fifty() {
-        let sqlite = fifty_build_cycles(false);
-        let chisei = fifty_build_cycles(true);
-        let ratio = chisei.as_secs_f64() / sqlite.as_secs_f64().max(1e-6);
+    fn apply_save_stays_within_three_times_sqlite_persist_work_for_fifty() {
+        let sqlite = fifty_build_cycles(false, 0);
+        let chisei = fifty_build_cycles(true, 0);
+        assert_eq!(sqlite.sqlite_saves, 50);
+        assert_eq!(sqlite.graph_writes, 0);
+        assert_eq!(chisei.sqlite_saves, 50);
+        assert_eq!(chisei.graph_writes, 50);
+        let ratio = persist_work_ratio(chisei, sqlite);
         assert!(
-            ratio < 20.0,
-            "50 Chisei cycles took {chisei:?}, {ratio:.1}x the SQLite cycles ({sqlite:?})"
+            !chisei_persist_exceeds_sqlite(chisei, sqlite),
+            "50 Chisei persist units {}, {ratio:.1}x the SQLite units {}",
+            chisei.units(),
+            sqlite.units()
+        );
+    }
+
+    #[test]
+    fn apply_save_persist_work_trips_when_chisei_work_doubles() {
+        let sqlite = fifty_build_cycles(false, 0);
+        let doubled = fifty_build_cycles(true, 1);
+        assert_eq!(doubled.sqlite_saves, 100);
+        assert_eq!(doubled.graph_writes, 100);
+        let ratio = persist_work_ratio(doubled, sqlite);
+        assert!(
+            chisei_persist_exceeds_sqlite(doubled, sqlite),
+            "doubled Chisei persist units {} ({ratio:.1}x) should trip vs SQLite {}",
+            doubled.units(),
+            sqlite.units()
         );
     }
 }
