@@ -1973,6 +1973,35 @@ impl App {
         }
     }
 
+    /// Home raids store pirates as attacker. Player-launched fights store the
+    /// player's fleet as attacker. The report names you and pirates from that.
+    ///
+    /// Schema 50+ always stores `raid_plunder` on a home raid, including zero.
+    /// Pre-schema-50 raid logs have neither field and display as a player-launched
+    /// fight. A save column would be needed to recover those.
+    fn combat_replay_labels(log: &CombatLog) -> (&'static str, &'static str, &'static str) {
+        let player_defends = log.raid_plunder.is_some() || log.raid_defence.is_some();
+        let (attacker, defender) = if player_defends {
+            ("pirates", "you")
+        } else {
+            ("you", "pirates")
+        };
+        let winner = match log.report.winner {
+            CombatWinner::Attacker => attacker,
+            CombatWinner::Defender => defender,
+            CombatWinner::Draw => "draw",
+        };
+        (attacker, defender, winner)
+    }
+
+    fn side_intent(name: &str) -> Intent {
+        if name == "pirates" {
+            Intent::Danger
+        } else {
+            Intent::Success
+        }
+    }
+
     fn draw_replay(&self, frame: &mut Frame<'_>) {
         let Some(replay) = &self.replay else {
             return;
@@ -1981,11 +2010,7 @@ impl App {
         let n = report.frames.len().max(1);
         let idx = replay.frame.min(n - 1);
         let snap = &report.frames[idx];
-        let winner = match report.winner {
-            CombatWinner::Attacker => "pirates",
-            CombatWinner::Defender => "you",
-            CombatWinner::Draw => "draw",
-        };
+        let (attacker_name, defender_name, winner) = Self::combat_replay_labels(&replay.log);
         let t = &self.theme;
         let most = snap.attacker.total().max(snap.defender.total()).max(1) as f64;
         let side = |name: &str, n: u32, intent: Intent| {
@@ -2008,8 +2033,16 @@ impl App {
                 ),
             ]),
             Line::default(),
-            side("PIRATES", snap.attacker.total(), Intent::Danger),
-            side("YOU", snap.defender.total(), Intent::Success),
+            side(
+                &attacker_name.to_uppercase(),
+                snap.attacker.total(),
+                Self::side_intent(attacker_name),
+            ),
+            side(
+                &defender_name.to_uppercase(),
+                snap.defender.total(),
+                Self::side_intent(defender_name),
+            ),
         ];
         if snap.shots > 0 {
             lines.push(Line::from(format!(
@@ -2023,8 +2056,8 @@ impl App {
         // The report: who fought, what each side lost and what was taken.
         lines.push(Line::default());
         for (name, before, after) in [
-            ("pirates", report.attacker_before, report.attacker_after),
-            ("you", report.defender_before, report.defender_after),
+            (attacker_name, report.attacker_before, report.attacker_after),
+            (defender_name, report.defender_before, report.defender_after),
         ] {
             lines.push(Line::from(vec![
                 Span::styled(format!("{name:<9}"), t.label()),
@@ -4540,9 +4573,9 @@ fn building_deposits(state: &GameState, kind: BuildingKind, planet: Coord) -> Ve
 mod tests {
     use super::*;
     use hoshi_core::{
-        BalanceConfig, Buildings, Clock, Colony, Coord, DiplomacyConfig, FakeClock, Fleet,
-        GameState, MarketConfig, Outpost, PlanetType, RaidConfig, Resources, StoryCatalog, Vehicle,
-        VictoryPath, VictoryRecord,
+        BalanceConfig, Buildings, Clock, Colony, CombatFrame, CombatReport, Coord, DiplomacyConfig,
+        FakeClock, Fleet, GameState, MarketConfig, Outpost, PlanetType, RaidConfig, Resources,
+        StoryCatalog, Vehicle, VictoryPath, VictoryRecord,
     };
     use hoshi_storage::{load_state, open_save, save_state};
     use ratatui::Terminal;
@@ -5425,6 +5458,92 @@ mod tests {
         app.handle_key(KeyCode::Char('r'), 1_000);
         assert!(app.replay_active());
         assert!(app.away_hidden);
+    }
+
+    fn fighters(n: u32) -> Fleet {
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::LightFighter, n);
+        ships
+    }
+
+    /// Same shape `try_attack_at` stores: player is attacker, no raid plunder.
+    fn player_outpost_attack_log(player: u32, outpost: u32, winner: CombatWinner) -> CombatLog {
+        let attacker = fighters(player);
+        let defender = fighters(outpost);
+        CombatLog {
+            at: 1_000,
+            report: CombatReport {
+                rounds: 1,
+                attacker_before: attacker,
+                defender_before: defender,
+                attacker_after: attacker,
+                defender_after: Fleet::default(),
+                winner,
+                ground: None,
+                seed: 0,
+                frames: vec![CombatFrame {
+                    round: 1,
+                    attacker,
+                    defender,
+                    shots: 0,
+                    explosions: 0,
+                }],
+                layered: false,
+            },
+            raid_plunder: None,
+            raid_defence: None,
+        }
+    }
+
+    #[test]
+    fn combat_report_for_a_player_outpost_attack_labels_the_player_as_you() {
+        let mut state = GameState::new(1_000);
+        state
+            .combat_logs
+            .push(player_outpost_attack_log(20, 1, CombatWinner::Attacker));
+        let mut app = App::new(state);
+        app.handle_key(KeyCode::Char('r'), 1_000);
+        assert!(app.replay_active());
+        let text = render_text(&app, 80, 24);
+        assert!(text.contains("WINNER YOU"), "{text}");
+        assert!(!text.contains("WINNER PIRATES"), "{text}");
+        let you = text
+            .lines()
+            .find(|line| line.contains("you") && line.contains("light fighter"))
+            .unwrap_or("");
+        let pirates = text
+            .lines()
+            .find(|line| line.contains("pirates") && line.contains("light fighter"))
+            .unwrap_or("");
+        assert!(you.contains("20 light fighter"), "{you}\n{text}");
+        assert!(pirates.contains("1 light fighter"), "{pirates}\n{text}");
+    }
+
+    #[test]
+    fn combat_report_for_a_home_raid_still_labels_pirates_as_the_attacker() {
+        let mut state = GameState::new(1_000);
+        state.trigger_raid(1_000);
+        let log = state.combat_logs.last().unwrap();
+        assert!(log.raid_plunder.is_some());
+        assert_eq!(log.report.winner, CombatWinner::Attacker);
+        let pirate_fleet = log.report.attacker_before.label();
+        let player_fleet = log.report.defender_before.label();
+        state.story_pending = None;
+        let mut app = App::new(state);
+        app.handle_key(KeyCode::Char('r'), 1_000);
+        let text = render_text(&app, 80, 24);
+        assert!(text.contains("WINNER PIRATES"), "{text}");
+        assert!(!text.contains("WINNER YOU"), "{text}");
+        let pirates = text
+            .lines()
+            .find(|line| line.contains("pirates") && line.contains(&pirate_fleet))
+            .unwrap_or("");
+        let you = text
+            .lines()
+            .find(|line| line.contains("you") && line.contains(&player_fleet))
+            .unwrap_or("");
+        assert!(!pirates.is_empty(), "{text}");
+        assert!(!you.is_empty(), "{text}");
     }
 
     #[test]
