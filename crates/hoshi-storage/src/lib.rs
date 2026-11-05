@@ -30,6 +30,43 @@ pub(crate) fn unique_temp_path(stem: &str, ext: &str) -> PathBuf {
     std::env::temp_dir().join(format!("{stem}-{}-{nanos}-{n}.{ext}", std::process::id()))
 }
 
+/// Persist-op counters for tests. Thread-local so parallel tests stay isolated.
+#[cfg(test)]
+pub(crate) mod persist_ops {
+    use std::cell::Cell;
+
+    thread_local! {
+        static SQLITE: Cell<u32> = const { Cell::new(0) };
+        #[cfg(feature = "chisei")]
+        static GRAPH: Cell<u32> = const { Cell::new(0) };
+    }
+
+    #[cfg(feature = "chisei")]
+    pub(crate) fn reset() {
+        SQLITE.with(|c| c.set(0));
+        GRAPH.with(|c| c.set(0));
+    }
+
+    pub(crate) fn count_sqlite() {
+        SQLITE.with(|c| c.set(c.get() + 1));
+    }
+
+    #[cfg(feature = "chisei")]
+    pub(crate) fn count_graph() {
+        GRAPH.with(|c| c.set(c.get() + 1));
+    }
+
+    #[cfg(feature = "chisei")]
+    pub(crate) fn sqlite_saves() -> u32 {
+        SQLITE.with(|c| c.get())
+    }
+
+    #[cfg(feature = "chisei")]
+    pub(crate) fn graph_writes() -> u32 {
+        GRAPH.with(|c| c.get())
+    }
+}
+
 #[cfg(feature = "mikura")]
 mod mikura;
 
@@ -122,7 +159,10 @@ impl Storage for SqliteStorage {
     }
 
     fn save(&mut self, state: &GameState) -> Result<(), SaveError> {
-        save_state(&mut self.conn, state)
+        save_state(&mut self.conn, state)?;
+        #[cfg(test)]
+        persist_ops::count_sqlite();
+        Ok(())
     }
 
     fn is_empty(&self) -> Result<bool, SaveError> {

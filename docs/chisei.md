@@ -211,13 +211,16 @@ Needs `--features chisei`. Without the feature the path or flag is refused.
 
 ## Throughput
 
-The unit test `apply_save_throughput_stays_under_twelve_seconds_for_fifty` runs
-50 propose-apply-save cycles (build queue + catch-up) and requires the whole
-loop to finish in under twelve seconds. CLI and TUI still persist once per
-command, not per tick. Catch-up stays in memory, then one save.
+The unit tests `apply_save_stays_within_three_times_sqlite_persist_work_for_fifty`
+and `apply_save_persist_work_trips_when_chisei_work_doubles` run 50
+propose-apply-save cycles (build queue + catch-up) and compare persist work
+(SQLite saves plus Chisei graph writes), not CPU time. Chisei writes one sqlite
+snapshot and one graph revision per cycle; the guard trips when that persist
+work doubles. CLI and TUI still persist once per command, not per tick.
+Catch-up stays in memory, then one save.
 
 ```sh
-cargo test -p hoshi-storage --features chisei apply_save_throughput
+cargo test -p hoshi-storage --features chisei apply_save
 ```
 
 ## Tests
@@ -227,5 +230,5 @@ cargo test -p hoshi-storage --features chisei
 ```
 
 Covers the shared storage contract from #25, object-graph rows, two-player fog
-of war (hidden until alliance or spy), refused intents, and the throughput
-bound.
+of war (hidden until alliance or spy), refused intents, and the persist-work
+guard.
