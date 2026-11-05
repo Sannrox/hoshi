@@ -959,8 +959,7 @@ impl App {
 
     fn production_view(&self) -> ListView {
         let t = &self.theme;
-        let report = self.state.production_report();
-        let coord = self.selected_coord();
+        let report = self.production_here();
         let ratio = |a: f64, b: f64| if b > 0.0 { a / b } else { 0.0 };
         let energy_short = report.energy_demand > report.energy_supply;
         let heat_short = report.heat_load > report.heat_sink;
@@ -1040,7 +1039,6 @@ impl App {
         let rows = report
             .steps
             .iter()
-            .filter(|step| step.planet == coord)
             .map(|step| {
                 let limit = step.limited_by.as_key();
                 vec![
@@ -2473,10 +2471,22 @@ impl App {
         let now = self.state.last_tick_unix;
         let snap = self.state.maintenance_snapshot();
         let cfg = self.state.maintenance_config();
+        let assets = self.maintenance_assets_here();
+        let ids: std::collections::BTreeSet<u64> = assets.iter().map(|asset| asset.id).collect();
+        let orders = snap
+            .orders
+            .iter()
+            .filter(|order| ids.contains(&order.asset_id))
+            .count();
+        let readings = snap
+            .readings
+            .iter()
+            .filter(|reading| ids.contains(&reading.asset_id))
+            .count();
         let mut head = vec![self.props(&[
-            ("assets", snap.assets.len().to_string()),
-            ("orders", snap.orders.len().to_string()),
-            ("readings", snap.readings.len().to_string()),
+            ("assets", assets.len().to_string()),
+            ("orders", orders.to_string()),
+            ("readings", readings.to_string()),
             (
                 "next reading in",
                 duration(snap.next_at.saturating_sub(now)),
@@ -2487,7 +2497,7 @@ impl App {
             t.muted(),
         ));
         let mut foot = Vec::new();
-        if snap.assets.is_empty() {
+        if assets.is_empty() {
             head.push(Line::default());
             head.extend(callout_lines(
                 t,
@@ -2501,7 +2511,7 @@ impl App {
                 ..ListView::default()
             };
         }
-        if let Some(asset) = snap.assets.get(self.selected) {
+        if let Some(asset) = assets.get(self.selected) {
             foot.push(section(t, &self.state.asset_label(asset)));
             if let Some(pred) = snap
                 .predictions
@@ -2559,8 +2569,7 @@ impl App {
                 ));
             }
         }
-        let rows = snap
-            .assets
+        let rows = assets
             .iter()
             .map(|asset| {
                 let cond_intent = if asset.condition < 0.35 {

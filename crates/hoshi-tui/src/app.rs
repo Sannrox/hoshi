@@ -466,13 +466,7 @@ impl App {
                     })
             }
             Screen::Production => {
-                let steps: Vec<_> = self
-                    .state
-                    .production_report()
-                    .steps
-                    .into_iter()
-                    .filter(|step| step.planet == self.selected_coord())
-                    .collect();
+                let steps = self.production_here().steps;
                 steps
                     .get(self.selected)
                     .map(|step| DetailSubject::Production {
@@ -1194,6 +1188,12 @@ impl App {
         let next = (self.planet_index as i32 + delta).rem_euclid(n);
         self.planet_index = next as usize;
         self.status.clear();
+        let len = self.list_len();
+        if len == 0 {
+            self.selected = 0;
+        } else {
+            self.selected = self.selected.min(len - 1);
+        }
     }
 
     fn clamp_planet(&mut self) {
@@ -1207,6 +1207,20 @@ impl App {
         let coords = self.state.owned_coords();
         let i = self.planet_index.min(coords.len().saturating_sub(1));
         coords[i]
+    }
+
+    fn production_here(&self) -> hoshi_core::ProductionReport {
+        self.state.production_report_at(self.selected_coord())
+    }
+
+    fn maintenance_assets_here(&self) -> Vec<hoshi_core::Asset> {
+        let coord = self.selected_coord();
+        self.state
+            .maintenance_snapshot()
+            .assets
+            .into_iter()
+            .filter(|asset| asset.coord == coord)
+            .collect()
     }
 
     /// Stock on the selected planet, which pays for what is queued there.
@@ -3118,13 +3132,7 @@ impl App {
             Screen::Achievements => self.state.config.achievements.len(),
             Screen::Daily => self.state.daily.slots.len(),
             Screen::Goals => 3,
-            Screen::Production => self
-                .state
-                .production_report()
-                .steps
-                .iter()
-                .filter(|step| step.planet == self.selected_coord())
-                .count(),
+            Screen::Production => self.production_here().steps.len(),
             Screen::Market => TRADE_PAIRS.len(),
             Screen::Diplomacy => self.state.config.diplomacy.len(),
             Screen::Laws => self.state.config.laws.len() + self.state.laws.laws.len(),
@@ -3137,7 +3145,7 @@ impl App {
             Screen::Finance => self.state.finance.pending.len() + self.state.finance.budgets.len(),
             Screen::Kpis => self.state.kpi_snapshot().measurements.len(),
             Screen::Incidents => self.state.incident_snapshot().open.len(),
-            Screen::Maintenance => self.state.maintenance_snapshot().assets.len(),
+            Screen::Maintenance => self.maintenance_assets_here().len(),
             Screen::Ops => {
                 self.state.vehicles.len()
                     + self.state.planned.len()
@@ -4036,8 +4044,8 @@ impl App {
     }
 
     fn activate_maintenance(&mut self) {
-        let snap = self.state.maintenance_snapshot();
-        let Some(asset) = snap.assets.get(self.selected) else {
+        let assets = self.maintenance_assets_here();
+        let Some(asset) = assets.get(self.selected) else {
             self.status = "select an asset".into();
             return;
         };
@@ -6359,6 +6367,52 @@ mod tests {
     }
 
     #[test]
+    fn maintenance_screen_follows_the_selected_planet() {
+        let (mut app, dest) = app_with_new_colony();
+        app.state.colonies[0].buildings.metal_mine = 8;
+        app.state.colonies[0].buildings.solar_plant = 12;
+        app.state.resources.iron = 1_000.0;
+        app.state.resources.silicon = 1_000.0;
+        app.state.sync_maintenance_assets(1_000);
+        let home_mine = app
+            .state
+            .maintenance
+            .assets
+            .iter()
+            .find(|asset| asset.coord == app.state.home && asset.key.contains("metal_mine"))
+            .cloned()
+            .expect("home mine");
+        let colony_mine = app
+            .state
+            .maintenance
+            .assets
+            .iter()
+            .find(|asset| asset.coord == dest && asset.key.contains("metal_mine"))
+            .cloned()
+            .expect("colony mine");
+        let home_label = app.state.asset_label(&home_mine);
+        let colony_label = app.state.asset_label(&colony_mine);
+        let colony_id = colony_mine.id;
+
+        app.open(Screen::Maintenance);
+        let text = render_text(&app, 120, 32);
+        assert!(text.contains(&home_label), "{text}");
+        assert!(!text.contains(&colony_label), "{text}");
+
+        app.handle_key(KeyCode::Char(']'), 1_000);
+        assert_eq!(app.selected_coord(), dest);
+        let text = render_text(&app, 120, 32);
+        assert!(text.contains(&colony_label), "{text}");
+        assert!(!text.contains(&home_label), "{text}");
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(
+            app.status.contains(&format!("asset {colony_id}")),
+            "{}",
+            app.status
+        );
+    }
+
+    #[test]
     fn incident_screen_lists_open_rows_and_resolves() {
         let mut state = GameState::new(1_000);
         state
@@ -6493,6 +6547,36 @@ mod tests {
             text.chars().any(|c| "▁▂▃▄▅▆▇█".contains(c)) || text.contains("Fe /h"),
             "history missing: {text}"
         );
+    }
+
+    #[test]
+    fn production_screen_follows_the_selected_planet() {
+        let (mut app, dest) = app_with_new_colony();
+        app.state.colonies[0].buildings.metal_mine = 8;
+        app.state.colonies[0].buildings.solar_plant = 12;
+        let home = app.state.production_report_at(app.state.home);
+        let colony = app.state.production_report_at(dest);
+        let home_energy = format!("{:.0}/{:.0}", home.energy_supply, home.energy_demand);
+        let colony_energy = format!("{:.0}/{:.0}", colony.energy_supply, colony.energy_demand);
+        let home_fe = format!("Fe {:.0}", home.metal_per_hour);
+        let colony_fe = format!("Fe {:.0}", colony.metal_per_hour);
+        assert_ne!(home_energy, colony_energy);
+        assert_ne!(home_fe, colony_fe);
+
+        app.open(Screen::Production);
+        let text = render_text(&app, 120, 32);
+        assert!(text.contains(&home_energy), "home energy missing: {text}");
+        assert!(text.contains(&home_fe), "home Fe missing: {text}");
+
+        app.handle_key(KeyCode::Char(']'), 1_000);
+        assert_eq!(app.selected_coord(), dest);
+        let text = render_text(&app, 120, 32);
+        assert!(
+            text.contains(&colony_energy),
+            "colony energy missing: {text}"
+        );
+        assert!(text.contains(&colony_fe), "colony Fe missing: {text}");
+        assert!(!text.contains(&home_energy), "home energy lingered: {text}");
     }
 
     #[test]
