@@ -278,6 +278,8 @@ pub struct App {
     detail_dirty: bool,
     last_width: Cell<u16>,
     scenario: Option<Scenario>,
+    /// Bumped on input so idle skip-draw still repaints after a key.
+    ui_epoch: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -362,6 +364,7 @@ impl App {
             detail_dirty: false,
             last_width: Cell::new(80),
             scenario: None,
+            ui_epoch: 0,
         }
     }
 
@@ -618,6 +621,166 @@ impl App {
         crate::cockpit::record_gauge(&mut self.gauge_history, self.state.resources);
     }
 
+    /// Identity of the painted frame. Idle wakes skip `terminal.draw` when this
+    /// matches the last paint (see [`crate::idle::should_draw`]).
+    pub(crate) fn idle_frame_sig(&self) -> crate::idle::FrameSig {
+        let now = self.state.last_tick_unix;
+        let still = self.reduced_motion || self.no_animation;
+        let timer_label = if still {
+            None
+        } else {
+            let raid = match self.state.next_raid_in_secs() {
+                Some(secs) if self.state.raid_countdown_secs().is_some() => {
+                    ui::spans::countdown(secs)
+                }
+                Some(secs) => ui::spans::duration(secs),
+                None => String::new(),
+            };
+            // Queue labels use `duration` (minute grain at ≥1h), matching planet,
+            // shipyard, and overview. Cockpit upcoming prints `countdown` with
+            // seconds; using that here would restore a 1Hz idle redraw, which is
+            // the load this skip exists to stop. Minute + slow_clock still move
+            // those rows; completions still draw via the queue heads.
+            let build = self
+                .state
+                .build_queue
+                .first()
+                .and_then(|job| job.completes_at)
+                .map(|at| ui::spans::duration(at.saturating_sub(now)))
+                .unwrap_or_default();
+            let colony = self
+                .state
+                .colonies
+                .iter()
+                .filter_map(|c| c.build_queue.first().and_then(|job| job.completes_at))
+                .min()
+                .map(|at| ui::spans::duration(at.saturating_sub(now)))
+                .unwrap_or_default();
+            let research = self
+                .state
+                .research
+                .as_ref()
+                .map(|job| ui::spans::duration(job.completes_at.saturating_sub(now)))
+                .unwrap_or_default();
+            let fleet = self
+                .state
+                .missions
+                .iter()
+                .map(|m| m.phase_ends_at.saturating_sub(now))
+                .min()
+                .map(ui::spans::countdown)
+                .unwrap_or_default();
+            let ship = self
+                .state
+                .ship_queue
+                .first()
+                .and_then(|j| j.completes_at)
+                .into_iter()
+                .chain(
+                    self.state
+                        .colonies
+                        .iter()
+                        .filter_map(|c| c.ship_queue.first().and_then(|j| j.completes_at)),
+                )
+                .min()
+                .map(|at| ui::spans::duration(at.saturating_sub(now)))
+                .unwrap_or_default();
+            let merchant = self
+                .state
+                .open_merchant()
+                .map(|visit| ui::spans::duration(visit.until_unix.saturating_sub(now)))
+                .unwrap_or_default();
+            let signal = self
+                .state
+                .signals
+                .iter()
+                .filter(|s| s.is_open())
+                .map(|s| s.deadline.saturating_sub(now))
+                .min()
+                .map(ui::spans::countdown)
+                .unwrap_or_default();
+            Some(format!(
+                "{raid}|{build}|{colony}|{research}|{fleet}|{ship}|{merchant}|{signal}"
+            ))
+        };
+        crate::idle::FrameSig {
+            history_next_id: self.state.history.next_id,
+            replay_frame: self.replay.as_ref().map(|replay| replay.frame),
+            raid_warning: self.state.raid_countdown_secs().is_some(),
+            timer_label,
+            slow_clock: crate::idle::slow_clock(now),
+            pending_tactical: self
+                .state
+                .pending_tactical
+                .as_ref()
+                .map(|p| (p.next_at, p.actions.len())),
+            story_pending: self.state.story_pending.is_some(),
+            away_open: self.away.is_some() && !self.away_hidden,
+            build_head: self
+                .state
+                .build_queue
+                .first()
+                .and_then(|job| job.completes_at),
+            research_head: self.state.research.as_ref().map(|job| job.completes_at),
+            build_len: self.state.build_queue.len()
+                + self
+                    .state
+                    .colonies
+                    .iter()
+                    .map(|c| c.build_queue.len())
+                    .sum::<usize>(),
+            research_queued: self.state.research_queue.len(),
+            ship_jobs: self.state.ship_queue.len()
+                + self
+                    .state
+                    .colonies
+                    .iter()
+                    .map(|c| c.ship_queue.len())
+                    .sum::<usize>(),
+            ship_remaining: self
+                .state
+                .ship_queue
+                .iter()
+                .map(|j| j.remaining)
+                .sum::<u32>()
+                + self
+                    .state
+                    .colonies
+                    .iter()
+                    .flat_map(|c| c.ship_queue.iter())
+                    .map(|j| j.remaining)
+                    .sum::<u32>(),
+            ship_head: self
+                .state
+                .ship_queue
+                .first()
+                .and_then(|j| j.completes_at)
+                .into_iter()
+                .chain(
+                    self.state
+                        .colonies
+                        .iter()
+                        .filter_map(|c| c.ship_queue.first().and_then(|j| j.completes_at)),
+                )
+                .min(),
+            merchant_until: self.state.open_merchant().map(|visit| visit.until_unix),
+            signal_head: self
+                .state
+                .signals
+                .iter()
+                .filter(|s| s.is_open())
+                .map(|s| s.deadline)
+                .min(),
+            signals: self.state.signals.iter().filter(|s| s.is_open()).count(),
+            missions: self.state.missions.len(),
+            combat_logs: self.state.combat_logs.len(),
+            ui_epoch: self.ui_epoch,
+            updates: self.updates.as_ref().map_or((false, false), |ui| {
+                (ui.overlay_open(), ui.disclosure_open())
+            }),
+        }
+    }
+
     /// Catch up to the effective game time `target`. A gap of at least
     /// `away_on_wake` opens the away summary; returns true when it did.
     fn catch_up_to(&mut self, target: u64) -> bool {
@@ -650,6 +813,7 @@ impl App {
     }
 
     pub fn handle_key(&mut self, code: KeyCode, now_unix: u64) -> Action {
+        self.ui_epoch = self.ui_epoch.wrapping_add(1);
         if let Some(bug) = &mut self.bug {
             if bug.handle_key(code) {
                 self.bug = None;
@@ -5723,6 +5887,137 @@ mod tests {
             text.contains(&ui::spans::duration(research_left_later)),
             "{text}"
         );
+    }
+
+    #[test]
+    fn idle_reduced_motion_skips_draw_until_a_key_or_build_completes() {
+        let mut state = GameState::new(1_000);
+        state.config.story = StoryCatalog::empty();
+        state.resources.iron = 10_000.0;
+        state.resources.silicon = 10_000.0;
+        state.resources.deuterium = 10_000.0;
+        state
+            .enqueue_build(BuildingKind::MetalMine, 1_000)
+            .expect("queue metal mine");
+        let done = state.build_queue[0].completes_at.expect("deadline");
+        let mut app = App::new(state);
+        app.reduced_motion = true;
+        app.no_animation = true;
+        app.portraits.enabled = false;
+        assert!(!app.replay_active());
+        assert_eq!(
+            crate::idle::poll_wait(app.replay_active()),
+            crate::idle::IDLE_POLL
+        );
+        assert!(crate::idle::IDLE_POLL >= std::time::Duration::from_secs(1));
+        assert_ne!(crate::idle::IDLE_POLL, std::time::Duration::ZERO);
+
+        let first = app.idle_frame_sig();
+        app.catch_up_now(1_001);
+        let idle = app.idle_frame_sig();
+        assert!(
+            !crate::idle::should_draw(Some(&first), &idle),
+            "idle wake must not redraw a frozen reduced-motion frame"
+        );
+
+        app.catch_up_now(done);
+        let completed = app.idle_frame_sig();
+        assert!(app.state.build_queue.is_empty());
+        assert_ne!(idle.build_head, completed.build_head);
+        assert!(
+            crate::idle::should_draw(Some(&idle), &completed),
+            "a due build still draws"
+        );
+
+        let before_key = app.idle_frame_sig();
+        assert_eq!(app.handle_key(KeyCode::Right, done), Action::None);
+        let after_key = app.idle_frame_sig();
+        assert!(crate::idle::should_draw(Some(&before_key), &after_key));
+    }
+
+    #[test]
+    fn idle_frame_sig_redraws_when_a_ship_batch_unit_completes() {
+        let mut state = GameState::new(1_000);
+        state.ship_queue.push(hoshi_core::ShipJob {
+            ship: Some(ShipKind::LightFighter),
+            defence: None,
+            remaining: 2,
+            unit_paid: Resources::ZERO,
+            credits: 0.0,
+            started_at: Some(1_000),
+            completes_at: Some(1_100),
+        });
+        let mut app = App::new(state);
+        app.reduced_motion = true;
+        app.no_animation = true;
+        let before = app.idle_frame_sig();
+        app.state.ship_queue[0].remaining = 1;
+        let after = app.idle_frame_sig();
+        assert_ne!(before.ship_remaining, after.ship_remaining);
+        assert!(crate::idle::should_draw(Some(&before), &after));
+    }
+
+    #[test]
+    fn idle_frame_sig_redraws_when_a_ship_timer_ticks() {
+        let mut state = GameState::new(1_000);
+        state.ship_queue.push(hoshi_core::ShipJob {
+            ship: Some(ShipKind::LightFighter),
+            defence: None,
+            remaining: 1,
+            unit_paid: Resources::ZERO,
+            credits: 0.0,
+            started_at: Some(1_000),
+            completes_at: Some(1_200),
+        });
+        let mut app = App::new(state);
+        app.portraits.enabled = false;
+        let before = app.idle_frame_sig();
+        app.catch_up_now(1_001);
+        let after = app.idle_frame_sig();
+        assert_ne!(before.timer_label, after.timer_label);
+        assert!(crate::idle::should_draw(Some(&before), &after));
+    }
+
+    #[test]
+    fn idle_frame_sig_redraws_when_a_tactical_round_advances() {
+        let mut app = App::new(GameState::new(1_000));
+        app.reduced_motion = true;
+        app.no_animation = true;
+        app.state.pending_tactical = Some(hoshi_core::PendingTactical {
+            seed: 1,
+            attacker: Fleet::default(),
+            defender: Fleet::default(),
+            reserves: Fleet::default(),
+            atk_plan: hoshi_core::TacticalPlan::default(),
+            def_plan: hoshi_core::TacticalPlan::default(),
+            actions: Vec::new(),
+            next_at: 1_000,
+            queued: None,
+        });
+        let before = app.idle_frame_sig();
+        if let Some(pending) = &mut app.state.pending_tactical {
+            pending.actions.push(hoshi_core::RoundAction::Hold);
+            pending.next_at = 1_001;
+        }
+        let after = app.idle_frame_sig();
+        assert_ne!(before.pending_tactical, after.pending_tactical);
+        assert!(crate::idle::should_draw(Some(&before), &after));
+    }
+
+    #[test]
+    fn idle_frame_sig_redraws_when_a_merchant_timer_ticks() {
+        let mut state = GameState::new(1_000);
+        state.merchant = Some(hoshi_core::MerchantVisit {
+            until_unix: 1_020,
+            fee: 0.01,
+        });
+        let mut app = App::new(state);
+        app.portraits.enabled = false;
+        let before = app.idle_frame_sig();
+        app.catch_up_now(1_001);
+        let after = app.idle_frame_sig();
+        assert_ne!(before.timer_label, after.timer_label);
+        assert!(crate::idle::should_draw(Some(&before), &after));
     }
 
     #[test]

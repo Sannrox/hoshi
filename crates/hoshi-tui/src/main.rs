@@ -19,6 +19,7 @@ mod detail_panel;
 mod devices;
 mod help;
 mod hubs;
+mod idle;
 mod keymap;
 mod managed_update;
 mod notify;
@@ -52,13 +53,11 @@ use portraits::{PortraitView, Protocol, detect_protocol};
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use title::{
     NewGameSpec, Title, TitleAction, apply_difficulty, continue_slot, list_slots, slot_message,
     snapshot_away, summarize_away,
 };
-
-const SAVE_INTERVAL: Duration = Duration::from_secs(5);
 
 fn write_notify(bytes: Vec<u8>) {
     if bytes.is_empty() {
@@ -1047,7 +1046,9 @@ fn play_path(
     let _ = open_bridge;
 
     let mut terminal = ratatui::init();
-    let mut last_save = Instant::now();
+    let mut last_save_unix = now;
+    let mut last_drawn: Option<idle::FrameSig> = None;
+    let mut command_since_save = false;
     let result = loop {
         #[cfg(feature = "bridge")]
         {
@@ -1059,32 +1060,39 @@ fn play_path(
         }
         app.catch_up_now(clock.now_unix());
         write_notify(app.poll_notify());
-        if last_save.elapsed() >= SAVE_INTERVAL {
+        let now_unix = clock.now_unix();
+        if idle::save_due(
+            now_unix,
+            last_save_unix,
+            command_since_save,
+            app.state.pending_tactical.is_some(),
+        ) {
             app.state.finish_pending_tactical();
             if let Err(e) = store.save(&app.state) {
                 break Err(std::io::Error::other(e.to_string()));
             }
-            last_save = Instant::now();
+            last_save_unix = now_unix;
+            command_since_save = false;
         }
-        if let Err(e) = terminal.draw(|f| app.draw(f)) {
-            break Err(e);
+        let frame = app.idle_frame_sig();
+        if idle::should_draw(last_drawn.as_ref(), &frame) {
+            if let Err(e) = terminal.draw(|f| app.draw(f)) {
+                break Err(e);
+            }
+            if let Some(updates) = &mut app.updates {
+                updates.did_draw();
+            }
+            let size = match terminal.size() {
+                Ok(size) => size,
+                Err(e) => break Err(e),
+            };
+            let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
+            if let Err(e) = app.paint_inline_graphics(&mut std::io::stdout(), area) {
+                break Err(e);
+            }
+            last_drawn = Some(frame);
         }
-        if let Some(updates) = &mut app.updates {
-            updates.did_draw();
-        }
-        let size = match terminal.size() {
-            Ok(size) => size,
-            Err(e) => break Err(e),
-        };
-        let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
-        if let Err(e) = app.paint_inline_graphics(&mut std::io::stdout(), area) {
-            break Err(e);
-        }
-        let wait = if app.replay_active() {
-            Duration::from_millis(100)
-        } else {
-            Duration::from_secs(1)
-        };
+        let wait = idle::poll_wait(app.replay_active());
         match event::poll(wait) {
             Ok(true) => match event::read() {
                 Ok(Event::Key(k)) if k.kind == KeyEventKind::Press => {
@@ -1105,7 +1113,9 @@ fn play_path(
                         let _ = user.save(dir);
                     }
                     write_notify(app.poll_notify());
+                    command_since_save = true;
                 }
+                Ok(Event::Resize(..)) => last_drawn = None,
                 Ok(_) => {}
                 Err(e) => break Err(e),
             },
