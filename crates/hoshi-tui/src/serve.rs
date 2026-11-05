@@ -578,7 +578,7 @@ impl Drop for Client<'_> {
 }
 
 /// Match the TUI idle save cadence so an open socket does not rewrite every second.
-const SAVE_IDLE_SECS: u64 = 5;
+const SAVE_IDLE_SECS: u64 = crate::idle::SAVE_IDLE_SECS;
 
 /// Listener plus the exclusive save lock.
 pub struct Server {
