@@ -1,7 +1,7 @@
 //! NPC resource exchange plus a regional order book, contracts and shipments.
 //!
-//! Instant home barter (`quote` / `trade_market`) stays the over-the-counter
-//! path. Limit and market orders, delivery contracts and inter-region
+//! Instant over-the-counter barter (`quote` / `trade_market`) pays the
+//! origin planet's stockpile. Limit and market orders, delivery contracts and inter-region
 //! shipments go through [`GameState::place_order`], [`GameState::accept_contract`],
 //! [`GameState::fulfil_contract`] and [`GameState::ship_goods`]. Crystal and
 //! deuterium are priced in metal. Matching is price-time and deterministic.
@@ -140,7 +140,7 @@ pub enum MarketError {
     Closed,
     SameLocation,
     CannotFly,
-    /// The home storage for the received resource cannot hold the proceeds.
+    /// The origin planet's storage for the received resource cannot hold the proceeds.
     NoRoom {
         kind: ResourceKind,
         room: f64,
@@ -2318,6 +2318,98 @@ mod tests {
             .quote_market(ResourceKind::Silicon, ResourceKind::Deuterium, 50.0)
             .unwrap();
         assert!(state.trade_blocker(&small).is_none());
+    }
+
+    fn colony_world(state: &mut GameState, coord: Coord) -> &mut crate::Colony {
+        state.colonies.push(crate::Colony {
+            coord,
+            kind: crate::PlanetType::Rocky,
+            size: 120,
+            resources: Resources::ZERO,
+            buildings: crate::Buildings::default(),
+            fleet: Fleet::default(),
+            defences: crate::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: Default::default(),
+        });
+        state.colonies.last_mut().expect("just pushed")
+    }
+
+    #[test]
+    fn colony_spot_trade_pays_and_stores_on_that_planet() {
+        let mut state = ready(1_000);
+        state.config.market.cargo_free = 10_000.0;
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 8,
+        };
+        colony_world(&mut state, dest).resources.iron = 1_000.0;
+        state.resources.iron = 0.0;
+        state.resources.silicon = state.storage_cap(ResourceKind::Silicon);
+        let home_before = state.resources;
+        let quote = state
+            .trade_market_at(
+                dest,
+                ResourceKind::Iron,
+                ResourceKind::Silicon,
+                100.0,
+                1_000,
+            )
+            .unwrap();
+        let colony = state.resources_at(dest).copied().expect("colony");
+        assert!(
+            (colony.iron - (1_000.0 - quote.pay_amount)).abs() < 1e-9,
+            "colony iron {}",
+            colony.iron
+        );
+        assert!(
+            colony.silicon > 0.0 && (colony.silicon - quote.recv_amount).abs() < 1e-6,
+            "colony silicon {}",
+            colony.silicon
+        );
+        assert_eq!(state.resources, home_before, "home stock must not move");
+
+        let err = state
+            .trade_market(ResourceKind::Iron, ResourceKind::Silicon, 100.0, 1_000)
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                MarketError::Insufficient {
+                    kind: ResourceKind::Iron,
+                    ..
+                }
+            ),
+            "{err}"
+        );
+        assert_eq!(state.resources, home_before);
+        assert_eq!(state.resources_at(dest).copied(), Some(colony));
+    }
+
+    #[test]
+    fn home_spot_trade_leaves_colony_stock_alone() {
+        let mut state = ready(1_000);
+        state.config.market.cargo_free = 10_000.0;
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 8,
+        };
+        colony_world(&mut state, dest).resources = Resources::from_parts(800.0, 50.0, 0.0);
+        state.resources.iron = 2_000.0;
+        let colony_before = state.colonies[0].resources;
+        state
+            .trade_market(ResourceKind::Iron, ResourceKind::Silicon, 100.0, 1_000)
+            .unwrap();
+        assert!(
+            (state.resources.iron - 1_900.0).abs() < 1e-9,
+            "home iron {}",
+            state.resources.iron
+        );
+        assert_eq!(state.colonies[0].resources, colony_before);
     }
 
     #[test]

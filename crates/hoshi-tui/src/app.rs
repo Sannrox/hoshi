@@ -462,6 +462,7 @@ impl App {
                         pay,
                         recv,
                         amount: self.trade_amount as u64,
+                        planet: self.selected_coord(),
                     })
             }
             Screen::Production => {
@@ -980,7 +981,10 @@ impl App {
             }
             Some(Binding::Toggle) if self.screen == Screen::Market => {
                 if let Some(&(pay, _)) = TRADE_PAIRS.get(self.selected) {
-                    let max = self.state.max_trade_amount(pay).floor();
+                    let max = self
+                        .state
+                        .max_trade_amount_at(self.selected_coord(), pay)
+                        .floor();
                     self.trade_amount = max.clamp(MIN_TRADE_AMOUNT, MAX_TRADE_AMOUNT);
                 }
             }
@@ -2994,10 +2998,13 @@ impl App {
         let Some(&(pay, recv)) = TRADE_PAIRS.get(self.selected) else {
             return;
         };
-        match self
-            .state
-            .trade_market(pay, recv, self.trade_amount, now_unix)
-        {
+        match self.state.trade_market_at(
+            self.selected_coord(),
+            pay,
+            recv,
+            self.trade_amount,
+            now_unix,
+        ) {
             Ok(quote) => {
                 self.status = format!(
                     "{:.0} {} -> {:.1} {}",
@@ -4727,6 +4734,56 @@ mod tests {
         app.handle_key(KeyCode::Enter, 1_000);
         assert_eq!(app.state.resources.iron, iron, "{}", app.status);
         assert!(app.status.contains("storage is full"), "{}", app.status);
+    }
+
+    #[test]
+    fn market_enter_on_a_colony_trades_that_planet_stock() {
+        let (mut app, dest) = app_with_new_colony();
+        app.state.config.market.enabled = true;
+        app.state.config.market.cargo_free = 10_000.0;
+        app.state.config.daily = hoshi_core::DailyConfig::empty();
+        app.state.buildings.metal_mine = 0;
+        app.state.buildings.crystal_mine = 0;
+        app.state.resources.iron = 0.0;
+        app.state.colonies[0].resources.iron = 1_000.0;
+        app.planet_index = 1;
+        assert_eq!(app.selected_coord(), dest);
+        app.screen = Screen::Market;
+        app.selected = TRADE_PAIRS
+            .iter()
+            .position(|p| *p == (ResourceKind::Iron, ResourceKind::Silicon))
+            .unwrap();
+        app.trade_amount = 100.0;
+        let detail = app.current_detail().unwrap();
+        let iron = detail
+            .deltas
+            .iter()
+            .find(|d| d.label == "iron stock")
+            .unwrap();
+        assert_eq!((iron.from.as_str(), iron.to.as_str()), ("1000", "900"));
+        let home_before = app.state.resources;
+        let now = app.state.last_tick_unix;
+        app.handle_key(KeyCode::Enter, now);
+        assert_eq!(app.state.resources.iron, home_before.iron, "{}", app.status);
+        assert_eq!(
+            app.state.resources.silicon, home_before.silicon,
+            "{}",
+            app.status
+        );
+        let colony = app.state.resources_at(dest).copied().unwrap();
+        assert!(
+            (colony.iron - 900.0).abs() < 1e-9,
+            "colony iron {} status {}",
+            colony.iron,
+            app.status
+        );
+        assert!(
+            colony.silicon > 0.0,
+            "colony silicon {} status {}",
+            colony.silicon,
+            app.status
+        );
+        assert!(app.status.contains("iron"), "{}", app.status);
     }
 
     /// A lived-in four-day game for whole-screen text checks.

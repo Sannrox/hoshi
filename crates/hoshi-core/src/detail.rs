@@ -25,11 +25,12 @@ pub enum DetailSubject {
     },
     Wonder(String),
     Law(String),
-    /// A spot trade of `amount` whole units of `pay`.
+    /// A spot trade of `amount` whole units of `pay` from `planet`.
     Trade {
         pay: ResourceKind,
         recv: ResourceKind,
         amount: u64,
+        planet: Coord,
     },
     Production {
         planet: Coord,
@@ -139,9 +140,12 @@ impl GameState {
             DetailSubject::Defence { kind, planet } => Some(self.describe_defence(kind, planet)),
             DetailSubject::Wonder(id) => self.describe_wonder(&id),
             DetailSubject::Law(id) => self.describe_law(&id),
-            DetailSubject::Trade { pay, recv, amount } => {
-                Some(self.describe_trade(pay, recv, amount as f64))
-            }
+            DetailSubject::Trade {
+                pay,
+                recv,
+                amount,
+                planet,
+            } => Some(self.describe_trade(pay, recv, amount as f64, planet)),
             DetailSubject::Production { planet, id } => self.describe_production(planet, &id),
             DetailSubject::Faction(id) => self.describe_faction(&id),
             DetailSubject::Coord(coord) => Some(self.describe_coord(coord)),
@@ -578,11 +582,21 @@ impl GameState {
         }
     }
 
-    fn describe_trade(&self, pay: ResourceKind, recv: ResourceKind, amount: f64) -> Detail {
+    fn describe_trade(
+        &self,
+        pay: ResourceKind,
+        recv: ResourceKind,
+        amount: f64,
+        planet: Coord,
+    ) -> Detail {
         let quote = self.quote_market(pay, recv, amount).ok();
         let paid = quote.as_ref().map_or(0.0, |q| q.pay_amount);
         let got = quote.as_ref().map_or(0.0, |q| q.recv_amount);
-        let stock = |kind: ResourceKind| self.resources.get(kind);
+        let stock = |kind: ResourceKind| {
+            self.resources_at(planet)
+                .map(|resources| resources.get(kind))
+                .unwrap_or(0.0)
+        };
         let mut deltas = vec![
             DeltaLine {
                 label: format!("{} stock", pay.label()),
@@ -595,7 +609,7 @@ impl GameState {
                 to: format!(
                     "{:.0}",
                     (stock(recv) + got)
-                        .min(self.storage_cap(recv))
+                        .min(self.storage_cap_at(planet, recv))
                         .max(stock(recv))
                 ),
             },
@@ -609,7 +623,7 @@ impl GameState {
         }
         let requirements = quote
             .as_ref()
-            .and_then(|q| self.trade_blocker(q))
+            .and_then(|q| self.trade_blocker_at(planet, q))
             .map(|blocker| RequirementLine {
                 text: blocker
                     .to_string()
@@ -1259,6 +1273,55 @@ mod tests {
                 dest,
                 state.build_cost_on(dest, BuildingKind::MetalMine)
             ))
+        );
+    }
+
+    #[test]
+    fn trade_detail_uses_the_selected_planet_stock() {
+        let mut state = GameState::new(0);
+        state.config.market.enabled = true;
+        state.config.market.cargo_free = 10_000.0;
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 8,
+        };
+        state.colonies.push(crate::Colony {
+            coord: dest,
+            kind: crate::PlanetType::Rocky,
+            size: 120,
+            resources: Resources::from_parts(400.0, 0.0, 0.0),
+            buildings: crate::Buildings::default(),
+            fleet: Fleet::default(),
+            defences: crate::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: Default::default(),
+        });
+        state.resources.iron = 9_000.0;
+        let detail = state
+            .describe(
+                DetailSubject::Trade {
+                    pay: ResourceKind::Iron,
+                    recv: ResourceKind::Silicon,
+                    amount: 100,
+                    planet: dest,
+                },
+                None,
+            )
+            .unwrap();
+        let iron = detail
+            .deltas
+            .iter()
+            .find(|row| row.label == "iron stock")
+            .expect("iron stock");
+        assert_eq!(iron.from, "400");
+        assert_eq!(iron.to, "300");
+        assert!(
+            !detail.requirements.iter().any(|row| !row.met),
+            "{:?}",
+            detail.requirements
         );
     }
 

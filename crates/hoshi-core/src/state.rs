@@ -6464,11 +6464,23 @@ impl GameState {
         self.on_market_tick(at);
     }
 
-    /// Why the home cannot make this trade now: missing stock to pay, too
-    /// little cargo capacity above the free amount, or no storage room for
-    /// what it would receive. `None` when it can.
+    /// Why home cannot make this trade now. Same checks as [`Self::trade_blocker_at`].
     pub fn trade_blocker(&self, quote: &crate::TradeQuote) -> Option<crate::MarketError> {
-        let have = self.resources.get(quote.pay);
+        self.trade_blocker_at(self.home, quote)
+    }
+
+    /// Why `coord` cannot make this trade now: missing stock to pay, too
+    /// little cargo capacity above the free amount, or no storage room for
+    /// what it would receive. Unowned coords have no stock. `None` when it can.
+    pub fn trade_blocker_at(
+        &self,
+        coord: Coord,
+        quote: &crate::TradeQuote,
+    ) -> Option<crate::MarketError> {
+        let have = self
+            .resources_at(coord)
+            .map(|stock| stock.get(quote.pay))
+            .unwrap_or(0.0);
         if have + 1e-9 < quote.pay_amount {
             return Some(crate::MarketError::Insufficient {
                 missing: quote.pay_amount - have,
@@ -6476,7 +6488,7 @@ impl GameState {
             });
         }
         if quote.pay_amount > self.config.market.cargo_free {
-            let have_cargo = self.cargo_capacity(self.fleet);
+            let have_cargo = self.cargo_capacity(self.fleet_at(coord).unwrap_or_default());
             if have_cargo + 1e-9 < quote.pay_amount {
                 return Some(crate::MarketError::NeedCargo {
                     need: quote.pay_amount,
@@ -6485,7 +6497,11 @@ impl GameState {
             }
         }
         // Proceeds above the cap would be discarded, so the trade is refused.
-        let room = (self.storage_cap(quote.recv) - self.resources.get(quote.recv)).max(0.0);
+        let recv = self
+            .resources_at(coord)
+            .map(|stock| stock.get(quote.recv))
+            .unwrap_or(0.0);
+        let room = (self.storage_cap_at(coord, quote.recv) - recv).max(0.0);
         if quote.recv_amount > room + 1e-9 {
             return Some(crate::MarketError::NoRoom {
                 kind: quote.recv,
@@ -6495,12 +6511,21 @@ impl GameState {
         None
     }
 
-    /// Largest amount of `pay` the home can trade now: its stock, and above
-    /// the cargo-free amount no more than its cargo capacity.
+    /// Largest amount of `pay` home can trade now.
     pub fn max_trade_amount(&self, pay: ResourceKind) -> f64 {
+        self.max_trade_amount_at(self.home, pay)
+    }
+
+    /// Largest amount of `pay` `coord` can trade now: its stock, and above
+    /// the cargo-free amount no more than its parked cargo capacity.
+    pub fn max_trade_amount_at(&self, coord: Coord, pay: ResourceKind) -> f64 {
         let free = self.config.market.cargo_free;
-        let carried = free.max(self.cargo_capacity(self.fleet));
-        self.resources.get(pay).min(carried).max(0.0)
+        let carried = free.max(self.cargo_capacity(self.fleet_at(coord).unwrap_or_default()));
+        let have = self
+            .resources_at(coord)
+            .map(|stock| stock.get(pay))
+            .unwrap_or(0.0);
+        have.min(carried).max(0.0)
     }
 
     pub fn quote_market(
@@ -6517,9 +6542,21 @@ impl GameState {
         self.market.quote(pay, recv, amount, &cfg)
     }
 
-    /// Spend `amount` of `pay` for `recv` at the current quote, then move the mid.
+    /// Spend `amount` of `pay` for `recv` from home at the current quote.
     pub fn trade_market(
         &mut self,
+        pay: ResourceKind,
+        recv: ResourceKind,
+        amount: f64,
+        now_unix: u64,
+    ) -> Result<crate::TradeQuote, crate::MarketError> {
+        self.trade_market_at(self.home, pay, recv, amount, now_unix)
+    }
+
+    /// Spend `amount` of `pay` for `recv` from `coord`'s stockpile, then move the mid.
+    pub fn trade_market_at(
+        &mut self,
+        coord: Coord,
         pay: ResourceKind,
         recv: ResourceKind,
         amount: f64,
@@ -6532,16 +6569,25 @@ impl GameState {
         let mut cfg = self.config.market.clone();
         cfg.fee = self.effective_market_fee();
         let quote = self.market.quote(pay, recv, amount, &cfg)?;
-        if let Some(blocker) = self.trade_blocker(&quote) {
+        if let Some(blocker) = self.trade_blocker_at(coord, &quote) {
             return Err(blocker);
         }
-        let have = self.resources.get(pay);
-        self.resources.set(pay, (have - quote.pay_amount).max(0.0));
-        let got = self.resources.get(recv);
-        let cap = self.storage_cap(recv);
-        let stored = (got + quote.recv_amount).min(cap).max(got);
-        let added = (stored - got).max(0.0);
-        self.resources.set(recv, stored);
+        let cap = self.storage_cap_at(coord, recv);
+        let added = {
+            let stock =
+                self.resources_at_mut(coord)
+                    .map_err(|_| crate::MarketError::Insufficient {
+                        missing: quote.pay_amount,
+                        kind: pay,
+                    })?;
+            let have = stock.get(pay);
+            stock.set(pay, (have - quote.pay_amount).max(0.0));
+            let got = stock.get(recv);
+            let stored = (got + quote.recv_amount).min(cap).max(got);
+            let added = (stored - got).max(0.0);
+            stock.set(recv, stored);
+            added
+        };
         self.market.apply_trade_impact(&quote, &self.config.market);
         self.apply_faction_delta("traders", |f| f.trade_delta, "trade", self.last_tick_unix);
         self.note_daily(DailyAction::Trade, self.last_tick_unix);

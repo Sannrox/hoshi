@@ -1077,14 +1077,13 @@ impl App {
         let t = &self.theme;
         let market = &self.state.market;
         let fee_pct = self.state.effective_market_fee() * 100.0;
-        // A trade carries at most the free allowance or docked cargo, so
-        // `max` stops there even with more in stock.
-        let cargo = self
-            .state
-            .config
-            .market
-            .cargo_free
-            .max(self.state.cargo_capacity(self.state.fleet));
+        // A trade carries at most the free allowance or docked cargo on
+        // the selected planet, so `max` stops there even with more in stock.
+        let origin = self.selected_coord();
+        let cargo = self.state.config.market.cargo_free.max(
+            self.state
+                .cargo_capacity(self.state.fleet_at(origin).unwrap_or_default()),
+        );
         // An open merchant visit shows how long its fee holds.
         let merchant = self.state.open_merchant().map(|visit| {
             let left = visit.until_unix.saturating_sub(self.state.last_tick_unix);
@@ -1142,7 +1141,7 @@ impl App {
                             Line::styled(format!("{rate:.2}"), t.text()),
                             Line::from(sparkline(t, &ratios, 12, Intent::Primary)),
                             delta,
-                            match self.state.trade_blocker(&quote) {
+                            match self.state.trade_blocker_at(origin, &quote) {
                                 // Same check as the trade itself, so Enter cannot surprise.
                                 Some(blocker) => Line::styled(
                                     format!(
