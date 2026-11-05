@@ -322,15 +322,24 @@ impl HelpContext {
                 Binding::CopySeed,
             ],
             HelpContext::Victory => &[Binding::Help, Binding::Quit, Binding::Confirm],
-            HelpContext::Achievements
-            | HelpContext::Daily
-            | HelpContext::Goals
-            | HelpContext::Production => &[
+            HelpContext::Achievements | HelpContext::Daily | HelpContext::Goals => &[
                 Binding::Help,
                 Binding::Quit,
                 Binding::NextScreen,
                 Binding::Cockpit,
                 Binding::Detail,
+                Binding::SelectNext,
+                Binding::SelectPrev,
+                Binding::CopySeed,
+            ],
+            HelpContext::Production => &[
+                Binding::Help,
+                Binding::Quit,
+                Binding::NextScreen,
+                Binding::Cockpit,
+                Binding::Detail,
+                Binding::PrevPlanet,
+                Binding::NextPlanet,
                 Binding::SelectNext,
                 Binding::SelectPrev,
                 Binding::CopySeed,
@@ -448,6 +457,8 @@ impl HelpContext {
                 Binding::Quit,
                 Binding::NextScreen,
                 Binding::Cockpit,
+                Binding::PrevPlanet,
+                Binding::NextPlanet,
                 Binding::SelectNext,
                 Binding::SelectPrev,
                 Binding::Confirm,

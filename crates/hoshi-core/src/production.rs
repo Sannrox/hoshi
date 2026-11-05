@@ -149,6 +149,46 @@ impl GameState {
         }
     }
 
+    /// Glance for one owned planet: its steps, energy, heat, and bottleneck.
+    /// Unknown or unowned coords are an empty report.
+    pub fn production_report_at(&self, coord: Coord) -> ProductionReport {
+        let steps = self.flows_at(coord);
+        let (energy_supply, energy_demand, heat_load, heat_sink) = match (
+            self.operational_buildings_at(coord),
+            self.planet_kind(coord),
+        ) {
+            (Some(buildings), Some(kind)) => {
+                let waste = self.waste_at(coord);
+                (
+                    self.site_energy_produced(coord, buildings, kind),
+                    self.energy_consumed_at(coord),
+                    waste.as_ref().map(|w| w.heat_load).unwrap_or(0.0),
+                    waste.as_ref().map(|w| w.heat_sink).unwrap_or(0.0),
+                )
+            }
+            _ => (0.0, 0.0, 0.0, 0.0),
+        };
+        let limited_by = steps
+            .iter()
+            .map(|s| s.limited_by.clone())
+            .min_by_key(LimitingFactor::rank)
+            .unwrap_or(LimitingFactor::None);
+        ProductionReport {
+            steps,
+            energy_supply,
+            energy_demand,
+            heat_load,
+            heat_sink,
+            metal_per_hour: self.production_at(coord, ResourceKind::Iron),
+            crystal_per_hour: self.production_at(coord, ResourceKind::Silicon),
+            deuterium_per_hour: self.production_at(coord, ResourceKind::Deuterium),
+            rare_earths_per_hour: self.production_at(coord, ResourceKind::RareEarths),
+            water_ice_per_hour: self.production_at(coord, ResourceKind::WaterIce),
+            helium_3_per_hour: self.production_at(coord, ResourceKind::Helium3),
+            limited_by,
+        }
+    }
+
     pub(crate) fn flows_at(&self, coord: Coord) -> Vec<RecipeFlow> {
         let Some(buildings) = self.operational_buildings_at(coord) else {
             return Vec::new();
@@ -1018,6 +1058,81 @@ mod tests {
         close(
             report.heat_sink,
             home_waste.heat_sink + colony_waste.heat_sink,
+        );
+    }
+
+    #[test]
+    fn production_report_at_is_one_planet() {
+        let mut cfg = test_config();
+        cfg.chains = ChainConfig::default();
+        let mut state = GameState::with_config(0, cfg);
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 8,
+        };
+        state.colonies.push(Colony {
+            coord: dest,
+            kind: PlanetType::Rocky,
+            size: 120,
+            resources: Resources::ZERO,
+            buildings: Buildings {
+                metal_mine: 8,
+                solar_plant: 12,
+                ..Buildings::default()
+            },
+            fleet: Fleet::default(),
+            defences: crate::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: BTreeMap::new(),
+        });
+        let home = state.production_report_at(state.home);
+        let colony = state.production_report_at(dest);
+        let empire = state.production_report();
+        close(home.energy_supply, state.energy_produced());
+        close(home.energy_demand, state.energy_consumed());
+        close(
+            colony.energy_supply,
+            state.energy_produced_at(dest).unwrap(),
+        );
+        close(colony.energy_demand, state.energy_consumed_at(dest));
+        close(
+            colony.metal_per_hour,
+            state
+                .production_per_hour_at(dest, ResourceKind::Iron)
+                .unwrap(),
+        );
+        assert!(
+            (colony.energy_supply - home.energy_supply).abs() > 1.0,
+            "colony {} home {}",
+            colony.energy_supply,
+            home.energy_supply
+        );
+        assert!(
+            (colony.metal_per_hour - home.metal_per_hour).abs() > 1.0,
+            "colony Fe/h {} home {}",
+            colony.metal_per_hour,
+            home.metal_per_hour
+        );
+        close(
+            empire.energy_supply,
+            home.energy_supply + colony.energy_supply,
+        );
+        close(
+            empire.metal_per_hour,
+            home.metal_per_hour + colony.metal_per_hour,
+        );
+        assert!(
+            colony.steps.iter().all(|step| step.planet == dest),
+            "{:?}",
+            colony.steps
+        );
+        assert!(
+            home.steps.iter().all(|step| step.planet == state.home),
+            "{:?}",
+            home.steps
         );
     }
 }
