@@ -212,6 +212,9 @@ impl AchievementCondition {
                 let Some(run) = state.season.as_ref() else {
                     return 0.0;
                 };
+                if run.ruleset_id == crate::ISOLATED_PRESTIGE {
+                    return 0.0;
+                }
                 if id.as_ref().is_some_and(|want| want != &run.ruleset_id) {
                     return 0.0;
                 }

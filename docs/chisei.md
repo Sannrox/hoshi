@@ -49,7 +49,11 @@ live state or the save.
 A live shard (not this in-process backend) wraps those moves in
 `ShardSession`: the host clock is the only time source, a client timestamp is
 ignored, each identity is rate limited, intents carry an idempotency id, and
-bridge pulses need an HMAC-SHA256 the host keys. Unsigned or altered pulses
+bridge pulses need an HMAC-SHA256 the host keys. A blitz shard
+([ADR 0022](decisions/0022-blitz-shards-run-on-a-scaled-clock-and-end-with-a-winner.md))
+is created with a fixed `epoch` and `factor`; game unix is
+`epoch + factor x (wall - epoch)`, the tenant view carries both, and the
+command rate limit stays on wall time. Unsigned or altered pulses
 are rejected. A player raid is a mission with flight
 ([ADR 0019](decisions/0019-shard-raids-are-missions-with-flight.md)):
 `ShardSession::launch_raid` flies the fleet at another tenant's home on the

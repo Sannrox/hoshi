@@ -14,7 +14,7 @@
 
 use crate::activity::{ActivityApply, ActivityPulse};
 use crate::classification::ClassifiedKind;
-use crate::clock::Clock;
+use crate::clock::{Clock, scale_unix};
 use crate::combat::{
     CombatWinner, fill_hold, plunder_from, rapid_fire_table, resolve_combat, stats_from_catalog,
 };
@@ -450,6 +450,10 @@ impl Occupancy {
 pub struct ShardView {
     pub identity: String,
     pub at: u64,
+    /// Shard identity: game unix is `epoch + factor * (wall - epoch)`.
+    pub epoch: u64,
+    /// At least 1. Factor 1 is inert.
+    pub factor: u32,
     pub home: Coord,
     pub planets: Vec<ShardPlanet>,
     pub fleet: Fleet,
@@ -474,6 +478,8 @@ impl ShardView {
         serde_json::json!({
             "identity": self.identity,
             "at": self.at,
+            "epoch": self.epoch,
+            "factor": self.factor,
             "home": self.home.to_string(),
             "occupancy": self.occupancy.iter().map(|slot| {
                 serde_json::json!({
@@ -594,6 +600,8 @@ pub enum ShardError {
     /// The regional book opens at the next [`ShardSession::join`]; restored
     /// bytes from a build before it have none yet.
     NoBook,
+    /// Scaled clock `factor` was 0.
+    ZeroClockFactor,
 }
 
 impl fmt::Display for ShardError {
@@ -651,13 +659,15 @@ impl fmt::Display for ShardError {
             ShardError::ShardFull { cap } => write!(f, "shard is full at {cap} tenants"),
             ShardError::OrderNeedsBook => write!(f, "market orders need the shard book"),
             ShardError::NoBook => write!(f, "shard market book opens at the next join"),
+            ShardError::ZeroClockFactor => write!(f, "clock factor must be at least 1"),
         }
     }
 }
 
 impl std::error::Error for ShardError {}
 
-const BOOKKEEPING_VERSION: u32 = 1;
+const BOOKKEEPING_VERSION: u32 = 2;
+const BOOKKEEPING_READS: [u32; 2] = [1, BOOKKEEPING_VERSION];
 
 /// Host-owned shard bookkeeping: idempotency ids, command windows and attack
 /// stamps. Opaque bytes the host persists beside the tenant saves. It holds
@@ -682,6 +692,10 @@ impl fmt::Debug for ShardBookkeeping {
     }
 }
 
+fn default_clock_factor() -> u32 {
+    1
+}
+
 #[derive(Serialize, Deserialize)]
 struct BookkeepingDoc {
     version: u32,
@@ -692,6 +706,11 @@ struct BookkeepingDoc {
     /// settle rebuilds it.
     #[serde(default)]
     inbound: Vec<([u16; 3], u64)>,
+    /// Absent in bytes from a factor-1 host; `0` and `1` are the identity.
+    #[serde(default)]
+    epoch: u64,
+    #[serde(default = "default_clock_factor")]
+    factor: u32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -704,6 +723,10 @@ struct SeenRow {
 /// Live shard session. The clock and MAC key stay on the host.
 pub struct ShardSession<C> {
     clock: C,
+    /// Shard identity. Game unix is `epoch + factor * (wall - epoch)`.
+    epoch: u64,
+    /// At least 1. Factor 1 is the identity. Never changes on a live session.
+    factor: u32,
     config: ShardConfig,
     mac_key: [u8; 32],
     windows: BTreeMap<String, Vec<u64>>,
@@ -719,9 +742,12 @@ pub struct ShardSession<C> {
 }
 
 impl<C: Clock> ShardSession<C> {
+    /// Factor 1, epoch 0: game unix equals the inner clock.
     pub fn new(clock: C, mac_key: [u8; 32], config: ShardConfig) -> Self {
         Self {
             clock,
+            epoch: 0,
+            factor: 1,
             config,
             mac_key,
             windows: BTreeMap::new(),
@@ -731,6 +757,49 @@ impl<C: Clock> ShardSession<C> {
             commons: ShardCommons::default(),
             inbound: BTreeMap::new(),
         }
+    }
+
+    /// `epoch` and `factor` are identity and never change. `factor` must be
+    /// at least 1.
+    pub fn new_scaled(
+        clock: C,
+        mac_key: [u8; 32],
+        config: ShardConfig,
+        epoch: u64,
+        factor: u32,
+    ) -> Result<Self, ShardError> {
+        if factor == 0 {
+            return Err(ShardError::ZeroClockFactor);
+        }
+        Ok(Self {
+            clock,
+            epoch,
+            factor,
+            config,
+            mac_key,
+            windows: BTreeMap::new(),
+            seen: BTreeMap::new(),
+            attacks: BTreeMap::new(),
+            pruned_at: 0,
+            commons: ShardCommons::default(),
+            inbound: BTreeMap::new(),
+        })
+    }
+
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    pub fn factor(&self) -> u32 {
+        self.factor
+    }
+
+    fn real_now(&self) -> u64 {
+        self.clock.now_unix()
+    }
+
+    fn game_now(&self) -> u64 {
+        scale_unix(self.real_now(), self.epoch, self.factor)
     }
 
     /// The shard map's outposts, sites, and debris.
@@ -743,8 +812,9 @@ impl<C: Clock> ShardSession<C> {
         &mut self.commons
     }
 
+    /// Game unix on this shard (`epoch + factor * (wall - epoch)`).
     pub fn now_unix(&self) -> u64 {
-        self.clock.now_unix()
+        self.game_now()
     }
 
     /// Sign a pulse the host itself ingested. Clients never hold the key.
@@ -797,10 +867,11 @@ impl<C: Clock> ShardSession<C> {
             return Err(ShardError::EmptyIdempotency);
         }
         let _ = cmd.client_now_unix;
-        let now = self.clock.now_unix();
-        self.prune_due(now);
+        let real = self.real_now();
+        let now = self.game_now();
+        self.prune_due(real);
         let seen_key = (cmd.identity.clone(), cmd.idempotency_id.clone());
-        if self.is_seen(&seen_key, now) {
+        if self.is_seen(&seen_key, real) {
             return Ok(());
         }
         let raid_due = self.inbound.get(&state.home).is_some_and(|&at| at <= now);
@@ -813,7 +884,7 @@ impl<C: Clock> ShardSession<C> {
                 identity: cmd.identity,
             });
         }
-        self.admit(&cmd.identity, now)?;
+        self.admit(&cmd.identity, real)?;
         with_shared_debris(&mut self.commons.debris, state, |state| {
             state.catch_up(now);
             match (&cmd.intent, expedition) {
@@ -844,7 +915,7 @@ impl<C: Clock> ShardSession<C> {
             }
         })
         .map_err(ShardError::Intent)?;
-        self.seen.insert(seen_key, now);
+        self.seen.insert(seen_key, real);
         Ok(())
     }
 
@@ -864,9 +935,10 @@ impl<C: Clock> ShardSession<C> {
         if !verify_pulse(&self.mac_key, event.pulse, &event.mac) {
             return Err(ShardError::ForgedBridge);
         }
-        let now = self.clock.now_unix();
-        self.admit(identity, now)?;
-        Ok(state.apply_activity(event.pulse, now))
+        let real = self.real_now();
+        let now = self.game_now();
+        self.admit(identity, real)?;
+        Ok(state.apply_activity(scale_pulse(event.pulse, self.epoch, self.factor), now))
     }
 
     /// Launch a raid from `cmd.identity` at another tenant's home after
@@ -901,10 +973,11 @@ impl<C: Clock> ShardSession<C> {
         state
             .require_fair_play()
             .map_err(|e| ShardError::Intent(IntentError::Cheat(e)))?;
-        let now = self.clock.now_unix();
-        self.prune_due(now);
+        let real = self.real_now();
+        let now = self.game_now();
+        self.prune_due(real);
         let seen_key = (cmd.identity.clone(), cmd.idempotency_id.clone());
-        if self.is_seen(&seen_key, now) {
+        if self.is_seen(&seen_key, real) {
             return Ok(());
         }
         self.catch_up_shard(empires, now);
@@ -929,7 +1002,7 @@ impl<C: Clock> ShardSession<C> {
                 identity: defender_id.clone(),
             });
         }
-        self.admit(identity, now)?;
+        self.admit(identity, real)?;
         self.check_attack(identity, now)?;
         let state = empires
             .get_mut(identity)
@@ -944,7 +1017,7 @@ impl<C: Clock> ShardSession<C> {
             .or_default()
             .push(now);
         self.inbound = inbound_raids(empires);
-        self.seen.insert(seen_key, now);
+        self.seen.insert(seen_key, real);
         Ok(())
     }
 
@@ -969,7 +1042,7 @@ impl<C: Clock> ShardSession<C> {
         if identity.is_empty() {
             return Err(ShardError::EmptyIdentity);
         }
-        let now = self.clock.now_unix();
+        let now = self.game_now();
         if let Some(seated) = empires.get(identity) {
             let home = seated.home;
             self.commons.market.open(map.seed, now, &self.config.market);
@@ -982,6 +1055,11 @@ impl<C: Clock> ShardSession<C> {
         self.settle(empires);
         let coord = place_home(map, empires, self.commons.sites())?;
         seat_home(identity, build(coord), coord, empires, self.commons.sites())?;
+        if self.factor > 1
+            && let Some(state) = empires.get_mut(identity)
+        {
+            state.isolate_prestige(now);
+        }
         self.commons.market.open(map.seed, now, &self.config.market);
         Ok(coord)
     }
@@ -1014,10 +1092,11 @@ impl<C: Clock> ShardSession<C> {
                 identity: identity.to_string(),
             });
         }
-        let now = self.clock.now_unix();
-        self.prune_due(now);
+        let real = self.real_now();
+        let now = self.game_now();
+        self.prune_due(real);
         let seen_key = (identity.to_string(), idempotency_id.to_string());
-        if self.is_seen(&seen_key, now) {
+        if self.is_seen(&seen_key, real) {
             return Ok(());
         }
         {
@@ -1035,7 +1114,7 @@ impl<C: Clock> ShardSession<C> {
         if kind.blocks_planet_dest() {
             return Err(ShardError::Occupied { coord: dest, kind });
         }
-        self.admit(identity, now)?;
+        self.admit(identity, real)?;
         let state = empires
             .get_mut(identity)
             .ok_or_else(|| ShardError::UnknownIdentity {
@@ -1048,7 +1127,7 @@ impl<C: Clock> ShardSession<C> {
         };
         let proposal = propose(state, &intent, now).map_err(ShardError::Intent)?;
         apply(state, &proposal, now).map_err(ShardError::Intent)?;
-        self.seen.insert(seen_key, now);
+        self.seen.insert(seen_key, real);
         Ok(())
     }
 
@@ -1082,10 +1161,11 @@ impl<C: Clock> ShardSession<C> {
         state
             .require_fair_play()
             .map_err(|e| ShardError::Intent(IntentError::Cheat(e)))?;
-        let now = self.clock.now_unix();
-        self.prune_due(now);
+        let real = self.real_now();
+        let now = self.game_now();
+        self.prune_due(real);
         let seen_key = (cmd.identity.clone(), cmd.idempotency_id.clone());
-        if self.is_seen(&seen_key, now) {
+        if self.is_seen(&seen_key, real) {
             return Ok(());
         }
         self.catch_up_shard(empires, now);
@@ -1100,7 +1180,7 @@ impl<C: Clock> ShardSession<C> {
             }
             Occupancy::Tenant | Occupancy::Outpost => {}
         }
-        self.admit(identity, now)?;
+        self.admit(identity, real)?;
         let state = empires
             .get_mut(identity)
             .ok_or_else(|| ShardError::UnknownIdentity {
@@ -1120,7 +1200,7 @@ impl<C: Clock> ShardSession<C> {
             let proposal = propose(state, &intent, now).map_err(ShardError::Intent)?;
             apply(state, &proposal, now).map_err(ShardError::Intent)?;
         }
-        self.seen.insert(seen_key, now);
+        self.seen.insert(seen_key, real);
         Ok(())
     }
 
@@ -1151,14 +1231,15 @@ impl<C: Clock> ShardSession<C> {
         state
             .require_fair_play()
             .map_err(|e| ShardError::Intent(IntentError::Cheat(e)))?;
-        let now = self.clock.now_unix();
-        self.prune_due(now);
+        let real = self.real_now();
+        let now = self.game_now();
+        self.prune_due(real);
         let seen_key = (cmd.identity.clone(), cmd.idempotency_id.clone());
-        if self.is_seen(&seen_key, now) {
+        if self.is_seen(&seen_key, real) {
             return Ok(());
         }
         self.catch_up_shard(empires, now);
-        self.admit(identity, now)?;
+        self.admit(identity, real)?;
         let state = empires
             .get_mut(identity)
             .ok_or_else(|| ShardError::UnknownIdentity {
@@ -1168,7 +1249,7 @@ impl<C: Clock> ShardSession<C> {
             state.launch_recycle(state.home, cmd.dest, cmd.ships, cmd.speed_percent, now)
         })
         .map_err(|e| ShardError::Intent(IntentError::Fleet(e)))?;
-        self.seen.insert(seen_key, now);
+        self.seen.insert(seen_key, real);
         Ok(())
     }
 
@@ -1208,18 +1289,19 @@ impl<C: Clock> ShardSession<C> {
         if !self.commons.market.is_open() {
             return Err(ShardError::NoBook);
         }
-        let now = self.clock.now_unix();
-        self.prune_due(now);
+        let real = self.real_now();
+        let now = self.game_now();
+        self.prune_due(real);
         let seen_key = (cmd.identity.clone(), cmd.idempotency_id.clone());
-        if self.is_seen(&seen_key, now) {
+        if self.is_seen(&seen_key, real) {
             return Ok(());
         }
         self.catch_up_shard(empires, now);
-        self.admit(identity, now)?;
+        self.admit(identity, real)?;
         self.commons
             .market
             .place(identity, cmd.ticket, empires, now, &self.config.market)?;
-        self.seen.insert(seen_key, now);
+        self.seen.insert(seen_key, real);
         Ok(())
     }
 
@@ -1241,7 +1323,7 @@ impl<C: Clock> ShardSession<C> {
                 identity: identity.to_string(),
             });
         }
-        let now = self.clock.now_unix();
+        let now = self.game_now();
         self.catch_up_shard(empires, now);
         self.commons
             .market
@@ -1264,7 +1346,7 @@ impl<C: Clock> ShardSession<C> {
     /// calls this before [`Self::submit`] when it refuses with
     /// [`ShardError::Unsettled`].
     pub fn settle(&mut self, empires: &mut BTreeMap<String, GameState>) {
-        self.catch_up_shard(empires, self.clock.now_unix());
+        self.catch_up_shard(empires, self.game_now());
     }
 
     /// Catch every empire up at the host clock, then return `identity`'s view.
@@ -1291,14 +1373,20 @@ impl<C: Clock> ShardSession<C> {
                 identity: identity.to_string(),
             });
         }
-        let now = self.clock.now_unix();
+        let now = self.game_now();
         if let Some(state) = empires.get(identity) {
             state
                 .require_fair_play()
                 .map_err(|e| ShardError::Intent(crate::IntentError::Cheat(e)))?;
         }
         self.catch_up_shard(empires, now);
-        match shard_view(identity, empires, self.commons.sites()) {
+        match shard_view(
+            identity,
+            empires,
+            self.commons.sites(),
+            self.epoch,
+            self.factor,
+        ) {
             Some(view) => Ok(view),
             None => Err(ShardError::UnknownIdentity {
                 identity: identity.to_string(),
@@ -1307,10 +1395,16 @@ impl<C: Clock> ShardSession<C> {
     }
 
     /// Prune at the host clock, then serialise ids, windows and attack stamps.
+    /// Factor-1 sessions stay on version 1 so an older host can resume them.
+    /// Scaled sessions write version 2 so an older host fails closed.
     pub fn export_bookkeeping(&mut self) -> Result<ShardBookkeeping, ShardError> {
-        self.prune(self.clock.now_unix());
+        self.prune(self.real_now());
         let doc = BookkeepingDoc {
-            version: BOOKKEEPING_VERSION,
+            version: if self.factor > 1 {
+                BOOKKEEPING_VERSION
+            } else {
+                1
+            },
             seen: self
                 .seen
                 .iter()
@@ -1327,6 +1421,8 @@ impl<C: Clock> ShardSession<C> {
                 .iter()
                 .map(|(&coord, &at)| (coord_row(coord), at))
                 .collect(),
+            epoch: self.epoch,
+            factor: self.factor,
         };
         serde_json::to_vec(&doc)
             .map(ShardBookkeeping)
@@ -1334,15 +1430,26 @@ impl<C: Clock> ShardSession<C> {
     }
 
     /// Replace this session's bookkeeping with `saved`, then prune at the
-    /// host clock. Unreadable bytes or another version leave the session
-    /// untouched.
+    /// host clock. Unreadable bytes or a version other than 1 or 2 leave
+    /// the session untouched. Version 1 is a factor-1 document.
     pub fn restore_bookkeeping(&mut self, saved: &ShardBookkeeping) -> Result<(), ShardError> {
         let doc: BookkeepingDoc = serde_json::from_slice(saved.as_bytes())
             .map_err(|e| ShardError::Bookkeeping(e.to_string()))?;
-        if doc.version != BOOKKEEPING_VERSION {
+        if !BOOKKEEPING_READS.contains(&doc.version) {
             return Err(ShardError::Bookkeeping(format!(
                 "version {} is not {BOOKKEEPING_VERSION}",
                 doc.version
+            )));
+        }
+        if doc.factor == 0 {
+            return Err(ShardError::Bookkeeping(
+                "clock factor must be at least 1".into(),
+            ));
+        }
+        if doc.epoch != self.epoch || doc.factor != self.factor {
+            return Err(ShardError::Bookkeeping(format!(
+                "clock identity {0}+{1}x is not {2}+{3}x",
+                doc.epoch, doc.factor, self.epoch, self.factor
             )));
         }
         self.seen = doc
@@ -1357,7 +1464,7 @@ impl<C: Clock> ShardSession<C> {
             .into_iter()
             .map(|(row, at)| (row_coord(row), at))
             .collect();
-        self.prune(self.clock.now_unix());
+        self.prune(self.real_now());
         Ok(())
     }
 
@@ -1386,16 +1493,19 @@ impl<C: Clock> ShardSession<C> {
 
     /// Forget ids past [`ShardConfig::seen_ttl_secs`] and stamps outside
     /// their window, so a long-lived host does not grow without bound.
-    fn prune(&mut self, now: u64) {
-        self.pruned_at = now;
+    /// `real` is wall unix: seen ids and command stamps live there. Attack
+    /// stamps are game unix, so the attack window shrinks with `factor`.
+    fn prune(&mut self, real: u64) {
+        self.pruned_at = real;
         let ttl = self.config.seen_ttl_secs();
-        self.seen.retain(|_, at| now.saturating_sub(*at) < ttl);
-        let command = now.saturating_sub(self.config.command_window_secs.max(1));
+        self.seen.retain(|_, at| real.saturating_sub(*at) < ttl);
+        let command = real.saturating_sub(self.config.command_window_secs.max(1));
         self.windows.retain(|_, stamps| {
             stamps.retain(|&t| t > command);
             !stamps.is_empty()
         });
-        let attack = now.saturating_sub(self.config.attack_window_secs.max(1));
+        let game = scale_unix(real, self.epoch, self.factor);
+        let attack = game.saturating_sub(self.config.attack_window_secs.max(1));
         self.attacks.retain(|_, stamps| {
             stamps.retain(|&t| t > attack);
             !stamps.is_empty()
@@ -1920,6 +2030,8 @@ fn shard_view(
     identity: &str,
     empires: &BTreeMap<String, GameState>,
     sites: ShardSites<'_>,
+    epoch: u64,
+    factor: u32,
 ) -> Option<ShardView> {
     if !empires.contains_key(identity) {
         return None;
@@ -1945,6 +2057,8 @@ fn shard_view(
     Some(ShardView {
         identity: identity.to_string(),
         at: own.last_tick_unix,
+        epoch,
+        factor,
         home: own.home,
         planets,
         fleet: own.fleet,
@@ -2047,6 +2161,22 @@ fn canonical_pulse(pulse: ActivityPulse) -> Vec<u8> {
         }
     }
     out
+}
+
+fn scale_pulse(pulse: ActivityPulse, epoch: u64, factor: u32) -> ActivityPulse {
+    let ts = scale_unix(pulse.ts(), epoch, factor);
+    match pulse {
+        ActivityPulse::PrMerged { .. } => ActivityPulse::PrMerged { ts },
+        ActivityPulse::WorkflowFinished { success, .. } => {
+            ActivityPulse::WorkflowFinished { ts, success }
+        }
+        ActivityPulse::AgentFinished { duration_secs, .. } => {
+            ActivityPulse::AgentFinished { ts, duration_secs }
+        }
+        ActivityPulse::AgentWaiting { waiting_secs, .. } => {
+            ActivityPulse::AgentWaiting { ts, waiting_secs }
+        }
+    }
 }
 
 fn mac_pulse(key: &[u8; 32], pulse: ActivityPulse) -> [u8; 32] {
@@ -2231,6 +2361,33 @@ mod tests {
     }
 
     #[test]
+    fn scaled_bridge_pulse_applies_at_game_time() {
+        let mut shard = scaled_session(1_000, 1_000, 10);
+        let mut state = test_state(1_000);
+        shard.clock.advance(10);
+        shard
+            .submit(&mut state, build_cmd("tenant-a", "catch", None))
+            .unwrap();
+        assert_eq!(state.last_tick_unix, 1_100);
+        let iron = state.resources.iron;
+        let event = shard.sign_bridge(ActivityPulse::PrMerged { ts: 1_010 });
+        let result = shard.apply_bridge(&mut state, "tenant-a", &event).unwrap();
+        assert_eq!(result, ActivityApply::Applied);
+        assert!(state.resources.iron > iron);
+    }
+
+    #[test]
+    fn scaled_bridge_pulse_before_epoch_is_stale() {
+        let mut shard = scaled_session(1_000, 1_000, 10);
+        let mut state = test_state(1_000);
+        let iron = state.resources.iron;
+        let event = shard.sign_bridge(ActivityPulse::PrMerged { ts: 990 });
+        let result = shard.apply_bridge(&mut state, "tenant-a", &event).unwrap();
+        assert_eq!(result, ActivityApply::Skipped);
+        assert_eq!(state.resources.iron, iron);
+    }
+
+    #[test]
     fn mutated_pulse_fails_the_mac() {
         let mut shard = session(1_000);
         let mut state = test_state(1_000);
@@ -2364,6 +2521,52 @@ mod tests {
     }
 
     #[test]
+    fn restored_bookkeeping_keeps_the_clock_identity() {
+        let mut scaled = scaled_session(1_000, 1_000, 10);
+        let mut state = test_state(1_000);
+        scaled
+            .submit(&mut state, build_cmd("tenant-a", "same", None))
+            .unwrap();
+        let saved = scaled.export_bookkeeping().unwrap();
+        let scaled_doc: serde_json::Value = serde_json::from_slice(saved.as_bytes()).unwrap();
+        assert_eq!(scaled_doc["version"], 2, "older hosts refuse scaled bytes");
+        let mut same = scaled_session(1_030, 1_000, 10);
+        same.restore_bookkeeping(&saved).unwrap();
+        same.submit(&mut state, build_cmd("tenant-a", "same", None))
+            .unwrap();
+        assert_eq!(state.build_queue.len(), 1);
+        let err = session(1_030).restore_bookkeeping(&saved).unwrap_err();
+        assert!(
+            matches!(err, ShardError::Bookkeeping(ref msg) if msg.contains("clock identity")),
+            "{err}"
+        );
+        let legacy = ShardBookkeeping::from_bytes(
+            br#"{"version":1,"seen":[],"windows":{},"attacks":{}}"#.to_vec(),
+        );
+        let mut ordinary = session(1_000);
+        ordinary.restore_bookkeeping(&legacy).unwrap();
+        let factor_one = ordinary.export_bookkeeping().unwrap();
+        let factor_one_doc: serde_json::Value =
+            serde_json::from_slice(factor_one.as_bytes()).unwrap();
+        assert_eq!(factor_one_doc["version"], 1);
+        let err = scaled_session(1_000, 1_000, 10)
+            .restore_bookkeeping(&legacy)
+            .unwrap_err();
+        assert!(
+            matches!(err, ShardError::Bookkeeping(ref msg) if msg.contains("clock identity")),
+            "{err}"
+        );
+        let unknown = ShardBookkeeping::from_bytes(
+            br#"{"version":3,"seen":[],"windows":{},"attacks":{}}"#.to_vec(),
+        );
+        let err = session(1_000).restore_bookkeeping(&unknown).unwrap_err();
+        assert!(
+            matches!(err, ShardError::Bookkeeping(ref msg) if msg.contains("version 3")),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn an_id_older_than_the_ttl_is_forgotten_and_applies_again() {
         let ttl = ShardConfig::default().seen_ttl_secs();
         assert!(ttl >= ShardConfig::default().command_window_secs);
@@ -2421,7 +2624,7 @@ mod tests {
             .unwrap();
         for bad in [
             b"not json".to_vec(),
-            br#"{"version":2,"seen":[],"windows":{},"attacks":{}}"#.to_vec(),
+            br#"{"version":3,"seen":[],"windows":{},"attacks":{}}"#.to_vec(),
         ] {
             let err = shard
                 .restore_bookkeeping(&ShardBookkeeping::from_bytes(bad))
@@ -2968,6 +3171,8 @@ mod tests {
         let view = shard.view("tenant-a", &mut empires).unwrap();
         let json = view.to_json();
         let text = serde_json::to_string(&json).unwrap();
+        assert_eq!(json["epoch"], 0);
+        assert_eq!(json["factor"], 1);
         assert!(!text.contains("tenant-b"), "{text}");
         assert!(!text.contains("888777"), "{text}");
         let slots = json["occupancy"].as_array().unwrap();
@@ -4130,5 +4335,303 @@ mod tests {
             },
             "a local expedition still flies to its home-system slot"
         );
+    }
+
+    fn scaled_session(now: u64, epoch: u64, factor: u32) -> ShardSession<FakeClock> {
+        ShardSession::new_scaled(
+            FakeClock::new(now),
+            KEY,
+            ShardConfig::default(),
+            epoch,
+            factor,
+        )
+        .expect("factor >= 1")
+    }
+
+    fn close_resources(a: &Resources, b: &Resources) {
+        assert!(
+            (a.iron - b.iron).abs() < 1e-6,
+            "iron {} vs {}",
+            a.iron,
+            b.iron
+        );
+        assert!(
+            (a.silicon - b.silicon).abs() < 1e-6,
+            "silicon {} vs {}",
+            a.silicon,
+            b.silicon
+        );
+        assert!(
+            (a.deuterium - b.deuterium).abs() < 1e-6,
+            "deuterium {} vs {}",
+            a.deuterium,
+            b.deuterium
+        );
+    }
+
+    #[test]
+    fn zero_clock_factor_is_refused() {
+        let err = match ShardSession::new_scaled(
+            FakeClock::new(1_000),
+            KEY,
+            ShardConfig::default(),
+            1_000,
+            0,
+        ) {
+            Ok(_) => panic!("factor 0 must be refused"),
+            Err(err) => err,
+        };
+        assert_eq!(err, ShardError::ZeroClockFactor);
+    }
+
+    #[test]
+    fn catch_up_over_t_real_seconds_at_factor_k_matches_factor_one() {
+        const EPOCH: u64 = 1_000;
+        const K: u32 = 10;
+        const T: u64 = 12;
+        let mut slow = session(EPOCH);
+        let mut fast = scaled_session(EPOCH, EPOCH, K);
+        let mut slow_empires = two_empires(tenant_a(EPOCH), tenant_b(EPOCH));
+        let mut fast_empires = two_empires(tenant_a(EPOCH), tenant_b(EPOCH));
+        slow.clock.advance(u64::from(K) * T);
+        fast.clock.advance(T);
+        let slow_view = slow.view("tenant-a", &mut slow_empires).unwrap();
+        let fast_view = fast.view("tenant-a", &mut fast_empires).unwrap();
+        assert_eq!(slow_view.at, fast_view.at);
+        assert_eq!(slow_view.at, EPOCH + u64::from(K) * T);
+        close_resources(&slow_view.resources, &fast_view.resources);
+        assert_eq!(slow_view.missions, fast_view.missions);
+        assert_eq!(
+            slow_empires["tenant-a"].build_queue,
+            fast_empires["tenant-a"].build_queue
+        );
+        assert_eq!(slow_view.factor, 1);
+        assert_eq!(fast_view.epoch, EPOCH);
+        assert_eq!(fast_view.factor, K);
+        let slow_b = slow.view("tenant-b", &mut slow_empires).unwrap();
+        let fast_b = fast.view("tenant-b", &mut fast_empires).unwrap();
+        assert_eq!(slow_b.at, fast_b.at);
+        assert_eq!(slow_b.at, fast_view.at);
+    }
+
+    #[test]
+    fn duplicate_idempotency_id_on_a_scaled_shard_applies_once() {
+        let mut shard = scaled_session(1_000, 1_000, 10);
+        let mut state = test_state(1_000);
+        shard
+            .submit(&mut state, build_cmd("tenant-a", "same", None))
+            .unwrap();
+        let iron = state.resources.iron;
+        shard
+            .submit(&mut state, build_cmd("tenant-a", "same", None))
+            .unwrap();
+        assert_eq!(state.build_queue.len(), 1);
+        assert!((state.resources.iron - iron).abs() < 1e-9);
+        shard.clock.advance(7);
+        shard
+            .submit(&mut state, build_cmd("tenant-a", "same", None))
+            .unwrap();
+        assert_eq!(state.build_queue.len(), 1);
+        shard
+            .submit(&mut state, build_cmd("tenant-a", "next", None))
+            .unwrap();
+        assert_eq!(state.last_tick_unix, 1_070);
+    }
+
+    #[test]
+    fn command_limit_stays_on_wall_time_at_factor_ten() {
+        let mut shard = ShardSession::new_scaled(
+            FakeClock::new(1_000),
+            KEY,
+            ShardConfig {
+                command_window_secs: 60,
+                command_limit: 2,
+                ..ShardConfig::default()
+            },
+            1_000,
+            10,
+        )
+        .unwrap();
+        let mut state = test_state(1_000);
+        shard
+            .submit(&mut state, build_cmd("tenant-a", "a", None))
+            .unwrap();
+        shard
+            .submit(&mut state, build_cmd("tenant-a", "b", None))
+            .unwrap();
+        let err = shard
+            .submit(&mut state, build_cmd("tenant-a", "c", None))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ShardError::RateLimited { identity, .. } if identity == "tenant-a"
+        ));
+        shard.clock.advance(6);
+        let err = shard
+            .submit(&mut state, build_cmd("tenant-a", "c", None))
+            .unwrap_err();
+        assert!(matches!(err, ShardError::RateLimited { .. }));
+        shard.clock.advance(54);
+        shard
+            .submit(&mut state, build_cmd("tenant-a", "c", None))
+            .unwrap();
+        assert_eq!(state.last_tick_unix, 1_000 + 60 * 10);
+    }
+
+    #[test]
+    fn attack_window_expires_k_times_sooner_in_real_time() {
+        const WINDOW: u64 = 100;
+        let cfg = ShardConfig {
+            newbie_secs: 0,
+            attack_limit: 1,
+            attack_window_secs: WINDOW,
+            ..ShardConfig::default()
+        };
+        let mut slow = ShardSession::new(FakeClock::new(RAID_START), KEY, cfg.clone());
+        let mut fast =
+            ShardSession::new_scaled(FakeClock::new(RAID_START), KEY, cfg, RAID_START, 10).unwrap();
+        let mut slow_empires = raid_empires(20, 2);
+        let mut fast_empires = raid_empires(20, 2);
+        for empires in [&mut slow_empires, &mut fast_empires] {
+            for state in empires.values_mut() {
+                state.config.flight.base_fleet_slots = 2;
+            }
+        }
+        slow.launch_raid(&mut slow_empires, raid_cmd(10, B_HOME, "r1"))
+            .unwrap();
+        fast.launch_raid(&mut fast_empires, raid_cmd(10, B_HOME, "r1"))
+            .unwrap();
+        assert!(matches!(
+            slow.launch_raid(&mut slow_empires, raid_cmd(10, B_HOME, "r2")),
+            Err(ShardError::AttackCapped { .. })
+        ));
+        assert!(matches!(
+            fast.launch_raid(&mut fast_empires, raid_cmd(10, B_HOME, "r2")),
+            Err(ShardError::AttackCapped { .. })
+        ));
+        fast.clock.advance(WINDOW / 10);
+        fast.launch_raid(&mut fast_empires, raid_cmd(10, B_HOME, "r2"))
+            .unwrap();
+        assert!(matches!(
+            slow.launch_raid(&mut slow_empires, raid_cmd(10, B_HOME, "r2")),
+            Err(ShardError::AttackCapped { .. })
+        ));
+        slow.clock.advance(WINDOW);
+        slow.launch_raid(&mut slow_empires, raid_cmd(10, B_HOME, "r2"))
+            .unwrap();
+    }
+
+    #[test]
+    fn raid_at_game_t_matches_factor_one() {
+        let mut slow = raid_session(RAID_START, 0, 3);
+        let mut fast = ShardSession::new_scaled(
+            FakeClock::new(RAID_START),
+            KEY,
+            ShardConfig {
+                newbie_secs: 0,
+                attack_limit: 3,
+                ..ShardConfig::default()
+            },
+            RAID_START,
+            10,
+        )
+        .unwrap();
+        let mut slow_empires = raid_empires(8, 30);
+        let mut fast_empires = raid_empires(8, 30);
+        let arrive = launch(&mut slow, &mut slow_empires);
+        launch(&mut fast, &mut fast_empires);
+        assert_eq!(
+            slow_empires["a"].missions[0].phase_ends_at,
+            fast_empires["a"].missions[0].phase_ends_at
+        );
+        let mut real_arrive = crate::wall_unix(arrive, RAID_START, 10);
+        if crate::scale_unix(real_arrive, RAID_START, 10) < arrive {
+            real_arrive += 1;
+        }
+        let game_arrive = crate::scale_unix(real_arrive, RAID_START, 10);
+        slow.clock.set(game_arrive);
+        fast.clock.set(real_arrive);
+        slow.settle(&mut slow_empires);
+        fast.settle(&mut fast_empires);
+        assert_eq!(
+            slow_empires["b"].combat_logs.last().map(|log| &log.report),
+            fast_empires["b"].combat_logs.last().map(|log| &log.report)
+        );
+        assert_eq!(slow_empires["b"].fleet, fast_empires["b"].fleet);
+        assert_eq!(
+            slow_empires["a"].missions.first().map(|m| m.ships),
+            fast_empires["a"].missions.first().map(|m| m.ships)
+        );
+    }
+
+    #[test]
+    fn tenant_view_json_carries_epoch_and_factor() {
+        let mut shard = scaled_session(1_000, 1_000, 10);
+        place_sites(&mut shard);
+        let mut empires = two_empires(tenant_a(1_000), tenant_b(1_000));
+        let json = shard.view("tenant-a", &mut empires).unwrap().to_json();
+        assert_eq!(json["epoch"], 1_000);
+        assert_eq!(json["factor"], 10);
+        let mut keys: Vec<_> = json.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        let mut without_clock = keys.clone();
+        without_clock.retain(|k| k != "epoch" && k != "factor");
+        assert_eq!(
+            without_clock,
+            [
+                "at",
+                "decision",
+                "home",
+                "identity",
+                "inbound",
+                "occupancy",
+                "planets",
+                "raids",
+                "resources"
+            ]
+        );
+    }
+
+    #[test]
+    fn blitz_join_isolates_prestige_and_resume_keeps_it() {
+        let mut shard = scaled_session(1_000, 1_000, 10);
+        let mut empires = BTreeMap::new();
+        shard
+            .join("tenant-a", WALK, &mut empires, |_| {
+                let mut state = test_state(1_000);
+                state.prestige.currency = 9;
+                state.prestige.lifetime = 4;
+                state
+            })
+            .unwrap();
+        assert_eq!(empires["tenant-a"].prestige.currency, 0);
+        assert_eq!(empires["tenant-a"].prestige.lifetime, 0);
+        let run = empires["tenant-a"]
+            .season
+            .as_ref()
+            .expect("isolated overlay");
+        assert!(!run.prestige);
+        assert_eq!(run.ruleset_id, crate::ISOLATED_PRESTIGE);
+        {
+            let seated = empires.get_mut("tenant-a").unwrap();
+            seated.config.victory.enabled = true;
+            seated.config.victory.wonder_id = "dyson_ring".into();
+            seated.completed_wonders.push("dyson_ring".into());
+            seated.maybe_declare_victory(seated.last_tick_unix);
+            let rec = seated.victory.as_ref().expect("victory");
+            assert_eq!(rec.prestige, 0);
+            assert_eq!(seated.prestige.currency, 0);
+            seated.victory = None;
+            seated.completed_wonders.clear();
+        }
+        empires.get_mut("tenant-a").unwrap().prestige.currency = 3;
+        let before = empires.clone();
+        shard
+            .join("tenant-a", WALK, &mut empires, |_| {
+                unreachable!("resume builds nothing")
+            })
+            .unwrap();
+        assert_eq!(empires["tenant-a"].prestige.currency, 3);
+        assert_eq!(empires, before);
     }
 }

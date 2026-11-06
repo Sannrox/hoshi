@@ -95,6 +95,13 @@ pub fn countdown(secs: u64) -> String {
     }
 }
 
+/// Wall-time countdown from a shard view whose game seconds run at `factor`.
+/// The TUI Join client is the call site; this helper ships with the view fields.
+#[allow(dead_code)]
+pub fn shard_countdown(game_deadline: u64, game_now: u64, factor: u32) -> String {
+    countdown(hoshi_core::wall_remaining(game_deadline, game_now, factor))
+}
+
 /// `+500`, `−388`, `0`: [`compact`] with an explicit sign and a true minus.
 pub fn signed(v: f64) -> String {
     let text = compact(v.abs());
@@ -165,6 +172,8 @@ mod tests {
         assert_eq!(duration(273_600), "3d 04h");
         assert_eq!(countdown(3_582), "59:42");
         assert_eq!(countdown(3_900), "1:05:00");
+        assert_eq!(shard_countdown(1_070, 1_000, 1), countdown(70));
+        assert_eq!(shard_countdown(1_070, 1_000, 10), countdown(7));
     }
 
     #[test]
