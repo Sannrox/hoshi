@@ -524,6 +524,7 @@ impl GameState {
         winner: crate::CombatWinner,
         plunder: crate::Resources,
         at: u64,
+        dest: crate::Coord,
     ) {
         if winner != crate::CombatWinner::Attacker {
             return;
@@ -531,7 +532,7 @@ impl GameState {
         let id = self.push_incident(
             IncidentKind::Raid,
             Severity::High,
-            vec![self.home.to_string()],
+            vec![dest.to_string()],
             at,
         );
         let resolution = format!("raid over, plunder {}", plunder.brief());
@@ -711,7 +712,7 @@ mod tests {
         let mut state = GameState::with_config(1_000, cfg);
         let plunder = crate::Resources::from_parts(155.0, 224.0, 0.0);
         for n in 0..17 {
-            state.note_raid_incident(CombatWinner::Attacker, plunder, 1_000 + n);
+            state.note_raid_incident(CombatWinner::Attacker, plunder, 1_000 + n, state.home);
         }
         assert!(state.incident_snapshot().open.is_empty());
         let raids: Vec<_> = state
