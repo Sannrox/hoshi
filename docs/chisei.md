@@ -200,6 +200,9 @@ which runs under the default `cargo test`.
 Story flags, daily slots, and victory are per tenant, and the shard stays
 open after a victory; prestige reset is local only
 ([ADR 0021](decisions/0021-shard-progression-is-per-tenant.md)).
+A shard created as a blitz shard may use a scaled clock and a finish line
+([ADR 0022](decisions/0022-blitz-shards-run-on-a-scaled-clock-and-end-with-a-winner.md));
+ordinary shards stay open after a per-tenant victory.
 
 ## Arena
 

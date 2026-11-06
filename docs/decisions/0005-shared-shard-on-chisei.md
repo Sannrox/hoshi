@@ -2,7 +2,8 @@
 
 - Status: Partially superseded by [0017](0017-local-tui-may-join-a-chisei-shard.md);
   raid snapshot timing amended by [0019](0019-shard-raids-are-missions-with-flight.md);
-  tenant identity in [0020](0020-shard-identity-is-a-host-tenant.md)
+  tenant identity in [0020](0020-shard-identity-is-a-host-tenant.md);
+  blitz clock and finish line in [0022](0022-blitz-shards-run-on-a-scaled-clock-and-end-with-a-winner.md)
 - Date: 2026-10-12
 - Partially supersedes: [0004](0004-no-shared-universe.md)
 - Follows: [0002](0002-terminal-idle-game-with-event-bridge.md)
