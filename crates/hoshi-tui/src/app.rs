@@ -4850,6 +4850,36 @@ mod tests {
     }
 
     #[test]
+    fn robotics_inspector_shows_construction_speed() {
+        let mut app = App::new(GameState::new(1_000));
+        app.screen = Screen::Planet;
+        app.selected = BuildingKind::ALL
+            .iter()
+            .position(|kind| *kind == BuildingKind::RoboticsFactory)
+            .unwrap();
+        let detail = app.current_detail().unwrap();
+        let row = detail
+            .deltas
+            .iter()
+            .find(|d| d.label == "construction ×")
+            .expect("construction ×");
+        assert_eq!((row.from.as_str(), row.to.as_str()), ("1.0", "2.0"));
+        let text = render_text(&app, 160, 48);
+        assert!(text.contains("construction ×"), "{text}");
+        assert!(text.contains("shortens construction"), "{text}");
+        app.selected = BuildingKind::ALL
+            .iter()
+            .position(|kind| *kind == BuildingKind::MetalMine)
+            .unwrap();
+        let mine = app.current_detail().unwrap();
+        assert!(
+            mine.deltas.iter().all(|d| d.label != "construction ×"),
+            "{:?}",
+            mine.deltas
+        );
+    }
+
+    #[test]
     fn market_amount_steps_by_size_and_the_screen_shows_blockers_before_enter() {
         let mut state = GameState::new(1_000);
         state.config.market.cargo_free = 100.0;
