@@ -6,7 +6,7 @@
 | [0002](0002-terminal-idle-game-with-event-bridge.md) | Real-time idle game in the terminal with an agent/GitHub event bridge | Accepted, crate list amended by 0018 |
 | [0003](0003-pixel-portraits-with-ascii-fallback.md) | Pixel portraits with ASCII fallback | Accepted |
 | [0004](0004-no-shared-universe.md) | No shared universe | Partially superseded by 0005 |
-| [0005](0005-shared-shard-on-chisei.md) | Shared shard hosted on Chisei | Partially superseded by 0017; raid snapshot timing in 0019; tenant identity in 0020 |
+| [0005](0005-shared-shard-on-chisei.md) | Shared shard hosted on Chisei | Partially superseded by 0017; raid snapshot timing in 0019; tenant identity in 0020; blitz clock and finish line in 0022 |
 | [0006](0006-storage-trait.md) | Persistence through a Storage trait | Accepted, amended by 0018 |
 | [0007](0007-optional-chisei-backend.md) | Optional in-process Chisei backend | Accepted; TUI-client rejection superseded by 0017 |
 | [0008](0008-human-help-catalog.md) | Human help from the command catalog | Accepted |
@@ -22,4 +22,5 @@
 | [0018](0018-hoshi-storage-crate.md) | Persistence lives in hoshi-storage | Accepted |
 | [0019](0019-shard-raids-are-missions-with-flight.md) | Shard raids are missions with flight | Accepted |
 | [0020](0020-shard-identity-is-a-host-tenant.md) | Shard identity is a host tenant | Accepted |
-| [0021](0021-shard-progression-is-per-tenant.md) | Shard progression is per tenant | Accepted |
+| [0021](0021-shard-progression-is-per-tenant.md) | Shard progression is per tenant | Accepted; blitz finish line is 0022 |
+| [0022](0022-blitz-shards-run-on-a-scaled-clock-and-end-with-a-winner.md) | Blitz shards run on a scaled clock and end with a winner | Accepted |

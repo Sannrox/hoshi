@@ -1,6 +1,7 @@
 # ADR 0021: Shard progression is per tenant
 
-- Status: Accepted
+- Status: Accepted; blitz finish line is
+  [0022](0022-blitz-shards-run-on-a-scaled-clock-and-end-with-a-winner.md)
 - Date: 2026-11-04
 - Follows: [0005](0005-shared-shard-on-chisei.md), [0020](0020-shard-identity-is-a-host-tenant.md)
 - Source: [#390](https://github.com/Sannrox/hoshi/issues/390)
@@ -31,7 +32,10 @@ shared on the seed, or local only.
 - All four already hold: the state lives in each tenant's `GameState`, and
   `Intent` has no prestige, daily, or victory variant, so `ShardSession::submit`
   cannot reach them. No host-owned story or victory object is needed.
-- A future shared arc, shard-wide victory, or shard prestige needs a new ADR.
+- A shard-wide finish line is
+  [0022](0022-blitz-shards-run-on-a-scaled-clock-and-end-with-a-winner.md)
+  (opt-in at creation; ordinary shards still stay open). A future shared
+  arc or shard prestige still needs a new ADR.
 - #370 (whether the next local galaxy remembers the closed arc) stays a local
   question.
 
