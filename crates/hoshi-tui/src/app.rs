@@ -3900,14 +3900,8 @@ impl App {
 
     fn building_block_reason(&self, kind: BuildingKind) -> Option<String> {
         let coord = self.selected_coord();
-        let buildings = self
-            .state
-            .buildings_at(coord)
-            .unwrap_or(&self.state.buildings);
-        let queue = self.state.queue_at(coord).unwrap_or(&[]);
         for &(req, required) in &self.state.config.buildings.get(kind).prerequisites {
-            let actual =
-                buildings.get(req) + queue.iter().filter(|job| job.building == req).count() as u32;
+            let actual = self.state.available_building_level_at(coord, req);
             if actual < required {
                 return Some(format!("need {req} {required}"));
             }
@@ -8692,6 +8686,31 @@ mod tests {
         assert!(text.contains("Status   BLOCKED"), "{text}");
         assert!(!text.contains("Status   READY"), "{text}");
         assert!(text.contains("have 0"), "{text}");
+    }
+
+    #[test]
+    fn shipyard_inspector_stays_blocked_while_robotics_is_only_queued() {
+        let mut app = detail_app();
+        app.state.resources = hoshi_core::Resources::from_parts(1e6, 1e6, 1e6);
+        app.state.next_raid_at = None;
+        app.state
+            .enqueue_build(BuildingKind::RoboticsFactory, 1_000)
+            .unwrap();
+        app.screen = Screen::Planet;
+        app.selected = BuildingKind::ALL
+            .iter()
+            .position(|kind| *kind == BuildingKind::Shipyard)
+            .unwrap();
+        let queued = render_text(&app, 160, 48);
+        assert!(queued.contains("NEED ROBOTICS FACTORY 1"), "{queued}");
+        assert!(queued.contains("robotics factory 1 (have 0)"), "{queued}");
+        assert!(queued.contains("Status   BLOCKED"), "{queued}");
+        let done = app.state.build_queue[0].completes_at.unwrap();
+        app.state.catch_up(done);
+        let ready = render_text(&app, 160, 48);
+        assert!(ready.contains("robotics factory 1 (have 1)"), "{ready}");
+        assert!(!ready.contains("NEED ROBOTICS FACTORY 1"), "{ready}");
+        assert!(!ready.contains("Status   BLOCKED"), "{ready}");
     }
 
     #[test]

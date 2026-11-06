@@ -757,10 +757,21 @@ mod tests {
             .enqueue_dismantle_as(state.home, BuildingKind::ResearchLab, 100, Actor::Player)
             .unwrap();
         state.enqueue_build(BuildingKind::ResearchLab, 100).unwrap();
-        state
-            .enqueue_build(BuildingKind::FissionReactor, 100)
-            .unwrap();
+        assert!(matches!(
+            state.enqueue_build(BuildingKind::FissionReactor, 100),
+            Err(BuildError::MissingPrerequisite {
+                building: BuildingKind::ResearchLab,
+                required: 2,
+                actual: 1,
+            })
+        ));
         state.catch_up(10_000);
+        assert!(state.build_queue.is_empty(), "{:?}", state.build_queue);
+        assert_eq!(state.buildings.research_lab, 2);
+        state
+            .enqueue_build(BuildingKind::FissionReactor, state.last_tick_unix)
+            .unwrap();
+        state.catch_up(state.last_tick_unix + 10_000);
         assert!(state.build_queue.is_empty(), "{:?}", state.build_queue);
         assert_eq!(state.buildings.research_lab, 2);
         assert_eq!(state.buildings.fission_reactor, 1);
