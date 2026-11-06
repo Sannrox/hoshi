@@ -97,7 +97,10 @@ pub use classification::{
     LeakIncident, Marking, SharingAgreement, join_compartments, parse_compartment,
     split_compartments,
 };
-pub use clock::{Clock, FakeClock, SystemClock};
+pub use clock::{
+    Clock, ClockScaleError, FakeClock, ScaledClock, SystemClock, scale_unix, wall_remaining,
+    wall_unix,
+};
 pub use combat::{
     CombatFrame, CombatLog, CombatModifiers, CombatReport, CombatWinner, GroundReport,
     MAX_COMBAT_LOGS, RaidDefence, RaidLosses, RoundAction, next_u64, plunder_from,
@@ -227,8 +230,8 @@ pub use rivals::{
 };
 pub use scenario::{Baseline, Outcome, PlannedAction, Scenario, ScenarioError};
 pub use season::{
-    SEASON_SYSTEMS, SeasonCatalog, SeasonError, SeasonRuleset, SeasonRun, SeasonWindow,
-    season_slot_name,
+    ISOLATED_PRESTIGE, SEASON_SYSTEMS, SeasonCatalog, SeasonError, SeasonRuleset, SeasonRun,
+    SeasonWindow, season_slot_name,
 };
 pub use self_play::{
     SelfPlayCell, SelfPlayConfig, SelfPlayReport, path_bot_relpaths, run_self_play,

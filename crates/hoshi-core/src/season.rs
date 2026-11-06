@@ -11,6 +11,9 @@ const DEFAULT_SEASONS: &str = include_str!("../data/seasons.toml");
 /// Systems a rule set may enable or disable. Unknown keys fail load.
 pub const SEASON_SYSTEMS: &[&str] = &["raid", "market", "activity", "victory", "moons"];
 
+/// Overlay id that wipes prestige awards without a seasonal ruleset.
+pub const ISOLATED_PRESTIGE: &str = "isolated";
+
 /// One playable seasonal galaxy window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeasonWindow {
@@ -343,9 +346,29 @@ impl GameState {
         let Some(run) = self.season.as_ref() else {
             return Ok(());
         };
+        if run.ruleset_id == ISOLATED_PRESTIGE {
+            return Ok(());
+        }
         let (config, _) = catalog.overlay(&run.ruleset_id, self.config.clone())?;
         self.config = config;
         Ok(())
+    }
+
+    /// Isolated-season overlay: prestige stays empty and later victories award none.
+    pub fn isolate_prestige(&mut self, now_unix: u64) {
+        self.prestige = crate::Prestige::new(now_unix);
+        match self.season.as_mut() {
+            Some(run) => run.prestige = false,
+            None => {
+                self.season = Some(SeasonRun {
+                    ruleset_id: ISOLATED_PRESTIGE.into(),
+                    window_start: now_unix,
+                    window_end: now_unix,
+                    seed: self.galaxy_seed,
+                    prestige: false,
+                });
+            }
+        }
     }
 }
 
@@ -480,5 +503,30 @@ narnia = true
         assert_eq!(rec.prestige, 0);
         assert_eq!(state.prestige.currency, before);
         assert!(state.achievements.contains_key("season_double_haul"));
+    }
+
+    #[test]
+    fn isolate_prestige_stops_victory_awards_without_a_ruleset() {
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.enabled = false;
+        cfg.victory.enabled = true;
+        cfg.victory.wonder_id = "dyson_ring".into();
+        let mut state = GameState::with_config(1_000, cfg);
+        state.prestige.currency = 4;
+        state.isolate_prestige(1_000);
+        assert_eq!(state.prestige.currency, 0);
+        assert_eq!(
+            state.season.as_ref().map(|run| run.ruleset_id.as_str()),
+            Some(ISOLATED_PRESTIGE)
+        );
+        state
+            .apply_loaded_season(&SeasonCatalog::default())
+            .unwrap();
+        state.completed_wonders.push("dyson_ring".into());
+        state.maybe_declare_victory(1_000);
+        let rec = state.victory.as_ref().expect("victory");
+        assert_eq!(rec.prestige, 0);
+        assert_eq!(state.prestige.currency, 0);
+        assert!(!state.achievements.contains_key("season_double_haul"));
     }
 }
