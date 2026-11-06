@@ -24,3 +24,4 @@
 | [0020](0020-shard-identity-is-a-host-tenant.md) | Shard identity is a host tenant | Accepted |
 | [0021](0021-shard-progression-is-per-tenant.md) | Shard progression is per tenant | Accepted; blitz finish line is 0022 |
 | [0022](0022-blitz-shards-run-on-a-scaled-clock-and-end-with-a-winner.md) | Blitz shards run on a scaled clock and end with a winner | Accepted |
+| [0023](0023-planet-raids-keep-sequential-combat-layers.md) | Planet raids keep sequential combat layers | Accepted |

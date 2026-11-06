@@ -8175,7 +8175,7 @@ fn format_layered_raid(
         .map(|label| format!("defences lost {label}. "))
         .unwrap_or_default();
     format!(
-        "raid: {lead}pirates {} vs {}. {intercept}orbital stations {}->{} hangar {}->{} {} rounds. {dome}. batteries {}->{}. {ground}. lost {}. pirates lost {}. rebuilt {}. winner {}. {defs}plunder {}",
+        "raid: {lead}pirates {} vs {} in orbit. {intercept}orbital stations {}->{} hangar {}->{} {} rounds. {dome}. batteries {}->{}. {ground}. lost {}. pirates lost {}. rebuilt {}. winner {}. {defs}plunder {}",
         pirates.label(),
         parked.label(),
         battle.stations_before,
@@ -10603,6 +10603,7 @@ modifiers = []
             .expect("raid report")
             .text
             .as_str();
+        assert!(text.contains("in orbit"), "{text}");
         assert!(text.contains("orbital stations"), "{text}");
         assert!(text.contains("dome"), "{text}");
         assert!(text.contains("batteries"), "{text}");

@@ -536,13 +536,17 @@ pub fn alerts(state: &GameState, focus: Option<hoshi_core::VictoryPath>) -> Vec<
     rows
 }
 
-/// The two lines a raid on home leads with: hulls destroyed (never rebuilt),
-/// then defences the repair crews returned and batteries still missing.
+/// The two lines a raid on home leads with: hulls destroyed in orbit
+/// (never rebuilt), then defences the repair crews returned and batteries
+/// still missing.
 pub fn raid_loss_lines(losses: hoshi_core::RaidLosses) -> [String; 2] {
     let ships = if losses.ships_lost.is_empty() {
         "Ships lost: none".to_string()
     } else {
-        format!("Ships lost: {} (gone for good)", losses.ships_lost.label())
+        format!(
+            "Ships lost: {} (orbit first, gone for good)",
+            losses.ships_lost.label()
+        )
     };
     let missing = losses
         .batteries_missing
@@ -1827,7 +1831,7 @@ mod tests {
             .unwrap();
         assert_eq!(rows[lost + 1].text, "Ships lost");
         assert!(
-            rows[lost + 1].detail.contains("gone for good"),
+            rows[lost + 1].detail.contains("orbit first, gone for good"),
             "{:?}",
             rows[lost + 1]
         );
@@ -1853,6 +1857,24 @@ mod tests {
             [
                 "Ships lost: none".to_string(),
                 "Defences returned: 2".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn raid_loss_lines_name_ships_lost_in_orbit() {
+        let mut ships_lost = hoshi_core::Fleet::default();
+        ships_lost.add(hoshi_core::ShipKind::LightFighter, 3);
+        let losses = hoshi_core::RaidLosses {
+            ships_lost,
+            defences_returned: 2,
+            batteries_missing: Some(1),
+        };
+        assert_eq!(
+            raid_loss_lines(losses),
+            [
+                "Ships lost: 3 light fighter (orbit first, gone for good)".to_string(),
+                "Defences returned: 2 · batteries still missing 1".to_string()
             ]
         );
     }

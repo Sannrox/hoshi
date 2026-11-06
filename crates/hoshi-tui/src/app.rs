@@ -2241,11 +2241,18 @@ impl App {
             (attacker_name, report.attacker_before, report.attacker_after),
             (defender_name, report.defender_before, report.defender_after),
         ] {
+            let orbit =
+                if replay.log.raid_defence.is_some() && name == defender_name && !before.is_empty()
+                {
+                    " (orbit first)"
+                } else {
+                    ""
+                };
             lines.push(Line::from(vec![
                 Span::styled(format!("{name:<9}"), t.label()),
                 Span::styled(
                     format!(
-                        "{} · lost {}",
+                        "{} · lost {}{orbit}",
                         before.label(),
                         before.losses_to(after).label()
                     ),
@@ -4625,7 +4632,8 @@ fn wrap_chunks(word: &str, width: usize) -> Vec<String> {
 }
 
 /// One `(label, text)` row per defence layer that took part in a raid, in
-/// battle order: interception, stations, hangar, dome, batteries, rebuild.
+/// battle order after the parked fleet's orbital round: interception,
+/// stations, hangar, dome, batteries, rebuild.
 fn defence_layer_lines(d: hoshi_core::RaidDefence) -> Vec<(&'static str, String)> {
     let mut rows = Vec::new();
     if d.intercept_in > 0 {
@@ -5154,6 +5162,7 @@ mod tests {
     fn the_combat_report_shows_the_defence_layers() {
         let mut state = GameState::new(1_000);
         state.defences.add(DefenceKind::HeavyCannon, 2);
+        state.fleet.add(ShipKind::LightFighter, 1);
         state.trigger_raid(1_000);
         let defence = state.combat_logs.last().unwrap().raid_defence.unwrap();
         state.story_pending = None;
@@ -5161,6 +5170,7 @@ mod tests {
         app.screen = Screen::Cockpit;
         app.handle_key(KeyCode::Char('r'), 1_000);
         let report = render_text(&app, 140, 45);
+        assert!(report.contains("orbit first"), "{report}");
         let battery = format!("battery  {} → {}", 2, defence.batteries_after);
         assert!(report.contains(&battery), "{battery}\n{report}");
         if defence.rebuilt > 0 {
