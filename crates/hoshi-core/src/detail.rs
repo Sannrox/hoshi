@@ -215,7 +215,7 @@ impl GameState {
             .prerequisites
             .iter()
             .map(|&(building, required)| {
-                let actual = projected_buildings.get(building);
+                let actual = self.available_building_level_at(planet, building);
                 RequirementLine {
                     text: format!("{building} {required} (have {actual})"),
                     met: actual >= required,
@@ -979,6 +979,50 @@ mod tests {
         cfg.raid.enabled = false;
         cfg.market.enabled = false;
         cfg
+    }
+
+    #[test]
+    fn shipyard_detail_stays_blocked_while_robotics_is_only_queued() {
+        let mut cfg = quiet();
+        cfg.starting_resources = Resources::from_parts(1e6, 1e6, 1e6);
+        let mut state = GameState::with_config(0, cfg);
+        state
+            .enqueue_build(BuildingKind::RoboticsFactory, 0)
+            .unwrap();
+        let detail = state
+            .describe(
+                DetailSubject::Building {
+                    kind: BuildingKind::Shipyard,
+                    planet: state.home,
+                },
+                None,
+            )
+            .unwrap();
+        assert!(
+            detail.requirements.iter().any(|row| {
+                !row.met && row.text == format!("{} 1 (have 0)", BuildingKind::RoboticsFactory)
+            }),
+            "{:?}",
+            detail.requirements
+        );
+        let done = state.build_queue[0].completes_at.unwrap();
+        state.catch_up(done);
+        let detail = state
+            .describe(
+                DetailSubject::Building {
+                    kind: BuildingKind::Shipyard,
+                    planet: state.home,
+                },
+                None,
+            )
+            .unwrap();
+        assert!(
+            detail.requirements.iter().any(|row| {
+                row.met && row.text == format!("{} 1 (have 1)", BuildingKind::RoboticsFactory)
+            }),
+            "{:?}",
+            detail.requirements
+        );
     }
 
     /// #297: a ship's inspector listed only its unmet research, and never

@@ -1705,7 +1705,9 @@ impl GameState {
         }
         let prereqs = config.buildings.get(kind).prerequisites.clone();
         for &(req, required) in &prereqs {
-            let actual = projected_on(buildings, queue, req, queue.len());
+            // Queued upgrades do not count: a robotics job in the queue
+            // must finish before a shipyard may be enqueued.
+            let actual = available_on(buildings, queue, req);
             if actual < required {
                 return Err(BuildError::MissingPrerequisite {
                     building: req,
@@ -4282,10 +4284,7 @@ impl GameState {
         if self.dismantling(coord) == Some(kind) {
             return 0;
         }
-        (0..=queue.len())
-            .map(|index| projected_on(buildings, queue, kind, index))
-            .min()
-            .unwrap_or(buildings.get(kind))
+        available_on(buildings, queue, kind)
     }
 
     fn projected_level(&self, kind: BuildingKind) -> u32 {
@@ -8235,6 +8234,15 @@ pub(crate) fn projected_on(
         })
 }
 
+/// Lowest level `kind` reaches while this queue runs. Queued upgrades do
+/// not raise it; queued dismantles lower it.
+pub(crate) fn available_on(buildings: &Buildings, queue: &[BuildJob], kind: BuildingKind) -> u32 {
+    (0..=queue.len())
+        .map(|index| projected_on(buildings, queue, kind, index))
+        .min()
+        .unwrap_or(buildings.get(kind))
+}
+
 pub(crate) fn duration_with_robotics(
     kind: BuildingKind,
     from_level: u32,
@@ -9457,7 +9465,7 @@ mod tests {
     }
 
     #[test]
-    fn canceling_a_queued_prerequisite_drops_the_dependent_job() {
+    fn queued_robotics_does_not_unlock_a_shipyard() {
         let mut cfg = queue_config();
         cfg.buildings.robotics_factory.metal_base = 5.0;
         cfg.buildings.shipyard.metal_base = 7.0;
@@ -9466,14 +9474,91 @@ mod tests {
         state
             .enqueue_build(BuildingKind::RoboticsFactory, 0)
             .unwrap();
-        state.enqueue_build(BuildingKind::Shipyard, 0).unwrap();
-        assert_eq!(state.build_queue.len(), 2);
-        close(state.resources.iron, 88.0);
+        let err = state.enqueue_build(BuildingKind::Shipyard, 0).unwrap_err();
+        assert_eq!(
+            err,
+            BuildError::MissingPrerequisite {
+                building: BuildingKind::RoboticsFactory,
+                required: 1,
+                actual: 0,
+            }
+        );
+        assert_eq!(state.build_queue.len(), 1);
+        assert_eq!(state.build_queue[0].building, BuildingKind::RoboticsFactory);
+        close(state.resources.iron, 95.0);
+    }
+
+    #[test]
+    fn shipyard_enqueues_after_robotics_completes() {
+        let mut cfg = queue_config();
+        cfg.buildings.robotics_factory.metal_base = 5.0;
+        cfg.buildings.shipyard.metal_base = 7.0;
+        cfg.starting_resources.iron = 100.0;
+        let mut state = GameState::with_config(0, cfg);
+        state
+            .enqueue_build(BuildingKind::RoboticsFactory, 0)
+            .unwrap();
+        let done = state.build_queue[0].completes_at.unwrap();
+        state.catch_up(done);
+        assert_eq!(state.buildings.robotics_factory, 1);
+        state.enqueue_build(BuildingKind::Shipyard, done).unwrap();
+        assert_eq!(state.build_queue[0].building, BuildingKind::Shipyard);
+        assert_eq!(state.build_queue.len(), 1);
+    }
+
+    #[test]
+    fn canceling_a_queued_prerequisite_cannot_leave_a_dependent_job() {
+        let mut cfg = queue_config();
+        cfg.buildings.robotics_factory.metal_base = 5.0;
+        cfg.buildings.shipyard.metal_base = 7.0;
+        cfg.starting_resources.iron = 100.0;
+        let mut state = GameState::with_config(0, cfg);
+        state
+            .enqueue_build(BuildingKind::RoboticsFactory, 0)
+            .unwrap();
+        assert!(matches!(
+            state.enqueue_build(BuildingKind::Shipyard, 0),
+            Err(BuildError::MissingPrerequisite {
+                building: BuildingKind::RoboticsFactory,
+                required: 1,
+                actual: 0,
+            })
+        ));
         state.cancel_build(0, 0).unwrap();
         assert!(state.build_queue.is_empty());
         close(state.resources.iron, 100.0);
         assert_eq!(state.buildings.robotics_factory, 0);
         assert_eq!(state.buildings.shipyard, 0);
+        assert!(matches!(
+            state.enqueue_build(BuildingKind::Shipyard, 0),
+            Err(BuildError::MissingPrerequisite { .. })
+        ));
+    }
+
+    #[test]
+    fn queued_dismantle_of_a_prerequisite_blocks_the_dependent() {
+        let mut cfg = queue_config();
+        cfg.buildings.shipyard.metal_base = 7.0;
+        cfg.starting_buildings.robotics_factory = 1;
+        cfg.starting_resources.iron = 100.0;
+        let mut state = GameState::with_config(0, cfg);
+        state
+            .enqueue_dismantle_as(
+                state.home,
+                BuildingKind::RoboticsFactory,
+                0,
+                crate::Actor::Player,
+            )
+            .unwrap();
+        let err = state.enqueue_build(BuildingKind::Shipyard, 0).unwrap_err();
+        assert_eq!(
+            err,
+            BuildError::MissingPrerequisite {
+                building: BuildingKind::RoboticsFactory,
+                required: 1,
+                actual: 0,
+            }
+        );
     }
 
     #[test]
@@ -9611,6 +9696,35 @@ modifiers = []
         assert_eq!(state.tech_level("laser"), 1);
         assert!(state.research.is_none());
         assert!(state.research_queue.is_empty());
+    }
+
+    #[test]
+    fn queued_lab_does_not_unlock_research() {
+        let mut cfg = research_config();
+        cfg.starting_buildings.research_lab = 0;
+        let mut state = GameState::with_config(0, cfg);
+        state.enqueue_build(BuildingKind::ResearchLab, 0).unwrap();
+        let err = state.start_research("energy", 0).unwrap_err();
+        match err {
+            ResearchError::MissingPrerequisites { gaps } => {
+                assert_eq!(
+                    gaps,
+                    vec![PrereqGap::Building {
+                        building: BuildingKind::ResearchLab,
+                        required: 1,
+                        actual: 0,
+                    }]
+                );
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(matches!(
+            state.queue_research("energy", 0),
+            Err(ResearchError::MissingPrerequisites { .. })
+        ));
+        let done = state.build_queue[0].completes_at.unwrap();
+        state.catch_up(done);
+        state.start_research("energy", done).unwrap();
     }
 
     #[test]
