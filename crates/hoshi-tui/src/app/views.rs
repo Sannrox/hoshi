@@ -1183,6 +1183,10 @@ impl App {
                 ),
             ]),
         ];
+        foot.push(Line::styled(
+            "accept/fulfil: hoshi market contract accept|fulfil <id>",
+            t.muted(),
+        ));
         if let Some(region) = self.state.board.regions.get(&self.state.home) {
             foot.push(Line::from(vec![
                 Span::styled("HOME BOOK  ", t.label()),

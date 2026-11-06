@@ -4880,6 +4880,47 @@ mod tests {
     }
 
     #[test]
+    fn explorer_inspector_names_the_expedition_find() {
+        let mut app = App::new(GameState::new(1_000));
+        app.screen = Screen::Shipyard;
+        app.selected = ShipKind::ALL
+            .iter()
+            .position(|kind| *kind == ShipKind::Explorer)
+            .unwrap();
+        let detail = app.current_detail().unwrap();
+        assert!(
+            detail.description.contains("expedition find x2")
+                && detail.description.contains("no Explore mission"),
+            "{}",
+            detail.description
+        );
+        let text = render_text(&app, 160, 48);
+        assert!(text.contains("expedition find x2"), "{text}");
+        assert!(text.contains("no Explore mission"), "{text}");
+        app.selected = ShipKind::ALL
+            .iter()
+            .position(|kind| *kind == ShipKind::SmallCargo)
+            .unwrap();
+        let cargo = app.current_detail().unwrap();
+        assert!(
+            !cargo.description.contains("expedition find"),
+            "{}",
+            cargo.description
+        );
+    }
+
+    #[test]
+    fn market_footer_hints_contract_cli() {
+        let mut app = App::new(GameState::new(1_000));
+        app.open(Screen::Market);
+        let text = render_text(&app, 100, 32);
+        assert!(
+            text.contains("hoshi market contract accept|fulfil"),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn market_amount_steps_by_size_and_the_screen_shows_blockers_before_enter() {
         let mut state = GameState::new(1_000);
         state.config.market.cargo_free = 100.0;
