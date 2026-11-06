@@ -1686,7 +1686,8 @@ impl App {
     }
 
     /// Header cells for the selected planet: stock, cap and rate per
-    /// resource, then its power balance and heat.
+    /// resource, then its power balance and heat. Idle water ice and
+    /// helium-3 yield those two cells to pollution and parked fleet.
     fn metrics(&self, width: u16) -> Vec<Metric> {
         let t = &self.theme;
         let s = &self.state;
@@ -1710,44 +1711,116 @@ impl App {
                 style,
             )
         };
-        let mut out: Vec<Metric> = ResourceKind::ALL
-            .iter()
-            .map(|&kind| {
-                let stock = stockpile.get(kind);
-                let cap = s.storage_cap_at(coord, kind);
-                let rate = s.production_per_hour_at(coord, kind).unwrap_or(0.0);
-                let fill = if cap > 0.0 { stock / cap } else { 0.0 };
-                let intent = if fill >= 0.95 {
-                    Intent::Warning
-                } else {
-                    Intent::Primary
+        let resource_cell = |kind: ResourceKind| {
+            let stock = stockpile.get(kind);
+            let cap = s.storage_cap_at(coord, kind);
+            let rate = s.production_per_hour_at(coord, kind).unwrap_or(0.0);
+            let fill = if cap > 0.0 { stock / cap } else { 0.0 };
+            let intent = if fill >= 0.95 {
+                Intent::Warning
+            } else {
+                Intent::Primary
+            };
+            let value_style = if fill >= 0.95 {
+                t.intent(Intent::Warning)
+            } else {
+                t.strong()
+            };
+            if !wide {
+                return Metric {
+                    label: kind.abbr().into(),
+                    value: Line::styled(ui::spans::compact(stock), value_style),
+                    foot: Line::from(rate_span(rate)),
                 };
-                let value_style = if fill >= 0.95 {
-                    t.intent(Intent::Warning)
-                } else {
-                    t.strong()
-                };
-                if !wide {
-                    return Metric {
-                        label: kind.abbr().into(),
-                        value: Line::styled(ui::spans::compact(stock), value_style),
-                        foot: Line::from(rate_span(rate)),
-                    };
-                }
-                let mut foot = ui::spans::bar(t, fill, 6, intent);
-                foot.push(Span::raw(" "));
-                foot.push(rate_span(rate));
-                Metric {
-                    label: kind.label().to_uppercase(),
-                    value: Line::from(vec![
-                        Span::styled(ui::spans::compact(stock), value_style),
-                        Span::styled(format!(" / {}", ui::spans::compact(cap)), t.label()),
-                    ]),
-                    foot: Line::from(foot),
-                }
-            })
-            .collect();
+            }
+            let mut foot = ui::spans::bar(t, fill, 6, intent);
+            foot.push(Span::raw(" "));
+            foot.push(rate_span(rate));
+            Metric {
+                label: kind.label().to_uppercase(),
+                value: Line::from(vec![
+                    Span::styled(ui::spans::compact(stock), value_style),
+                    Span::styled(format!(" / {}", ui::spans::compact(cap)), t.label()),
+                ]),
+                foot: Line::from(foot),
+            }
+        };
+        let idle = |kind: ResourceKind| {
+            stockpile.get(kind) <= 0.5
+                && s.production_per_hour_at(coord, kind).unwrap_or(0.0).abs() < 1e-9
+        };
+        let ice_idle = idle(ResourceKind::WaterIce) && idle(ResourceKind::Helium3);
         let waste = s.waste_at(coord).unwrap_or_else(|| s.waste_home());
+        let poll_fill = if waste.pollution_sink > 0.0 {
+            waste.pollution_load / waste.pollution_sink
+        } else {
+            0.0
+        };
+        let poll_overflow = waste.pollution_overflow() > 0.0;
+        let poll_style = if poll_overflow {
+            t.intent(Intent::Danger)
+        } else {
+            t.strong()
+        };
+        let pollution_cell = if wide {
+            let poll_intent = if poll_overflow {
+                Intent::Danger
+            } else if poll_fill >= 0.75 {
+                Intent::Warning
+            } else {
+                Intent::Primary
+            };
+            let mut foot = ui::spans::bar(t, poll_fill, 6, poll_intent);
+            foot.push(Span::styled(
+                format!(" {:.0}%", poll_fill * 100.0),
+                t.label(),
+            ));
+            Metric {
+                label: "POLLUTION".into(),
+                value: Line::from(vec![
+                    Span::styled(format!("{:.0}", waste.pollution_load), poll_style),
+                    Span::styled(format!(" / {:.0}", waste.pollution_sink), t.label()),
+                ]),
+                foot: Line::from(foot),
+            }
+        } else {
+            Metric {
+                label: "Poll".into(),
+                value: Line::styled(ui::spans::compact(waste.pollution_load), poll_style),
+                foot: Line::styled(
+                    format!("{:.0}/{:.0}", waste.pollution_load, waste.pollution_sink),
+                    if poll_overflow {
+                        t.intent(Intent::Danger)
+                    } else {
+                        t.label()
+                    },
+                ),
+            }
+        };
+        let fleet_attack = parked_attack(s, coord);
+        let defence_attack = parked_defence(s, coord);
+        let fleet_cell = Metric {
+            label: if wide { "FLEET".into() } else { "Fleet".into() },
+            value: Line::styled(ui::spans::compact(fleet_attack), t.strong()),
+            foot: Line::styled(
+                format!("def {}", ui::spans::compact(defence_attack)),
+                t.label(),
+            ),
+        };
+        let mut pollution_cell = ice_idle.then_some(pollution_cell);
+        let mut fleet_cell = ice_idle.then_some(fleet_cell);
+        let mut out: Vec<Metric> = Vec::with_capacity(8);
+        for &kind in ResourceKind::ALL.iter() {
+            if ice_idle && kind == ResourceKind::WaterIce {
+                out.push(pollution_cell.take().expect("one pollution cell"));
+                continue;
+            }
+            if ice_idle && kind == ResourceKind::Helium3 {
+                out.push(fleet_cell.take().expect("one fleet cell"));
+                continue;
+            }
+            out.push(resource_cell(kind));
+        }
         let balance = s.energy_balance_at(coord).unwrap_or(0.0);
         let energy_style = if balance < 0.0 {
             t.intent(Intent::Danger)
@@ -4547,6 +4620,28 @@ fn report_overlay_lines(state: &GameState, reports: &[&SpyReport], now: u64) -> 
     lines
 }
 
+/// Attack of ships parked at `coord` (not in flight) for the header fleet cell.
+fn parked_attack(state: &GameState, coord: Coord) -> f64 {
+    let Some(fleet) = state.fleet_at(coord) else {
+        return 0.0;
+    };
+    ShipKind::ALL
+        .iter()
+        .map(|&kind| state.ship_stats(kind).attack * f64::from(fleet.get(kind)))
+        .sum()
+}
+
+/// Attack of defences built at `coord` for the header fleet cell foot.
+fn parked_defence(state: &GameState, coord: Coord) -> f64 {
+    let Some(grid) = state.defences_at(coord) else {
+        return 0.0;
+    };
+    DefenceKind::ALL
+        .iter()
+        .map(|&kind| state.config.defences.get(kind).attack * f64::from(grid.get(kind)))
+        .sum()
+}
+
 fn fleet_brief(fleet: Fleet) -> String {
     let parts: Vec<String> = ShipKind::ALL
         .iter()
@@ -5556,15 +5651,17 @@ mod tests {
                     "IRON",
                     "SILICON",
                     "RARE EARTHS",
-                    "WATER ICE",
-                    "HELIUM-3",
+                    "POLLUTION",
+                    "FLEET",
                     "DEUTERIUM",
                     "ENERGY",
                     "HEAT",
                     "/h",
                 ]
             } else {
-                &["Fe", "Si", "REE", "H2O", "He3", "D", "Energy", "heat", "/h"]
+                &[
+                    "Fe", "Si", "REE", "Poll", "Fleet", "D", "Energy", "heat", "/h",
+                ]
             };
             for needle in needles {
                 assert!(text.contains(needle), "{w}x{h} missing {needle}: {text}");
@@ -5577,6 +5674,41 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn starter_header_swaps_idle_ice_and_helium_for_pollution_and_fleet() {
+        let app = App::new(GameState::new(1_000));
+        for (w, h) in [(80, 24), (160, 48)] {
+            let text = render_text(&app, w, h);
+            assert!(
+                text.contains("POLLUTION") || text.contains("Poll"),
+                "{w}x{h}: {text}"
+            );
+            assert!(
+                text.contains("FLEET") || text.contains("Fleet"),
+                "{w}x{h}: {text}"
+            );
+            assert!(!text.contains("WATER ICE"), "{w}x{h}: {text}");
+            assert!(!text.contains("HELIUM-3"), "{w}x{h}: {text}");
+            assert!(!text.contains("H2O"), "{w}x{h}: {text}");
+            assert!(!text.contains("He3"), "{w}x{h}: {text}");
+        }
+    }
+
+    #[test]
+    fn header_shows_water_ice_once_it_has_stock() {
+        let mut state = GameState::new(1_000);
+        state.resources.water_ice = 10.0;
+        let app = App::new(state);
+        let wide = render_text(&app, 160, 48);
+        assert!(wide.contains("WATER ICE"), "{wide}");
+        assert!(wide.contains("HELIUM-3"), "{wide}");
+        assert!(!wide.contains("POLLUTION"), "{wide}");
+        let narrow = render_text(&app, 80, 24);
+        assert!(narrow.contains("H2O"), "{narrow}");
+        assert!(narrow.contains("He3"), "{narrow}");
+        assert!(!narrow.contains("Poll"), "{narrow}");
     }
 
     #[test]
