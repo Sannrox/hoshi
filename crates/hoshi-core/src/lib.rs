@@ -237,10 +237,11 @@ pub use self_play::{
     SelfPlayCell, SelfPlayConfig, SelfPlayReport, path_bot_relpaths, run_self_play,
 };
 pub use shard::{
-    Occupancy, ShardBookkeeping, ShardCommand, ShardCommons, ShardConfig, ShardError, ShardInbound,
-    ShardMap, ShardMission, ShardOrder, ShardPlanet, ShardRaid, ShardRaidAftermath, ShardRecycle,
-    ShardSession, ShardSites, ShardSlot, ShardSpy, ShardTarget, ShardView, SignedBridgeEvent,
-    load_tenants, occupancy, place_home, seat_home, targets,
+    ARENA_SCORING_VERSION, Occupancy, ScoreboardVisibility, ShardBookkeeping, ShardCommand,
+    ShardCommons, ShardConfig, ShardError, ShardInbound, ShardMap, ShardMission, ShardOrder,
+    ShardPlanet, ShardRaid, ShardRaidAftermath, ShardRecycle, ShardScoreRow, ShardSession,
+    ShardSites, ShardSlot, ShardSpy, ShardStanding, ShardTarget, ShardView, ShardWinPath,
+    SignedBridgeEvent, arena_score, load_tenants, occupancy, place_home, seat_home, targets,
 };
 pub use shard_market::{ShardBook, ShardBookOrder, ShardMarket};
 pub use ships::{

@@ -469,13 +469,70 @@ pub struct ShardView {
     pub inbound: Vec<ShardInbound>,
     /// The earliest choice still open, an inbound raid included.
     pub decision: Option<ExpiringDecision>,
+    /// Present after the shard ends. Hidden boards stay off the view until then.
+    pub standing: Option<ShardStanding>,
+    /// Live ranked scores when the creation option is `visible`.
+    pub scoreboard: Option<Vec<ShardScoreRow>>,
+}
+
+/// Creation option: live scores in every tenant view, or only after the end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScoreboardVisibility {
+    Hidden,
+    Visible,
+}
+
+/// How a finish-line shard named its winner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShardWinPath {
+    Race,
+    Deadline,
+}
+
+impl ShardWinPath {
+    fn as_key(self) -> &'static str {
+        match self {
+            Self::Race => "race",
+            Self::Deadline => "deadline",
+        }
+    }
+}
+
+/// Final standing of a finished shard.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShardStanding {
+    pub winner: String,
+    pub path: ShardWinPath,
+    pub scores: Vec<ShardScoreRow>,
+}
+
+/// One tenant's arena score. No stockpile or fleet.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShardScoreRow {
+    pub identity: String,
+    pub score: f64,
+}
+
+/// Arena scoring version 1, pinned on a finish-line shard at creation.
+pub const ARENA_SCORING_VERSION: u32 = 1;
+
+/// `prestige_score + 10*metal_mine + 5*crystal_mine + 3*solar_plant + 50*colonies + iron/1000`.
+pub fn arena_score(state: &GameState) -> f64 {
+    f64::from(state.prestige_score())
+        + 10.0 * f64::from(state.buildings.metal_mine)
+        + 5.0 * f64::from(state.buildings.crystal_mine)
+        + 3.0 * f64::from(state.buildings.solar_plant)
+        + 50.0 * state.colonies.len() as f64
+        + state.resources.iron / 1000.0
 }
 
 impl ShardView {
     /// JSON the host can hand to a tenant. Occupancy tags do not carry
     /// another tenant's identity or stockpile.
     pub fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
+        let mut json = serde_json::json!({
             "identity": self.identity,
             "at": self.at,
             "epoch": self.epoch,
@@ -524,7 +581,40 @@ impl ShardView {
                     "action": decision.action.as_key(),
                 })
             }),
-        })
+        });
+        if let Some(obj) = json.as_object_mut() {
+            if let Some(standing) = &self.standing {
+                obj.insert(
+                    "standing".into(),
+                    serde_json::json!({
+                        "winner": standing.winner,
+                        "path": standing.path.as_key(),
+                        "scores": standing.scores.iter().map(|row| {
+                            serde_json::json!({
+                                "identity": row.identity,
+                                "score": row.score,
+                            })
+                        }).collect::<Vec<_>>(),
+                    }),
+                );
+            }
+            if let Some(board) = &self.scoreboard {
+                obj.insert(
+                    "scoreboard".into(),
+                    board
+                        .iter()
+                        .map(|row| {
+                            serde_json::json!({
+                                "identity": row.identity,
+                                "score": row.score,
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                        .into(),
+                );
+            }
+        }
+        json
     }
 }
 
@@ -575,8 +665,10 @@ pub enum ShardError {
     Commons(String),
     /// A colony, recycler, or raid of `identity` arrives by the host clock,
     /// or the regional book has a tick or expiry due while `identity` has an
-    /// order on it. A lone catch-up cannot see the shard map or the book, so
-    /// the host calls [`ShardSession::settle`] first and retries.
+    /// order on it, or a finish-line shard has reached its deadline or this
+    /// tenant already recorded a victory. A lone catch-up cannot see the
+    /// shard map, the book, or the other tenants, so the host calls
+    /// [`ShardSession::settle`] first and retries.
     Unsettled {
         identity: String,
     },
@@ -602,6 +694,8 @@ pub enum ShardError {
     NoBook,
     /// Scaled clock `factor` was 0.
     ZeroClockFactor,
+    /// Gameplay after a finish-line shard named a winner.
+    Ended,
 }
 
 impl fmt::Display for ShardError {
@@ -647,7 +741,7 @@ impl fmt::Display for ShardError {
             ShardError::Bookkeeping(msg) => write!(f, "shard bookkeeping: {msg}"),
             ShardError::Commons(msg) => write!(f, "shard commons: {msg}"),
             ShardError::Unsettled { identity } => {
-                write!(f, "{identity} has an arrival due; settle the shard first")
+                write!(f, "{identity} needs the shard settled first")
             }
             ShardError::NoEmptySlot => write!(f, "shard map has no empty slot"),
             ShardError::NoExpeditionCoord => {
@@ -660,14 +754,15 @@ impl fmt::Display for ShardError {
             ShardError::OrderNeedsBook => write!(f, "market orders need the shard book"),
             ShardError::NoBook => write!(f, "shard market book opens at the next join"),
             ShardError::ZeroClockFactor => write!(f, "clock factor must be at least 1"),
+            ShardError::Ended => write!(f, "shard has ended"),
         }
     }
 }
 
 impl std::error::Error for ShardError {}
 
-const BOOKKEEPING_VERSION: u32 = 2;
-const BOOKKEEPING_READS: [u32; 2] = [1, BOOKKEEPING_VERSION];
+const BOOKKEEPING_VERSION: u32 = 3;
+const BOOKKEEPING_READS: [u32; 3] = [1, 2, BOOKKEEPING_VERSION];
 
 /// Host-owned shard bookkeeping: idempotency ids, command windows and attack
 /// stamps. Opaque bytes the host persists beside the tenant saves. It holds
@@ -696,6 +791,13 @@ fn default_clock_factor() -> u32 {
     1
 }
 
+fn join_rank(order: &[String], identity: &str) -> usize {
+    order
+        .iter()
+        .position(|id| id == identity)
+        .unwrap_or(usize::MAX)
+}
+
 #[derive(Serialize, Deserialize)]
 struct BookkeepingDoc {
     version: u32,
@@ -711,6 +813,26 @@ struct BookkeepingDoc {
     epoch: u64,
     #[serde(default = "default_clock_factor")]
     factor: u32,
+    #[serde(default)]
+    deadline: Option<u64>,
+    #[serde(default)]
+    scoreboard: Option<ScoreboardVisibility>,
+    #[serde(default)]
+    scoring_version: Option<u32>,
+    #[serde(default)]
+    ended_winner: Option<String>,
+    #[serde(default)]
+    ended_path: Option<ShardWinPath>,
+    #[serde(default)]
+    ended_scores: Vec<ShardScoreRowDoc>,
+    #[serde(default)]
+    join_order: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ShardScoreRowDoc {
+    identity: String,
+    score: f64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -739,6 +861,17 @@ pub struct ShardSession<C> {
     /// Earliest unresolved raid arrival per target home. A lone `submit`
     /// on that home cannot see the attacker's mission, so it reads this.
     inbound: BTreeMap<Coord, u64>,
+    /// Game unix. `None` is an ordinary shard with no finish line.
+    deadline: Option<u64>,
+    scoreboard: ScoreboardVisibility,
+    scoring_version: u32,
+    ended: Option<ShardStanding>,
+    /// First-join order; deadline ties break this way.
+    join_order: Vec<String>,
+    /// Game unix of the last finish-line [`Self::catch_up_shard`]. Not
+    /// persisted: after restore the next command unsettles so the host
+    /// settles before anyone moves.
+    settled_at: Option<u64>,
 }
 
 impl<C: Clock> ShardSession<C> {
@@ -756,6 +889,12 @@ impl<C: Clock> ShardSession<C> {
             pruned_at: 0,
             commons: ShardCommons::default(),
             inbound: BTreeMap::new(),
+            deadline: None,
+            scoreboard: ScoreboardVisibility::Hidden,
+            scoring_version: ARENA_SCORING_VERSION,
+            ended: None,
+            join_order: Vec::new(),
+            settled_at: None,
         }
     }
 
@@ -783,7 +922,29 @@ impl<C: Clock> ShardSession<C> {
             pruned_at: 0,
             commons: ShardCommons::default(),
             inbound: BTreeMap::new(),
+            deadline: None,
+            scoreboard: ScoreboardVisibility::Hidden,
+            scoring_version: ARENA_SCORING_VERSION,
+            ended: None,
+            join_order: Vec::new(),
+            settled_at: None,
         })
+    }
+
+    /// Finish line identity, fixed at creation. Ordinary `new` has none.
+    pub fn with_finish_line(mut self, deadline: u64, scoreboard: ScoreboardVisibility) -> Self {
+        self.deadline = Some(deadline);
+        self.scoreboard = scoreboard;
+        self.scoring_version = ARENA_SCORING_VERSION;
+        self
+    }
+
+    pub fn deadline(&self) -> Option<u64> {
+        self.deadline
+    }
+
+    pub fn standing(&self) -> Option<&ShardStanding> {
+        self.ended.as_ref()
     }
 
     pub fn epoch(&self) -> u64 {
@@ -817,6 +978,119 @@ impl<C: Clock> ShardSession<C> {
         self.game_now()
     }
 
+    fn require_open(&self) -> Result<(), ShardError> {
+        if self.ended.is_some() {
+            Err(ShardError::Ended)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn finish_line(&self) -> bool {
+        self.deadline.is_some()
+    }
+
+    fn needs_finish_settle(&self, now: u64) -> bool {
+        self.finish_line() && self.ended.is_none() && self.settled_at != Some(now)
+    }
+
+    fn finish_unsettled(&self, state: &GameState, now: u64) -> bool {
+        self.needs_finish_settle(now)
+            || self.deadline.is_some_and(|d| now >= d)
+            || (self.finish_line() && finish_due(state, now))
+    }
+
+    /// Catch-up bound for a finish-line shard: the deadline if it is already
+    /// due, else the earliest recorded victory, last-stage victory-wonder, or
+    /// alliance hold, else `now`. Ordinary shards pass `now` through.
+    /// A conquest that appears only inside this catch-up is named at the end
+    /// of the same settle (interaction-time, ADR 0022).
+    fn freeze_at(&self, empires: &BTreeMap<String, GameState>, now: u64) -> u64 {
+        let mut target = self.deadline.filter(|&d| d < now).unwrap_or(now);
+        if !self.finish_line() {
+            return target;
+        }
+        for state in empires.values() {
+            if let Some(victory) = state.victory.as_ref() {
+                target = target.min(victory.at);
+            }
+            if !state.config.victory.enabled {
+                continue;
+            }
+            if let Some(at) = state.next_victory_at().filter(|&at| at <= target) {
+                target = at;
+            }
+            if let Some(at) = victory_wonder_at(state).filter(|&at| at <= target) {
+                target = at;
+            }
+        }
+        target
+    }
+
+    fn ranked_scores(&self, empires: &BTreeMap<String, GameState>) -> Vec<ShardScoreRow> {
+        let mut rows: Vec<ShardScoreRow> = empires
+            .iter()
+            .map(|(id, state)| ShardScoreRow {
+                identity: id.clone(),
+                score: arena_score(state),
+            })
+            .collect();
+        rows.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    join_rank(&self.join_order, &a.identity)
+                        .cmp(&join_rank(&self.join_order, &b.identity))
+                })
+                .then_with(|| a.identity.cmp(&b.identity))
+        });
+        rows
+    }
+
+    fn resolve_finish(&mut self, empires: &BTreeMap<String, GameState>, now: u64) {
+        if !self.finish_line() {
+            return;
+        }
+        if self.ended.is_some() {
+            return;
+        }
+        let mut race: Option<(u64, usize, String)> = None;
+        for (id, state) in empires {
+            let Some(victory) = state.victory.as_ref() else {
+                continue;
+            };
+            let rank = join_rank(&self.join_order, id);
+            let cand = (victory.at, rank, id.clone());
+            if race.as_ref().is_none_or(|cur| cand < *cur) {
+                race = Some(cand);
+            }
+        }
+        if let Some((_, _, winner)) = race {
+            self.ended = Some(ShardStanding {
+                winner,
+                path: ShardWinPath::Race,
+                scores: self.ranked_scores(empires),
+            });
+            return;
+        }
+        let Some(deadline) = self.deadline else {
+            return;
+        };
+        if now < deadline || empires.is_empty() {
+            return;
+        }
+        let scores = self.ranked_scores(empires);
+        let Some(winner) = scores.first().map(|row| row.identity.clone()) else {
+            return;
+        };
+        self.ended = Some(ShardStanding {
+            winner,
+            path: ShardWinPath::Deadline,
+            scores,
+        });
+    }
+
     /// Sign a pulse the host itself ingested. Clients never hold the key.
     pub fn sign_bridge(&self, pulse: ActivityPulse) -> SignedBridgeEvent {
         SignedBridgeEvent {
@@ -834,9 +1108,10 @@ impl<C: Clock> ShardSession<C> {
     /// flies to the shard's one expedition coord, not the tenant's own slot,
     /// and is refused as [`ShardError::NoExpeditionCoord`] until the host
     /// places it. A colony, recycler, or raid arrival due by the host clock,
-    /// another tenant's raid due on this home, or a market tick or expiry
-    /// due while the tenant has an order on the regional book, is refused
-    /// as [`ShardError::Unsettled`] before anything moves.
+    /// another tenant's raid due on this home, a market tick or expiry
+    /// due while the tenant has an order on the regional book, or a
+    /// finish-line deadline or recorded victory, is refused as
+    /// [`ShardError::Unsettled`] before anything moves.
     pub fn submit(&mut self, state: &mut GameState, cmd: ShardCommand) -> Result<(), ShardError> {
         state
             .require_fair_play()
@@ -874,6 +1149,12 @@ impl<C: Clock> ShardSession<C> {
         if self.is_seen(&seen_key, real) {
             return Ok(());
         }
+        self.require_open()?;
+        if self.finish_unsettled(state, now) {
+            return Err(ShardError::Unsettled {
+                identity: cmd.identity,
+            });
+        }
         let raid_due = self.inbound.get(&state.home).is_some_and(|&at| at <= now);
         let book_due = self
             .commons
@@ -885,8 +1166,12 @@ impl<C: Clock> ShardSession<C> {
             });
         }
         self.admit(&cmd.identity, real)?;
-        with_shared_debris(&mut self.commons.debris, state, |state| {
+        let finish = self.finish_line();
+        let applied = with_shared_debris(&mut self.commons.debris, state, |state| {
             state.catch_up(now);
+            if finish && state.victory.is_some() {
+                return Ok(false);
+            }
             match (&cmd.intent, expedition) {
                 (
                     Intent::Expedition {
@@ -907,14 +1192,20 @@ impl<C: Clock> ShardSession<C> {
                         now,
                     )
                     .map(|_| ())
-                    .map_err(IntentError::Fleet),
+                    .map_err(IntentError::Fleet)?,
                 (intent, _) => {
                     let proposal = propose(state, intent, now)?;
-                    apply(state, &proposal, now)
+                    apply(state, &proposal, now)?;
                 }
             }
+            Ok(true)
         })
         .map_err(ShardError::Intent)?;
+        if !applied {
+            return Err(ShardError::Unsettled {
+                identity: cmd.identity,
+            });
+        }
         self.seen.insert(seen_key, real);
         Ok(())
     }
@@ -935,10 +1226,27 @@ impl<C: Clock> ShardSession<C> {
         if !verify_pulse(&self.mac_key, event.pulse, &event.mac) {
             return Err(ShardError::ForgedBridge);
         }
+        self.require_open()?;
         let real = self.real_now();
         let now = self.game_now();
+        let pulse = scale_pulse(event.pulse, self.epoch, self.factor);
+        if self.deadline.is_some_and(|d| now >= d) || (self.finish_line() && finish_due(state, now))
+        {
+            return Err(ShardError::Unsettled {
+                identity: identity.to_string(),
+            });
+        }
+        // Delayed pulses (ts < now) apply at their stamp. A pulse at/after
+        // the host clock needs shard-wide settle first so another tenant's
+        // victory can close the shard; settle-then-retry would skip a
+        // delayed stamp.
+        if self.needs_finish_settle(now) && pulse.ts() >= now {
+            return Err(ShardError::Unsettled {
+                identity: identity.to_string(),
+            });
+        }
         self.admit(identity, real)?;
-        Ok(state.apply_activity(scale_pulse(event.pulse, self.epoch, self.factor), now))
+        Ok(state.apply_activity(pulse, now))
     }
 
     /// Launch a raid from `cmd.identity` at another tenant's home after
@@ -981,6 +1289,7 @@ impl<C: Clock> ShardSession<C> {
             return Ok(());
         }
         self.catch_up_shard(empires, now);
+        self.require_open()?;
         let kind = occupancy(identity, empires, self.commons.sites(), cmd.dest);
         if kind == Occupancy::You {
             return Err(ShardError::SameEmpire);
@@ -1053,8 +1362,12 @@ impl<C: Clock> ShardSession<C> {
             return Err(ShardError::ShardFull { cap });
         }
         self.settle(empires);
+        self.require_open()?;
         let coord = place_home(map, empires, self.commons.sites())?;
         seat_home(identity, build(coord), coord, empires, self.commons.sites())?;
+        if !self.join_order.iter().any(|id| id == identity) {
+            self.join_order.push(identity.to_string());
+        }
         if self.factor > 1
             && let Some(state) = empires.get_mut(identity)
         {
@@ -1110,6 +1423,7 @@ impl<C: Clock> ShardSession<C> {
                 .map_err(|e| ShardError::Intent(IntentError::Cheat(e)))?;
         }
         self.catch_up_shard(empires, now);
+        self.require_open()?;
         let kind = occupancy(identity, empires, self.commons.sites(), dest);
         if kind.blocks_planet_dest() {
             return Err(ShardError::Occupied { coord: dest, kind });
@@ -1169,6 +1483,7 @@ impl<C: Clock> ShardSession<C> {
             return Ok(());
         }
         self.catch_up_shard(empires, now);
+        self.require_open()?;
         let kind = occupancy(identity, empires, self.commons.sites(), cmd.dest);
         match kind {
             Occupancy::You => return Err(ShardError::SameEmpire),
@@ -1239,6 +1554,7 @@ impl<C: Clock> ShardSession<C> {
             return Ok(());
         }
         self.catch_up_shard(empires, now);
+        self.require_open()?;
         self.admit(identity, real)?;
         let state = empires
             .get_mut(identity)
@@ -1297,6 +1613,7 @@ impl<C: Clock> ShardSession<C> {
             return Ok(());
         }
         self.catch_up_shard(empires, now);
+        self.require_open()?;
         self.admit(identity, real)?;
         self.commons
             .market
@@ -1387,7 +1704,13 @@ impl<C: Clock> ShardSession<C> {
             self.epoch,
             self.factor,
         ) {
-            Some(view) => Ok(view),
+            Some(mut view) => {
+                view.standing = self.ended.clone();
+                if self.ended.is_none() && self.scoreboard == ScoreboardVisibility::Visible {
+                    view.scoreboard = Some(self.ranked_scores(empires));
+                }
+                Ok(view)
+            }
             None => Err(ShardError::UnknownIdentity {
                 identity: identity.to_string(),
             }),
@@ -1397,11 +1720,14 @@ impl<C: Clock> ShardSession<C> {
     /// Prune at the host clock, then serialise ids, windows and attack stamps.
     /// Factor-1 sessions stay on version 1 so an older host can resume them.
     /// Scaled sessions write version 2 so an older host fails closed.
+    /// Finish-line sessions write version 3.
     pub fn export_bookkeeping(&mut self) -> Result<ShardBookkeeping, ShardError> {
         self.prune(self.real_now());
         let doc = BookkeepingDoc {
-            version: if self.factor > 1 {
+            version: if self.deadline.is_some() || self.ended.is_some() {
                 BOOKKEEPING_VERSION
+            } else if self.factor > 1 {
+                2
             } else {
                 1
             },
@@ -1423,6 +1749,25 @@ impl<C: Clock> ShardSession<C> {
                 .collect(),
             epoch: self.epoch,
             factor: self.factor,
+            deadline: self.deadline,
+            scoreboard: Some(self.scoreboard),
+            scoring_version: Some(self.scoring_version),
+            ended_winner: self.ended.as_ref().map(|s| s.winner.clone()),
+            ended_path: self.ended.as_ref().map(|s| s.path),
+            ended_scores: self
+                .ended
+                .as_ref()
+                .map(|s| {
+                    s.scores
+                        .iter()
+                        .map(|row| ShardScoreRowDoc {
+                            identity: row.identity.clone(),
+                            score: row.score,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            join_order: self.join_order.clone(),
         };
         serde_json::to_vec(&doc)
             .map(ShardBookkeeping)
@@ -1452,6 +1797,16 @@ impl<C: Clock> ShardSession<C> {
                 doc.epoch, doc.factor, self.epoch, self.factor
             )));
         }
+        let doc_board = doc.scoreboard.unwrap_or(ScoreboardVisibility::Hidden);
+        let doc_scoring = doc.scoring_version.unwrap_or(ARENA_SCORING_VERSION);
+        if doc.deadline != self.deadline
+            || doc_board != self.scoreboard
+            || (self.deadline.is_some() && doc_scoring != self.scoring_version)
+        {
+            return Err(ShardError::Bookkeeping(
+                "finish-line identity does not match the session".into(),
+            ));
+        }
         self.seen = doc
             .seen
             .into_iter()
@@ -1464,6 +1819,22 @@ impl<C: Clock> ShardSession<C> {
             .into_iter()
             .map(|(row, at)| (row_coord(row), at))
             .collect();
+        self.join_order = doc.join_order;
+        self.ended = match (doc.ended_winner, doc.ended_path) {
+            (Some(winner), Some(path)) => Some(ShardStanding {
+                winner,
+                path,
+                scores: doc
+                    .ended_scores
+                    .into_iter()
+                    .map(|row| ShardScoreRow {
+                        identity: row.identity,
+                        score: row.score,
+                    })
+                    .collect(),
+            }),
+            _ => None,
+        };
         self.prune(self.real_now());
         Ok(())
     }
@@ -1471,8 +1842,24 @@ impl<C: Clock> ShardSession<C> {
     /// Catch every empire up to `now` on the shared map, then note the raids
     /// still in flight for [`Self::submit`].
     fn catch_up_shard(&mut self, empires: &mut BTreeMap<String, GameState>, now: u64) {
-        catch_up_empires(empires, &mut self.commons, &self.config.market, now);
-        self.inbound = inbound_raids(empires);
+        if self.ended.is_some() {
+            self.inbound = inbound_raids(empires);
+            return;
+        }
+        if empires.is_empty() {
+            self.settled_at = Some(now);
+            return;
+        }
+        loop {
+            let target = self.freeze_at(empires, now);
+            catch_up_empires(empires, &mut self.commons, &self.config.market, target);
+            self.inbound = inbound_raids(empires);
+            self.resolve_finish(empires, target);
+            self.settled_at = Some(target);
+            if self.ended.is_some() || target >= now {
+                break;
+            }
+        }
     }
 
     /// Whether `key` applied less than [`ShardConfig::seen_ttl_secs`] ago.
@@ -1954,6 +2341,31 @@ fn race_due(state: &GameState, now: u64) -> bool {
     })
 }
 
+/// Whether this tenant has already won or would declare during a lone catch-up.
+fn finish_due(state: &GameState, now: u64) -> bool {
+    if state.victory.is_some() {
+        return true;
+    }
+    if !state.config.victory.enabled {
+        return false;
+    }
+    state.next_victory_at().is_some_and(|at| at <= now)
+        || victory_wonder_at(state).is_some_and(|at| at <= now)
+}
+
+/// Last-stage timer of the victory wonder, if that stage is already paid.
+fn victory_wonder_at(state: &GameState) -> Option<u64> {
+    let job = state.wonder.as_ref()?;
+    if job.id != state.config.victory.wonder_id {
+        return None;
+    }
+    let spec = state.config.wonders.iter().find(|spec| spec.id == job.id)?;
+    if job.stage + 1 < spec.stages.len() {
+        return None;
+    }
+    job.completes_at.filter(|&at| at > state.last_tick_unix)
+}
+
 /// `mission` flies at a coord that is neither an outpost of `state` nor its
 /// own planet, so only another tenant can be there.
 fn aims_at_tenant(state: &GameState, mission: &Mission) -> bool {
@@ -2091,6 +2503,8 @@ fn shard_view(
             .collect(),
         inbound,
         decision,
+        standing: None,
+        scoreboard: None,
     })
 }
 
@@ -2557,11 +2971,11 @@ mod tests {
             "{err}"
         );
         let unknown = ShardBookkeeping::from_bytes(
-            br#"{"version":3,"seen":[],"windows":{},"attacks":{}}"#.to_vec(),
+            br#"{"version":4,"seen":[],"windows":{},"attacks":{}}"#.to_vec(),
         );
         let err = session(1_000).restore_bookkeeping(&unknown).unwrap_err();
         assert!(
-            matches!(err, ShardError::Bookkeeping(ref msg) if msg.contains("version 3")),
+            matches!(err, ShardError::Bookkeeping(ref msg) if msg.contains("version 4")),
             "{err}"
         );
     }
@@ -2624,7 +3038,7 @@ mod tests {
             .unwrap();
         for bad in [
             b"not json".to_vec(),
-            br#"{"version":3,"seen":[],"windows":{},"attacks":{}}"#.to_vec(),
+            br#"{"version":4,"seen":[],"windows":{},"attacks":{}}"#.to_vec(),
         ] {
             let err = shard
                 .restore_bookkeeping(&ShardBookkeeping::from_bytes(bad))
@@ -4633,5 +5047,330 @@ mod tests {
             .unwrap();
         assert_eq!(empires["tenant-a"].prestige.currency, 3);
         assert_eq!(empires, before);
+    }
+
+    fn finish_session(
+        now: u64,
+        deadline: u64,
+        board: ScoreboardVisibility,
+    ) -> ShardSession<FakeClock> {
+        session(now).with_finish_line(deadline, board)
+    }
+
+    fn join_pair(shard: &mut ShardSession<FakeClock>, now: u64) -> BTreeMap<String, GameState> {
+        let mut empires = BTreeMap::new();
+        shard
+            .join("tenant-a", WALK, &mut empires, |_| test_state(now))
+            .unwrap();
+        shard
+            .join("tenant-b", WALK, &mut empires, |_| test_state(now))
+            .unwrap();
+        empires
+    }
+
+    fn grant_wonder(state: &mut GameState) {
+        state.config.victory.enabled = true;
+        state.config.victory.wonder_id = "dyson_ring".into();
+        state.completed_wonders.push("dyson_ring".into());
+        state.maybe_declare_victory(state.last_tick_unix);
+    }
+
+    fn build_on(identity: &str, id: &str, planet: Coord) -> ShardCommand {
+        let mut cmd = build_cmd(identity, id, None);
+        cmd.intent = Intent::Build {
+            planet,
+            building: BuildingKind::MetalMine,
+            actor: Actor::Player,
+        };
+        cmd
+    }
+
+    #[test]
+    fn wonder_first_ends_the_shard_and_replay_is_a_no_op() {
+        let mut shard = finish_session(1_000, 5_000, ScoreboardVisibility::Hidden);
+        let mut empires = join_pair(&mut shard, 1_000);
+        let home_a = empires["tenant-a"].home;
+        let home_b = empires["tenant-b"].home;
+        grant_wonder(empires.get_mut("tenant-a").unwrap());
+        let err = shard
+            .submit(
+                empires.get_mut("tenant-a").unwrap(),
+                build_on("tenant-a", "win", home_a),
+            )
+            .unwrap_err();
+        assert_eq!(
+            err,
+            ShardError::Unsettled {
+                identity: "tenant-a".into()
+            }
+        );
+        shard.settle(&mut empires);
+        let standing = shard.standing().expect("race");
+        assert_eq!(standing.winner, "tenant-a");
+        assert_eq!(standing.path, ShardWinPath::Race);
+        let err = shard
+            .submit(
+                empires.get_mut("tenant-a").unwrap(),
+                build_on("tenant-a", "win", home_a),
+            )
+            .unwrap_err();
+        assert_eq!(err, ShardError::Ended);
+        assert_eq!(shard.standing().unwrap().winner, "tenant-a");
+        let err = shard
+            .submit(
+                empires.get_mut("tenant-b").unwrap(),
+                build_on("tenant-b", "late", home_b),
+            )
+            .unwrap_err();
+        assert_eq!(err, ShardError::Ended);
+        shard.settle(&mut empires);
+        let json = shard.view("tenant-b", &mut empires).unwrap().to_json();
+        assert_eq!(json["standing"]["winner"], "tenant-a");
+        assert_eq!(json["standing"]["path"], "race");
+        assert!(json.get("scoreboard").is_none());
+        let scores = json["standing"]["scores"].as_array().unwrap();
+        assert_eq!(scores.len(), 2);
+        assert!(scores.iter().all(|row| {
+            row.get("identity").is_some()
+                && row.get("score").is_some()
+                && row.get("iron").is_none()
+                && row.get("fleet").is_none()
+        }));
+    }
+
+    #[test]
+    fn race_catch_up_stops_at_the_victory_instant() {
+        let mut shard = finish_session(1_000, 5_000, ScoreboardVisibility::Hidden);
+        let mut empires = join_pair(&mut shard, 1_000);
+        grant_wonder(empires.get_mut("tenant-a").unwrap());
+        assert_eq!(empires["tenant-a"].last_tick_unix, 1_000);
+        shard.clock.set(1_500);
+        shard.settle(&mut empires);
+        assert_eq!(empires["tenant-a"].last_tick_unix, 1_000);
+        assert_eq!(empires["tenant-b"].last_tick_unix, 1_000);
+        assert_eq!(shard.standing().unwrap().path, ShardWinPath::Race);
+    }
+
+    #[test]
+    fn other_tenant_submit_unsettles_until_the_race_is_named() {
+        let mut shard = finish_session(1_000, 5_000, ScoreboardVisibility::Hidden);
+        let mut empires = join_pair(&mut shard, 1_000);
+        grant_wonder(empires.get_mut("tenant-a").unwrap());
+        shard.clock.set(1_200);
+        let home_b = empires["tenant-b"].home;
+        let err = shard
+            .submit(
+                empires.get_mut("tenant-b").unwrap(),
+                build_on("tenant-b", "late", home_b),
+            )
+            .unwrap_err();
+        assert_eq!(
+            err,
+            ShardError::Unsettled {
+                identity: "tenant-b".into()
+            }
+        );
+        assert_eq!(empires["tenant-b"].last_tick_unix, 1_000);
+        shard.settle(&mut empires);
+        assert_eq!(shard.standing().unwrap().winner, "tenant-a");
+        assert_eq!(empires["tenant-b"].last_tick_unix, 1_000);
+        let err = shard
+            .submit(
+                empires.get_mut("tenant-b").unwrap(),
+                build_on("tenant-b", "late", home_b),
+            )
+            .unwrap_err();
+        assert_eq!(err, ShardError::Ended);
+    }
+
+    #[test]
+    fn bridge_pulse_after_the_deadline_is_unsettled() {
+        let mut shard = finish_session(1_000, 1_100, ScoreboardVisibility::Hidden);
+        let mut empires = join_pair(&mut shard, 1_000);
+        shard.clock.set(1_200);
+        let iron = empires["tenant-a"].resources.iron;
+        let event = shard.sign_bridge(ActivityPulse::PrMerged { ts: 1_200 });
+        let err = shard
+            .apply_bridge(empires.get_mut("tenant-a").unwrap(), "tenant-a", &event)
+            .unwrap_err();
+        assert_eq!(
+            err,
+            ShardError::Unsettled {
+                identity: "tenant-a".into()
+            }
+        );
+        assert!((empires["tenant-a"].resources.iron - iron).abs() < 1e-9);
+        shard.settle(&mut empires);
+        assert_eq!(shard.standing().unwrap().path, ShardWinPath::Deadline);
+        let iron = empires["tenant-a"].resources.iron;
+        let err = shard
+            .apply_bridge(empires.get_mut("tenant-a").unwrap(), "tenant-a", &event)
+            .unwrap_err();
+        assert_eq!(err, ShardError::Ended);
+        assert!((empires["tenant-a"].resources.iron - iron).abs() < 1e-9);
+    }
+
+    #[test]
+    fn delayed_bridge_pulse_applies_before_the_deadline() {
+        let mut shard = finish_session(1_000, 5_000, ScoreboardVisibility::Hidden);
+        let mut empires = join_pair(&mut shard, 1_000);
+        shard.clock.set(1_100);
+        let iron = empires["tenant-a"].resources.iron;
+        let event = shard.sign_bridge(ActivityPulse::PrMerged { ts: 1_050 });
+        let result = shard
+            .apply_bridge(empires.get_mut("tenant-a").unwrap(), "tenant-a", &event)
+            .unwrap();
+        assert_eq!(result, ActivityApply::Applied);
+        assert!(empires["tenant-a"].resources.iron > iron);
+        assert!(shard.standing().is_none());
+    }
+
+    #[test]
+    fn current_bridge_pulse_unsettles_until_the_race_is_named() {
+        let mut shard = finish_session(1_000, 5_000, ScoreboardVisibility::Hidden);
+        let mut empires = join_pair(&mut shard, 1_000);
+        grant_wonder(empires.get_mut("tenant-a").unwrap());
+        shard.clock.set(1_200);
+        let iron = empires["tenant-b"].resources.iron;
+        let event = shard.sign_bridge(ActivityPulse::PrMerged { ts: 1_200 });
+        let err = shard
+            .apply_bridge(empires.get_mut("tenant-b").unwrap(), "tenant-b", &event)
+            .unwrap_err();
+        assert_eq!(
+            err,
+            ShardError::Unsettled {
+                identity: "tenant-b".into()
+            }
+        );
+        assert!((empires["tenant-b"].resources.iron - iron).abs() < 1e-9);
+        shard.settle(&mut empires);
+        assert_eq!(shard.standing().unwrap().winner, "tenant-a");
+        let err = shard
+            .apply_bridge(empires.get_mut("tenant-b").unwrap(), "tenant-b", &event)
+            .unwrap_err();
+        assert_eq!(err, ShardError::Ended);
+        assert!((empires["tenant-b"].resources.iron - iron).abs() < 1e-9);
+    }
+
+    #[test]
+    fn first_join_after_the_deadline_still_seats() {
+        let mut shard = finish_session(1_000, 1_100, ScoreboardVisibility::Hidden);
+        shard.clock.set(1_200);
+        let mut empires = BTreeMap::new();
+        shard
+            .join("tenant-a", WALK, &mut empires, |_| test_state(1_000))
+            .unwrap();
+        assert_eq!(empires.len(), 1);
+        shard.settle(&mut empires);
+        assert_eq!(shard.standing().unwrap().winner, "tenant-a");
+        assert_eq!(shard.standing().unwrap().path, ShardWinPath::Deadline);
+    }
+
+    #[test]
+    fn earlier_victory_wins_even_if_the_later_tenant_is_touched_first() {
+        let mut shard = finish_session(1_000, 5_000, ScoreboardVisibility::Hidden);
+        let mut empires = join_pair(&mut shard, 1_000);
+        {
+            let a = empires.get_mut("tenant-a").unwrap();
+            a.config.victory.enabled = true;
+            a.config.victory.wonder_id = "dyson_ring".into();
+            a.completed_wonders.push("dyson_ring".into());
+            a.maybe_declare_victory(1_100);
+        }
+        {
+            let b = empires.get_mut("tenant-b").unwrap();
+            b.config.victory.enabled = true;
+            b.config.victory.wonder_id = "dyson_ring".into();
+            b.completed_wonders.push("dyson_ring".into());
+            b.maybe_declare_victory(1_200);
+        }
+        shard.clock.set(1_300);
+        shard.settle(&mut empires);
+        let standing = shard.standing().expect("race");
+        assert_eq!(standing.winner, "tenant-a");
+        assert_eq!(standing.path, ShardWinPath::Race);
+    }
+
+    #[test]
+    fn deadline_picks_the_higher_score_at_the_next_interaction() {
+        let mut shard = finish_session(1_000, 1_100, ScoreboardVisibility::Hidden);
+        let mut empires = join_pair(&mut shard, 1_000);
+        empires.get_mut("tenant-a").unwrap().resources.iron = 2_000_000.0;
+        empires.get_mut("tenant-b").unwrap().resources.iron = 10.0;
+        shard.clock.set(1_100);
+        let json = shard.view("tenant-a", &mut empires).unwrap().to_json();
+        assert_eq!(json["standing"]["winner"], "tenant-a");
+        assert_eq!(json["standing"]["path"], "deadline");
+        let home_b = empires["tenant-b"].home;
+        let err = shard
+            .submit(
+                empires.get_mut("tenant-b").unwrap(),
+                build_on("tenant-b", "after", home_b),
+            )
+            .unwrap_err();
+        assert_eq!(err, ShardError::Ended);
+        let frozen = shard.standing().unwrap().scores.clone();
+        empires.get_mut("tenant-b").unwrap().resources.iron = 9_000_000.0;
+        let later = shard.view("tenant-a", &mut empires).unwrap();
+        let standing = later.standing.as_ref().unwrap();
+        assert_eq!(standing.scores, frozen);
+        assert_eq!(standing.winner, "tenant-a");
+    }
+
+    #[test]
+    fn hidden_scoreboard_stays_off_the_view_until_end() {
+        let mut shard = finish_session(1_000, 5_000, ScoreboardVisibility::Hidden);
+        let mut empires = join_pair(&mut shard, 1_000);
+        let json = shard.view("tenant-a", &mut empires).unwrap().to_json();
+        assert!(json.get("scoreboard").is_none());
+        assert!(json.get("standing").is_none());
+    }
+
+    #[test]
+    fn visible_scoreboard_is_identity_and_score_only() {
+        let mut shard = finish_session(1_000, 5_000, ScoreboardVisibility::Visible);
+        let mut empires = join_pair(&mut shard, 1_000);
+        let json = shard.view("tenant-a", &mut empires).unwrap().to_json();
+        assert!(json.get("standing").is_none());
+        let row = &json["scoreboard"][0];
+        let keys: Vec<_> = row.as_object().unwrap().keys().cloned().collect();
+        assert_eq!(keys, ["identity", "score"]);
+        assert_ne!(row["identity"], "");
+    }
+
+    #[test]
+    fn ordinary_shard_does_not_end_on_victory() {
+        let mut shard = session(1_000);
+        let mut empires = join_pair(&mut shard, 1_000);
+        grant_wonder(empires.get_mut("tenant-a").unwrap());
+        shard.settle(&mut empires);
+        assert!(shard.standing().is_none());
+        let home_b = empires["tenant-b"].home;
+        shard
+            .submit(
+                empires.get_mut("tenant-b").unwrap(),
+                build_on("tenant-b", "still", home_b),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn finish_bookkeeping_is_version_3_and_keeps_the_winner() {
+        let mut shard = finish_session(1_000, 5_000, ScoreboardVisibility::Hidden);
+        let mut empires = join_pair(&mut shard, 1_000);
+        grant_wonder(empires.get_mut("tenant-a").unwrap());
+        shard.settle(&mut empires);
+        assert!(shard.standing().is_some());
+        let saved = shard.export_bookkeeping().unwrap();
+        let doc: serde_json::Value = serde_json::from_slice(saved.as_bytes()).unwrap();
+        assert_eq!(doc["version"], 3);
+        let mut restored = finish_session(1_030, 5_000, ScoreboardVisibility::Hidden);
+        restored.restore_bookkeeping(&saved).unwrap();
+        assert_eq!(restored.standing().unwrap().winner, "tenant-a");
+        let err = session(1_030).restore_bookkeeping(&saved).unwrap_err();
+        assert!(
+            matches!(err, ShardError::Bookkeeping(ref msg) if msg.contains("finish-line identity")),
+            "{err}"
+        );
     }
 }

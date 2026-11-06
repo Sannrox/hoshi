@@ -53,7 +53,10 @@ bridge pulses need an HMAC-SHA256 the host keys. A blitz shard
 ([ADR 0022](decisions/0022-blitz-shards-run-on-a-scaled-clock-and-end-with-a-winner.md))
 is created with a fixed `epoch` and `factor`; game unix is
 `epoch + factor x (wall - epoch)`, the tenant view carries both, and the
-command rate limit stays on wall time. Unsigned or altered pulses
+command rate limit stays on wall time. A finish-line shard (same ADR)
+carries a deadline and scoreboard option fixed at creation: the first
+tenant victory wins, otherwise the highest arena score at the deadline;
+ended shards refuse gameplay and the view carries the standing. Unsigned or altered pulses
 are rejected. A player raid is a mission with flight
 ([ADR 0019](decisions/0019-shard-raids-are-missions-with-flight.md)):
 `ShardSession::launch_raid` flies the fleet at another tenant's home on the
@@ -111,9 +114,14 @@ held by then turns back with the colony ship. Recyclers launched with
 `ShardSession::recycle` harvest the shared pile in arrival order, each
 taking at most its hold from what is left. `submit` catches up without the
 other empires, so it refuses with `Unsettled` while a colony, recycler, or
-raid arrival of that empire, another tenant's raid on its home, or a
-market tick or expiry while it has an order on the regional book, is due;
-the host settles and retries. The session keeps each target's next raid
+raid arrival of that empire, another tenant's raid on its home, a
+market tick or expiry while it has an order on the regional book, or a
+finish-line deadline, recorded victory, or a clock that has moved since
+the last settle, is due; the host settles and retries. `apply_bridge`
+refuses with `Unsettled` once the deadline has passed, that tenant
+already recorded a victory, or a pulse is stamped at the current host
+clock and the shard has not been settled yet; delayed pulses still
+apply at their own timestamp. The session keeps each target's next raid
 arrival in its bookkeeping, so the refusal holds across a restart.
 
 One regional market: `ShardCommons` holds one NPC book per region that
@@ -186,8 +194,8 @@ which runs under the default `cargo test`.
 3. **Act.** `submit` for intents, `launch_raid`, `spy`, `colonize`, and
    `recycle` for shard missions, `place_order` for the market book, each
    with an idempotency id. Client
-   timestamps are ignored. When `submit` refuses with `Unsettled`, call
-   `settle` and retry the same id.
+   timestamps are ignored. When `submit` or `apply_bridge` refuses with
+   `Unsettled`, call `settle` and retry the same id.
 4. **Settle.** `settle` steps every empire and the market book to the
    host clock. The mission calls, `place_order`, `view`, and `book` settle
    first.
