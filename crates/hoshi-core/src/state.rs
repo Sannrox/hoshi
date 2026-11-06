@@ -5302,7 +5302,8 @@ impl GameState {
 
     fn resolve_raid_at(&mut self, done_at: u64) -> CombatReport {
         self.finish_pending_tactical();
-        if self.interactive_tactics && self.defences.is_empty() {
+        // Interactive rounds stay a home-fleet pause. A colony raid auto-resolves.
+        if self.raid_target() == self.home && self.interactive_tactics && self.defences.is_empty() {
             self.begin_home_raid_pending(done_at);
             if let Some(pending) = &self.pending_tactical {
                 return CombatReport {
@@ -5393,7 +5394,7 @@ impl GameState {
                 || report.attacker_after.is_empty()
                 || report.defender_after.is_empty();
             if finished {
-                self.finish_home_raid(now.max(pending.next_at), report);
+                self.finish_raid_at(now.max(pending.next_at), self.home, report);
                 return;
             }
             if let Some(slot) = &mut self.pending_tactical {
@@ -5547,7 +5548,10 @@ impl GameState {
     }
 
     fn resolve_raid_now(&mut self, done_at: u64) -> CombatReport {
+        let dest = self.raid_target();
         let pirates = self.pirate_fleet();
+        let parked = self.fleet_at(dest).unwrap_or_default();
+        let defences = self.defences_at(dest).unwrap_or_default();
         let mut atk_stats = stats_from_catalog(&self.config.ships);
         if self.cheats.god_mode {
             for stats in &mut atk_stats {
@@ -5556,29 +5560,45 @@ impl GameState {
         }
         let def_stats = self.player_combat_stats();
         let rf = rapid_fire_table(&self.config.ships);
-        if self.defences.is_empty() {
+        let home_fight = dest == self.home;
+        if defences.is_empty() {
             let mut rng = self.rng_seed;
             let report = crate::resolve_tactical(
                 pirates,
-                self.fleet,
+                parked,
                 &atk_stats,
                 &def_stats,
                 &rf,
                 &mut rng,
                 &self.config.tactics,
                 crate::TacticalPlan::default(),
-                self.player_plan(),
-                self.fleet_tactics,
+                if home_fight {
+                    self.player_plan()
+                } else {
+                    crate::TacticalPlan::default()
+                },
+                if home_fight {
+                    self.fleet_tactics
+                } else {
+                    crate::FleetTactics::default()
+                },
                 None,
-                self.home_admiral(),
+                if home_fight {
+                    self.home_admiral()
+                } else {
+                    None
+                },
                 &[],
-                self.reserves,
+                if home_fight {
+                    self.reserves
+                } else {
+                    Fleet::default()
+                },
             );
             self.rng_seed = rng;
-            self.finish_home_raid(done_at, report)
+            self.finish_raid_at(done_at, dest, report)
         } else {
-            let parked = self.fleet;
-            let defences_before = self.defences;
+            let defences_before = defences;
             let hangar = def_stats[ShipKind::LightFighter.index()];
             let seed = self.rng_seed;
             let mut defence_config = self.config.defences.clone();
@@ -5588,7 +5608,7 @@ impl GameState {
             let battle = crate::defences::resolve_planet_battle_protected(
                 pirates,
                 parked,
-                self.defences,
+                defences,
                 &atk_stats,
                 &def_stats,
                 hangar,
@@ -5599,19 +5619,21 @@ impl GameState {
                 &mut self.rng_seed,
                 self.cheats.god_mode,
             );
-            self.fleet = battle.fleet_after;
-            self.defences = battle.defences_after;
-            let plunder = self.take_raid_plunder(battle.winner, battle.attacker_after);
+            if let Some(yard) = self.yard_mut(dest) {
+                *yard.fleet = battle.fleet_after;
+                *yard.defences = battle.defences_after;
+            }
+            let plunder = self.take_raid_plunder(battle.winner, battle.attacker_after, dest);
             self.apply_raid_standing(battle.winner, done_at);
-            self.note_raid_incident(battle.winner, plunder, done_at);
+            self.note_raid_incident(battle.winner, plunder, done_at, dest);
             self.note_raid_outcome(battle.winner);
             let offline = if battle.winner == CombatWinner::Attacker {
-                self.scar_home_mine(done_at)
+                self.scar_mine_at(dest, done_at)
             } else {
                 None
             };
             let defence_losses =
-                offline.map(|_| defence_loss_label(defences_before, self.defences));
+                offline.map(|_| defence_loss_label(defences_before, battle.defences_after));
             self.push_event(
                 done_at,
                 format_layered_raid(
@@ -5621,6 +5643,7 @@ impl GameState {
                     plunder,
                     offline,
                     defence_losses.as_deref(),
+                    &raid_dest_suffix(dest, self.home),
                 ),
             );
             let report = CombatReport {
@@ -5637,15 +5660,22 @@ impl GameState {
             }
             .with_seed_and_endpoints(seed);
             let defence = crate::RaidDefence::from_battle(&battle);
-            self.schedule_next_raid(done_at, report, plunder, Some(defence))
+            self.schedule_next_raid(done_at, dest, report, plunder, Some(defence))
         }
     }
 
-    fn finish_home_raid(&mut self, done_at: u64, mut report: CombatReport) -> CombatReport {
+    fn finish_raid_at(
+        &mut self,
+        done_at: u64,
+        dest: Coord,
+        mut report: CombatReport,
+    ) -> CombatReport {
         if self.cheats.god_mode && report.winner == CombatWinner::Attacker {
             report.winner = CombatWinner::Draw;
         }
-        if let Some(pending) = self.pending_tactical.take() {
+        if dest == self.home
+            && let Some(pending) = self.pending_tactical.take()
+        {
             let mut rng = pending.seed;
             let _ = crate::resolve_tactical(
                 pending.attacker,
@@ -5665,24 +5695,32 @@ impl GameState {
             );
             self.rng_seed = rng;
         }
-        self.fleet = report.defender_after;
-        let plunder = self.take_raid_plunder(report.winner, report.attacker_after);
+        if let Some(yard) = self.yard_mut(dest) {
+            *yard.fleet = report.defender_after;
+        }
+        let plunder = self.take_raid_plunder(report.winner, report.attacker_after, dest);
         self.apply_raid_standing(report.winner, done_at);
-        self.note_raid_incident(report.winner, plunder, done_at);
+        self.note_raid_incident(report.winner, plunder, done_at, dest);
         self.note_raid_outcome(report.winner);
-        self.grant_admiral_xp(report.winner);
+        if dest == self.home {
+            self.grant_admiral_xp(report.winner);
+        }
         let offline = if report.winner == CombatWinner::Attacker {
-            self.scar_home_mine(done_at)
+            self.scar_mine_at(dest, done_at)
         } else {
             None
         };
-        self.push_event(done_at, format_raid_report(&report, plunder, offline));
-        self.schedule_next_raid(done_at, report, plunder, None)
+        self.push_event(
+            done_at,
+            format_raid_report(&report, plunder, offline, dest, self.home),
+        );
+        self.schedule_next_raid(done_at, dest, report, plunder, None)
     }
 
     fn schedule_next_raid(
         &mut self,
         done_at: u64,
+        dest: Coord,
         report: CombatReport,
         plunder: Resources,
         defence: Option<crate::RaidDefence>,
@@ -5698,7 +5736,7 @@ impl GameState {
             log.raid_plunder = Some(plunder);
             log.raid_defence = defence;
         }
-        self.note_fight_debris(done_at, self.home, &report);
+        self.note_fight_debris(done_at, dest, &report);
         if report.winner != CombatWinner::Attacker {
             self.note_daily(DailyAction::RaidWon, done_at);
         }
@@ -5731,9 +5769,14 @@ impl GameState {
         }
     }
 
-    /// What winning raiders carry off: the plunder share of reachable stock,
-    /// capped per resource, and no more than the survivors' holds take.
-    fn take_raid_plunder(&mut self, winner: CombatWinner, survivors: Fleet) -> Resources {
+    /// What winning raiders carry off: the plunder share of reachable stock
+    /// at `dest`, capped per resource, and no more than the survivors' holds take.
+    fn take_raid_plunder(
+        &mut self,
+        winner: CombatWinner,
+        survivors: Fleet,
+        dest: Coord,
+    ) -> Resources {
         if winner != CombatWinner::Attacker {
             return Resources::ZERO;
         }
@@ -5743,16 +5786,17 @@ impl GameState {
             .sum();
         let taken = crate::combat::fill_hold(
             plunder_from(
-                self.plunderable(),
+                self.plunderable_at(dest),
                 self.config.raid.plunder_share,
                 self.config.raid.plunder_cap,
             ),
             hold,
         );
-        self.resources = self.resources.saturating_sub(taken);
-        let home = self.home;
+        if let Ok(stock) = self.resources_at_mut(dest) {
+            *stock = stock.saturating_sub(taken);
+        }
         if let Some(ledger) = &mut self.ledger {
-            ledger.plunder(home, taken);
+            ledger.plunder(dest, taken);
         }
         taken
     }
@@ -5760,12 +5804,49 @@ impl GameState {
     /// Home stock above the protected share of storage, the most a raid can
     /// reach. See [`crate::RaidConfig::protected_share`].
     pub(crate) fn plunderable(&self) -> Resources {
+        self.plunderable_at(self.home)
+    }
+
+    fn plunderable_at(&self, coord: Coord) -> Resources {
+        let Some(stock) = self.resources_at(coord) else {
+            return Resources::ZERO;
+        };
         let mut out = Resources::ZERO;
         for kind in ResourceKind::ALL {
-            let protected = self.storage_cap(kind) * self.config.raid.protected_share;
-            out.set(kind, (self.resources.get(kind) - protected).max(0.0));
+            let protected = self.storage_cap_at(coord, kind) * self.config.raid.protected_share;
+            out.set(kind, (stock.get(kind) - protected).max(0.0));
         }
         out
+    }
+
+    /// Weakest owned world by parked fleet plus defence points. A tie keeps home.
+    pub(crate) fn raid_target(&self) -> Coord {
+        let mut best = self.home;
+        let mut best_pts = self.world_combat_points(self.home);
+        for coord in self.owned_coords() {
+            if coord == self.home {
+                continue;
+            }
+            let pts = self.world_combat_points(coord);
+            if pts < best_pts {
+                best = coord;
+                best_pts = pts;
+            }
+        }
+        best
+    }
+
+    fn world_combat_points(&self, coord: Coord) -> f64 {
+        let fleet = self.fleet_at(coord).unwrap_or_default();
+        let defences = self.defences_at(coord).unwrap_or_default();
+        let fleet_pts: f64 = ShipKind::ALL
+            .iter()
+            .map(|&kind| {
+                let stats = self.ship_stats(kind);
+                f64::from(fleet.get(kind)) * (stats.attack + stats.hull)
+            })
+            .sum();
+        fleet_pts + defences.combat_points(&self.config.defences)
     }
 
     fn note_raid_outcome(&mut self, winner: CombatWinner) {
@@ -8091,10 +8172,20 @@ fn format_outpost_invade(report: &crate::CombatReport, dest: Coord) -> String {
     }
 }
 
+fn raid_dest_suffix(dest: Coord, home: Coord) -> String {
+    if dest == home {
+        String::new()
+    } else {
+        format!(" at {dest}")
+    }
+}
+
 fn format_raid_report(
     report: &crate::CombatReport,
     plunder: Resources,
     offline: Option<BuildingKind>,
+    dest: Coord,
+    home: Coord,
 ) -> String {
     let ours = report
         .defender_before
@@ -8104,14 +8195,15 @@ fn format_raid_report(
         .attacker_before
         .losses_to(report.attacker_after)
         .label();
+    let at = raid_dest_suffix(dest, home);
     match offline {
         Some(kind) => format!(
-            "raid: {kind} offline. lost {ours}. pirates lost {theirs}. defences lost none. plunder {}. winner {}",
+            "raid: {kind} offline. lost {ours}. pirates lost {theirs}. defences lost none. plunder {}. winner {}{at}",
             plunder.brief(),
             report.winner.as_key(),
         ),
         None => format!(
-            "raid: pirates {} vs {}. {} rounds. lost {ours}. pirates lost {theirs}. plunder {}. winner {}",
+            "raid: pirates {} vs {}. {} rounds. lost {ours}. pirates lost {theirs}. plunder {}. winner {}{at}",
             report.attacker_before.label(),
             report.defender_before.label(),
             report.rounds,
@@ -8143,6 +8235,7 @@ fn format_layered_raid(
     plunder: Resources,
     offline: Option<BuildingKind>,
     defence_losses: Option<&str>,
+    at: &str,
 ) -> String {
     let intercept = if battle.intercept_in > 0 {
         format!(
@@ -8175,7 +8268,7 @@ fn format_layered_raid(
         .map(|label| format!("defences lost {label}. "))
         .unwrap_or_default();
     format!(
-        "raid: {lead}pirates {} vs {} in orbit. {intercept}orbital stations {}->{} hangar {}->{} {} rounds. {dome}. batteries {}->{}. {ground}. lost {}. pirates lost {}. rebuilt {}. winner {}. {defs}plunder {}",
+        "raid: {lead}pirates {} vs {} in orbit. {intercept}orbital stations {}->{} hangar {}->{} {} rounds. {dome}. batteries {}->{}. {ground}. lost {}. pirates lost {}. rebuilt {}. winner {}. {defs}plunder {}{at}",
         pirates.label(),
         parked.label(),
         battle.stations_before,
@@ -10453,6 +10546,94 @@ modifiers = []
         assert!(!raid_text(&bare).contains("offline"));
     }
 
+    fn unarmed_colony(state: &mut GameState) -> Coord {
+        let coord = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 4,
+        };
+        plant_colony(state, coord);
+        if let Some(colony) = state.colonies.iter_mut().find(|c| c.coord == coord) {
+            colony.buildings.metal_mine = 1;
+        }
+        coord
+    }
+
+    #[test]
+    fn pirate_raid_fights_the_weaker_colony_not_home() {
+        let mut state = quiet_home();
+        state.fleet.add(ShipKind::LightFighter, 10);
+        let home_fleet = state.fleet;
+        let home_stock = state.resources;
+        let home_mine = state.building_health(state.home, BuildingKind::MetalMine);
+        let colony = unarmed_colony(&mut state);
+        let colony_stock = *state.resources_at(colony).unwrap();
+        state.trigger_raid(0);
+        assert_eq!(state.fleet, home_fleet);
+        assert_eq!(state.resources, home_stock);
+        assert_eq!(
+            state.building_health(state.home, BuildingKind::MetalMine),
+            home_mine
+        );
+        let after = *state.resources_at(colony).unwrap();
+        assert_ne!(after, colony_stock);
+        assert_eq!(state.building_health(colony, BuildingKind::MetalMine), 0.0);
+        let text = raid_text(&state);
+        assert!(text.contains(&format!(" at {colony}")), "{text}");
+    }
+
+    #[test]
+    fn stronger_colony_is_not_the_raid_target() {
+        let mut state = quiet_home();
+        let colony = unarmed_colony(&mut state);
+        state.colonies[0].fleet.add(ShipKind::LightFighter, 10);
+        let colony_fleet = state.colonies[0].fleet;
+        let colony_stock = state.colonies[0].resources;
+        let colony_mine = state.building_health(colony, BuildingKind::MetalMine);
+        state.trigger_raid(0);
+        assert_eq!(state.colonies[0].fleet, colony_fleet);
+        assert_eq!(state.colonies[0].resources, colony_stock);
+        assert_eq!(
+            state.building_health(colony, BuildingKind::MetalMine),
+            colony_mine
+        );
+        assert_eq!(
+            state.building_health(state.home, BuildingKind::MetalMine),
+            0.0
+        );
+        let text = raid_text(&state);
+        assert!(!text.contains(&format!(" at {colony}")), "{text}");
+    }
+
+    #[test]
+    fn colony_raid_catch_up_matches_steps() {
+        let mut gap = quiet_home();
+        gap.fleet.add(ShipKind::LightFighter, 10);
+        let colony = unarmed_colony(&mut gap);
+        gap.next_raid_at = Some(40);
+        let mut step = gap.clone();
+        gap.catch_up(40);
+        for now in 1..=40 {
+            step.catch_up(now);
+        }
+        assert_eq!(gap.building_health(colony, BuildingKind::MetalMine), 0.0);
+        assert_eq!(
+            step.building_health(colony, BuildingKind::MetalMine),
+            gap.building_health(colony, BuildingKind::MetalMine)
+        );
+        assert_eq!(step.maintenance.orders, gap.maintenance.orders);
+        assert_eq!(step.fleet, gap.fleet);
+        assert_eq!(raid_text(&step), raid_text(&gap));
+        close(
+            step.resources_at(colony).unwrap().iron,
+            gap.resources_at(colony).unwrap().iron,
+        );
+        close(
+            step.resources_at(colony).unwrap().silicon,
+            gap.resources_at(colony).unwrap().silicon,
+        );
+    }
+
     #[test]
     fn offline_gap_and_steps_scar_the_same_mine() {
         let mut gap = quiet_home();
@@ -12397,7 +12578,8 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         let home = ledger.planets[0];
         let colony = ledger.planets[1];
         assert_eq!(ledger.raids_lost, 1, "{:?}", state.events);
-        assert!(home.plundered.iron > 0.0);
+        assert_eq!(home.plundered, Resources::ZERO);
+        assert!(colony.plundered.iron > 0.0);
         assert!(home.capped.silicon > 0.0);
         assert!(home.transfers_out.iron > 0.0);
         assert!(colony.transfers_in.iron > 0.0);

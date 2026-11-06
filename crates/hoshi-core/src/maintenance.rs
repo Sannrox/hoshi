@@ -913,23 +913,24 @@ impl GameState {
         self.note_failure_incident(&key, at);
     }
 
-    /// After a lost home raid, take the iron mine offline, otherwise the
-    /// silicon mine, otherwise the deuterium synthesizer. Downtime matches a
-    /// wear failure. The repair order bills no parts: the scarred iron mine
-    /// is the only source of the iron a wear bill charges, and charging it
-    /// leaves that mine offline for good. Wear failures still use
-    /// `iron_cost` and `silicon_cost`. A second loss while the order is open
-    /// does not open another. Colonies are not scarred.
-    pub(crate) fn scar_home_mine(&mut self, at: u64) -> Option<BuildingKind> {
+    /// After a lost raid on `coord`, take that world's iron mine offline,
+    /// otherwise the silicon mine, otherwise the deuterium synthesizer.
+    /// Downtime matches a wear failure. The repair order bills no parts: the
+    /// scarred iron mine is the only source of the iron a wear bill charges,
+    /// and charging it leaves that mine offline for good. Wear failures still
+    /// use `iron_cost` and `silicon_cost`. A second loss while the order is
+    /// open does not open another.
+    pub(crate) fn scar_mine_at(&mut self, coord: Coord, at: u64) -> Option<BuildingKind> {
         self.sync_maintenance_assets(at);
+        let buildings = *self.buildings_at(coord)?;
         let kind = [
             BuildingKind::MetalMine,
             BuildingKind::CrystalMine,
             BuildingKind::DeuteriumSynthesizer,
         ]
         .into_iter()
-        .find(|&kind| self.buildings.get(kind) > 0)?;
-        let key = format!("building:{}:{}", self.home, kind.as_key());
+        .find(|&kind| buildings.get(kind) > 0)?;
+        let key = format!("building:{}:{}", coord, kind.as_key());
         let id = self
             .maintenance
             .assets
