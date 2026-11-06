@@ -382,9 +382,16 @@ impl GameState {
                     }
                 }))
                 .collect();
+        let mut description = format!("drive {}", self.display_name(&spec.drive));
+        if kind == ShipKind::Explorer {
+            let factor = self.config.expedition.explorer_mult.max(0.0);
+            description.push_str(&format!(
+                "; expedition find x{factor} with one aboard (no Explore mission)"
+            ));
+        }
         Detail {
             name: spec.name.clone(),
-            description: format!("drive {}", self.display_name(&spec.drive)),
+            description,
             level: 0,
             costs: material_lines(self, cost),
             energy_draw: None,
@@ -1557,5 +1564,41 @@ mod tests {
         upgraded.buildings.robotics_factory = 1;
         let row = construction_delta(&upgraded);
         assert_eq!((row.from.as_str(), row.to.as_str()), ("2.0", "3.0"));
+    }
+
+    #[test]
+    fn explorer_detail_names_the_expedition_find_bonus() {
+        let state = GameState::with_config(0, quiet());
+        assert_eq!(state.config.expedition.explorer_mult, 2.0);
+        let explorer = state
+            .describe(
+                DetailSubject::Ship {
+                    kind: ShipKind::Explorer,
+                    planet: state.home,
+                },
+                None,
+            )
+            .unwrap();
+        assert!(
+            explorer.description.contains("expedition find x2")
+                && explorer.description.contains("no Explore mission"),
+            "{}",
+            explorer.description
+        );
+        let cargo = state
+            .describe(
+                DetailSubject::Ship {
+                    kind: ShipKind::SmallCargo,
+                    planet: state.home,
+                },
+                None,
+            )
+            .unwrap();
+        assert!(
+            cargo.description.starts_with("drive ")
+                && !cargo.description.contains("expedition find"),
+            "{}",
+            cargo.description
+        );
     }
 }

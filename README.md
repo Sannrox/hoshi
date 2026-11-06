@@ -6,7 +6,7 @@
 [![Release](https://img.shields.io/github/v/release/Sannrox/hoshi?include_prereleases)](https://github.com/Sannrox/hoshi/releases)
 [![License](https://img.shields.io/github/license/Sannrox/hoshi)](LICENSE)
 
-[Try it](#try-it) · [Install](docs/install.md) · [Scriptable CLI](docs/cli.md) · [Realism](docs/realism.md) · [Decisions](docs/decisions/README.md)
+[Try it](#try-it) · [Play](docs/play.md) · [Install](docs/install.md) · [Scriptable CLI](docs/cli.md) · [Realism](docs/realism.md) · [Decisions](docs/decisions/README.md)
 
 > Status: hobby project, pre-alpha.
 
@@ -127,6 +127,8 @@ With `--features bridge` and the bridge enabled, a status bar shows the latest
 feed event and `a` opens the activity log.
 
 ## Playing
+
+Player notes for explorers and market contracts: [docs/play.md](docs/play.md).
 
 ### The empire
 
