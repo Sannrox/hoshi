@@ -1046,6 +1046,8 @@ fn map_lines(
                 ('H', t.intent(Intent::Primary).add_modifier(Modifier::BOLD))
             } else if owned.contains(&coord) {
                 ('C', t.intent(Intent::Success))
+            } else if state.visible_rival_colony_at(coord).is_some() {
+                ('R', t.intent(Intent::Warning))
             } else if state.outposts.iter().any(|o| o.coord == coord) {
                 ('P', t.intent(Intent::Danger))
             } else if signals.iter().any(|s| s.coord == coord && s.is_open()) {
@@ -1070,6 +1072,8 @@ fn map_lines(
             spans.push(Span::styled(ch.to_string(), style));
             if coord == state.home {
                 labels.push("home".to_string());
+            } else if let Some(claim) = state.visible_rival_colony_at(coord) {
+                labels.push(format!("rival {}", claim.rival_id));
             } else if let Some(site) = state.site_at(coord) {
                 let label = match site.outcome {
                     Some(outcome) => format!("{} {}", site.kind.as_key(), outcome.as_key()),
@@ -1507,6 +1511,8 @@ fn planet_detail(state: &GameState, coord: Coord, height: usize, t: &Theme) -> V
             colony.build_queue.len(),
             colony.fleet.total()
         )));
+    } else if let Some(claim) = state.visible_rival_colony_at(coord) {
+        lines.push(Line::from(format!("rival {} colony", claim.rival_id)));
     } else if let Some(outpost) = state.outposts.iter().find(|o| o.coord == coord) {
         lines.push(Line::from(format!(
             "pirate {}  faction pirates",

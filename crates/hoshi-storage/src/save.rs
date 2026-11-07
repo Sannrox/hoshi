@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 63;
+pub const SCHEMA_VERSION: u32 = 64;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -249,6 +249,8 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM rival_ships;
          DELETE FROM rival_queue;
          DELETE FROM rival_buildings;
+         DELETE FROM rival_colonies;
+         DELETE FROM rival_colonize_flights;
          DELETE FROM rivals;
          DELETE FROM rivals_meta;
          DELETE FROM ladder;
@@ -1276,6 +1278,45 @@ fn insert_rivals(conn: &Connection, state: &GameState) -> Result<(), SaveError> 
             )?;
         }
     }
+    if table_exists(conn, "rival_colonies") {
+        for row in &state.rivals.colonies {
+            conn.execute(
+                "INSERT INTO rival_colonies (
+                    rival_id, galaxy, system, position, founded_at, visible_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    row.rival_id,
+                    row.coord.galaxy as i64,
+                    row.coord.system as i64,
+                    row.coord.position as i64,
+                    row.founded_at as i64,
+                    row.visible_at as i64,
+                ],
+            )?;
+        }
+    }
+    if table_exists(conn, "rival_colonize_flights") {
+        for row in &state.rivals.flights {
+            conn.execute(
+                "INSERT INTO rival_colonize_flights (
+                    rival_id, galaxy, system, position,
+                    origin_galaxy, origin_system, origin_position,
+                    launched_at, arrives_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    row.rival_id,
+                    row.dest.galaxy as i64,
+                    row.dest.system as i64,
+                    row.dest.position as i64,
+                    row.origin.galaxy as i64,
+                    row.origin.system as i64,
+                    row.origin.position as i64,
+                    row.launched_at as i64,
+                    row.arrives_at as i64,
+                ],
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -1514,6 +1555,76 @@ fn load_rivals(conn: &Connection, state: &mut GameState) -> Result<(), SaveError
             });
         }
     }
+    let mut colonies = Vec::new();
+    if table_exists(conn, "rival_colonies") {
+        let mut stmt = conn.prepare(
+            "SELECT rival_id, galaxy, system, position, founded_at, visible_at
+             FROM rival_colonies ORDER BY rowid",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+            ))
+        })?;
+        for row in rows {
+            let (rival_id, g, s, p, founded, visible) = row?;
+            colonies.push(hoshi_core::RivalColony {
+                rival_id,
+                coord: Coord {
+                    galaxy: u16_coord(g)?,
+                    system: u16_coord(s)?,
+                    position: u16_coord(p)?,
+                },
+                founded_at: unix_ts(founded)?,
+                visible_at: unix_ts(visible)?,
+            });
+        }
+    }
+    let mut flights = Vec::new();
+    if table_exists(conn, "rival_colonize_flights") {
+        let mut stmt = conn.prepare(
+            "SELECT rival_id, galaxy, system, position,
+                    origin_galaxy, origin_system, origin_position,
+                    launched_at, arrives_at
+             FROM rival_colonize_flights ORDER BY rowid",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
+                row.get::<_, i64>(8)?,
+            ))
+        })?;
+        for row in rows {
+            let (rival_id, g, s, p, og, os, op, launched, arrives) = row?;
+            flights.push(hoshi_core::RivalColonizeFlight {
+                rival_id,
+                dest: Coord {
+                    galaxy: u16_coord(g)?,
+                    system: u16_coord(s)?,
+                    position: u16_coord(p)?,
+                },
+                origin: Coord {
+                    galaxy: u16_coord(og)?,
+                    system: u16_coord(os)?,
+                    position: u16_coord(op)?,
+                },
+                launched_at: unix_ts(launched)?,
+                arrives_at: unix_ts(arrives)?,
+            });
+        }
+    }
     state.rivals = hoshi_core::RivalBoard {
         enabled: enabled != 0,
         tick_secs: unix_ts(tick)?,
@@ -1521,6 +1632,8 @@ fn load_rivals(conn: &Connection, state: &mut GameState) -> Result<(), SaveError
         efficiency,
         starting_bonus: bonus,
         empires,
+        colonies,
+        flights,
     };
     Ok(())
 }
@@ -3374,6 +3487,8 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "rival_techs" => "SELECT COUNT(*) FROM rival_techs",
         "rival_research" => "SELECT COUNT(*) FROM rival_research",
         "rival_ship_queue" => "SELECT COUNT(*) FROM rival_ship_queue",
+        "rival_colonies" => "SELECT COUNT(*) FROM rival_colonies",
+        "rival_colonize_flights" => "SELECT COUNT(*) FROM rival_colonize_flights",
         "ladder" => "SELECT COUNT(*) FROM ladder",
         "ladder_hold" => "SELECT COUNT(*) FROM ladder_hold",
         "frontier_meta" => "SELECT COUNT(*) FROM frontier_meta",
@@ -3496,6 +3611,8 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "rival_techs")?
         + count_rows(conn, "rival_research")?
         + count_rows(conn, "rival_ship_queue")?
+        + count_rows(conn, "rival_colonies")?
+        + count_rows(conn, "rival_colonize_flights")?
         + count_rows(conn, "ladder")?
         + count_rows(conn, "ladder_hold")?
         + count_rows(conn, "frontier_meta")?
@@ -3721,6 +3838,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 63 {
         migrate_v63(conn)?;
+    }
+    if found < 64 {
+        migrate_v64(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -4942,6 +5062,33 @@ fn migrate_v50(conn: &Connection) -> Result<(), SaveError> {
             water_ice REAL NOT NULL CHECK (water_ice >= 0),
             helium_3 REAL NOT NULL CHECK (helium_3 >= 0),
             deuterium REAL NOT NULL CHECK (deuterium >= 0)
+        );",
+    )?;
+    Ok(())
+}
+
+/// v64: rival colonies and hidden colonize flights. A missing table is an
+/// empty list, so older saves load with no rival claims.
+fn migrate_v64(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS rival_colonies (
+            rival_id TEXT NOT NULL,
+            galaxy INTEGER NOT NULL,
+            system INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            founded_at INTEGER NOT NULL CHECK (founded_at >= 0),
+            visible_at INTEGER NOT NULL CHECK (visible_at >= 0)
+        );
+        CREATE TABLE IF NOT EXISTS rival_colonize_flights (
+            rival_id TEXT NOT NULL,
+            galaxy INTEGER NOT NULL,
+            system INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            origin_galaxy INTEGER NOT NULL,
+            origin_system INTEGER NOT NULL,
+            origin_position INTEGER NOT NULL,
+            launched_at INTEGER NOT NULL CHECK (launched_at >= 0),
+            arrives_at INTEGER NOT NULL CHECK (arrives_at >= 0)
         );",
     )?;
     Ok(())
@@ -11967,6 +12114,58 @@ label = "Leave it"
         );
         assert_eq!(count_rows(&conn, "rivals_meta").unwrap(), 1);
         assert_eq!(count_rows(&conn, "rivals").unwrap(), 3);
+    }
+
+    #[test]
+    fn rival_colonies_round_trip_and_v63_saves_have_none() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.enabled = false;
+        cfg.market.enabled = false;
+        let mut state = GameState::with_seed(1_000, cfg, 9);
+        state.deterministic = true;
+        let mut settings = hoshi_core::RivalSettings::on();
+        settings.tick_secs = 60;
+        state
+            .spawn_rivals(&hoshi_core::RivalCatalog::default(), settings)
+            .unwrap();
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 4,
+        };
+        state.rivals.colonies.push(hoshi_core::RivalColony {
+            rival_id: state.rivals.empires[0].id.clone(),
+            coord: dest,
+            founded_at: 1_200,
+            visible_at: 1_400,
+        });
+        state.rivals.flights.push(hoshi_core::RivalColonizeFlight {
+            rival_id: state.rivals.empires[1].id.clone(),
+            dest: Coord {
+                galaxy: 1,
+                system: 1,
+                position: 5,
+            },
+            origin: state.rivals.empires[1].home,
+            launched_at: 1_000,
+            arrives_at: 1_800,
+        });
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.rivals.colonies, state.rivals.colonies);
+        assert_eq!(loaded.rivals.flights, state.rivals.flights);
+        assert_eq!(loaded.rivals.colonies[0].coord, dest);
+        assert_eq!(count_rows(&conn, "rival_colonies").unwrap(), 1);
+        assert_eq!(count_rows(&conn, "rival_colonize_flights").unwrap(), 1);
+        conn.execute_batch(
+            "DROP TABLE rival_colonies; DROP TABLE rival_colonize_flights; PRAGMA user_version = 63;",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        let old = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert!(old.rivals.colonies.is_empty());
+        assert!(old.rivals.flights.is_empty());
     }
 
     #[test]

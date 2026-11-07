@@ -134,7 +134,7 @@
     },
     "rivals": {
       "type": "object",
-      "description": "NPC rival empires for this galaxy: enabled flag and an intel list gated by espionage (id, personality, home, last action, optional stockpile/fleet/buildings)."
+      "description": "NPC rival empires for this galaxy: enabled flag, visible rival colonies, and an intel list gated by espionage (id, personality, home, last action, optional stockpile/fleet/buildings)."
     },
     "finance": {
       "type": "object",

@@ -1678,6 +1678,7 @@ impl App {
         let legend = [
             ("H", "home", Intent::Primary),
             ("C", "colony", Intent::Success),
+            ("R", "rival", Intent::Warning),
             ("P", "pirate", Intent::Danger),
             ("F", "frontier", Intent::Warning),
             ("f", "fleet", Intent::Neutral),
@@ -1711,6 +1712,8 @@ impl App {
                     ('H', Some(Intent::Primary))
                 } else if owned.contains(&coord) {
                     ('C', Some(Intent::Success))
+                } else if self.state.visible_rival_colony_at(coord).is_some() {
+                    ('R', Some(Intent::Warning))
                 } else if self.state.outposts.iter().any(|o| o.coord == coord) {
                     ('P', Some(Intent::Danger))
                 } else if self
@@ -1735,6 +1738,8 @@ impl App {
                     labels.push("home".to_string());
                 } else if owned.contains(&coord) {
                     labels.push(format!("colony {coord}"));
+                } else if let Some(claim) = self.state.visible_rival_colony_at(coord) {
+                    labels.push(format!("rival {} {coord}", claim.rival_id));
                 } else if let Some(out) = self.state.outposts.iter().find(|o| o.coord == coord) {
                     labels.push(format!("pirate {coord} {}", out.kind.as_key()));
                 } else if let Some(world) = self
