@@ -136,6 +136,8 @@ impl TechNodeState {
 pub struct TechSpec {
     pub id: String,
     pub name: String,
+    /// One-sentence player-facing use, shown in the inspector.
+    pub purpose: String,
     pub iron: f64,
     pub silicon: f64,
     pub deuterium: f64,
@@ -197,6 +199,8 @@ impl TechTree {
             let spec = TechSpec {
                 id: raw.id.clone(),
                 name: raw.name,
+                purpose: crate::balance::nonempty_purpose("tech", &raw.id, raw.purpose)
+                    .map_err(TechTreeError::Parse)?,
                 iron: raw.iron,
                 silicon: raw.silicon,
                 deuterium: raw.deuterium,
@@ -612,6 +616,7 @@ struct FileTree {
 struct FileTech {
     id: String,
     name: String,
+    purpose: String,
     #[serde(alias = "metal")]
     iron: f64,
     #[serde(alias = "crystal")]
@@ -692,11 +697,34 @@ mod tests {
     }
 
     #[test]
+    fn empty_purpose_is_rejected() {
+        let toml = r#"
+[[tech]]
+id = "a"
+name = "A"
+purpose = "   "
+metal = 0.0
+crystal = 0.0
+deuterium = 0.0
+cost_growth = 1.0
+base_seconds = 1.0
+time_growth = 1.0
+"#;
+        match TechTree::parse(toml) {
+            Err(TechTreeError::Parse(msg)) => {
+                assert!(msg.contains("purpose must be non-empty"), "{msg}");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
     fn unknown_prereq_id_is_rejected() {
         let toml = r#"
 [[tech]]
 id = "a"
 name = "A"
+purpose = "test"
 metal = 0.0
 crystal = 0.0
 deuterium = 0.0
@@ -720,6 +748,7 @@ prereq_techs = [{ id = "missing", level = 1 }]
 [[tech]]
 id = "a"
 name = "A"
+purpose = "test"
 metal = 0.0
 crystal = 0.0
 deuterium = 0.0
@@ -731,6 +760,7 @@ prereq_techs = [{ id = "b", level = 1 }]
 [[tech]]
 id = "b"
 name = "B"
+purpose = "test"
 metal = 0.0
 crystal = 0.0
 deuterium = 0.0
@@ -754,6 +784,7 @@ prereq_techs = [{ id = "a", level = 1 }]
 [[tech]]
 id = "a"
 name = "A"
+purpose = "test"
 metal = 0.0
 crystal = 0.0
 deuterium = 0.0
@@ -774,6 +805,7 @@ exclusive_group = "solo"
 [[tech]]
 id = "a"
 name = "A"
+purpose = "test"
 metal = 0.0
 crystal = 0.0
 deuterium = 0.0
@@ -786,6 +818,7 @@ prereq_techs = [{ id = "b", level = 1 }]
 [[tech]]
 id = "b"
 name = "B"
+purpose = "test"
 metal = 0.0
 crystal = 0.0
 deuterium = 0.0
@@ -808,6 +841,7 @@ prereq_techs = [{ id = "a", level = 1 }]
 [[tech]]
 id = "root"
 name = "Root"
+purpose = "test"
 metal = 0.0
 crystal = 0.0
 deuterium = 0.0
@@ -818,6 +852,7 @@ time_growth = 1.0
 [[tech]]
 id = "stone"
 name = "Stone"
+purpose = "test"
 metal = 0.0
 crystal = 0.0
 deuterium = 0.0
@@ -841,6 +876,7 @@ prereq_techs = [{ id = "missing_path", level = 1 }]
 [[tech]]
 id = "root"
 name = "Root"
+purpose = "test"
 metal = 0.0
 crystal = 0.0
 deuterium = 0.0
@@ -851,6 +887,7 @@ time_growth = 1.0
 [[tech]]
 id = "loop_a"
 name = "Loop A"
+purpose = "test"
 metal = 0.0
 crystal = 0.0
 deuterium = 0.0
@@ -862,6 +899,7 @@ prereq_techs = [{ id = "loop_b", level = 1 }]
 [[tech]]
 id = "loop_b"
 name = "Loop B"
+purpose = "test"
 metal = 0.0
 crystal = 0.0
 deuterium = 0.0
@@ -873,6 +911,7 @@ prereq_techs = [{ id = "loop_a", level = 1 }]
 [[tech]]
 id = "stone"
 name = "Stone"
+purpose = "test"
 metal = 0.0
 crystal = 0.0
 deuterium = 0.0

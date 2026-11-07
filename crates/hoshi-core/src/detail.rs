@@ -104,30 +104,6 @@ pub struct Detail {
     pub ship: Option<ShipTravel>,
 }
 
-/// Plant line for the side panel: mode, output, fuel, start-up and cooling cap.
-fn fusion_summary(status: &crate::FusionStatus) -> String {
-    let state = if status.plant.mode == crate::FusionMode::Off {
-        "off".to_string()
-    } else if status.plant.burning() {
-        format!("{:.0}/{:.0} energy", status.output, status.rated)
-    } else {
-        format!(
-            "start-up {:.0}% drawing {:.0}",
-            status.startup_progress * 100.0,
-            status.startup_draw
-        )
-    };
-    let mut fuel = format!("deuterium {:.2}/h", status.deuterium_per_hour);
-    if status.helium3_per_hour > 0.0 {
-        fuel.push_str(&format!(", helium-3 {:.2}/h", status.helium3_per_hour));
-    }
-    format!(
-        "; fusion {} {state}; {fuel}; cooling cap {:.0}",
-        status.plant.mode.as_key(),
-        status.cooling_cap
-    )
-}
-
 impl GameState {
     /// Pure glance for a list selection. `travel_dest` is the map cursor for ships.
     pub fn describe(&self, subject: DetailSubject, travel_dest: Option<Coord>) -> Option<Detail> {
@@ -210,6 +186,32 @@ impl GameState {
                 from: format!("{:.0}", waste_now.heat_load),
                 to: format!("{:.0}", waste_next.heat_load),
             });
+            let heat_sink_moves = (waste_now.heat_sink - waste_next.heat_sink).abs() > f64::EPSILON;
+            if kind == BuildingKind::Radiator || heat_sink_moves {
+                deltas.push(DeltaLine {
+                    label: "heat sink".into(),
+                    from: format!("{:.0}", waste_now.heat_sink),
+                    to: format!("{:.0}", waste_next.heat_sink),
+                });
+            }
+            let pollution_load_moves =
+                (waste_now.pollution_load - waste_next.pollution_load).abs() > f64::EPSILON;
+            if pollution_load_moves {
+                deltas.push(DeltaLine {
+                    label: "pollution load".into(),
+                    from: format!("{:.0}", waste_now.pollution_load),
+                    to: format!("{:.0}", waste_next.pollution_load),
+                });
+            }
+            let pollution_sink_moves =
+                (waste_now.pollution_sink - waste_next.pollution_sink).abs() > f64::EPSILON;
+            if kind == BuildingKind::Scrubber || pollution_sink_moves {
+                deltas.push(DeltaLine {
+                    label: "pollution sink".into(),
+                    from: format!("{:.0}", waste_now.pollution_sink),
+                    to: format!("{:.0}", waste_next.pollution_sink),
+                });
+            }
         }
         let mut requirements: Vec<RequirementLine> = spec
             .prerequisites
@@ -235,12 +237,6 @@ impl GameState {
                     }),
             )
             .collect();
-        let mut description = format!("next level {}", level.saturating_add(1));
-        if kind == BuildingKind::FusionPlant
-            && let Some(status) = self.fusion_status_at(planet)
-        {
-            description.push_str(&fusion_summary(&status));
-        }
         if kind == BuildingKind::SolarPlant {
             let cap = self.max_solar_level(planet)?;
             requirements.push(RequirementLine {
@@ -249,7 +245,6 @@ impl GameState {
             });
         }
         if kind == BuildingKind::RoboticsFactory {
-            description.push_str("; shortens construction on this planet");
             deltas.insert(
                 0,
                 DeltaLine {
@@ -273,7 +268,7 @@ impl GameState {
         }
         Some(Detail {
             name: kind.to_string(),
-            description,
+            description: spec.purpose.clone(),
             level,
             costs: material_lines_at(self, planet, cost),
             energy_draw: Some(energy_next - energy_now),
@@ -316,12 +311,6 @@ impl GameState {
                 }
             }))
             .collect();
-        let mut description = format!("{} tier {}", spec.branch.as_key(), spec.tier);
-        match spec.max_level {
-            Some(1) => description.push_str(", single-level pick"),
-            Some(max) => description.push_str(&format!(", max level {max}")),
-            None => {}
-        }
         // At the cap there is no next level: no cost, time or delta, so each
         // effect reads its current value on both sides.
         let next = if complete {
@@ -331,7 +320,7 @@ impl GameState {
         };
         Some(Detail {
             name: spec.name.clone(),
-            description,
+            description: spec.purpose.clone(),
             level,
             costs: if complete {
                 Vec::new()
@@ -382,16 +371,9 @@ impl GameState {
                     }
                 }))
                 .collect();
-        let mut description = format!("drive {}", self.display_name(&spec.drive));
-        if kind == ShipKind::Explorer {
-            let factor = self.config.expedition.explorer_mult.max(0.0);
-            description.push_str(&format!(
-                "; expedition find x{factor} with one aboard (no Explore mission)"
-            ));
-        }
         Detail {
             name: spec.name.clone(),
-            description,
+            description: spec.purpose.clone(),
             level: 0,
             costs: material_lines(self, cost),
             energy_draw: None,
@@ -430,7 +412,7 @@ impl GameState {
         let cost = spec.unit_cost();
         Detail {
             name: spec.name.clone(),
-            description: "orbital or ground defence".into(),
+            description: spec.purpose.clone(),
             level: self.defences_at(planet).unwrap_or_default().get(kind),
             costs: material_lines(self, cost),
             energy_draw: None,
@@ -488,11 +470,7 @@ impl GameState {
         };
         Some(Detail {
             name: spec.name.clone(),
-            description: if done {
-                "complete".into()
-            } else {
-                format!("stage {} / {}", stage_idx + 1, spec.stages.len())
-            },
+            description: spec.purpose.clone(),
             level: if done {
                 spec.stages.len() as u32
             } else {
@@ -703,12 +681,25 @@ impl GameState {
                 to: format!("{rate:.1}"),
             });
         }
-        Some(Detail {
-            name: self.display_name(&step.id),
-            description: match step.limited_by.as_key() {
+        let purpose = step
+            .outputs_per_hour
+            .keys()
+            .find_map(|id| {
+                self.config
+                    .chains
+                    .goods
+                    .iter()
+                    .find(|good| good.id == *id)
+                    .map(|good| good.purpose.clone())
+            })
+            .filter(|purpose| !purpose.is_empty())
+            .unwrap_or_else(|| match step.limited_by.as_key() {
                 "none" => format!("full rate at {planet}"),
                 limit => format!("limited by {} at {planet}", limit.replace('_', " ")),
-            },
+            });
+        Some(Detail {
+            name: self.display_name(&step.id),
+            description: purpose,
             level: 0,
             costs: Vec::new(),
             energy_draw: None,
@@ -1160,10 +1151,9 @@ mod tests {
             .describe(DetailSubject::Tech("deep_core".into()), None)
             .unwrap();
         assert!(!fresh.complete);
-        assert!(
-            fresh.description.ends_with("single-level pick"),
-            "{}",
-            fresh.description
+        assert_eq!(
+            fresh.description,
+            state.config.techs.get("deep_core").unwrap().purpose
         );
         assert_eq!(
             (fresh.deltas[0].from.as_str(), fresh.deltas[0].to.as_str()),
@@ -1310,11 +1300,21 @@ mod tests {
                 None,
             )
             .unwrap();
+        assert_eq!(
+            detail.description,
+            state
+                .config
+                .buildings
+                .get(BuildingKind::FusionPlant)
+                .purpose
+        );
+        let brief = state
+            .fusion_status_at(state.home)
+            .expect("fusion plant")
+            .brief();
         assert!(
-            detail.description.contains("fusion dd start-up 0%")
-                && detail.description.contains("cooling cap"),
-            "{}",
-            detail.description
+            brief.contains("dd start-up") && brief.contains("cooling cap"),
+            "{brief}"
         );
     }
 
@@ -1439,11 +1439,14 @@ mod tests {
         let active = state
             .describe(DetailSubject::Wonder("dyson_ring".into()), None)
             .unwrap();
-        assert!(
-            active.description.contains("stage 2"),
-            "{}",
-            active.description
-        );
+        let spec = state
+            .config
+            .wonders
+            .iter()
+            .find(|wonder| wonder.id == "dyson_ring")
+            .unwrap();
+        assert_eq!(active.description, spec.purpose);
+        assert_eq!(active.level, 1);
         let metal = active
             .costs
             .iter()
@@ -1455,7 +1458,8 @@ mod tests {
         let done = state
             .describe(DetailSubject::Wonder("dyson_ring".into()), None)
             .unwrap();
-        assert_eq!(done.description, "complete");
+        assert_eq!(done.description, spec.purpose);
+        assert_eq!(done.level, spec.stages.len() as u32);
         assert!(
             done.costs.iter().all(|row| row.cost == 0.0),
             "{:?}",
@@ -1574,12 +1578,13 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert!(
-            detail
-                .description
-                .contains("shortens construction on this planet"),
-            "{}",
-            detail.description
+        assert_eq!(
+            detail.description,
+            state
+                .config
+                .buildings
+                .get(BuildingKind::RoboticsFactory)
+                .purpose
         );
         let row = construction_delta(&state);
         assert_eq!((row.from.as_str(), row.to.as_str()), ("1.0", "2.0"));
@@ -1603,11 +1608,9 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert!(
-            explorer.description.contains("expedition find x2")
-                && explorer.description.contains("no Explore mission"),
-            "{}",
-            explorer.description
+        assert_eq!(
+            explorer.description,
+            state.config.ships.get(ShipKind::Explorer).purpose
         );
         let cargo = state
             .describe(
@@ -1618,11 +1621,99 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert!(
-            cargo.description.starts_with("drive ")
-                && !cargo.description.contains("expedition find"),
-            "{}",
-            cargo.description
+        assert_eq!(
+            cargo.description,
+            state.config.ships.get(ShipKind::SmallCargo).purpose
         );
+        assert!(!cargo.description.contains("expedition"));
+    }
+
+    #[test]
+    fn bundled_catalog_objects_have_a_purpose() {
+        let cfg = BalanceConfig::default();
+        for kind in BuildingKind::ALL {
+            assert!(!cfg.buildings.get(kind).purpose.trim().is_empty(), "{kind}");
+        }
+        for kind in ShipKind::ALL {
+            assert!(!cfg.ships.get(kind).purpose.trim().is_empty(), "{kind}");
+        }
+        for kind in crate::DefenceKind::ALL {
+            assert!(!cfg.defences.get(kind).purpose.trim().is_empty(), "{kind}");
+        }
+        for spec in cfg.techs.iter() {
+            assert!(!spec.purpose.trim().is_empty(), "{}", spec.id);
+        }
+        for spec in &cfg.wonders {
+            assert!(!spec.purpose.trim().is_empty(), "{}", spec.id);
+        }
+        for spec in &cfg.chains.goods {
+            assert!(!spec.purpose.trim().is_empty(), "{}", spec.id);
+        }
+        for species in crate::SpeciesCatalog::default().iter() {
+            for spec in &species.techs {
+                assert!(
+                    !spec.purpose.trim().is_empty(),
+                    "{} {}",
+                    species.id,
+                    spec.id
+                );
+            }
+        }
+    }
+
+    fn waste_delta(state: &GameState, kind: BuildingKind, label: &str) -> DeltaLine {
+        state
+            .describe(
+                DetailSubject::Building {
+                    kind,
+                    planet: state.home,
+                },
+                None,
+            )
+            .unwrap()
+            .deltas
+            .into_iter()
+            .find(|row| row.label == label)
+            .unwrap_or_else(|| panic!("{kind} {label}"))
+    }
+
+    #[test]
+    fn scrubber_detail_names_purpose_and_pollution_sink() {
+        let state = GameState::with_config(0, quiet());
+        let detail = state
+            .describe(
+                DetailSubject::Building {
+                    kind: BuildingKind::Scrubber,
+                    planet: state.home,
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            detail.description,
+            state.config.buildings.get(BuildingKind::Scrubber).purpose
+        );
+        let row = waste_delta(&state, BuildingKind::Scrubber, "pollution sink");
+        assert_ne!(row.from, row.to, "{row:?}");
+    }
+
+    #[test]
+    fn radiator_detail_names_purpose_and_heat_sink() {
+        let state = GameState::with_config(0, quiet());
+        let detail = state
+            .describe(
+                DetailSubject::Building {
+                    kind: BuildingKind::Radiator,
+                    planet: state.home,
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            detail.description,
+            state.config.buildings.get(BuildingKind::Radiator).purpose
+        );
+        let row = waste_delta(&state, BuildingKind::Radiator, "heat sink");
+        assert_ne!(row.from, row.to, "{row:?}");
     }
 }

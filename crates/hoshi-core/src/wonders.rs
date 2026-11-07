@@ -8,6 +8,8 @@ use std::fmt;
 pub struct WonderSpec {
     pub id: String,
     pub name: String,
+    /// One-sentence player-facing use, shown in the inspector.
+    pub purpose: String,
     pub prereq_techs: Vec<TechPrereq>,
     pub stages: Vec<WonderStage>,
     pub modifiers: Vec<WonderModifier>,

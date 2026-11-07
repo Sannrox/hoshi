@@ -109,6 +109,7 @@ base = 10000.0
 growth = 2.0
 
 [buildings.metal_mine]
+purpose = "Extracts iron ore from the planet crust."
 frames = 60.0
 electronics = 15.0
 fuel = 0.0
@@ -118,6 +119,7 @@ time_growth = 1.5
 prerequisites = []
 
 [buildings.crystal_mine]
+purpose = "Extracts silicon from the planet crust."
 frames = 48.0
 electronics = 24.0
 fuel = 0.0
@@ -127,6 +129,7 @@ time_growth = 1.6
 prerequisites = []
 
 [buildings.deuterium_synthesizer]
+purpose = "Enriches deuterium from water ice for fuel."
 frames = 225.0
 electronics = 75.0
 fuel = 0.0
@@ -136,6 +139,7 @@ time_growth = 1.5
 prerequisites = []
 
 [buildings.solar_plant]
+purpose = "Makes electrical power from starlight. Planet size caps the level."
 frames = 75.0
 electronics = 30.0
 fuel = 0.0
@@ -145,6 +149,7 @@ time_growth = 1.15
 prerequisites = []
 
 [buildings.metal_storage]
+purpose = "Holds iron and rare earths."
 frames = 1000.0
 electronics = 0.0
 fuel = 0.0
@@ -154,6 +159,7 @@ time_growth = 2.0
 prerequisites = []
 
 [buildings.crystal_storage]
+purpose = "Holds silicon."
 frames = 1000.0
 electronics = 500.0
 fuel = 0.0
@@ -163,6 +169,7 @@ time_growth = 2.0
 prerequisites = []
 
 [buildings.deuterium_storage]
+purpose = "Holds water ice, helium-3 and deuterium."
 frames = 1000.0
 electronics = 1000.0
 fuel = 0.0
@@ -172,6 +179,7 @@ time_growth = 2.0
 prerequisites = []
 
 [buildings.robotics_factory]
+purpose = "Shortens construction on this planet."
 frames = 400.0
 electronics = 120.0
 fuel = 200.0
@@ -181,6 +189,7 @@ time_growth = 2.0
 prerequisites = []
 
 [buildings.research_lab]
+purpose = "Unlocks research and runs the research queue."
 frames = 200.0
 electronics = 400.0
 fuel = 200.0
@@ -190,6 +199,7 @@ time_growth = 2.0
 prerequisites = []
 
 [buildings.shipyard]
+purpose = "Builds ships and defences. Needs a robotics factory."
 frames = 400.0
 electronics = 200.0
 fuel = 100.0
@@ -199,6 +209,7 @@ time_growth = 2.0
 prerequisites = [{ building = "robotics_factory", level = 1 }]
 
 [buildings.radiator]
+purpose = "Dumps waste heat so industry does not throttle."
 frames = 200.0
 electronics = 150.0
 fuel = 0.0
@@ -208,6 +219,7 @@ time_growth = 1.6
 prerequisites = [{ building = "solar_plant", level = 1 }]
 
 [buildings.scrubber]
+purpose = "Dumps industrial pollution so work stays at full speed and raids stay smaller."
 frames = 150.0
 electronics = 200.0
 fuel = 50.0
@@ -562,6 +574,7 @@ fields = 20
 [[wonders]]
 id = "dyson_ring"
 name = "Dyson ring"
+purpose = "Harvests extra energy from the star."
 prereq_techs = [{ id = "energy", level = 8 }]
 stages = [
   { iron = 20000.0, silicon = 10000.0, deuterium = 2000.0, duration_secs = 86400, require_tier = "wonder_supply" },
@@ -572,6 +585,7 @@ modifiers = [{ kind = "energy_output", value = 0.25 }]
 [[wonders]]
 id = "stellar_gate"
 name = "Stellar gate"
+purpose = "Speeds fleet drives."
 prereq_techs = [{ id = "hyperspace_drive", level = 4 }]
 stages = [
   { iron = 15000.0, silicon = 15000.0, deuterium = 8000.0, duration_secs = 86400, require_tier = "logistics" },
@@ -582,6 +596,7 @@ modifiers = [{ kind = "drive_speed", value = 0.20 }]
 [[wonders]]
 id = "observatory"
 name = "Deep-space observatory"
+purpose = "Strengthens espionage."
 prereq_techs = [{ id = "espionage", level = 4 }]
 stages = [
   { iron = 8000.0, silicon = 16000.0, deuterium = 2000.0, duration_secs = 86400, require_tier = "steel_electronics" },
@@ -597,49 +612,64 @@ deposit_jitter = 0.05
 [[chains.goods]]
 id = "iron_ore"
 kind = "raw"
+purpose = "Raw iron from the mine, smelted into steel."
 [[chains.goods]]
 id = "silicon"
 kind = "raw"
+purpose = "Raw silicon from the mine, purified for electronics."
 [[chains.goods]]
 id = "rare_earths"
 kind = "raw"
+purpose = "Trace crust metals used in magnets."
 [[chains.goods]]
 id = "water_ice"
 kind = "raw"
+purpose = "Ice for propellant and deuterium."
 [[chains.goods]]
 id = "helium_3"
 kind = "raw"
+purpose = "Fusion fuel from ice worlds and giants."
 [[chains.goods]]
 id = "steel"
 kind = "refined"
+purpose = "Refined iron, forged into frames."
 [[chains.goods]]
 id = "purified_silicon"
 kind = "refined"
+purpose = "Refined silicon for electronics."
 [[chains.goods]]
 id = "magnets"
 kind = "refined"
+purpose = "Rare-earth parts for electronics."
 [[chains.goods]]
 id = "propellant"
 kind = "refined"
+purpose = "Refined ice for the fuel blend."
 [[chains.goods]]
 id = "fuel"
 kind = "refined"
+purpose = "Tankage spent on construction and flight."
 [[chains.goods]]
 id = "frames"
 kind = "component"
+purpose = "Construction parts paid as iron."
 [[chains.goods]]
 id = "electronics"
 kind = "component"
+purpose = "Construction parts paid as silicon."
 
 [[chains.goods]]
 id = "uranium_ore"
 kind = "raw"
+purpose = "Mined ore refined into reactor fuel."
 [[chains.goods]]
 id = "reactor_fuel"
 kind = "refined"
+purpose = "Burns in the fission reactor."
 [[chains.goods]]
 id = "spent_fuel"
 kind = "refined"
+purpose = "Used reactor fuel held in the on-site pool."
 
 [chains.deposits.rocky]
 uranium_ore = 0.30
@@ -887,6 +917,7 @@ decay_day_fraction = 0.01
 decay_time_constant_secs = 3600.0
 
 [buildings.fission_reactor]
+purpose = "Burns reactor fuel for power independent of sunlight."
 frames = 900.0
 electronics = 500.0
 fuel = 0.0
@@ -920,6 +951,7 @@ dhe3_neutron_share = 0.1
 activation_cooldown_secs = 86400
 
 [buildings.fusion_plant]
+purpose = "Burns deuterium, later with helium-3, for high output at any orbit."
 frames = 20000.0
 electronics = 15000.0
 fuel = 3000.0

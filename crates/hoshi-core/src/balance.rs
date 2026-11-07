@@ -104,6 +104,8 @@ pub struct BuildingSpec {
     pub time_growth: f64,
     pub prerequisites: Vec<(BuildingKind, u32)>,
     pub tech_prerequisites: Vec<TechPrereq>,
+    /// One-sentence player-facing use, shown in the inspector.
+    pub purpose: String,
 }
 
 impl BuildingSpec {
@@ -121,6 +123,7 @@ impl BuildingSpec {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spec(
     iron: f64,
     silicon: f64,
@@ -129,6 +132,7 @@ fn spec(
     base_seconds: f64,
     time_growth: f64,
     prerequisites: Vec<(BuildingKind, u32)>,
+    purpose: &'static str,
 ) -> BuildingSpec {
     BuildingSpec {
         metal_base: iron,
@@ -139,6 +143,16 @@ fn spec(
         time_growth,
         prerequisites,
         tech_prerequisites: Vec::new(),
+        purpose: purpose.into(),
+    }
+}
+
+pub(crate) fn nonempty_purpose(kind: &str, id: &str, purpose: String) -> Result<String, String> {
+    let purpose = purpose.trim();
+    if purpose.is_empty() {
+        Err(format!("{kind} {id} purpose must be non-empty"))
+    } else {
+        Ok(purpose.to_string())
     }
 }
 
@@ -192,6 +206,7 @@ impl Default for BuildingCatalog {
             600.0,
             1.8,
             vec![(BuildingKind::ResearchLab, 2)],
+            "Burns reactor fuel for power independent of sunlight.",
         );
         fission_reactor.tech_prerequisites.push(TechPrereq {
             id: "fission".into(),
@@ -208,23 +223,105 @@ impl Default for BuildingCatalog {
                 (BuildingKind::ResearchLab, 6),
                 (BuildingKind::FissionReactor, 1),
             ],
+            "Burns deuterium, later with helium-3, for high output at any orbit.",
         );
         fusion_plant.tech_prerequisites.push(TechPrereq {
             id: "fusion_dd".into(),
             level: 1,
         });
         Self {
-            metal_mine: spec(60.0, 15.0, 0.0, 1.5, 120.0, 1.5, vec![]),
-            crystal_mine: spec(48.0, 24.0, 0.0, 1.6, 120.0, 1.6, vec![]),
-            deuterium_synthesizer: spec(225.0, 75.0, 0.0, 1.5, 180.0, 1.5, vec![]),
-            solar_plant: spec(75.0, 30.0, 0.0, 1.15, 120.0, 1.15, vec![]),
+            metal_mine: spec(
+                60.0,
+                15.0,
+                0.0,
+                1.5,
+                120.0,
+                1.5,
+                vec![],
+                "Extracts iron ore from the planet crust.",
+            ),
+            crystal_mine: spec(
+                48.0,
+                24.0,
+                0.0,
+                1.6,
+                120.0,
+                1.6,
+                vec![],
+                "Extracts silicon from the planet crust.",
+            ),
+            deuterium_synthesizer: spec(
+                225.0,
+                75.0,
+                0.0,
+                1.5,
+                180.0,
+                1.5,
+                vec![],
+                "Enriches deuterium from water ice for fuel.",
+            ),
+            solar_plant: spec(
+                75.0,
+                30.0,
+                0.0,
+                1.15,
+                120.0,
+                1.15,
+                vec![],
+                "Makes electrical power from starlight. Planet size caps the level.",
+            ),
             fission_reactor,
             fusion_plant,
-            metal_storage: spec(1_000.0, 0.0, 0.0, 2.0, 60.0, 2.0, vec![]),
-            crystal_storage: spec(1_000.0, 500.0, 0.0, 2.0, 60.0, 2.0, vec![]),
-            deuterium_storage: spec(1_000.0, 1_000.0, 0.0, 2.0, 60.0, 2.0, vec![]),
-            robotics_factory: spec(400.0, 120.0, 200.0, 2.0, 300.0, 2.0, vec![]),
-            research_lab: spec(200.0, 400.0, 200.0, 2.0, 300.0, 2.0, vec![]),
+            metal_storage: spec(
+                1_000.0,
+                0.0,
+                0.0,
+                2.0,
+                60.0,
+                2.0,
+                vec![],
+                "Holds iron and rare earths.",
+            ),
+            crystal_storage: spec(
+                1_000.0,
+                500.0,
+                0.0,
+                2.0,
+                60.0,
+                2.0,
+                vec![],
+                "Holds silicon.",
+            ),
+            deuterium_storage: spec(
+                1_000.0,
+                1_000.0,
+                0.0,
+                2.0,
+                60.0,
+                2.0,
+                vec![],
+                "Holds water ice, helium-3 and deuterium.",
+            ),
+            robotics_factory: spec(
+                400.0,
+                120.0,
+                200.0,
+                2.0,
+                300.0,
+                2.0,
+                vec![],
+                "Shortens construction on this planet.",
+            ),
+            research_lab: spec(
+                200.0,
+                400.0,
+                200.0,
+                2.0,
+                300.0,
+                2.0,
+                vec![],
+                "Unlocks research and runs the research queue.",
+            ),
             shipyard: spec(
                 400.0,
                 200.0,
@@ -233,6 +330,7 @@ impl Default for BuildingCatalog {
                 300.0,
                 2.0,
                 vec![(BuildingKind::RoboticsFactory, 1)],
+                "Builds ships and defences. Needs a robotics factory.",
             ),
             radiator: spec(
                 200.0,
@@ -242,8 +340,18 @@ impl Default for BuildingCatalog {
                 180.0,
                 1.6,
                 vec![(BuildingKind::SolarPlant, 1)],
+                "Dumps waste heat so industry does not throttle.",
             ),
-            scrubber: spec(150.0, 200.0, 50.0, 1.6, 180.0, 1.6, vec![]),
+            scrubber: spec(
+                150.0,
+                200.0,
+                50.0,
+                1.6,
+                180.0,
+                1.6,
+                vec![],
+                "Dumps industrial pollution so work stays at full speed and raids stay smaller.",
+            ),
         }
     }
 }
@@ -1156,6 +1264,7 @@ fn default_rare_weight() -> u32 {
 struct FileWonder {
     id: String,
     name: String,
+    purpose: String,
     #[serde(default)]
     prereq_techs: Vec<FileTechPrereq>,
     stages: Vec<FileWonderStage>,
@@ -1331,6 +1440,7 @@ struct FileBuildings {
 
 #[derive(Deserialize)]
 struct FileBuilding {
+    purpose: String,
     #[serde(alias = "frames", alias = "metal", alias = "iron")]
     metal_base: f64,
     #[serde(alias = "electronics", alias = "crystal", alias = "silicon")]
@@ -1680,30 +1790,42 @@ impl File {
             crystal_storage: self.crystal_storage.into_spec(),
             deuterium_storage: self.deuterium_storage.into_spec(),
             buildings: BuildingCatalog {
-                metal_mine: self.buildings.metal_mine.into_spec()?,
-                crystal_mine: self.buildings.crystal_mine.into_spec()?,
-                deuterium_synthesizer: self.buildings.deuterium_synthesizer.into_spec()?,
-                solar_plant: self.buildings.solar_plant.into_spec()?,
+                metal_mine: self.buildings.metal_mine.into_spec("metal_mine")?,
+                crystal_mine: self.buildings.crystal_mine.into_spec("crystal_mine")?,
+                deuterium_synthesizer: self
+                    .buildings
+                    .deuterium_synthesizer
+                    .into_spec("deuterium_synthesizer")?,
+                solar_plant: self.buildings.solar_plant.into_spec("solar_plant")?,
                 fission_reactor: self
                     .buildings
                     .fission_reactor
-                    .map(FileBuilding::into_spec)
+                    .map(|row| row.into_spec("fission_reactor"))
                     .transpose()?
                     .unwrap_or_else(|| BuildingCatalog::default().fission_reactor),
                 fusion_plant: self
                     .buildings
                     .fusion_plant
-                    .map(FileBuilding::into_spec)
+                    .map(|row| row.into_spec("fusion_plant"))
                     .transpose()?
                     .unwrap_or_else(|| BuildingCatalog::default().fusion_plant),
-                metal_storage: self.buildings.metal_storage.into_spec()?,
-                crystal_storage: self.buildings.crystal_storage.into_spec()?,
-                deuterium_storage: self.buildings.deuterium_storage.into_spec()?,
-                robotics_factory: self.buildings.robotics_factory.into_spec()?,
-                research_lab: self.buildings.research_lab.into_spec()?,
-                shipyard: self.buildings.shipyard.into_spec()?,
-                radiator: self.buildings.radiator.into_spec()?,
-                scrubber: self.buildings.scrubber.into_spec()?,
+                metal_storage: self.buildings.metal_storage.into_spec("metal_storage")?,
+                crystal_storage: self
+                    .buildings
+                    .crystal_storage
+                    .into_spec("crystal_storage")?,
+                deuterium_storage: self
+                    .buildings
+                    .deuterium_storage
+                    .into_spec("deuterium_storage")?,
+                robotics_factory: self
+                    .buildings
+                    .robotics_factory
+                    .into_spec("robotics_factory")?,
+                research_lab: self.buildings.research_lab.into_spec("research_lab")?,
+                shipyard: self.buildings.shipyard.into_spec("shipyard")?,
+                radiator: self.buildings.radiator.into_spec("radiator")?,
+                scrubber: self.buildings.scrubber.into_spec("scrubber")?,
             },
             dismantle: self.dismantle,
             max_build_queue: self.queues.max_build_queue,
@@ -1864,36 +1986,41 @@ impl File {
             wonders: self
                 .wonders
                 .into_iter()
-                .map(|w| WonderSpec {
-                    id: w.id,
-                    name: w.name,
-                    prereq_techs: w
-                        .prereq_techs
-                        .into_iter()
-                        .map(|p| TechPrereq {
-                            id: p.id,
-                            level: p.level,
-                        })
-                        .collect(),
-                    stages: w
-                        .stages
-                        .into_iter()
-                        .map(|s| WonderStage {
-                            cost: Resources::from_parts(s.iron, s.silicon, s.deuterium),
-                            duration_secs: s.duration_secs,
-                            require_tier: s.require_tier,
-                        })
-                        .collect(),
-                    modifiers: w
-                        .modifiers
-                        .into_iter()
-                        .map(|m| WonderModifier {
-                            kind: m.kind,
-                            value: m.value,
-                        })
-                        .collect(),
+                .map(|w| {
+                    let purpose = nonempty_purpose("wonder", &w.id, w.purpose)
+                        .map_err(BalanceError::Invalid)?;
+                    Ok(WonderSpec {
+                        id: w.id,
+                        name: w.name,
+                        purpose,
+                        prereq_techs: w
+                            .prereq_techs
+                            .into_iter()
+                            .map(|p| TechPrereq {
+                                id: p.id,
+                                level: p.level,
+                            })
+                            .collect(),
+                        stages: w
+                            .stages
+                            .into_iter()
+                            .map(|s| WonderStage {
+                                cost: Resources::from_parts(s.iron, s.silicon, s.deuterium),
+                                duration_secs: s.duration_secs,
+                                require_tier: s.require_tier,
+                            })
+                            .collect(),
+                        modifiers: w
+                            .modifiers
+                            .into_iter()
+                            .map(|m| WonderModifier {
+                                kind: m.kind,
+                                value: m.value,
+                            })
+                            .collect(),
+                    })
                 })
-                .collect(),
+                .collect::<Result<Vec<_>, _>>()?,
             prestige: {
                 let bonuses = if self.prestige.bonuses.is_empty() {
                     PrestigeConfig::default().bonuses
@@ -2022,7 +2149,7 @@ impl FileStorage {
 }
 
 impl FileBuilding {
-    fn into_spec(self) -> Result<BuildingSpec, BalanceError> {
+    fn into_spec(self, id: &str) -> Result<BuildingSpec, BalanceError> {
         let mut prerequisites = Vec::with_capacity(self.prerequisites.len());
         for pre in self.prerequisites {
             let building = BuildingKind::from_key(&pre.building).ok_or_else(|| {
@@ -2046,6 +2173,8 @@ impl FileBuilding {
                     level: p.level,
                 })
                 .collect(),
+            purpose: nonempty_purpose("building", id, self.purpose)
+                .map_err(BalanceError::Invalid)?,
         })
     }
 }
@@ -2630,6 +2759,16 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn purpose_rejects_empty_and_trims() {
+        assert_eq!(
+            nonempty_purpose("building", "scrubber", "  dumps dust  ".into()).unwrap(),
+            "dumps dust"
+        );
+        let err = nonempty_purpose("building", "scrubber", "   ".into()).unwrap_err();
+        assert!(err.contains("purpose must be non-empty"), "{err}");
+    }
+
+    #[test]
     fn bundled_file_matches_previous_defaults() {
         let cfg = BalanceConfig::default();
         assert_eq!(cfg.metal_mine.base_per_hour, 30.0);
@@ -2714,6 +2853,7 @@ mod tests {
 [[wonders]]
 id = \"dyson_ring\"
 name = \"Dup\"
+purpose = \"test\"
 stages = [{{ metal = 1.0, crystal = 0.0, deuterium = 0.0, duration_secs = 1 }}]
 "
         );
@@ -2728,6 +2868,7 @@ stages = [{{ metal = 1.0, crystal = 0.0, deuterium = 0.0, duration_secs = 1 }}]
 [[wonders]]
 id = \"free\"
 name = \"Free\"
+purpose = \"test\"
 stages = [{{ metal = 0.0, crystal = 0.0, deuterium = 0.0, duration_secs = 1 }}]
 "
         );
@@ -2742,6 +2883,7 @@ stages = [{{ metal = 0.0, crystal = 0.0, deuterium = 0.0, duration_secs = 1 }}]
 [[wonders]]
 id = \"hollow\"
 name = \"Hollow\"
+purpose = \"test\"
 stages = []
 "
         );

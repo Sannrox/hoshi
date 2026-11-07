@@ -7,6 +7,7 @@ starting_techs = ["energy"]
 [[tech]]
 id = "energy"
 name = "Energy Technology"
+purpose = "Raises the planet heat sink so industry can run hotter."
 branch = "industry"
 tier = 1
 iron = 0.0
@@ -22,6 +23,7 @@ modifiers = [{ kind = "heat_sink", per_level = 0.05 }]
 [[tech]]
 id = "laser"
 name = "Laser Technology"
+purpose = "Opens later weapons research."
 branch = "military"
 tier = 2
 iron = 200.0
@@ -37,6 +39,7 @@ modifiers = []
 [[tech]]
 id = "ion"
 name = "Ion Technology"
+purpose = "Opens later military research."
 branch = "military"
 tier = 3
 iron = 1000.0
@@ -52,6 +55,7 @@ modifiers = []
 [[tech]]
 id = "hyperspace"
 name = "Hyperspace Technology"
+purpose = "Opens hyperspace drive research."
 branch = "military"
 tier = 4
 iron = 0.0
@@ -67,6 +71,7 @@ modifiers = []
 [[tech]]
 id = "combustion_drive"
 name = "Combustion Drive"
+purpose = "Speeds ships that use this drive."
 branch = "military"
 tier = 2
 iron = 400.0
@@ -82,6 +87,7 @@ modifiers = [{ kind = "drive_speed", per_level = 0.1 }]
 [[tech]]
 id = "impulse_drive"
 name = "Impulse Drive"
+purpose = "Speeds ships that use this drive."
 branch = "military"
 tier = 2
 iron = 2000.0
@@ -97,6 +103,7 @@ modifiers = [{ kind = "drive_speed", per_level = 0.2 }]
 [[tech]]
 id = "hyperspace_drive"
 name = "Hyperspace Drive"
+purpose = "Speeds ships that use this drive."
 branch = "military"
 tier = 5
 iron = 10000.0
@@ -112,6 +119,7 @@ modifiers = [{ kind = "drive_speed", per_level = 0.3 }]
 [[tech]]
 id = "espionage"
 name = "Espionage Technology"
+purpose = "Improves spy reports."
 branch = "society"
 tier = 2
 iron = 200.0
@@ -127,6 +135,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
 [[tech]]
 id = "computer"
 name = "Computer Technology"
+purpose = "Adds fleet slots."
 branch = "industry"
 tier = 1
 iron = 0.0
@@ -142,6 +151,7 @@ modifiers = [{ kind = "fleet_slots", per_level = 1.0 }]
 [[tech]]
 id = "weapons"
 name = "Weapons Technology"
+purpose = "Raises weapon damage."
 branch = "military"
 tier = 2
 iron = 800.0
@@ -157,6 +167,7 @@ modifiers = [{ kind = "weapon_damage", per_level = 0.1 }]
 [[tech]]
 id = "shields"
 name = "Shielding Technology"
+purpose = "Raises shield strength."
 branch = "military"
 tier = 3
 iron = 200.0
@@ -172,6 +183,7 @@ modifiers = [{ kind = "shield_strength", per_level = 0.1 }]
 [[tech]]
 id = "armour"
 name = "Armour Technology"
+purpose = "Raises hull armour."
 branch = "military"
 tier = 1
 iron = 1000.0
@@ -187,6 +199,7 @@ modifiers = [{ kind = "armour", per_level = 0.1 }]
 [[tech]]
 id = "astrophysics"
 name = "Astrophysics"
+purpose = "Adds expedition slots."
 branch = "society"
 tier = 4
 iron = 4000.0
@@ -202,6 +215,7 @@ modifiers = [{ kind = "expedition_slots", per_level = 1.0 }]
 [[tech]]
 id = "colonization"
 name = "Colonization"
+purpose = "Adds colony slots."
 branch = "society"
 tier = 3
 iron = 1000.0
@@ -217,6 +231,7 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
 [[tech]]
 id = "ecology"
 name = "Ecology"
+purpose = "Raises the pollution sink."
 branch = "industry"
 tier = 2
 iron = 200.0
@@ -233,6 +248,7 @@ modifiers = [{ kind = "pollution_sink", per_level = 0.08 }]
 [[tech]]
 id = "auto_routes"
 name = "Adaptive routes"
+purpose = "Unlocks automation routes between colonies."
 branch = "industry"
 tier = 3
 iron = 800.0
@@ -248,6 +264,7 @@ modifiers = []
 [[tech]]
 id = "logistics"
 name = "Logistics"
+purpose = "Unlocks logistics automation."
 branch = "industry"
 tier = 3
 iron = 2000.0
@@ -263,6 +280,7 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
 [[tech]]
 id = "logistics_rules"
 name = "Logistics rules"
+purpose = "Unlocks logistics rules."
 branch = "industry"
 tier = 4
 iron = 4000.0
@@ -278,6 +296,7 @@ modifiers = []
 [[tech]]
 id = "deep_core"
 name = "Deep-core mining"
+purpose = "One-level pick that raises iron output. Locks orbital harvesting."
 branch = "industry"
 tier = 2
 exclusive_group = "mining_method"
@@ -295,6 +314,7 @@ modifiers = [{ kind = "metal_output", per_level = 0.08 }]
 [[tech]]
 id = "orbital_harvest"
 name = "Orbital harvesting"
+purpose = "One-level pick that raises silicon output. Locks deep-core mining."
 branch = "industry"
 tier = 2
 exclusive_group = "mining_method"
@@ -312,6 +332,7 @@ modifiers = [{ kind = "crystal_output", per_level = 0.08 }]
 [[tech]]
 id = "dyson_blueprint"
 name = "Dyson ring blueprint"
+purpose = "Industry keystone. Unlocks the Dyson ring."
 branch = "industry"
 tier = 5
 keystone = true
@@ -329,6 +350,7 @@ modifiers = []
 [[tech]]
 id = "shield_doctrine"
 name = "Shield doctrine"
+purpose = "One-level pick that raises shields. Locks armour doctrine."
 branch = "military"
 tier = 2
 exclusive_group = "defense_focus"
@@ -346,6 +368,7 @@ modifiers = [{ kind = "shield_strength", per_level = 0.12 }]
 [[tech]]
 id = "armour_doctrine"
 name = "Armour doctrine"
+purpose = "One-level pick that raises armour. Locks shield doctrine."
 branch = "military"
 tier = 2
 exclusive_group = "defense_focus"
@@ -363,6 +386,7 @@ modifiers = [{ kind = "armour", per_level = 0.12 }]
 [[tech]]
 id = "invasion_doctrine"
 name = "Invasion doctrine"
+purpose = "Military keystone."
 branch = "military"
 tier = 5
 keystone = true
@@ -380,6 +404,7 @@ modifiers = []
 [[tech]]
 id = "trade_empire"
 name = "Trade empire"
+purpose = "One-level pick that raises silicon output. Locks smuggler network."
 branch = "society"
 tier = 2
 exclusive_group = "trade_focus"
@@ -397,6 +422,7 @@ modifiers = [{ kind = "crystal_output", per_level = 0.05 }]
 [[tech]]
 id = "smuggler_network"
 name = "Smuggler network"
+purpose = "One-level pick that raises espionage. Locks trade empire."
 branch = "society"
 tier = 2
 exclusive_group = "trade_focus"
@@ -414,6 +440,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
 [[tech]]
 id = "galactic_senate"
 name = "Galactic senate"
+purpose = "Society keystone."
 branch = "society"
 tier = 5
 keystone = true
@@ -431,6 +458,7 @@ modifiers = []
 [[tech]]
 id = "ancient_drive"
 name = "Ancient drive"
+purpose = "Hidden prestige research that speeds drives."
 branch = "ancient"
 tier = 1
 hidden = true
@@ -448,6 +476,7 @@ modifiers = [{ kind = "drive_speed", per_level = 0.5 }]
 [[tech]]
 id = "ancient_weapon"
 name = "Ancient weapon"
+purpose = "Hidden prestige research that raises weapon damage."
 branch = "ancient"
 tier = 2
 hidden = true
@@ -465,6 +494,7 @@ modifiers = [{ kind = "weapon_damage", per_level = 0.25 }]
 [[tech]]
 id = "fission"
 name = "Fission"
+purpose = "Unlocks the fission reactor."
 branch = "industry"
 tier = 2
 iron = 0.0
@@ -480,6 +510,7 @@ modifiers = []
 [[tech]]
 id = "plasma_physics"
 name = "Plasma Physics"
+purpose = "Unlocks deuterium fusion research."
 branch = "industry"
 tier = 3
 iron = 0.0
@@ -495,6 +526,7 @@ modifiers = []
 [[tech]]
 id = "fusion_dd"
 name = "Deuterium Fusion"
+purpose = "Unlocks the fusion plant on deuterium."
 branch = "industry"
 tier = 3
 iron = 0.0
@@ -510,6 +542,7 @@ modifiers = []
 [[tech]]
 id = "fusion_dhe3"
 name = "Deuterium–Helium-3 Fusion"
+purpose = "Unlocks deuterium-helium-3 fusion."
 branch = "industry"
 tier = 4
 max_level = 1

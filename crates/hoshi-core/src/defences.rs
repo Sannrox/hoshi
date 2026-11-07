@@ -118,6 +118,8 @@ impl DefenceRole {
 pub struct DefenceSpec {
     pub kind: DefenceKind,
     pub name: String,
+    /// One-sentence player-facing use, shown in the inspector.
+    pub purpose: String,
     pub role: DefenceRole,
     pub iron: f64,
     pub silicon: f64,
@@ -216,6 +218,7 @@ fn default_hangar() -> u32 {
 struct FileDefence {
     id: String,
     name: String,
+    purpose: String,
     role: String,
     #[serde(alias = "metal")]
     iron: f64,
@@ -248,6 +251,8 @@ impl File {
             types.push(DefenceSpec {
                 kind,
                 name: row.name,
+                purpose: crate::balance::nonempty_purpose("defence", &row.id, row.purpose)
+                    .map_err(DefenceCatalogError::Parse)?,
                 role,
                 iron: row.iron,
                 silicon: row.silicon,

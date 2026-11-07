@@ -34,6 +34,8 @@ impl GoodKind {
 pub struct GoodSpec {
     pub id: String,
     pub kind: GoodKind,
+    /// One-sentence player-facing use, shown in the inspector.
+    pub purpose: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -507,6 +509,7 @@ pub(crate) struct FileChains {
 struct FileGood {
     id: String,
     kind: String,
+    purpose: String,
 }
 
 #[derive(Deserialize)]
@@ -543,7 +546,11 @@ impl FileChains {
         for row in self.goods {
             let kind = GoodKind::parse(&row.kind)
                 .ok_or_else(|| format!("unknown good kind {} for {}", row.kind, row.id))?;
-            goods.push(GoodSpec { id: row.id, kind });
+            goods.push(GoodSpec {
+                id: row.id.clone(),
+                kind,
+                purpose: crate::balance::nonempty_purpose("good", &row.id, row.purpose)?,
+            });
         }
         let mut recipes = Vec::new();
         for row in self.recipes {
@@ -590,14 +597,17 @@ mod tests {
                 GoodSpec {
                     id: "iron_ore".into(),
                     kind: GoodKind::Raw,
+                    purpose: String::new(),
                 },
                 GoodSpec {
                     id: "steel".into(),
                     kind: GoodKind::Refined,
+                    purpose: String::new(),
                 },
                 GoodSpec {
                     id: "frames".into(),
                     kind: GoodKind::Component,
+                    purpose: String::new(),
                 },
             ],
             recipes: vec![

@@ -472,6 +472,7 @@ fn one() -> f64 {
 struct FileTech {
     id: String,
     name: String,
+    purpose: String,
     #[serde(alias = "metal")]
     iron: f64,
     #[serde(alias = "crystal")]
@@ -591,6 +592,8 @@ fn tech_from_file(raw: FileTech) -> Result<TechSpec, SpeciesError> {
     Ok(TechSpec {
         id: raw.id.clone(),
         name: raw.name,
+        purpose: crate::balance::nonempty_purpose("tech", &raw.id, raw.purpose)
+            .map_err(SpeciesError::Invalid)?,
         iron: raw.iron,
         silicon: raw.silicon,
         deuterium: raw.deuterium,

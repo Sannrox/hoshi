@@ -11,6 +11,7 @@ hangar_per_station = 2
 [[defence]]
 id = "light_cannon"
 name = "Light cannon"
+purpose = "Light orbital battery against incoming ships."
 role = "battery"
 iron = 200.0
 silicon = 0.0
@@ -24,6 +25,7 @@ hull = 200.0
 [[defence]]
 id = "heavy_cannon"
 name = "Heavy cannon"
+purpose = "Heavier orbital battery than a light cannon."
 role = "battery"
 iron = 500.0
 silicon = 150.0
@@ -37,6 +39,7 @@ hull = 500.0
 [[defence]]
 id = "ion_cannon"
 name = "Ion cannon"
+purpose = "High-shield orbital battery."
 role = "battery"
 iron = 200.0
 silicon = 600.0
@@ -50,6 +53,7 @@ hull = 400.0
 [[defence]]
 id = "missile_silo"
 name = "Missile silo"
+purpose = "Fires missiles at incoming ships."
 role = "missile"
 iron = 150.0
 silicon = 50.0
@@ -63,6 +67,7 @@ hull = 200.0
 [[defence]]
 id = "interceptor"
 name = "Interceptor"
+purpose = "Shoots down incoming missiles."
 role = "interceptor"
 iron = 100.0
 silicon = 100.0
@@ -76,6 +81,7 @@ hull = 100.0
 [[defence]]
 id = "shield_dome"
 name = "Shield dome"
+purpose = "Absorbs incoming fire for the planet."
 role = "dome"
 iron = 1000.0
 silicon = 1000.0
@@ -89,6 +95,7 @@ hull = 2000.0
 [[defence]]
 id = "orbital_station"
 name = "Orbital station"
+purpose = "Heavy orbital platform with hangar space."
 role = "orbital"
 iron = 2000.0
 silicon = 1500.0
@@ -102,6 +109,7 @@ hull = 2000.0
 [[defence]]
 id = "garrison"
 name = "Garrison"
+purpose = "Ground troops that fight landings."
 role = "garrison"
 iron = 50.0
 silicon = 0.0

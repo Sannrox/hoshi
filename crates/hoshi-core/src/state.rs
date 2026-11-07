@@ -8657,14 +8657,17 @@ mod tests {
                 crate::GoodSpec {
                     id: "iron_ore".into(),
                     kind: crate::GoodKind::Raw,
+                    purpose: String::new(),
                 },
                 crate::GoodSpec {
                     id: "steel".into(),
                     kind: crate::GoodKind::Refined,
+                    purpose: String::new(),
                 },
                 crate::GoodSpec {
                     id: "frames".into(),
                     kind: crate::GoodKind::Component,
+                    purpose: String::new(),
                 },
             ],
             recipes: vec![
@@ -8894,6 +8897,7 @@ mod tests {
             goods: vec![crate::GoodSpec {
                 id: "frames".into(),
                 kind: crate::GoodKind::Component,
+                purpose: String::new(),
             }],
             recipes: vec![crate::Recipe {
                 id: "forge".into(),
@@ -8929,14 +8933,17 @@ mod tests {
                 crate::GoodSpec {
                     id: "iron_ore".into(),
                     kind: crate::GoodKind::Raw,
+                    purpose: String::new(),
                 },
                 crate::GoodSpec {
                     id: "steel".into(),
                     kind: crate::GoodKind::Refined,
+                    purpose: String::new(),
                 },
                 crate::GoodSpec {
                     id: "frames".into(),
                     kind: crate::GoodKind::Component,
+                    purpose: String::new(),
                 },
             ],
             recipes: vec![
@@ -9052,6 +9059,7 @@ mod tests {
                 goods: vec![crate::GoodSpec {
                     id: "steel".into(),
                     kind: crate::GoodKind::Refined,
+                    purpose: String::new(),
                 }],
                 recipes: vec![crate::Recipe {
                     id: "forge".into(),
@@ -9240,6 +9248,7 @@ mod tests {
             goods: vec![crate::GoodSpec {
                 id: "steel".into(),
                 kind: crate::GoodKind::Refined,
+                purpose: String::new(),
             }],
             recipes: vec![crate::Recipe {
                 id: "forge".into(),
@@ -9284,6 +9293,7 @@ mod tests {
             goods: vec![crate::GoodSpec {
                 id: "steel".into(),
                 kind: crate::GoodKind::Refined,
+                purpose: String::new(),
             }],
             recipes: vec![
                 crate::Recipe {
@@ -9396,6 +9406,7 @@ mod tests {
             time_growth: 1.0,
             prerequisites: vec![],
             tech_prerequisites: vec![],
+            purpose: String::new(),
         }
     }
 
@@ -9417,6 +9428,7 @@ mod tests {
             time_growth: 1.0,
             prerequisites: vec![(BuildingKind::RoboticsFactory, 1)],
             tech_prerequisites: vec![],
+            purpose: String::new(),
         };
         cfg.buildings.metal_storage = crate::BuildingSpec {
             metal_base: 50.0,
@@ -9427,6 +9439,7 @@ mod tests {
             time_growth: 1.0,
             prerequisites: vec![],
             tech_prerequisites: vec![],
+            purpose: String::new(),
         };
         cfg.max_build_queue = 5;
         cfg.robotics_speed_per_level = 1.0;
@@ -9692,6 +9705,7 @@ mod tests {
 [[tech]]
 id = "energy"
 name = "Energy"
+purpose = "test"
 metal = 0.0
 crystal = 10.0
 deuterium = 0.0
@@ -9704,6 +9718,7 @@ modifiers = []
 [[tech]]
 id = "weapons"
 name = "Weapons"
+purpose = "test"
 metal = 10.0
 crystal = 0.0
 deuterium = 0.0
@@ -9716,6 +9731,7 @@ modifiers = [{ kind = "weapon_damage", per_level = 0.1 }]
 [[tech]]
 id = "laser"
 name = "Laser"
+purpose = "test"
 metal = 10.0
 crystal = 0.0
 deuterium = 0.0
@@ -11151,6 +11167,7 @@ modifiers = []
 [[tech]]
 id = "colonization"
 name = "Colonization"
+purpose = "test"
 metal = 1000.0
 crystal = 4000.0
 deuterium = 2000.0
@@ -12454,6 +12471,7 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
 [[tech]]
 id = "astrophysics"
 name = "Astrophysics"
+purpose = "test"
 metal = 1.0
 crystal = 1.0
 deuterium = 1.0
@@ -12520,6 +12538,7 @@ modifiers = [{ kind = "expedition_slots", per_level = 1.0 }]
 [[tech]]
 id = "logistics"
 name = "Logistics"
+purpose = "test"
 metal = 1.0
 crystal = 1.0
 deuterium = 1.0
@@ -12904,6 +12923,7 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         cfg.wonders = vec![crate::WonderSpec {
             id: "test_ring".into(),
             name: "Test ring".into(),
+            purpose: "test".into(),
             prereq_techs: vec![crate::TechPrereq {
                 id: "energy".into(),
                 level: 1,
@@ -13156,6 +13176,7 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
 [[tech]]
 id = "espionage"
 name = "Espionage"
+purpose = "test"
 metal = 1.0
 crystal = 1.0
 deuterium = 0.0
@@ -13444,6 +13465,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
 [[tech]]
 id = "espionage"
 name = "Espionage"
+purpose = "test"
 metal = 1.0
 crystal = 1.0
 deuterium = 0.0
