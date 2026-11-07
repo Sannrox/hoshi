@@ -409,10 +409,11 @@
     "water_ice": 0.0
   },
   "rivals": {
+    "colonies": [],
     "empires": [],
     "enabled": false
   },
-  "save_schema": 63,
+  "save_schema": 64,
   "schema_version": 2,
   "season": null,
   "signals": [],

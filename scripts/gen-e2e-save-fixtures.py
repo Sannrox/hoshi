@@ -1448,6 +1448,30 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
     elif version == 63:
         # Colony shipyard queues reuse ship_queue, keyed by planet_id already.
         pass
+    elif version == 64:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS rival_colonies (
+                rival_id TEXT NOT NULL,
+                galaxy INTEGER NOT NULL,
+                system INTEGER NOT NULL,
+                position INTEGER NOT NULL,
+                founded_at INTEGER NOT NULL CHECK (founded_at >= 0),
+                visible_at INTEGER NOT NULL CHECK (visible_at >= 0)
+            );
+            CREATE TABLE IF NOT EXISTS rival_colonize_flights (
+                rival_id TEXT NOT NULL,
+                galaxy INTEGER NOT NULL,
+                system INTEGER NOT NULL,
+                position INTEGER NOT NULL,
+                origin_galaxy INTEGER NOT NULL,
+                origin_system INTEGER NOT NULL,
+                origin_position INTEGER NOT NULL,
+                launched_at INTEGER NOT NULL CHECK (launched_at >= 0),
+                arrives_at INTEGER NOT NULL CHECK (arrives_at >= 0)
+            );
+            """
+        )
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"

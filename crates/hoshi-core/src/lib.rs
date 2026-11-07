@@ -226,7 +226,8 @@ pub use research::{
     TechNodeState, TechPrereq, TechSpec, TechTree, TechTreeError,
 };
 pub use rivals::{
-    RivalBoard, RivalCatalog, RivalEmpire, RivalError, RivalIntel, RivalPersonality, RivalSettings,
+    RivalBoard, RivalCatalog, RivalColonizeFlight, RivalColony, RivalEmpire, RivalError,
+    RivalIntel, RivalPersonality, RivalSettings,
 };
 pub use scenario::{Baseline, Outcome, PlannedAction, Scenario, ScenarioError};
 pub use season::{

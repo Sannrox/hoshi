@@ -763,6 +763,8 @@ impl GameState {
                 format!("pirate outpost · {}", outpost.kind.as_key())
             } else if let Some(world) = self.frontier.visible_worlds().find(|w| w.coord == coord) {
                 format!("frontier world · {}", world.kind.as_key())
+            } else if let Some(claim) = self.visible_rival_colony_at(coord) {
+                format!("rival {} colony", claim.rival_id)
             } else {
                 "empty slot".into()
             };
@@ -980,6 +982,28 @@ mod tests {
             .describe(DetailSubject::Coord(state.home), None)
             .unwrap();
         assert!(home.description.contains(" size "), "{}", home.description);
+    }
+
+    #[test]
+    fn star_map_detail_names_a_visible_rival_colony() {
+        let mut state = GameState::new_live_galaxy(10, quiet(), 7);
+        let dest = Coord {
+            galaxy: state.home.galaxy,
+            system: state.home.system,
+            position: 4,
+        };
+        state.rivals.colonies.push(crate::RivalColony {
+            rival_id: "rival-0-trader".into(),
+            coord: dest,
+            founded_at: 1,
+            visible_at: 10,
+        });
+        state.last_tick_unix = 9;
+        let hidden = state.describe(DetailSubject::Coord(dest), None).unwrap();
+        assert_eq!(hidden.description, "empty slot");
+        state.last_tick_unix = 10;
+        let seen = state.describe(DetailSubject::Coord(dest), None).unwrap();
+        assert_eq!(seen.description, "rival rival-0-trader colony");
     }
 
     #[test]

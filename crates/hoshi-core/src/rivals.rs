@@ -21,7 +21,15 @@ use std::fmt;
 const DEFAULT_RIVALS: &str = include_str!("../data/rivals.toml");
 
 #[cfg(test)]
-const PLAYER_ACTIONS: [&str; 6] = ["build", "research", "place_order", "launch", "ship", "idle"];
+const PLAYER_ACTIONS: [&str; 7] = [
+    "build",
+    "research",
+    "place_order",
+    "launch",
+    "ship",
+    "colonize",
+    "idle",
+];
 
 /// Catalog plus per-galaxy difficulty. Empires are empty until spawn.
 #[derive(Debug, Clone, PartialEq)]
@@ -32,6 +40,10 @@ pub struct RivalBoard {
     pub efficiency: f64,
     pub starting_bonus: f64,
     pub empires: Vec<RivalEmpire>,
+    /// Physical claims, including those whose light has not reached the player.
+    pub colonies: Vec<RivalColony>,
+    /// Hidden outbound colony ships. Launch is never a player mission.
+    pub flights: Vec<RivalColonizeFlight>,
 }
 
 impl Default for RivalBoard {
@@ -43,6 +55,8 @@ impl Default for RivalBoard {
             efficiency: 1.0,
             starting_bonus: 0.0,
             empires: Vec::new(),
+            colonies: Vec::new(),
+            flights: Vec::new(),
         }
     }
 }
@@ -101,6 +115,26 @@ impl RivalSettings {
             ..Self::default()
         }
     }
+}
+
+/// A rival-owned slot in the player's home system.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RivalColony {
+    pub rival_id: String,
+    pub coord: Coord,
+    pub founded_at: u64,
+    /// Arrival plus light-time from the rival home. The map names the owner then.
+    pub visible_at: u64,
+}
+
+/// One hidden rival colony ship. Not a player mission.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RivalColonizeFlight {
+    pub rival_id: String,
+    pub dest: Coord,
+    pub origin: Coord,
+    pub launched_at: u64,
+    pub arrives_at: u64,
 }
 
 /// One rival empire. Production and queues live here; catch-up uses a pocket state.
@@ -334,6 +368,8 @@ impl GameState {
             efficiency: settings.efficiency.max(0.1),
             starting_bonus: settings.starting_bonus.max(0.0),
             empires: Vec::new(),
+            colonies: Vec::new(),
+            flights: Vec::new(),
         }
         .act_secs();
         let bonus = 1.0 + settings.starting_bonus.max(0.0);
@@ -347,6 +383,7 @@ impl GameState {
             resources.silicon *= bonus;
             resources.deuterium *= bonus;
             let mut fleet = Fleet::default();
+            fleet.add(ShipKind::ColonyShip, 1);
             if spec.raid > spec.build {
                 fleet.add(ShipKind::LightFighter, 4);
             }
@@ -373,32 +410,89 @@ impl GameState {
             efficiency: settings.efficiency.max(0.1),
             starting_bonus: settings.starting_bonus.max(0.0),
             empires,
+            colonies: Vec::new(),
+            flights: Vec::new(),
         };
         Ok(())
     }
 
     pub(crate) fn next_rivals_at(&self) -> Option<u64> {
-        if !self.rivals.enabled || self.rivals.empires.is_empty() {
+        if !self.rivals.enabled {
             return None;
         }
-        self.rivals
+        let act = self
+            .rivals
             .empires
             .iter()
             .map(|row| row.next_act_at)
             .min()
-            .filter(|&at| at > 0)
+            .filter(|&at| at > 0);
+        let flight = self
+            .rivals
+            .flights
+            .iter()
+            .map(|row| row.arrives_at)
+            .min()
+            .filter(|&at| at > 0);
+        match (act, flight) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) | (None, Some(a)) => Some(a),
+            (None, None) => None,
+        }
     }
 
     pub(crate) fn tick_rivals(&mut self, at: u64) {
         if !self.rivals.enabled {
             return;
         }
+        self.settle_rival_colonies(at);
         let n = self.rivals.empires.len();
         for i in 0..n {
             if self.rivals.empires[i].next_act_at == at {
                 self.act_rival(i, at);
             }
         }
+    }
+
+    /// Physical claim, including one whose light has not arrived.
+    pub fn rival_colony_at(&self, coord: Coord) -> Option<&RivalColony> {
+        self.rivals.colonies.iter().find(|row| row.coord == coord)
+    }
+
+    /// Claim the star map and continue screen may name.
+    pub fn visible_rival_colony_at(&self, coord: Coord) -> Option<&RivalColony> {
+        self.rival_colony_at(coord)
+            .filter(|row| row.visible_at <= self.last_tick_unix)
+    }
+
+    /// Empty home-system slots a rival Colonize may pick.
+    pub fn rival_colonize_dest(&self, index: usize) -> Option<Coord> {
+        pick_colonize_dest(self, index)
+    }
+
+    /// Spend that rival's colony ship on the seeded dest. `None` if it cannot fly.
+    #[cfg(test)]
+    pub(crate) fn launch_rival_colonize(&mut self, index: usize, at: u64) -> Option<Coord> {
+        let dest = pick_colonize_dest(self, index)?;
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::ColonyShip, 1);
+        let (outbound_secs, fuel) = self.flight_from(self.home, dest, ships, 100).ok()?;
+        let empire = self.rivals.empires.get_mut(index)?;
+        if empire.fleet.get(ShipKind::ColonyShip) == 0 || empire.resources.deuterium + 1e-9 < fuel {
+            return None;
+        }
+        empire.fleet.saturating_sub(ShipKind::ColonyShip, 1);
+        empire.resources.deuterium = (empire.resources.deuterium - fuel).max(0.0);
+        let origin = empire.home;
+        let rival_id = empire.id.clone();
+        self.rivals.flights.push(RivalColonizeFlight {
+            rival_id,
+            dest,
+            origin,
+            launched_at: at,
+            arrives_at: at.saturating_add(outbound_secs),
+        });
+        Some(dest)
     }
 
     /// Espionage-gated glance used by the intel panel and `hoshi rivals`.
@@ -496,7 +590,15 @@ impl GameState {
         };
         let mut pocket = self.make_pocket(index);
         pocket.catch_up(at);
-        let chosen = choose_action(&pocket, &spec, self.rivals.aggression, index, at);
+        let chosen = choose_action(self, &pocket, &spec, self.rivals.aggression, index, at);
+        let colonize = match &chosen {
+            Act::Colonize {
+                dest,
+                outbound_secs,
+                fuel,
+            } => Some((*dest, *outbound_secs, *fuel)),
+            _ => None,
+        };
         let action = match &chosen {
             Act::Intent(intent) => match propose(&pocket, intent, at) {
                 Ok(proposal) => {
@@ -514,6 +616,17 @@ impl GameState {
                 }
             }
             Act::Raid => "launch".into(),
+            Act::Colonize { fuel, .. } => {
+                if pocket.fleet.get(ShipKind::ColonyShip) > 0
+                    && pocket.resources.deuterium + 1e-9 >= *fuel
+                {
+                    pocket.fleet.saturating_sub(ShipKind::ColonyShip, 1);
+                    pocket.resources.deuterium = (pocket.resources.deuterium - *fuel).max(0.0);
+                    "colonize".into()
+                } else {
+                    "idle".into()
+                }
+            }
             Act::Idle => "idle".into(),
         };
         if matches!(chosen, Act::Intent(Intent::PlaceOrder { .. })) {
@@ -523,6 +636,55 @@ impl GameState {
         self.merge_pocket(index, pocket, at, action);
         if raid {
             self.resolve_rival_raid(index, at);
+        }
+        if self.rivals.empires[index].last_action == "colonize"
+            && let Some((dest, outbound_secs, _)) = colonize
+        {
+            let origin = self.rivals.empires[index].home;
+            let rival_id = self.rivals.empires[index].id.clone();
+            self.rivals.flights.push(RivalColonizeFlight {
+                rival_id,
+                dest,
+                origin,
+                launched_at: at,
+                arrives_at: at.saturating_add(outbound_secs),
+            });
+        }
+    }
+
+    fn settle_rival_colonies(&mut self, at: u64) {
+        let due: Vec<RivalColonizeFlight> = self
+            .rivals
+            .flights
+            .iter()
+            .filter(|flight| flight.arrives_at == at)
+            .cloned()
+            .collect();
+        self.rivals.flights.retain(|flight| flight.arrives_at != at);
+        for flight in due {
+            if self.occupied(flight.dest) {
+                if let Some(empire) = self
+                    .rivals
+                    .empires
+                    .iter_mut()
+                    .find(|row| row.id == flight.rival_id)
+                {
+                    empire.fleet.add(ShipKind::ColonyShip, 1);
+                }
+                continue;
+            }
+            let delay = light_delay_secs(flight.origin, flight.dest, &self.config.orbits);
+            let visible_at = at.saturating_add(delay);
+            self.rivals.colonies.push(RivalColony {
+                rival_id: flight.rival_id.clone(),
+                coord: flight.dest,
+                founded_at: at,
+                visible_at,
+            });
+            self.push_event(
+                visible_at,
+                format!("rival {} claimed {}", flight.rival_id, flight.dest),
+            );
         }
     }
 
@@ -653,10 +815,16 @@ enum Act {
     Intent(Intent),
     Ship,
     Raid,
+    Colonize {
+        dest: Coord,
+        outbound_secs: u64,
+        fuel: f64,
+    },
     Idle,
 }
 
 fn choose_action(
+    live: &GameState,
     pocket: &GameState,
     spec: &RivalPersonality,
     aggression: f64,
@@ -721,7 +889,78 @@ fn choose_action(
     if raid_w > 0.0 && pocket.fleet.get(ShipKind::LightFighter) > 0 {
         consider(&mut best, raid_w, 5, Act::Raid);
     }
+    if pocket.fleet.get(ShipKind::ColonyShip) > 0
+        && let Some(dest) = pick_colonize_dest(live, index)
+    {
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::ColonyShip, 1);
+        if let Ok((outbound_secs, fuel)) = live.flight_from(live.home, dest, ships, 100)
+            && pocket.resources.deuterium + 1e-9 >= fuel
+        {
+            consider(
+                &mut best,
+                0.4,
+                6,
+                Act::Colonize {
+                    dest,
+                    outbound_secs,
+                    fuel,
+                },
+            );
+        }
+    }
     best.map(|(_, act)| act).unwrap_or(Act::Idle)
+}
+
+fn pick_colonize_dest(state: &GameState, index: usize) -> Option<Coord> {
+    let mut candidates = rival_colonize_candidates(state);
+    if candidates.is_empty() {
+        return None;
+    }
+    candidates.sort();
+    let mut rng = state
+        .galaxy_seed
+        .wrapping_add((index as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+    for coord in &candidates {
+        rng ^= u64::from(coord.galaxy).wrapping_shl(32)
+            ^ u64::from(coord.system).wrapping_shl(16)
+            ^ u64::from(coord.position);
+    }
+    for (id, standing) in &state.diplomacy.standing {
+        rng = rng
+            .wrapping_mul(1_099_511_628_211)
+            .wrapping_add(standing.to_bits());
+        for b in id.as_bytes() {
+            rng = rng
+                .wrapping_mul(1_099_511_628_211)
+                .wrapping_add(u64::from(*b));
+        }
+    }
+    let pick = (next_u64(&mut rng) as usize) % candidates.len();
+    Some(candidates[pick])
+}
+
+fn rival_colonize_candidates(state: &GameState) -> Vec<Coord> {
+    let home = state.home;
+    let last = state.config.expedition.dest_position.max(1);
+    (1..=last)
+        .map(|position| Coord {
+            galaxy: home.galaxy,
+            system: home.system,
+            position,
+        })
+        .filter(|coord| {
+            *coord != home
+                && !state.colonies.iter().any(|row| row.coord == *coord)
+                && !state.outposts.iter().any(|row| row.coord == *coord)
+                && !state
+                    .sites
+                    .iter()
+                    .any(|site| site.coord == *coord && site.outcome.is_none())
+                && !state.rivals.colonies.iter().any(|row| row.coord == *coord)
+                && !state.rivals.flights.iter().any(|row| row.dest == *coord)
+        })
+        .collect()
 }
 
 fn pick_building(pocket: &GameState, spec: &RivalPersonality) -> BuildingKind {
@@ -842,6 +1081,12 @@ mod tests {
             .spawn_rivals(&RivalCatalog::default(), settings)
             .unwrap();
         state
+    }
+
+    fn freeze_rival_acts(state: &mut GameState) {
+        for empire in &mut state.rivals.empires {
+            empire.next_act_at = u64::MAX;
+        }
     }
 
     #[test]
@@ -1005,5 +1250,163 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, crate::IntentError::Research(_)));
+    }
+
+    #[test]
+    fn same_seed_and_standing_pick_the_same_colonize_dest() {
+        let a = spawn_on(quiet(1_000), 60);
+        let b = spawn_on(quiet(1_000), 60);
+        assert_eq!(a.rival_colonize_dest(0), b.rival_colonize_dest(0));
+        assert!(a.rival_colonize_dest(0).is_some());
+        let mut same_standing = spawn_on(quiet(1_000), 60);
+        same_standing
+            .diplomacy
+            .set_standing("traders", a.diplomacy.standing("traders"));
+        assert_eq!(
+            a.rival_colonize_dest(0),
+            same_standing.rival_colonize_dest(0)
+        );
+    }
+
+    #[test]
+    fn an_open_expedition_site_is_not_a_colonize_dest() {
+        let mut state = spawn_on(quiet(1_000), 60);
+        let dest = state.rival_colonize_dest(0).expect("empty home slot");
+        state.sites.push(crate::ExpeditionSite {
+            id: 1,
+            coord: dest,
+            kind: crate::SiteKind::Wreck,
+            iron: 0.0,
+            silicon: 0.0,
+            deuterium: 0.0,
+            ships: 0,
+            outcome: None,
+        });
+        assert_ne!(state.rival_colonize_dest(0), Some(dest));
+        state
+            .sites
+            .iter_mut()
+            .find(|site| site.coord == dest)
+            .expect("pushed site")
+            .outcome = Some(crate::ExpeditionKind::Nothing);
+        assert_eq!(state.rival_colonize_dest(0), Some(dest));
+    }
+
+    #[test]
+    fn rival_colonize_arrival_matches_stepped_ticks_and_waits_for_light() {
+        let mut gap = spawn_on(quiet(1_000), 60);
+        gap.rivals.empires[0].resources.deuterium = 50_000.0;
+        let dest = gap.launch_rival_colonize(0, 1_000).expect("colony ship");
+        freeze_rival_acts(&mut gap);
+        let arrives = gap.rivals.flights[0].arrives_at;
+        let origin = gap.rivals.empires[0].home;
+        let delay = light_delay_secs(origin, dest, &gap.config.orbits);
+        let visible = arrives.saturating_add(delay);
+        assert!(visible >= arrives);
+        let mut step = gap.clone();
+        gap.catch_up(visible);
+        // catch_up already jumps to event times; a 1s loop hangs for ~40 AU of light.
+        step.catch_up(arrives);
+        assert_eq!(step.rivals.colonies.len(), 1);
+        assert!(step.visible_rival_colony_at(dest).is_none());
+        step.catch_up(visible);
+        assert_eq!(gap.rivals.colonies, step.rivals.colonies);
+        assert_eq!(gap.events, step.events);
+        assert_eq!(gap.rivals.colonies[0].coord, dest);
+        assert_eq!(gap.rivals.colonies[0].visible_at, visible);
+        assert!(
+            gap.delivered_events()
+                .any(|event| event.text.contains("claimed")
+                    && event.text.contains(&dest.to_string())),
+            "{:?}",
+            gap.events
+        );
+        let mut early = spawn_on(quiet(1_000), 60);
+        early.rivals.empires[0].resources.deuterium = 50_000.0;
+        early.launch_rival_colonize(0, 1_000);
+        freeze_rival_acts(&mut early);
+        early.catch_up(arrives);
+        assert_eq!(early.rivals.colonies.len(), 1);
+        assert!(early.visible_rival_colony_at(dest).is_none());
+        assert!(
+            early
+                .delivered_events()
+                .all(|event| !event.text.contains("claimed"))
+        );
+        early.catch_up(visible);
+        assert!(early.visible_rival_colony_at(dest).is_some());
+    }
+
+    #[test]
+    fn player_colonize_of_a_rival_claim_fails_and_another_slot_still_works() {
+        let mut state = spawn_on(quiet(1_000), 60);
+        state.rivals.empires[0].resources.deuterium = 50_000.0;
+        state.resources.deuterium = 50_000.0;
+        state.tech_levels.insert("colonization".into(), 1);
+        state.fleet.add(ShipKind::ColonyShip, 2);
+        let dest = state.launch_rival_colonize(0, 1_000).expect("colony ship");
+        freeze_rival_acts(&mut state);
+        let arrives = state.rivals.flights[0].arrives_at;
+        let origin = state.rivals.empires[0].home;
+        let visible = arrives.saturating_add(light_delay_secs(origin, dest, &state.config.orbits));
+        state.catch_up(visible);
+        let err = state
+            .launch_colony(state.home, dest, 100, visible)
+            .unwrap_err();
+        assert!(
+            matches!(err, crate::FleetError::RivalClaim { dest: taken, .. } if taken == dest),
+            "{err}"
+        );
+        let other = state
+            .rival_colonize_dest(1)
+            .filter(|coord| *coord != dest)
+            .or_else(|| {
+                (1..=state.config.expedition.dest_position)
+                    .map(|position| Coord {
+                        galaxy: state.home.galaxy,
+                        system: state.home.system,
+                        position,
+                    })
+                    .find(|coord| *coord != state.home && *coord != dest)
+            })
+            .expect("another empty slot");
+        state
+            .launch_colony(state.home, other, 100, visible)
+            .expect("other empty coord still colonizes");
+    }
+
+    #[test]
+    fn player_colonize_first_sends_the_rival_ship_home() {
+        let mut state = spawn_on(quiet(1_000), 60);
+        state.rivals.empires[0].resources.deuterium = 50_000.0;
+        state.resources.deuterium = 50_000.0;
+        state.tech_levels.insert("colonization".into(), 2);
+        state.fleet.add(ShipKind::ColonyShip, 1);
+        let dest = state.rival_colonize_dest(0).expect("dest");
+        freeze_rival_acts(&mut state);
+        state.launch_colony(state.home, dest, 100, 1_000).unwrap();
+        let player_arrives = state.missions[0].phase_ends_at;
+        state.catch_up(player_arrives);
+        assert!(state.colonies.iter().any(|c| c.coord == dest));
+        let ships_before = state.rivals.empires[0].fleet.get(ShipKind::ColonyShip);
+        let origin = state.rivals.empires[0].home;
+        let rival_id = state.rivals.empires[0].id.clone();
+        let now = state.last_tick_unix;
+        state.rivals.empires[0]
+            .fleet
+            .saturating_sub(ShipKind::ColonyShip, 1);
+        state.rivals.flights.push(RivalColonizeFlight {
+            rival_id,
+            dest,
+            origin,
+            launched_at: now,
+            arrives_at: now.saturating_add(10),
+        });
+        state.catch_up(now.saturating_add(10));
+        assert!(state.rivals.colonies.is_empty());
+        assert_eq!(
+            state.rivals.empires[0].fleet.get(ShipKind::ColonyShip),
+            ships_before
+        );
     }
 }

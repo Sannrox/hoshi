@@ -2871,6 +2871,18 @@ fn state_value(state: &GameState, actor: Actor) -> Value {
     value["cheat_audit"] = json!(state.cheat_audit());
     value["rivals"] = json!({
         "enabled": state.rivals.enabled,
+        "colonies": state
+            .rivals
+            .colonies
+            .iter()
+            .filter(|row| row.visible_at <= state.last_tick_unix)
+            .map(|row| json!({
+                "rival_id": row.rival_id,
+                "coord": row.coord.to_string(),
+                "founded_at": row.founded_at,
+                "visible_at": row.visible_at,
+            }))
+            .collect::<Vec<_>>(),
         "empires": state.rival_intel().into_iter().map(|row| json!({
             "id": row.id,
             "personality": row.personality,

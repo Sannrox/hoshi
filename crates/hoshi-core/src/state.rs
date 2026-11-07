@@ -3205,6 +3205,12 @@ impl GameState {
         now_unix: u64,
     ) -> Result<u64, FleetError> {
         self.catch_up(now_unix);
+        if let Some(claim) = self.visible_rival_colony_at(dest) {
+            return Err(FleetError::RivalClaim {
+                dest,
+                rival_id: claim.rival_id.clone(),
+            });
+        }
         let fleet = self.fleet_at(origin).ok_or(FleetError::UnknownPlanet)?;
         if fleet.get(ShipKind::ColonyShip) == 0 {
             return Err(FleetError::NeedColonyShip);
@@ -3758,10 +3764,11 @@ impl GameState {
         }
     }
 
-    fn occupied(&self, coord: Coord) -> bool {
+    pub(crate) fn occupied(&self, coord: Coord) -> bool {
         coord == self.home
             || self.colonies.iter().any(|c| c.coord == coord)
             || self.outposts.iter().any(|o| o.coord == coord)
+            || self.rivals.colonies.iter().any(|c| c.coord == coord)
     }
 
     /// Turn a fleet around. Outbound recall uses elapsed time as the return.
@@ -4845,6 +4852,18 @@ impl GameState {
         let dest = self.missions[index].dest;
         let planets = 1 + self.colonies.len() as u32;
         let no_ship = self.missions[index].ships.get(ShipKind::ColonyShip) == 0;
+        if let Some(claim) = self.rival_colony_at(dest) {
+            let text = if claim.visible_at <= self.last_tick_unix {
+                format!(
+                    "colony ship found {dest} claimed by {}; returning",
+                    claim.rival_id
+                )
+            } else {
+                format!("colony ship found {dest} taken; returning")
+            };
+            self.push_event(_done_at, text);
+            return false;
+        }
         if self.occupied(dest) || planets >= self.colony_cap() || no_ship {
             return false;
         }

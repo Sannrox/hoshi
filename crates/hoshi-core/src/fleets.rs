@@ -221,6 +221,11 @@ pub enum FleetError {
     },
     AlreadyReturning,
     NeedColonyShip,
+    /// A visible rival colony already holds `dest`.
+    RivalClaim {
+        dest: Coord,
+        rival_id: String,
+    },
     HoldOutOfRange {
         got: u64,
         min: u64,
@@ -317,6 +322,9 @@ impl fmt::Display for FleetError {
             FleetError::UnknownMission { id } => write!(f, "no mission {id}"),
             FleetError::AlreadyReturning => write!(f, "mission is already returning"),
             FleetError::NeedColonyShip => write!(f, "colony mission needs a colony ship"),
+            FleetError::RivalClaim { dest, rival_id } => {
+                write!(f, "rival {rival_id} already claimed {dest}")
+            }
             FleetError::HoldOutOfRange { got, min, max } => {
                 write!(f, "hold {got}s is outside {min}..={max}")
             }
