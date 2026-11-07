@@ -252,6 +252,32 @@ pub struct FusionStatus {
     pub heat: f64,
 }
 
+impl FusionStatus {
+    /// Inspector line: mode, output or start-up, fuel burn, cooling cap.
+    pub fn brief(&self) -> String {
+        let state = if self.plant.mode == FusionMode::Off {
+            "off".to_string()
+        } else if self.plant.burning() {
+            format!("{:.0}/{:.0} energy", self.output, self.rated)
+        } else {
+            format!(
+                "start-up {:.0}% drawing {:.0}",
+                self.startup_progress * 100.0,
+                self.startup_draw
+            )
+        };
+        let mut fuel = format!("deuterium {:.2}/h", self.deuterium_per_hour);
+        if self.helium3_per_hour > 0.0 {
+            fuel.push_str(&format!(", helium-3 {:.2}/h", self.helium3_per_hour));
+        }
+        format!(
+            "{} {state}; {fuel}; cooling cap {:.0}",
+            self.plant.mode.as_key(),
+            self.cooling_cap
+        )
+    }
+}
+
 /// One plant's rates for a production segment.
 pub(crate) struct FusionStep {
     coord: Coord,

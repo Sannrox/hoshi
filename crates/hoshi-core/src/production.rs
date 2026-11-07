@@ -578,14 +578,17 @@ mod tests {
                 GoodSpec {
                     id: "iron_ore".into(),
                     kind: GoodKind::Raw,
+                    purpose: String::new(),
                 },
                 GoodSpec {
                     id: "steel".into(),
                     kind: GoodKind::Refined,
+                    purpose: String::new(),
                 },
                 GoodSpec {
                     id: "frames".into(),
                     kind: GoodKind::Component,
+                    purpose: String::new(),
                 },
             ],
             recipes: vec![

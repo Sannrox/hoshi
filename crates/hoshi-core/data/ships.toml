@@ -4,6 +4,7 @@
 [[ship]]
 id = "small_cargo"
 name = "Small Cargo"
+purpose = "Hauls resources between planets."
 frames = 2000.0
 electronics = 2000.0
 propellant = 0.0
@@ -21,6 +22,7 @@ prereq_techs = [{ id = "combustion_drive", level = 2 }]
 [[ship]]
 id = "large_cargo"
 name = "Large Cargo"
+purpose = "Hauls a larger load than a small cargo."
 frames = 6000.0
 electronics = 6000.0
 propellant = 0.0
@@ -38,6 +40,7 @@ prereq_techs = [{ id = "impulse_drive", level = 4 }]
 [[ship]]
 id = "light_fighter"
 name = "Light Fighter"
+purpose = "Cheap combat screen for raids and defence."
 frames = 3000.0
 electronics = 1000.0
 propellant = 0.0
@@ -56,6 +59,7 @@ rapid_fire = [{ target = "espionage_probe", value = 5 }]
 [[ship]]
 id = "heavy_fighter"
 name = "Heavy Fighter"
+purpose = "Heavier combat hull than a light fighter."
 frames = 6000.0
 electronics = 4000.0
 propellant = 0.0
@@ -77,6 +81,7 @@ rapid_fire = [
 [[ship]]
 id = "cruiser"
 name = "Cruiser"
+purpose = "Main combat ship, strong against fighters."
 frames = 20000.0
 electronics = 7000.0
 propellant = 2000.0
@@ -99,6 +104,7 @@ rapid_fire = [
 [[ship]]
 id = "battleship"
 name = "Battleship"
+purpose = "Heavy combat hull for fleet actions."
 frames = 45000.0
 electronics = 15000.0
 propellant = 0.0
@@ -121,6 +127,7 @@ rapid_fire = [
 [[ship]]
 id = "recycler"
 name = "Recycler"
+purpose = "Harvests debris at a coordinate."
 frames = 10000.0
 electronics = 6000.0
 propellant = 2000.0
@@ -138,6 +145,7 @@ prereq_techs = [{ id = "combustion_drive", level = 6 }, { id = "shields", level 
 [[ship]]
 id = "espionage_probe"
 name = "Espionage Probe"
+purpose = "Flies a spy mission and reports what it finds."
 frames = 0.0
 electronics = 1000.0
 propellant = 0.0
@@ -155,6 +163,7 @@ prereq_techs = [{ id = "espionage", level = 2 }, { id = "combustion_drive", leve
 [[ship]]
 id = "explorer"
 name = "Explorer"
+purpose = "One aboard doubles expedition resource and ship finds; there is no Explore mission."
 frames = 4000.0
 electronics = 8000.0
 propellant = 4000.0
@@ -172,6 +181,7 @@ prereq_techs = [{ id = "astrophysics", level = 1 }, { id = "impulse_drive", leve
 [[ship]]
 id = "colony_ship"
 name = "Colony Ship"
+purpose = "Settles an empty planet."
 frames = 10000.0
 electronics = 20000.0
 propellant = 10000.0
@@ -189,6 +199,7 @@ prereq_techs = [{ id = "colonization", level = 1 }, { id = "impulse_drive", leve
 [[ship]]
 id = "troop_transport"
 name = "Troop Transport"
+purpose = "Lands troops on an outpost after the fleet fights."
 frames = 4000.0
 electronics = 4000.0
 propellant = 1000.0

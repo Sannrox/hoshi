@@ -11,6 +11,8 @@ planet defences stay in `defences.toml`; laws stay in `laws.toml`; daily goals
 stay in `missions.toml`; light tactical combat stays in `tactics.toml`.
 Wonder ids must be unique; each wonder
 needs at least one stage with `duration_secs > 0` and a positive resource cost.
+Buildings, ships, defences, techs, wonders, and chain goods require a non-empty
+`purpose` sentence; the inspector shows it as the object's description.
 
 Override the bundled file at runtime:
 

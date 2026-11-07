@@ -54,6 +54,7 @@ tree_remove = ["shield_doctrine"]
 [[species.tech]]
 id = "swarm_doctrine"
 name = "Swarm doctrine"
+purpose = "One-level pick that raises weapon damage. Locks shield doctrine."
 branch = "military"
 tier = 2
 exclusive_group = "defense_focus"
@@ -96,6 +97,7 @@ tree_remove = ["orbital_harvest"]
 [[species.tech]]
 id = "alchemy_flow"
 name = "Alchemy flow"
+purpose = "One-level pick that raises silicon output. Locks orbital harvesting."
 branch = "industry"
 tier = 2
 exclusive_group = "mining_method"
@@ -138,6 +140,7 @@ tree_remove = ["smuggler_network"]
 [[species.tech]]
 id = "void_charts"
 name = "Void charts"
+purpose = "One-level pick that raises espionage and expedition slots. Locks smuggler network."
 branch = "society"
 tier = 2
 exclusive_group = "trade_focus"
@@ -180,6 +183,7 @@ tree_remove = ["deep_core"]
 [[species.tech]]
 id = "automation_grid"
 name = "Automation grid"
+purpose = "One-level pick that raises energy output and logistics. Locks deep-core mining."
 branch = "industry"
 tier = 2
 exclusive_group = "mining_method"

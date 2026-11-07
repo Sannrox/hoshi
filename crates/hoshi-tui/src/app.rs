@@ -1526,21 +1526,8 @@ impl App {
             if let Some(form) = self.dispatch.as_ref().filter(|_| self.docks_dispatch()) {
                 let lines = self.dispatch_window(form, usize::from(card.height));
                 frame.render_widget(Paragraph::new(lines), card);
-            } else if let Some(detail) = self.current_detail() {
-                let (kind, extra) = self.inspector_context();
-                let levelled = matches!(
-                    self.detail_subject(),
-                    Some(
-                        DetailSubject::Building { .. }
-                            | DetailSubject::Tech(_)
-                            | DetailSubject::Wonder(_)
-                    )
-                );
-                frame.render_widget(
-                    Paragraph::new(detail_panel::inspector(&detail, kind, levelled, extra, t))
-                        .wrap(Wrap { trim: false }),
-                    card,
-                );
+            } else if let Some(lines) = self.inspector_lines() {
+                frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), card);
             }
         } else {
             let (list_area, portrait) = if self.screen == Screen::Staff {
@@ -1642,18 +1629,92 @@ impl App {
                             )
                         }),
                 );
+                if kind == BuildingKind::FusionPlant
+                    && let Some(status) = self.state.fusion_status_at(planet)
+                {
+                    extra.push(("Fusion".into(), Line::styled(status.brief(), t.text())));
+                }
                 ("building", extra)
             }
-            Some(DetailSubject::Tech(_)) => ("tech", Vec::new()),
-            Some(DetailSubject::Ship { .. }) => ("ship", Vec::new()),
+            Some(DetailSubject::Tech(id)) => {
+                let extra = self
+                    .state
+                    .config
+                    .techs
+                    .get(&id)
+                    .map(|spec| {
+                        let mut text = format!("{} tier {}", spec.branch.as_key(), spec.tier);
+                        match spec.max_level {
+                            Some(1) => text.push_str(", single-level pick"),
+                            Some(max) => text.push_str(&format!(", max level {max}")),
+                            None => {}
+                        }
+                        vec![("Tree".into(), Line::styled(text, t.text()))]
+                    })
+                    .unwrap_or_default();
+                ("tech", extra)
+            }
+            Some(DetailSubject::Ship { kind, .. }) => {
+                let drive = &self.state.config.ships.get(kind).drive;
+                (
+                    "ship",
+                    vec![(
+                        "Drive".into(),
+                        Line::styled(self.state.display_name(drive), t.text()),
+                    )],
+                )
+            }
             Some(DetailSubject::Defence { .. }) => ("defence", Vec::new()),
-            Some(DetailSubject::Wonder(_)) => ("wonder", Vec::new()),
+            Some(DetailSubject::Wonder(id)) => {
+                let extra = self
+                    .state
+                    .config
+                    .wonders
+                    .iter()
+                    .find(|spec| spec.id == id)
+                    .map(|spec| {
+                        let done = self.state.completed_wonders.iter().any(|done| done == &id);
+                        let stage = self
+                            .state
+                            .wonder
+                            .as_ref()
+                            .filter(|job| job.id == id)
+                            .map(|job| job.stage)
+                            .unwrap_or(0);
+                        let text = if done {
+                            "complete".to_string()
+                        } else {
+                            format!("{} / {}", stage + 1, spec.stages.len())
+                        };
+                        vec![("Stage".into(), Line::styled(text, t.text()))]
+                    })
+                    .unwrap_or_default();
+                ("wonder", extra)
+            }
             Some(DetailSubject::Law(_)) => ("law", Vec::new()),
             Some(DetailSubject::Trade { .. }) => ("trade", Vec::new()),
             Some(DetailSubject::Production { .. }) => ("production", Vec::new()),
             Some(DetailSubject::Faction(_)) => ("faction", Vec::new()),
             Some(DetailSubject::Coord(_)) | None => ("location", Vec::new()),
         }
+    }
+
+    fn inspector_lines(&self) -> Option<Vec<Line<'static>>> {
+        let detail = self.current_detail()?;
+        let (kind, extra) = self.inspector_context();
+        let levelled = matches!(
+            self.detail_subject(),
+            Some(
+                DetailSubject::Building { .. } | DetailSubject::Tech(_) | DetailSubject::Wonder(_)
+            )
+        );
+        Some(detail_panel::inspector(
+            &detail,
+            kind,
+            levelled,
+            extra,
+            &self.theme,
+        ))
     }
 
     fn navbar_right(&self) -> Vec<Span<'static>> {
@@ -2074,15 +2135,9 @@ impl App {
             self.draw_advisor(frame);
         }
         if self.shows_detail_overlay()
-            && let Some(detail) = self.current_detail()
+            && let Some(lines) = self.inspector_lines()
         {
-            self.dialog(
-                frame,
-                "Detail",
-                String::new(),
-                detail_panel::paragraph(&detail),
-                &[],
-            );
+            self.dialog(frame, "Detail", String::new(), lines, &[]);
         }
         if self.help_open {
             self.draw_help(frame);
@@ -4961,7 +5016,7 @@ mod tests {
         assert_eq!((row.from.as_str(), row.to.as_str()), ("1.0", "2.0"));
         let text = render_text(&app, 160, 48);
         assert!(text.contains("construction ×"), "{text}");
-        assert!(text.contains("shortens construction"), "{text}");
+        assert!(text.contains("Shortens construction"), "{text}");
         app.selected = BuildingKind::ALL
             .iter()
             .position(|kind| *kind == BuildingKind::MetalMine)
@@ -4983,25 +5038,55 @@ mod tests {
             .position(|kind| *kind == ShipKind::Explorer)
             .unwrap();
         let detail = app.current_detail().unwrap();
-        assert!(
-            detail.description.contains("expedition find x2")
-                && detail.description.contains("no Explore mission"),
-            "{}",
-            detail.description
+        assert_eq!(
+            detail.description,
+            app.state.config.ships.get(ShipKind::Explorer).purpose
         );
         let text = render_text(&app, 160, 48);
-        assert!(text.contains("expedition find x2"), "{text}");
+        assert!(text.contains("doubles expedition"), "{text}");
         assert!(text.contains("no Explore mission"), "{text}");
+        assert!(text.contains("Drive"), "{text}");
         app.selected = ShipKind::ALL
             .iter()
             .position(|kind| *kind == ShipKind::SmallCargo)
             .unwrap();
         let cargo = app.current_detail().unwrap();
-        assert!(
-            !cargo.description.contains("expedition find"),
-            "{}",
-            cargo.description
+        assert_eq!(
+            cargo.description,
+            app.state.config.ships.get(ShipKind::SmallCargo).purpose
         );
+        assert!(!cargo.description.contains("expedition"));
+    }
+
+    #[test]
+    fn fusion_inspector_shows_live_status_beside_purpose() {
+        let mut app = App::new(GameState::new(1_000));
+        app.screen = Screen::Planet;
+        app.state.buildings.fusion_plant = 1;
+        app.state.resources.deuterium = 100.0;
+        app.selected = BuildingKind::ALL
+            .iter()
+            .position(|kind| *kind == BuildingKind::FusionPlant)
+            .unwrap();
+        let detail = app.current_detail().unwrap();
+        assert_eq!(
+            detail.description,
+            app.state
+                .config
+                .buildings
+                .get(BuildingKind::FusionPlant)
+                .purpose
+        );
+        let text = render_text(&app, 160, 48);
+        assert!(text.contains("Fusion"), "{text}");
+        assert!(text.contains("start-up"), "{text}");
+        assert!(text.contains("cooling cap"), "{text}");
+        let _ = render_text(&app, 80, 24);
+        app.handle_key(KeyCode::Char('d'), 1_000);
+        let overlay = render_text(&app, 80, 24);
+        assert!(overlay.contains("Fusion"), "{overlay}");
+        assert!(overlay.contains("start-up"), "{overlay}");
+        assert!(overlay.contains("cooling cap"), "{overlay}");
     }
 
     #[test]

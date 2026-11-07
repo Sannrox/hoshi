@@ -113,6 +113,8 @@ impl fmt::Display for ShipKind {
 pub struct ShipSpec {
     pub kind: ShipKind,
     pub name: String,
+    /// One-sentence player-facing use, shown in the inspector.
+    pub purpose: String,
     pub iron: f64,
     pub silicon: f64,
     pub deuterium: f64,
@@ -185,6 +187,8 @@ impl ShipCatalog {
                 ShipSpec {
                     kind,
                     name: raw.name,
+                    purpose: crate::balance::nonempty_purpose("ship", &raw.id, raw.purpose)
+                        .map_err(ShipCatalogError::Parse)?,
                     iron: raw.iron,
                     silicon: raw.silicon,
                     deuterium: raw.deuterium,
@@ -411,6 +415,7 @@ struct File {
 struct RawShip {
     id: String,
     name: String,
+    purpose: String,
     #[serde(alias = "frames", alias = "metal")]
     iron: f64,
     #[serde(alias = "electronics", alias = "crystal")]
