@@ -399,7 +399,9 @@ pub(crate) struct RecipeTally {
 
 /// Run every recipe once for `hours`. Extractors first (config order must be
 /// topological). Stops a recipe when any input runs out or a component output
-/// is already at cap.
+/// is already at cap. A component that hit its cap while recipes offered at
+/// least what they drew ends the pass at cap: in continuous time it would
+/// never have left it, and a dip below cap would re-split catch-up every second.
 pub(crate) fn apply_recipes(
     run: RecipeRun<'_>,
     scale_of: impl Fn(BuildingKind) -> f64,
@@ -415,6 +417,7 @@ pub(crate) fn apply_recipes(
         return tally;
     }
     let throttle = run.energy_factor.max(0.0) * run.boost.max(0.0);
+    let mut offered = Resources::ZERO;
     for recipe in &run.config.recipes {
         if run.buildings.get(recipe.building) == 0 {
             continue;
@@ -443,6 +446,11 @@ pub(crate) fn apply_recipes(
             let need = *qty * scale;
             let have = available(resources, goods, id);
             by_input = by_input.min(have / need);
+        }
+        for (id, qty) in &recipe.outputs {
+            if let Some(kind) = component_kind(id).filter(|_| *qty > 0.0) {
+                offered.set(kind, offered.get(kind) + *qty * scale * by_input.max(0.0));
+            }
         }
         let mut limited = by_input;
         for (id, qty) in &recipe.outputs {
@@ -488,6 +496,14 @@ pub(crate) fn apply_recipes(
         for (id, qty) in &recipe.outputs {
             let cap = component_kind(id).map(&cap_of);
             add_good(resources, goods, id, *qty * used, cap);
+        }
+    }
+    for kind in ResourceKind::ALL {
+        let capped = tally.capped.get(kind);
+        if capped > 0.0 && offered.get(kind) >= tally.consumed.get(kind) {
+            let refill = (cap_of(kind) - resources.get(kind)).clamp(0.0, capped);
+            resources.set(kind, resources.get(kind) + refill);
+            tally.capped.set(kind, capped - refill);
         }
     }
     tally

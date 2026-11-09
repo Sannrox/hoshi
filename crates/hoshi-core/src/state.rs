@@ -9284,6 +9284,65 @@ mod tests {
     }
 
     #[test]
+    fn a_full_store_drained_by_a_recipe_stays_full_in_few_steps() {
+        let mut cfg = test_config();
+        cfg.starting_buildings.metal_mine = 1;
+        cfg.metal_storage.base = 1_000.0;
+        cfg.starting_resources.iron = 999.99;
+        cfg.chains = crate::ChainConfig {
+            goods: vec![crate::GoodSpec {
+                id: "steel".into(),
+                kind: crate::GoodKind::Refined,
+                purpose: String::new(),
+            }],
+            recipes: vec![
+                crate::Recipe {
+                    id: "mine".into(),
+                    building: BuildingKind::MetalMine,
+                    deposit: None,
+                    inputs: BTreeMap::new(),
+                    outputs: BTreeMap::from([("iron".into(), 1.0)]),
+                    energy: 0.0,
+                    heat: 0.0,
+                    pollution: 0.0,
+                },
+                crate::Recipe {
+                    id: "smelt".into(),
+                    building: BuildingKind::MetalMine,
+                    deposit: None,
+                    inputs: BTreeMap::from([("iron".into(), 0.5)]),
+                    outputs: BTreeMap::from([("steel".into(), 0.5)]),
+                    energy: 0.0,
+                    heat: 0.0,
+                    pollution: 0.0,
+                },
+            ],
+            deposits: BTreeMap::new(),
+            deposit_jitter: 0.0,
+        };
+        let mut one_shot = GameState::with_config(0, cfg.clone());
+        one_shot.catch_up(3600);
+        let mut stepped = GameState::with_config(0, cfg);
+        for t in 1..=3600 {
+            stepped.catch_up(t);
+        }
+        // Mining outpaces smelting, so the store is pinned at its cap
+        // instead of sitting one step of smelting below it.
+        close(one_shot.resources.iron, 1_000.0);
+        close(stepped.resources.iron, 1_000.0);
+        close(
+            one_shot.goods.get("steel").copied().unwrap_or(0.0),
+            stepped.goods.get("steel").copied().unwrap_or(0.0),
+        );
+        // A pinned store has no fill instant left to split catch-up on.
+        assert!(
+            one_shot
+                .next_logistics_at()
+                .is_none_or(|at| at > one_shot.last_tick_unix + 1)
+        );
+    }
+
+    #[test]
     fn catch_up_shared_chain_inputs_match_step_by_step() {
         let mut cfg = test_config();
         cfg.starting_buildings.crystal_mine = 1;
