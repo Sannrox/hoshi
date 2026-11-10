@@ -4768,8 +4768,8 @@ impl GameState {
             ExpeditionResult::Pirates { enemy } => {
                 let mut fight_seed = seed.wrapping_add(0xA5A5_A5A5_A5A5_A5A5);
                 let report = self.resolve_player_attack(ships, enemy, &mut fight_seed);
-                self.push_combat_log(done_at, report.clone());
                 let dest = self.missions[index].dest;
+                self.push_combat_log(done_at, dest, report.clone());
                 self.note_fight_debris(done_at, dest, &report);
                 self.missions[index].ships = report.attacker_after;
                 let survivors: u32 = ShipKind::ALL
@@ -5141,7 +5141,7 @@ impl GameState {
         };
         let dest = self.missions[index].dest;
         let (winner, rounds, survivors) = (report.winner, report.rounds, report.attacker_after);
-        self.push_combat_log(at, report);
+        self.push_combat_log(at, dest, report);
         if survivors.is_empty() {
             self.missions.remove(index);
             self.push_event(at, format!("raid on {dest}: fleet lost"));
@@ -5175,7 +5175,7 @@ impl GameState {
         self.rng_seed = rng;
         self.outposts[outpost_idx].defences = report.defender_after;
         self.missions[index].ships = report.attacker_after;
-        self.push_combat_log(done_at, report.clone());
+        self.push_combat_log(done_at, dest, report.clone());
         self.note_fight_debris(done_at, dest, &report);
         self.push_event(done_at, format_outpost_attack(&report, dest));
         if self.missions[index].ships.is_empty() {
@@ -5243,7 +5243,7 @@ impl GameState {
         }
         report.attacker_after = self.missions[index].ships;
         report = report.with_seed_and_endpoints(seed);
-        self.push_combat_log(done_at, report.clone());
+        self.push_combat_log(done_at, dest, report.clone());
         self.note_fight_debris(done_at, dest, &report);
         if ground.winner != CombatWinner::Attacker {
             self.push_event(done_at, format_outpost_invade(&report, dest));
@@ -5781,7 +5781,7 @@ impl GameState {
             .raid_interval_secs(done_at)
             .map(|wait| done_at.saturating_add(wait));
         self.set_raid_schedule(next);
-        self.push_combat_log(done_at, report.clone());
+        self.push_combat_log(done_at, dest, report.clone());
         if let Some(log) = self.combat_logs.last_mut() {
             log.raid_plunder = Some(plunder);
             log.raid_defence = defence;
@@ -5794,7 +5794,9 @@ impl GameState {
         report
     }
 
-    pub(crate) fn push_combat_log(&mut self, at: u64, report: CombatReport) {
+    /// Log a fight at `place`, the world it happened at, keeping the newest
+    /// `MAX_COMBAT_LOGS`.
+    pub(crate) fn push_combat_log(&mut self, at: u64, place: Coord, report: CombatReport) {
         self.record_history(crate::HistoryDraft {
             at,
             kind: crate::HistoryKind::Combat,
@@ -5806,6 +5808,7 @@ impl GameState {
         });
         self.combat_logs.push(crate::CombatLog {
             at,
+            place: Some(place),
             report,
             raid_plunder: None,
             raid_defence: None,
@@ -10734,6 +10737,7 @@ modifiers = []
         assert_eq!(state.building_health(colony, BuildingKind::MetalMine), 0.0);
         let text = raid_text(&state);
         assert!(text.contains(&format!(" at {colony}")), "{text}");
+        assert_eq!(state.combat_logs.last().unwrap().place, Some(colony));
     }
 
     #[test]
@@ -10757,6 +10761,7 @@ modifiers = []
         );
         let text = raid_text(&state);
         assert!(!text.contains(&format!(" at {colony}")), "{text}");
+        assert_eq!(state.combat_logs.last().unwrap().place, Some(state.home));
     }
 
     /// Home with ten fighters, an unarmed colony, and a raid scheduled from
@@ -12468,6 +12473,7 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
         assert_eq!(jumped.fleet, stepped.fleet);
         assert_eq!(jumped.debris, stepped.debris);
         assert!(jumped.debris.get(&signal.coord).is_some_and(|&d| d > 0.0));
+        assert_eq!(jumped.combat_logs.last().unwrap().place, Some(signal.coord));
         assert!(
             jumped
                 .events
@@ -12666,6 +12672,31 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
                 .any(|e| e.text.starts_with("expedition:")),
             "{:?}",
             state.events
+        );
+    }
+
+    #[test]
+    fn an_expedition_fight_is_logged_at_the_expedition_coord() {
+        let mut state = expedition_state(0);
+        state.config.expedition.weights = crate::ExpeditionWeights {
+            nothing: 0,
+            merchant: 0,
+            resources: 0,
+            ships: 0,
+            delay: 0,
+            early_return: 0,
+            pirates: 1,
+            loss: 0,
+        };
+        state
+            .launch_expedition(state.home, scout_fleet(), 10, 100, 0)
+            .unwrap();
+        let dest = state.missions[0].dest;
+        let outbound = state.missions[0].outbound_secs;
+        state.catch_up(outbound + 10);
+        assert_eq!(
+            state.combat_logs.last().map(|log| log.place),
+            Some(Some(dest))
         );
     }
 
@@ -13795,8 +13826,9 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         fly_home(&mut state);
         assert!(state.colonies.is_empty());
         assert_eq!(state.fleet.get(ShipKind::TroopTransport), 1);
-        let report = &state.combat_logs.last().unwrap().report;
-        assert_eq!(report.attacker_after, report.attacker_before);
+        let log = state.combat_logs.last().unwrap();
+        assert_eq!(log.place, Some(dest));
+        assert_eq!(log.report.attacker_after, log.report.attacker_before);
     }
 
     #[test]
@@ -13940,6 +13972,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
 
         state.catch_up(state.missions[0].phase_ends_at);
         assert_eq!(state.missions[0].phase, MissionPhase::Return);
+        assert_eq!(state.combat_logs.last().unwrap().place, Some(dest));
         let survivors = state.missions[0].ships;
         assert!(!survivors.is_empty());
         fly_home(&mut state);

@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 65;
+pub const SCHEMA_VERSION: u32 = 66;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -3854,6 +3854,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     if found < 65 {
         migrate_v65(conn)?;
     }
+    if found < 66 {
+        migrate_v66(conn)?;
+    }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
 }
@@ -5112,23 +5115,45 @@ fn load_raid_targets(conn: &Connection) -> Result<(Option<Coord>, Option<Coord>)
     }
 }
 
+/// v66: the world each logged fight happened at. Null for older logs.
+fn migrate_v66(conn: &Connection) -> Result<(), SaveError> {
+    add_missing_integer_columns(
+        conn,
+        "combat_logs",
+        &["place_galaxy", "place_system", "place_position"],
+    )
+}
+
+/// Add each nullable INTEGER column `table` lacks. Each one is checked on its
+/// own, so a crash between two ALTERs cannot leave a save that skips the rest.
+fn add_missing_integer_columns(
+    conn: &Connection,
+    table: &str,
+    columns: &[&str],
+) -> Result<(), SaveError> {
+    for column in columns {
+        if !table_has_column(conn, table, column)? {
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} INTEGER"))?;
+        }
+    }
+    Ok(())
+}
+
 /// v65: the world each pending raid locked on when it was scheduled or
 /// brought. Null for older saves, whose raids pick a world on landing.
 fn migrate_v65(conn: &Connection) -> Result<(), SaveError> {
-    let has = conn
-        .prepare("SELECT 1 FROM pragma_table_info('raids') WHERE name = 'next_target_galaxy'")?
-        .exists([])?;
-    if !has {
-        conn.execute_batch(
-            "ALTER TABLE raids ADD COLUMN next_target_galaxy INTEGER;
-             ALTER TABLE raids ADD COLUMN next_target_system INTEGER;
-             ALTER TABLE raids ADD COLUMN next_target_position INTEGER;
-             ALTER TABLE raids ADD COLUMN event_target_galaxy INTEGER;
-             ALTER TABLE raids ADD COLUMN event_target_system INTEGER;
-             ALTER TABLE raids ADD COLUMN event_target_position INTEGER;",
-        )?;
-    }
-    Ok(())
+    add_missing_integer_columns(
+        conn,
+        "raids",
+        &[
+            "next_target_galaxy",
+            "next_target_system",
+            "next_target_position",
+            "event_target_galaxy",
+            "event_target_system",
+            "event_target_position",
+        ],
+    )
 }
 
 /// v64: rival colonies and hidden colonize flights. A missing table is an
@@ -7581,8 +7606,9 @@ fn insert_combat_logs(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Resu
         };
         tx.execute(
             "INSERT INTO combat_logs (id, at, seed, winner, rounds, layered,
-                ground_atk, ground_def, ground_atk_roll, ground_def_roll, ground_winner)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                ground_atk, ground_def, ground_atk_roll, ground_def_roll, ground_winner,
+                place_galaxy, place_system, place_position)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 log_id,
                 log.at as i64,
@@ -7595,6 +7621,9 @@ fn insert_combat_logs(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Resu
                 g_atk_roll,
                 g_def_roll,
                 g_winner,
+                log.place.map(|c| c.galaxy),
+                log.place.map(|c| c.system),
+                log.place.map(|c| c.position),
             ],
         )?;
         for (frame_i, frame) in log.report.frames.iter().enumerate() {
@@ -7736,6 +7765,7 @@ fn load_combat_logs(conn: &Connection, state: &mut GameState) -> Result<(), Save
         let frames = load_combat_frames(conn, id)?;
         let raid_plunder = load_combat_plunder(conn, id)?;
         let raid_defence = load_combat_defence(conn, id)?;
+        let place = load_combat_place(conn, id)?;
         let (attacker_before, defender_before) = frames
             .first()
             .map(|f| (f.attacker, f.defender))
@@ -7746,6 +7776,7 @@ fn load_combat_logs(conn: &Connection, state: &mut GameState) -> Result<(), Save
             .unwrap_or_default();
         state.combat_logs.push(CombatLog {
             at: unix_ts(at)?,
+            place,
             report: CombatReport {
                 rounds: u8::try_from(rounds).map_err(|_| SaveError::Corrupt("combat rounds"))?,
                 attacker_before,
@@ -7763,6 +7794,24 @@ fn load_combat_logs(conn: &Connection, state: &mut GameState) -> Result<(), Save
         });
     }
     Ok(())
+}
+
+/// Where a logged fight happened; `None` for logs saved before v66.
+fn load_combat_place(conn: &Connection, log_id: i64) -> Result<Option<Coord>, SaveError> {
+    let cols: [Option<u16>; 3] = conn.query_row(
+        "SELECT place_galaxy, place_system, place_position FROM combat_logs WHERE id = ?1",
+        [log_id],
+        |row| Ok([row.get(0)?, row.get(1)?, row.get(2)?]),
+    )?;
+    match cols {
+        [Some(galaxy), Some(system), Some(position)] => Ok(Some(Coord {
+            galaxy,
+            system,
+            position,
+        })),
+        [None, None, None] => Ok(None),
+        _ => Err(SaveError::Corrupt("combat place")),
+    }
 }
 
 fn load_combat_plunder(conn: &Connection, log_id: i64) -> Result<Option<Resources>, SaveError> {
@@ -10158,6 +10207,51 @@ label = "Leave it"
     }
 
     #[test]
+    fn a_half_applied_v66_migration_finishes_on_reopen() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let mut state = GameState::new(0);
+        state.trigger_raid(0);
+        save_state(&mut conn, &state).unwrap();
+        // A crash after the first ALTER: one column landed, the version did not.
+        conn.execute_batch(
+            "ALTER TABLE combat_logs DROP COLUMN place_system;
+             ALTER TABLE combat_logs DROP COLUMN place_position;
+             PRAGMA user_version = 65;",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.combat_logs, state.combat_logs);
+    }
+
+    #[test]
+    fn combat_places_survive_save_and_v65_logs_have_none() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let mut state = GameState::new(0);
+        state.trigger_raid(0);
+        assert_eq!(state.combat_logs.last().unwrap().place, Some(state.home));
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.combat_logs, state.combat_logs);
+        conn.execute_batch(
+            "ALTER TABLE combat_logs DROP COLUMN place_galaxy;
+             ALTER TABLE combat_logs DROP COLUMN place_system;
+             ALTER TABLE combat_logs DROP COLUMN place_position;
+             PRAGMA user_version = 65;",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        let old = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(old.combat_logs.len(), state.combat_logs.len());
+        assert_eq!(old.combat_logs.last().unwrap().place, None);
+        assert_eq!(
+            old.combat_logs.last().unwrap().report,
+            state.combat_logs.last().unwrap().report
+        );
+    }
+
+    #[test]
     fn locked_raid_targets_survive_save_and_v64_saves_have_none() {
         let mut conn = open_save(Path::new(":memory:")).unwrap();
         let mut state = GameState::new(100);
@@ -11224,6 +11318,7 @@ label = "Leave it"
         let mut state = GameState::new(10);
         state.combat_logs.push(CombatLog {
             at: 10,
+            place: Some(state.home),
             report: CombatReport {
                 rounds: 6,
                 attacker_before: before,

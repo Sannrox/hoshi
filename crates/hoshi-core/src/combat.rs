@@ -116,6 +116,9 @@ pub struct CombatFrame {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CombatLog {
     pub at: u64,
+    /// The world the fight happened at. `None` only for logs saved before
+    /// schema 66, which did not record it.
+    pub place: Option<crate::Coord>,
     pub report: CombatReport,
     /// For a raid on home, what it took (zero when nothing was reachable).
     /// `None` for every other fight, and for raids saved before schema 50.
@@ -918,6 +921,7 @@ mod tests {
     fn a_fleet_fight_has_no_raid_losses() {
         let log = CombatLog {
             at: 0,
+            place: None,
             report: CombatReport {
                 rounds: 1,
                 attacker_before: lf(1),

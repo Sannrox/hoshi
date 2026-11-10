@@ -383,7 +383,7 @@ pub fn alerts(state: &GameState, focus: Option<hoshi_core::VictoryPath>) -> Vec<
                 duration(state.last_tick_unix.saturating_sub(log.at))
             ),
             detail: format!("plunder {} · r report", taken.brief()),
-            jump: Target::Planet(home),
+            jump: Target::Planet(log.place.unwrap_or(home)),
             decision: None,
         });
         if let Some(losses) = log.raid_losses() {
@@ -1842,6 +1842,7 @@ mod tests {
             .iter()
             .position(|r| r.text.starts_with("Raid lost"))
             .unwrap();
+        assert_eq!(rows[lost].jump, Target::Planet(state.home));
         assert_eq!(rows[lost + 1].text, "Ships lost");
         assert!(
             rows[lost + 1].detail.contains("orbit first, gone for good"),
@@ -1856,6 +1857,26 @@ mod tests {
             "{:?}",
             rows[lost + 2]
         );
+    }
+
+    #[test]
+    fn a_lost_colony_raid_alert_jumps_to_the_colony() {
+        let mut state = GameState::new(1_000);
+        state.config.raid.min_ships = 60;
+        state.config.raid.strength_factor = 20.0;
+        state.trigger_raid(1_000);
+        let colony = hoshi_core::Coord {
+            galaxy: 1,
+            system: 7,
+            position: 9,
+        };
+        state.combat_logs.last_mut().unwrap().place = Some(colony);
+        let rows = alerts(&state, None);
+        let lost = rows
+            .iter()
+            .find(|r| r.text.starts_with("Raid lost"))
+            .unwrap();
+        assert_eq!(lost.jump, Target::Planet(colony));
     }
 
     #[test]

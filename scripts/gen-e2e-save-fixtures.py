@@ -1482,6 +1482,11 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             "event_target_position",
         ):
             add_column(conn, "raids", column, f"ALTER TABLE raids ADD COLUMN {column} INTEGER")
+    elif version == 66:
+        for column in ("place_galaxy", "place_system", "place_position"):
+            add_column(
+                conn, "combat_logs", column, f"ALTER TABLE combat_logs ADD COLUMN {column} INTEGER"
+            )
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"

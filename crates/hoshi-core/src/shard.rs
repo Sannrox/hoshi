@@ -2269,7 +2269,8 @@ fn fight_raid(
         Resources::ZERO
     };
     defender.resources = defender.resources.saturating_sub(plunder);
-    defender.push_combat_log(fought_at, report.clone());
+    let place = defender.home;
+    defender.push_combat_log(fought_at, place, report.clone());
     if let Some(log) = defender.combat_logs.last_mut() {
         log.raid_plunder = Some(plunder);
     }
@@ -4129,6 +4130,9 @@ mod tests {
         assert!(!text.contains("battleship"), "{text}");
         assert_eq!(shard.view("b", &mut empires).unwrap().raids, view.raids);
         assert!(shard.view("a", &mut empires).unwrap().raids.is_empty());
+        // Both sides log the fight at the defended world.
+        assert_eq!(empires["b"].combat_logs.last().unwrap().place, Some(B_HOME));
+        assert_eq!(empires["a"].combat_logs.last().unwrap().place, Some(B_HOME));
     }
 
     #[test]
