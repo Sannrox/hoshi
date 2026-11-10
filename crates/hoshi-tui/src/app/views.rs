@@ -16,6 +16,8 @@ pub(super) struct ListView {
 pub(super) struct TableView {
     pub columns: Vec<Column>,
     pub rows: Vec<Vec<Line<'static>>>,
+    /// Leading rows the cursor never reaches; see [`DataTable::lead`].
+    pub lead: usize,
     pub groups: Vec<(usize, String)>,
     pub selected: Option<usize>,
 }
@@ -238,6 +240,7 @@ impl App {
                     selected: table.selected,
                     striped: true,
                     surface: Surface::Raised,
+                    lead: table.lead,
                     groups: table.groups,
                 },
                 body,
@@ -383,6 +386,7 @@ impl App {
             table: Some(TableView {
                 columns,
                 rows,
+                lead: 0,
                 groups: Vec::new(),
                 selected: Some(self.selected),
             }),
@@ -471,6 +475,7 @@ impl App {
             table: Some(TableView {
                 columns,
                 rows,
+                lead: 0,
                 groups: vec![
                     (0, "ships".into()),
                     (ShipKind::ALL.len(), "defences".into()),
@@ -490,10 +495,23 @@ impl App {
         }
         tabs.push(Span::styled("  h/l branch", t.muted()));
         let specs = self.overview_techs();
-        let mut groups = Vec::new();
+        // The empire-wide queue leads the table on every branch tab. Its rows
+        // sit above the techs and the cursor skips them, so `selected` keeps
+        // indexing `specs`. The count is queued entries against the cap; the
+        // running job sits outside it, as in `GameState::queue_research`.
+        let mut rows = self.research_queue_rows();
+        let queued = rows.len();
+        let mut groups = vec![(
+            0,
+            format!(
+                "queue {}/{}",
+                self.state.research_queue.len(),
+                self.state.build_queue_cap()
+            ),
+        )];
         let mut last_group = None;
-        let mut rows = Vec::new();
         for (i, spec) in specs.iter().enumerate() {
+            let i = i + queued;
             // Keystones close a branch and open its victory path.
             let group = if spec.keystone {
                 "keystone ★ victory path".to_string()
@@ -531,8 +549,14 @@ impl App {
                 row.extend(self.cost_cells(cost, self.state.resources, base));
                 row.push(Line::styled(duration(spec.duration_secs(next)), base));
             }
+            let in_queue = self
+                .state
+                .research_queue
+                .iter()
+                .any(|job| job.tech == spec.id);
             row.push(match node {
                 TechNodeState::InProgress => self.chip("in progress", Intent::Warning, false),
+                _ if in_queue => self.chip("queued", Intent::Neutral, true),
                 TechNodeState::Excluded => self.chip("excluded", Intent::Neutral, true),
                 _ if complete => self.chip("complete", Intent::Success, true),
                 _ => self.status_chip(reason.as_deref()),
@@ -549,11 +573,51 @@ impl App {
             table: Some(TableView {
                 columns,
                 rows,
+                lead: queued,
                 groups,
-                selected: Some(self.selected),
+                selected: Some(self.selected + queued),
             }),
             ..ListView::default()
         }
+    }
+
+    /// One row per research job, running first: `1. Tech → lvN`, then its
+    /// countdown, or for a queued entry its estimated duration.
+    fn research_queue_rows(&self) -> Vec<Vec<Line<'static>>> {
+        let t = &self.theme;
+        let now = self.state.last_tick_unix;
+        let running = self.state.research.iter().map(|job| (job, true));
+        let queued = self.state.research_queue.iter().map(|job| (job, false));
+        running
+            .chain(queued)
+            .enumerate()
+            .map(|(i, (job, running))| {
+                let spec = self.state.config.techs.get(&job.tech);
+                let name = spec.map_or(job.tech.as_str(), |s| s.name.as_str());
+                let (secs, chip, style) = if running {
+                    (
+                        job.completes_at.saturating_sub(now),
+                        self.chip("in progress", Intent::Warning, false),
+                        t.intent(Intent::Warning),
+                    )
+                } else {
+                    (
+                        spec.map_or(0, |s| self.state.research_secs(s, job.from_level)),
+                        self.chip("queued", Intent::Neutral, true),
+                        t.muted(),
+                    )
+                };
+                let mut row = vec![Line::from(format!(
+                    "  {}. {name} → lv{}",
+                    i + 1,
+                    job.from_level + 1
+                ))];
+                row.extend(ResourceKind::QUOTED.iter().map(|_| Line::default()));
+                row.push(Line::styled(duration(secs), style));
+                row.push(chip);
+                row
+            })
+            .collect()
     }
 
     fn wonder_view(&self) -> ListView {
@@ -608,6 +672,7 @@ impl App {
                     Column::fill("status"),
                 ],
                 rows,
+                lead: 0,
                 groups: Vec::new(),
                 selected: Some(self.selected),
             }),
@@ -715,6 +780,7 @@ impl App {
                     Column::fill("effect"),
                 ],
                 rows,
+                lead: 0,
                 groups: Vec::new(),
                 selected: Some(self.selected),
             }),
@@ -802,6 +868,7 @@ impl App {
                     Column::fill("needs"),
                 ],
                 rows,
+                lead: 0,
                 groups: Vec::new(),
                 selected: Some(self.selected),
             }),
@@ -864,6 +931,7 @@ impl App {
                     Column::fill("state"),
                 ],
                 rows,
+                lead: 0,
                 groups: Vec::new(),
                 selected: Some(self.selected),
             }),
@@ -951,6 +1019,7 @@ impl App {
                     Column::fill("next step"),
                 ],
                 rows,
+                lead: 0,
                 groups: Vec::new(),
                 selected: Some(self.selected),
             }),
@@ -1065,6 +1134,7 @@ impl App {
                     Column::fill("buffer"),
                 ],
                 rows,
+                lead: 0,
                 groups: Vec::new(),
                 selected: Some(self.selected),
             }),
@@ -1240,6 +1310,7 @@ impl App {
                     Column::fill("you get"),
                 ],
                 rows,
+                lead: 0,
                 groups: Vec::new(),
                 selected: Some(self.selected),
             }),
@@ -1589,6 +1660,7 @@ impl App {
                     Column::fill("tribute"),
                 ],
                 rows,
+                lead: 0,
                 groups: Vec::new(),
                 selected: Some(self.selected),
             }),
@@ -1666,6 +1738,7 @@ impl App {
                     Column::fill("state"),
                 ],
                 rows,
+                lead: 0,
                 groups,
                 selected: Some(self.selected),
             }),
@@ -1846,6 +1919,7 @@ impl App {
                     Column::fill("notes"),
                 ],
                 rows,
+                lead: 0,
                 groups: Vec::new(),
                 selected: Some(self.map_system.saturating_sub(1) as usize),
             }),
@@ -1920,6 +1994,7 @@ impl App {
                     Column::fill("flags"),
                 ],
                 rows,
+                lead: 0,
                 groups: Vec::new(),
                 selected: Some(self.selected),
             }),
@@ -1992,6 +2067,7 @@ impl App {
                     Column::fill("event"),
                 ],
                 rows,
+                lead: 0,
                 groups: Vec::new(),
                 selected: Some(self.selected),
             }),
@@ -2093,6 +2169,7 @@ impl App {
                     Column::fill("state"),
                 ],
                 rows,
+                lead: 0,
                 groups,
                 selected: Some(self.selected),
             }),
@@ -2190,6 +2267,7 @@ impl App {
                     Column::fill("state"),
                 ],
                 rows,
+                lead: 0,
                 groups,
                 selected: Some(self.selected),
             }),
@@ -2293,6 +2371,7 @@ impl App {
                     Column::right("events", 6),
                 ],
                 rows,
+                lead: 0,
                 groups: Vec::new(),
                 selected: Some(self.selected),
             }),
@@ -2346,6 +2425,7 @@ impl App {
                     Column::right("conf", 11),
                 ],
                 rows,
+                lead: 0,
                 groups: Vec::new(),
                 selected: Some(self.selected),
             }),
@@ -2515,6 +2595,7 @@ impl App {
                     Column::right("ev", 3),
                 ],
                 rows,
+                lead: 0,
                 groups: Vec::new(),
                 selected: Some(self.selected),
             }),
@@ -2675,6 +2756,7 @@ impl App {
                     Column::fill("status"),
                 ],
                 rows,
+                lead: 0,
                 groups: Vec::new(),
                 selected: Some(self.selected),
             }),
@@ -2825,6 +2907,7 @@ impl App {
                     Column::fill("used"),
                 ],
                 rows,
+                lead: 0,
                 groups,
                 selected: Some(self.selected),
             }),
@@ -2925,6 +3008,7 @@ impl App {
                     Column::fill("state"),
                 ],
                 rows,
+                lead: 0,
                 groups: Vec::new(),
                 selected: Some(self.selected),
             }),

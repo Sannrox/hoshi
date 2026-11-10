@@ -1945,6 +1945,7 @@ impl Title {
             selected: None,
             striped: true,
             surface: Surface::Base,
+            lead: 0,
             groups: Vec::new(),
         }
     }
