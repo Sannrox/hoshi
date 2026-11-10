@@ -252,42 +252,49 @@ impl crate::GameState {
         if hours <= 0.0 {
             return 0.0;
         }
-        let fuel = goods.get("reactor_fuel").copied().unwrap_or(0.0);
-        let spent = goods.get("spent_fuel").copied().unwrap_or(0.0);
-        let power = power.min(
-            (config.pool_capacity(buildings.fission_reactor) - spent).max(0.0)
-                / (config.reactor_fuel_per_energy_hour * hours),
-        );
         if power <= 0.0 {
             return 0.0;
         }
-        if !self
-            .config
-            .chains
-            .recipes
-            .iter()
-            .any(|recipe| recipe.outputs.contains_key("reactor_fuel"))
-        {
-            return power.min(fuel / (config.reactor_fuel_per_energy_hour * hours));
-        }
-        if fuel >= power * hours * config.reactor_fuel_per_energy_hour {
+        let fuel = goods.get("reactor_fuel").copied().unwrap_or(0.0);
+        let spent = goods.get("spent_fuel").copied().unwrap_or(0.0);
+        let space = (config.pool_capacity(buildings.fission_reactor) - spent).max(0.0);
+        let per_power = hours * config.reactor_fuel_per_energy_hour;
+        if fuel >= power * per_power && space >= power * per_power {
             return power;
         }
-        let balance = |output| {
-            fuel + self.fabricated_fuel_for_power(coord, hours, output)
-                - output * hours * config.reactor_fuel_per_energy_hour
+        // Fuel must last and the pool must hold what burns, after the chains
+        // fabricate fuel and cask spent fuel over the same span. A full pool
+        // throttles output to the cask rate the way cooling does.
+        let margins = |output: f64| {
+            let (made, casked) = self.chain_fuel_flows_for_power(coord, hours, output);
+            let burned = output * per_power;
+            (fuel + made - burned, space + casked - burned)
         };
-        let at_zero = balance(0.0);
-        if at_zero <= 0.0 {
+        let balance = |output: f64| {
+            let (fuel_margin, pool_margin) = margins(output);
+            fuel_margin.min(pool_margin)
+        };
+        let (fuel_at_zero, pool_at_zero) = margins(0.0);
+        if fuel_at_zero <= 0.0 {
             return 0.0;
         }
-        let at_max = balance(power);
+        let (fuel_at_max, pool_at_max) = margins(power);
+        let at_max = fuel_at_max.min(pool_at_max);
         if at_max >= 0.0 {
             return power;
         }
-        let candidate = power * at_zero / (at_zero - at_max);
-        if balance(candidate).abs() < 1e-12 {
-            return candidate;
+        // Casking draws power the reactor makes, so a full pool with no other
+        // supply casks nothing at zero output. Only no casking at full output
+        // proves the pool holds the reactor at zero.
+        if pool_at_max + power * per_power <= 0.0 {
+            return 0.0;
+        }
+        let at_zero = fuel_at_zero.min(pool_at_zero);
+        if at_zero > 1e-12 {
+            let candidate = power * at_zero / (at_zero - at_max);
+            if balance(candidate).abs() < 1e-12 {
+                return candidate;
+            }
         }
         let mut low = 0.0;
         let mut high = power;
@@ -374,39 +381,46 @@ impl crate::GameState {
         integrate_unit_interval(&sample)
     }
 
-    /// Preview the existing production chain at a proposed electrical output.
-    /// This closes the fuel/power loop without scheduling one event per fuel drip.
-    fn fabricated_fuel_for_power(&self, coord: crate::Coord, hours: f64, power: f64) -> f64 {
-        if !self
-            .config
-            .chains
-            .recipes
-            .iter()
-            .any(|recipe| recipe.outputs.contains_key("reactor_fuel"))
-        {
-            return 0.0;
+    /// Preview the existing production chain at a proposed electrical output:
+    /// `(reactor fuel fabricated, spent fuel casked)` over `hours`. The burnup
+    /// at `power` enters the pool before the chains run, as in the tick, so
+    /// casking can clear it in the same span. This closes the fuel/power and
+    /// pool/power loops without scheduling one event per drip.
+    fn chain_fuel_flows_for_power(
+        &self,
+        coord: crate::Coord,
+        hours: f64,
+        power: f64,
+    ) -> (f64, f64) {
+        if !self.config.chains.recipes.iter().any(|recipe| {
+            recipe.outputs.contains_key("reactor_fuel") || recipe.inputs.contains_key("spent_fuel")
+        }) {
+            return (0.0, 0.0);
         }
         let Some(buildings) = self.operational_buildings_at(coord) else {
-            return 0.0;
+            return (0.0, 0.0);
         };
         let Some(planet) = self.planet_kind(coord) else {
-            return 0.0;
+            return (0.0, 0.0);
         };
         let Some(mut resources) = self.resources_at(coord).copied() else {
-            return 0.0;
+            return (0.0, 0.0);
         };
         let mut goods = if coord == self.home {
             self.goods.clone()
         } else {
             let Some(colony) = self.colonies.iter().find(|c| c.coord == coord) else {
-                return 0.0;
+                return (0.0, 0.0);
             };
             colony.goods.clone()
         };
         let before = goods.get("reactor_fuel").copied().unwrap_or(0.0);
+        let pool = goods.entry("spent_fuel".into()).or_default();
+        *pool += power.max(0.0) * hours * self.config.fission_reactor.reactor_fuel_per_energy_hour;
+        let pooled = *pool;
         let factor = self.reactor_factor_at_power(coord, hours, power);
         let Some(waste) = self.base_waste_at(coord) else {
-            return 0.0;
+            return (0.0, 0.0);
         };
         let now = self.last_tick_unix;
         let to = now.saturating_add((hours * 3600.0).round() as u64);
@@ -434,7 +448,30 @@ impl crate::GameState {
             &mut goods,
             |kind| self.storage_cap_at(coord, kind),
         );
-        goods.get("reactor_fuel").copied().unwrap_or(0.0) - before
+        (
+            goods.get("reactor_fuel").copied().unwrap_or(0.0) - before,
+            pooled - goods.get("spent_fuel").copied().unwrap_or(0.0),
+        )
+    }
+
+    /// Whether a full spent-fuel pool holds output down: casking over the next
+    /// hour frees no more than the reactor burns at its current output. A full
+    /// pool that casking outpaces limits nothing.
+    pub(crate) fn spent_pool_limits_output(&self, coord: crate::Coord) -> bool {
+        let Some(level) = self.buildings_at(coord).map(|b| b.fission_reactor) else {
+            return false;
+        };
+        let spent = self
+            .goods_at(coord)
+            .get("spent_fuel")
+            .copied()
+            .unwrap_or(0.0);
+        if level == 0 || spent + 1e-9 < self.config.fission_reactor.pool_capacity(level) {
+            return false;
+        }
+        let output = self.reactor_output_at(coord);
+        let (_, casked) = self.chain_fuel_flows_for_power(coord, 1.0, output);
+        casked <= output * self.config.fission_reactor.reactor_fuel_per_energy_hour + 1e-9
     }
 
     pub(crate) fn next_reactor_event_secs(&self, coord: crate::Coord) -> Option<f64> {
@@ -449,13 +486,13 @@ impl crate::GameState {
         };
         let fuel = goods.get("reactor_fuel").copied().unwrap_or(0.0);
         let spent = goods.get("spent_fuel").copied().unwrap_or(0.0);
-        let space = self
+        let space = (self
             .config
             .fission_reactor
             .pool_capacity(buildings.fission_reactor)
-            - spent;
-        if space <= 1e-12 || self.building_health(coord, crate::BuildingKind::FissionReactor) <= 0.0
-        {
+            - spent)
+            .max(0.0);
+        if self.building_health(coord, crate::BuildingKind::FissionReactor) <= 0.0 {
             return None;
         }
         let waste = self.base_waste_at(coord)?;
@@ -468,13 +505,17 @@ impl crate::GameState {
             if burn <= 1e-12 {
                 return None;
             }
-            let made = self.fabricated_fuel_for_power(coord, 1.0 / 3600.0, power) * 3600.0;
-            let pool_wait = space / burn * 3600.0;
-            return Some(if fuel > 1e-9 && burn > made + 1e-9 {
-                pool_wait.min(fuel / (burn - made) * 3600.0)
-            } else {
-                pool_wait
-            });
+            let (made, casked) = self.chain_fuel_flows_for_power(coord, 1.0 / 3600.0, power);
+            let (made, casked) = (made * 3600.0, casked * 3600.0);
+            // A full pool already throttles to the cask rate: nothing to split on.
+            let pool_wait =
+                (space > 1e-12 && burn > casked + 1e-9).then(|| space / (burn - casked) * 3600.0);
+            let fuel_wait =
+                (fuel > 1e-9 && burn > made + 1e-9).then(|| fuel / (burn - made) * 3600.0);
+            return match (pool_wait, fuel_wait) {
+                (Some(pool), Some(fuel)) => Some(pool.min(fuel)),
+                (pool, fuel) => pool.or(fuel),
+            };
         }
         if waste.heat_sink <= waste.heat_load {
             return None;
@@ -489,8 +530,8 @@ impl crate::GameState {
                 hours,
             );
             let burned = power * hours * cfg.reactor_fuel_per_energy_hour;
-            let made = self.fabricated_fuel_for_power(coord, hours, power);
-            (burned, burned - made)
+            let (made, casked) = self.chain_fuel_flows_for_power(coord, hours, power);
+            (burned - casked, burned - made)
         };
         let mut first = None;
         for (capacity, net) in [(space, false), (fuel, true)] {
@@ -498,11 +539,11 @@ impl crate::GameState {
                 continue;
             }
             let exceeds = |seconds| {
-                let (burned, net_burned) = usage(seconds);
+                let (pooled, net_burned) = usage(seconds);
                 if net {
                     net_burned >= capacity
                 } else {
-                    burned >= capacity
+                    pooled >= capacity
                 }
             };
             let mut high = 3600.0;
@@ -607,6 +648,229 @@ mod tests {
         state.maintenance.next_at = u64::MAX;
         state.goods.insert("reactor_fuel".into(), 10.0);
         state
+    }
+
+    /// Bundled chains with plenty of cooling and solar, so the pool and the
+    /// cask recipe are the only limits. `keep` names the recipes left on.
+    fn casking_reactor(level: u32, keep: &[&str]) -> crate::GameState {
+        let mut config = crate::BalanceConfig::default();
+        config.raid.enabled = false;
+        config.market.enabled = false;
+        config
+            .chains
+            .recipes
+            .retain(|recipe| keep.contains(&recipe.id.as_str()));
+        let mut state = crate::GameState::with_seed(0, config, 9);
+        state.deterministic = true;
+        state.maintenance.next_at = u64::MAX;
+        state.buildings = crate::Buildings {
+            fission_reactor: level,
+            radiator: 40,
+            solar_plant: 40,
+            metal_mine: 1,
+            ..Default::default()
+        };
+        state.goods.clear();
+        state.goods.insert("reactor_fuel".into(), 1e3);
+        state
+    }
+
+    fn pool_full(state: &mut crate::GameState) {
+        let level = state.buildings.fission_reactor;
+        let capacity = state.config.fission_reactor.pool_capacity(level);
+        state.goods.insert("spent_fuel".into(), capacity);
+    }
+
+    #[test]
+    fn reactors_hold_rated_output_for_a_week_while_casks_keep_up() {
+        for level in 1..=10 {
+            let mut config = crate::BalanceConfig::default();
+            config.raid.enabled = false;
+            config.market.enabled = false;
+            let mut state = crate::GameState::with_seed(0, config, 9);
+            state.deterministic = true;
+            state.maintenance.next_at = u64::MAX;
+            state.buildings.fission_reactor = level;
+            state.buildings.radiator = 40;
+            state.buildings.solar_plant = 40;
+            state.buildings.metal_mine = 10;
+            state.goods.insert("reactor_fuel".into(), 1e6);
+            state.goods.insert("steel".into(), 1e6);
+            let rated = state.config.fission_reactor.rated_output(level);
+            assert!((state.reactor_output_at(state.home) - rated).abs() < 1e-6);
+            state.catch_up(7 * 86_400);
+            let capacity = state.config.fission_reactor.pool_capacity(level);
+            assert!(
+                (state.reactor_output_at(state.home) - rated).abs() < 1e-6,
+                "level {level}"
+            );
+            assert!(
+                state.goods["spent_fuel"] <= capacity + 1e-9,
+                "level {level}"
+            );
+            assert!(state.reactor_shutdowns.is_empty(), "level {level}");
+        }
+    }
+
+    #[test]
+    fn a_full_pool_without_steel_stops_output_without_a_shutdown() {
+        let mut state = casking_reactor(2, &["cask_spent_fuel"]);
+        pool_full(&mut state);
+        assert_eq!(state.reactor_output_at(state.home), 0.0);
+        assert_eq!(
+            state.production_report_at(state.home).limited_by,
+            crate::LimitingFactor::FullBuffer {
+                good: "spent_fuel".into()
+            }
+        );
+        for at in (60..=600).step_by(60) {
+            state.catch_up(at);
+        }
+        assert!(state.reactor_shutdowns.is_empty());
+        assert_eq!(state.goods["reactor_fuel"], 1e3);
+    }
+
+    #[test]
+    fn a_full_pool_runs_at_the_cask_rate_and_catch_up_matches_live() {
+        let mut bulk = casking_reactor(2, &["cask_spent_fuel"]);
+        pool_full(&mut bulk);
+        bulk.goods.insert("steel".into(), 1e3);
+        let cask = bulk
+            .production_report_at(bulk.home)
+            .steps
+            .into_iter()
+            .find(|flow| flow.id == "cask_spent_fuel")
+            .unwrap();
+        let fuel_per_energy = bulk.config.fission_reactor.reactor_fuel_per_energy_hour;
+        let output = bulk.reactor_output_at(bulk.home);
+        assert!(output > 0.0 && output < bulk.config.fission_reactor.rated_output(2));
+        assert!((output - cask.inputs_per_hour["spent_fuel"] / fuel_per_energy).abs() < 1e-6);
+        assert_eq!(
+            bulk.production_report_at(bulk.home).limited_by,
+            crate::LimitingFactor::FullBuffer {
+                good: "spent_fuel".into()
+            }
+        );
+        // Steel for about half an hour, so the cask stops mid-span.
+        bulk.goods
+            .insert("steel".into(), cask.inputs_per_hour["steel"] / 2.0);
+        let mut live = bulk.clone();
+        bulk.catch_up(3600);
+        for at in (60..=3600).step_by(60) {
+            live.catch_up(at);
+        }
+        assert!(bulk.goods["steel"] < 1e-9);
+        assert_eq!(bulk.reactor_output_at(bulk.home), 0.0);
+        for good in ["reactor_fuel", "spent_fuel", "steel"] {
+            let (left, right) = (bulk.goods[good], live.goods[good]);
+            assert!(
+                (left - right).abs() < 1e-8,
+                "{good}: bulk {left}, live {right}"
+            );
+        }
+        assert!(bulk.reactor_shutdowns.is_empty());
+        assert!(live.reactor_shutdowns.is_empty());
+    }
+
+    #[test]
+    fn a_full_pool_with_no_other_power_casks_on_its_own_output() {
+        let mut state = casking_reactor(2, &["cask_spent_fuel"]);
+        // Casking, powered only by the reactor, outpaces burnup once it runs.
+        state.buildings.solar_plant = 0;
+        state.buildings.radiator = 2;
+        state.buildings.metal_mine = 12;
+        pool_full(&mut state);
+        state.goods.insert("steel".into(), 1e3);
+        let output = state.reactor_output_at(state.home);
+        assert!(output > 0.0, "stuck at zero");
+        for at in (60..=3600).step_by(60) {
+            state.catch_up(at);
+        }
+        assert!((state.reactor_output_at(state.home) - output).abs() < 1e-6);
+        assert!(state.goods["steel"] < 1e3);
+        assert!(state.reactor_shutdowns.is_empty());
+    }
+
+    #[test]
+    fn a_running_reactor_with_an_empty_pool_reports_casking_as_clear() {
+        let mut state = casking_reactor(1, &["cask_spent_fuel"]);
+        state.buildings.metal_mine = 10;
+        state.goods.insert("steel".into(), 1e3);
+        let report = state.production_report_at(state.home);
+        let cask = report
+            .steps
+            .iter()
+            .find(|flow| flow.id == "cask_spent_fuel")
+            .unwrap();
+        let burn = state.reactor_output_at(state.home)
+            * state.config.fission_reactor.reactor_fuel_per_energy_hour;
+        assert!((cask.inputs_per_hour["spent_fuel"] - burn).abs() < 1e-9);
+        assert_eq!(cask.limited_by, crate::LimitingFactor::None);
+        assert_eq!(report.limited_by, crate::LimitingFactor::None);
+    }
+
+    #[test]
+    fn a_low_pool_without_steel_reports_no_casking_and_names_steel() {
+        let mut state = casking_reactor(1, &["cask_spent_fuel"]);
+        state.buildings.metal_mine = 10;
+        let cask = state
+            .production_report_at(state.home)
+            .steps
+            .into_iter()
+            .find(|flow| flow.id == "cask_spent_fuel")
+            .unwrap();
+        assert_eq!(cask.inputs_per_hour["steel"], 0.0);
+        assert_eq!(cask.inputs_per_hour["spent_fuel"], 0.0);
+        assert_eq!(
+            cask.limited_by,
+            crate::LimitingFactor::Input {
+                good: "steel".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_full_pool_that_casking_outpaces_is_not_the_limit() {
+        let mut state = casking_reactor(1, &["cask_spent_fuel"]);
+        state.buildings.metal_mine = 10;
+        pool_full(&mut state);
+        state.goods.insert("steel".into(), 1e3);
+        let rated = state.config.fission_reactor.rated_output(1);
+        assert!((state.reactor_output_at(state.home) - rated).abs() < 1e-6);
+        let report = state.production_report_at(state.home);
+        let burn = report.steps.iter().find(|f| f.id == "burn_fuel").unwrap();
+        assert_eq!(burn.limited_by, crate::LimitingFactor::None);
+    }
+
+    #[test]
+    fn casking_an_empty_pool_takes_no_steel() {
+        let mut state = casking_reactor(2, &["cask_spent_fuel"]);
+        state.goods.insert("reactor_fuel".into(), 0.0);
+        state.goods.insert("steel".into(), 10.0);
+        state.catch_up(3600);
+        assert_eq!(state.goods["steel"], 10.0);
+    }
+
+    #[test]
+    fn casking_frees_a_reactor_level_for_dismantling() {
+        let mut state = casking_reactor(2, &["cask_spent_fuel"]);
+        state.goods.insert("reactor_fuel".into(), 0.0);
+        pool_full(&mut state);
+        state.goods.insert("steel".into(), 1e3);
+        let blocked = |state: &crate::GameState| {
+            !state
+                .dismantle_blockers(state.home, crate::BuildingKind::FissionReactor, 2, 0)
+                .is_empty()
+        };
+        assert!(blocked(&state));
+        let capacity = state.config.fission_reactor.pool_capacity(1);
+        let mut at = 0;
+        while state.goods["spent_fuel"] > capacity {
+            at += 3600;
+            assert!(at < 30 * 86_400, "pool never drained");
+            state.catch_up(at);
+        }
+        assert!(!blocked(&state));
     }
 
     #[test]
@@ -732,6 +996,11 @@ mod tests {
     fn fuel_fabrication_catches_up_from_an_empty_core() {
         let mut bulk = isolated_reactor();
         bulk.config.chains = crate::BalanceConfig::default().chains;
+        // Fabrication only: casking would hide the burnup this test weighs.
+        bulk.config
+            .chains
+            .recipes
+            .retain(|recipe| recipe.id != "cask_spent_fuel");
         bulk.buildings.metal_mine = 1;
         bulk.buildings.solar_plant = 50;
         bulk.buildings.fission_reactor = 2;

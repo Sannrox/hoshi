@@ -228,7 +228,14 @@ share of rated output: the recipe's 8 against the level-1 output of 60, so
 burns at rated output; the recipe's ore and fuel rates keep their own scaling.
 Delivered electricity consumes 0.01 fuel per energy-hour and leaves the same
 mass of spent fuel. Each reactor level provides 30 units of on-site
-pool capacity. A full pool stops generation. Spent fuel is excluded from raid
+pool capacity. The `cask_spent_fuel` recipe moves spent fuel into dry casks at
+0.01 per recipe unit for 0.05 steel, at the same scale as fabrication. Over
+time a reactor can only burn the fuel fabrication makes, 0.005 per unit, so
+casking at twice that rate keeps up with steady-state burnup and clears a
+backlog left by stockpiled fuel. An empty pool takes no steel. A full pool
+throttles output to the cask rate, the way cooling does, and the production
+report names it as the limit; without steel the reactor idles until steel
+arrives, with no shutdown or decay heat. Spent fuel is excluded from raid
 loot, as are all intermediate goods under the current resource-only raid rules.
 
 With enough cooling and fuel, net electricity (rated output minus fabrication

@@ -7148,6 +7148,20 @@ mod tests {
     }
 
     #[test]
+    fn production_screen_names_a_full_spent_fuel_pool() {
+        let mut state = GameState::new(1_000);
+        state.buildings.fission_reactor = 1;
+        // No metal mine, so no steel is smelted and casking cannot run.
+        state.buildings.metal_mine = 0;
+        state.goods.insert("reactor_fuel".into(), 10.0);
+        state.goods.insert("spent_fuel".into(), 30.0);
+        let mut app = App::new(state);
+        app.open(Screen::Production);
+        let text = render_text(&app, 80, 24);
+        assert!(text.contains("steel for casks"), "{text}");
+    }
+
+    #[test]
     fn production_screen_shows_limit_energy_heat_and_fits_80x24() {
         let mut app = App::new(GameState::new(1_000));
         app.open(Screen::Production);

@@ -669,7 +669,7 @@ purpose = "Burns in the fission reactor."
 [[chains.goods]]
 id = "spent_fuel"
 kind = "refined"
-purpose = "Used reactor fuel held in the on-site pool."
+purpose = "Used reactor fuel held in the on-site pool until it is casked."
 
 [chains.deposits.rocky]
 uranium_ore = 0.30
@@ -736,6 +736,18 @@ inputs = { iron_ore = 1.0 }
 outputs = { steel = 1.0 }
 heat = 0.5
 pollution = 0.4
+
+# Dry casks take spent fuel off the reactor's pool. Same scale as
+# fabricate_fuel, so casking (0.01) outpaces the burnup of fabricated fuel
+# (0.005). Steel at 5:1 by mass, concrete left out.
+[[chains.recipes]]
+id = "cask_spent_fuel"
+building = "fission_reactor"
+inputs = { spent_fuel = 0.01, steel = 0.05 }
+outputs = {}
+energy = 0.0
+heat = 0.0
+pollution = 0.0
 
 [[chains.recipes]]
 id = "forge_frames"

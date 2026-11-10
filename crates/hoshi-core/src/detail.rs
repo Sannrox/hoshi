@@ -213,6 +213,25 @@ impl GameState {
                 });
             }
         }
+        if kind == BuildingKind::FissionReactor {
+            let spent = self
+                .goods_at(planet)
+                .get("spent_fuel")
+                .copied()
+                .unwrap_or(0.0);
+            let pool = &self.config.fission_reactor;
+            deltas.push(DeltaLine {
+                label: "spent fuel pool".into(),
+                from: format!(
+                    "{spent:.0}/{:.0}",
+                    pool.pool_capacity(projected_buildings.fission_reactor)
+                ),
+                to: format!(
+                    "{spent:.0}/{:.0}",
+                    pool.pool_capacity(next_buildings.fission_reactor)
+                ),
+            });
+        }
         let mut requirements: Vec<RequirementLine> = spec
             .prerequisites
             .iter()
@@ -1493,6 +1512,28 @@ mod tests {
         let draw_gain = detail.energy_draw.expect("energy draw");
         assert!((draw_gain - 8.0 * 0.3).abs() < 1e-9, "draw {draw_gain}");
         assert!(output_gain - draw_gain > 0.0, "output {output_gain}");
+    }
+
+    #[test]
+    fn reactor_detail_shows_pool_fill_against_both_capacities() {
+        let mut state = GameState::with_config(0, quiet());
+        state.buildings.fission_reactor = 2;
+        state.goods.insert("spent_fuel".into(), 42.0);
+        let detail = state
+            .describe(
+                DetailSubject::Building {
+                    kind: BuildingKind::FissionReactor,
+                    planet: state.home,
+                },
+                None,
+            )
+            .unwrap();
+        let pool = detail
+            .deltas
+            .iter()
+            .find(|row| row.label == "spent fuel pool")
+            .expect("pool line");
+        assert_eq!((pool.from.as_str(), pool.to.as_str()), ("42/60", "42/90"));
     }
 
     #[test]
