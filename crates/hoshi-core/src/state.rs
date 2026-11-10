@@ -1965,12 +1965,7 @@ impl GameState {
                 .ok_or_else(|| ResearchError::UnknownTech {
                     id: tech.to_string(),
                 })?;
-            (
-                spec.cost(from_level),
-                ((spec.duration_secs(from_level) as f64) / self.research_speed())
-                    .ceil()
-                    .max(1.0) as u64,
-            )
+            (spec.cost(from_level), self.research_secs(spec, from_level))
         };
         if !self.resources.can_afford(cost) {
             return Err(ResearchError::InsufficientResources {
@@ -2113,12 +2108,7 @@ impl GameState {
             .config
             .techs
             .get(&job.tech)
-            .map(|spec| {
-                ((spec.duration_secs(level) as f64) / self.research_speed())
-                    .ceil()
-                    .max(1.0) as u64
-            })
-            .unwrap_or(1);
+            .map_or(1, |spec| self.research_secs(spec, level));
         job.from_level = level;
         job.started_at = at;
         job.completes_at = at.saturating_add(duration);
@@ -8113,6 +8103,15 @@ impl GameState {
             Some(until) if self.last_tick_unix < until => 1.0 + self.activity.prod_boost_factor,
             _ => 1.0,
         }
+    }
+
+    /// Seconds researching `spec` from `level` takes at the current research
+    /// speed: what a job started now runs for. The Research screen uses it
+    /// to estimate queued entries.
+    pub fn research_secs(&self, spec: &crate::TechSpec, level: u32) -> u64 {
+        ((spec.duration_secs(level) as f64) / self.research_speed())
+            .ceil()
+            .max(1.0) as u64
     }
 
     fn research_speed(&self) -> f64 {

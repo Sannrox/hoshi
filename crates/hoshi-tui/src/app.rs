@@ -89,6 +89,10 @@ const MAX_TRADE_AMOUNT: f64 = 1_000_000.0;
 /// Largest shipyard batch one Enter queues as a single job.
 const MAX_SHIP_BATCH: u32 = 999;
 
+/// What the Research screen names instead of a planet: research is one
+/// empire-wide queue, paid from the home stockpile.
+const EMPIRE: &str = "Empire";
+
 /// `+`/`-` step on the market amount: one digit below its size, at least 10,
 /// so 10 → 100 takes nine presses and 100 → 1000 nine more.
 fn trade_step(amount: f64) -> f64 {
@@ -1618,6 +1622,16 @@ impl App {
     /// fit beside the title and close hint in `width` columns, only the
     /// label stays, its name cut first and its coord kept.
     fn window_subtitle(&self, hub: Hub, width: u16) -> String {
+        // Research is empire-wide, so its screen names no planet.
+        if self.screen == Screen::Overview {
+            let full = format!("{EMPIRE} · {}", self.research_summary());
+            let room = usize::from(width).saturating_sub(hub.title().chars().count() + 6 + 7);
+            return if hoshi_core::name_columns(&full) <= room {
+                full
+            } else {
+                EMPIRE.into()
+            };
+        }
         let coord = self.selected_coord();
         let place = self.state.world_label(coord);
         let full = self.window_subtitle_full(hub, coord, &place);
@@ -1637,33 +1651,32 @@ impl App {
                     .planet_kind(coord)
                     .map(|k| k.as_key())
                     .unwrap_or("unknown");
-                let work = if self.screen == Screen::Overview {
-                    let queued = match self.state.research_queue.len() {
-                        0 => String::new(),
-                        n => format!(" +{n} queued"),
-                    };
-                    match &self.state.research {
-                        Some(job) => format!(
-                            "research {} → lv{} {}{queued}",
-                            job.tech,
-                            job.from_level + 1,
-                            ui::spans::duration(
-                                job.completes_at.saturating_sub(self.state.last_tick_unix)
-                            )
-                        ),
-                        None => "research idle".into(),
-                    }
-                } else {
-                    let queue = self.state.queue_at(coord).map_or(0, <[_]>::len);
-                    format!("queue {queue}/{}", self.state.build_queue_cap())
-                };
-                format!("{place} · {kind} · {work}")
+                let queue = self.state.queue_at(coord).map_or(0, <[_]>::len);
+                let cap = self.state.build_queue_cap();
+                format!("{place} · {kind} · queue {queue}/{cap}")
             }
             Hub::Fleet => format!(
                 "{place} · ship queue {}",
                 self.state.ship_queue_at(coord).map_or(0, <[_]>::len)
             ),
             _ => place.to_string(),
+        }
+    }
+
+    /// `research energy → lv1 4m 00s +2 queued`, or `research idle`.
+    fn research_summary(&self) -> String {
+        let queued = match self.state.research_queue.len() {
+            0 => String::new(),
+            n => format!(" +{n} queued"),
+        };
+        match &self.state.research {
+            Some(job) => format!(
+                "research {} → lv{} {}{queued}",
+                job.tech,
+                job.from_level + 1,
+                ui::spans::duration(job.completes_at.saturating_sub(self.state.last_tick_unix))
+            ),
+            None => "research idle".into(),
         }
     }
 
@@ -1811,6 +1824,10 @@ impl App {
         }
         // One gap to the crumbs and the navbar's trailing space.
         let used: usize = spans.iter().map(Span::width).sum::<usize>() + 2;
+        if self.screen == Screen::Overview {
+            spans.push(Span::styled(EMPIRE, t.text()));
+            return spans;
+        }
         let coord = self.selected_coord();
         let label = hoshi_core::fit_label(
             self.state.world_name(coord),
@@ -1823,11 +1840,16 @@ impl App {
 
     /// Header cells for the selected planet: stock, cap and rate per
     /// resource, then its power balance and heat. Idle water ice and
-    /// helium-3 yield those two cells to pollution and parked fleet.
+    /// helium-3 yield those two cells to pollution and parked fleet. The
+    /// Research screen shows Home, whose stockpile pays for research.
     fn metrics(&self, width: u16) -> Vec<Metric> {
         let t = &self.theme;
         let s = &self.state;
-        let coord = self.selected_coord();
+        let coord = if self.screen == Screen::Overview {
+            s.home
+        } else {
+            self.selected_coord()
+        };
         let stockpile = s.resources_at(coord).copied().unwrap_or(s.resources);
         let wide = width / 8 >= 14;
         let rate_span = |rate: f64| {
@@ -3731,7 +3753,7 @@ impl App {
             "{}{activity}{advisor}",
             match self.screen {
                 Screen::Overview => format!(
-                    "{planets}  {}/{} branch  {select}  {confirm} research  {} replay  {cancel}  {} copy seed  {} detail",
+                    "{}/{} branch  {select}  {confirm} research  {} replay  {cancel}  {} copy seed  {} detail",
                     k.primary(Binding::CursorLeft),
                     k.primary(Binding::CursorRight),
                     k.primary(Binding::Replay),
@@ -6017,6 +6039,71 @@ mod tests {
         assert_eq!(app.status, "Deep-core mining is already complete");
     }
 
+    /// One running tech and two queued, enough stock to pay for all three.
+    fn research_queue_app() -> App {
+        let mut state = GameState::new(1_000);
+        state.buildings.research_lab = 1;
+        state.resources = Resources::from_parts(100_000.0, 100_000.0, 100_000.0);
+        for tech in ["energy", "energy", "laser"] {
+            state.queue_research(tech, 1_000).unwrap();
+        }
+        App::new(state)
+    }
+
+    #[test]
+    fn research_screen_lists_its_queue_and_names_no_planet() {
+        let mut app = research_queue_app();
+        let text = render_text(&app, 160, 48);
+        let at = |needle: &str| {
+            text.find(needle)
+                .unwrap_or_else(|| panic!("{needle}: {text}"))
+        };
+        let cap = app.state.build_queue_cap();
+        assert!(at(&format!("QUEUE 2/{cap}")) < at("1. Energy Technology → lv1"));
+        assert!(at("1. Energy Technology → lv1") < at("2. Energy Technology → lv2"));
+        assert!(at("2. Energy Technology → lv2") < at("3. Laser Technology → lv1"));
+        assert!(at("3. Laser Technology → lv1") < at("TIER 1"));
+        let row = |needle: &str| {
+            text.lines()
+                .find(|l| l.contains(needle))
+                .unwrap()
+                .to_owned()
+        };
+        assert!(row("1. Energy").contains("IN PROGRESS"), "{text}");
+        assert!(row("3. Laser").contains("QUEUED"), "{text}");
+        // The cursor skips the queue and starts on the first tech.
+        let first = app.overview_techs()[0].name.clone();
+        assert!(text.contains(&format!("▌  {first}")), "{text}");
+        // Research is empire-wide: no planet in the top bar or subtitle.
+        assert!(text.contains("Empire · research energy → lv1"), "{text}");
+        assert!(!text.contains("1:1:1"), "{text}");
+        assert!(!row("BRIDGE ›").contains("planet"), "{text}");
+        // A queued tech is marked on its own branch tab.
+        app.tree_branch = TechBranch::Military;
+        let military = render_text(&app, 160, 48);
+        let laser = military
+            .lines()
+            .find(|l| l.contains("Laser Technology") && !l.contains("3. "))
+            .unwrap();
+        assert!(laser.contains("QUEUED"), "{military}");
+    }
+
+    #[test]
+    fn research_screen_shows_an_empty_queue_and_its_header_on_a_phone() {
+        let mut state = GameState::new(1_000);
+        state.buildings.research_lab = 1;
+        let app = App::new(state);
+        let text = render_text(&app, 120, 40);
+        let cap = app.state.build_queue_cap();
+        let header = text.find(&format!("QUEUE 0/{cap}")).expect(&text);
+        assert!(header < text.find("TIER 1").unwrap(), "{text}");
+        assert!(text.contains("Empire · research idle"), "{text}");
+
+        let phone = render_text(&research_queue_app(), 48, 32);
+        assert!(phone.contains(&format!("QUEUE 2/{cap}")), "{phone}");
+        assert!(phone.contains("▦ Colony   Empire"), "{phone}");
+    }
+
     #[test]
     fn tree_view_queues_research_from_the_keyboard() {
         let mut state = GameState::new(1_000);
@@ -6805,6 +6892,7 @@ mod tests {
             goods: std::collections::BTreeMap::new(),
         });
         let mut app = App::new(state);
+        app.open(Screen::Planet);
         let text = render_text(&app, 100, 32);
         assert!(text.contains("1:1:1"), "{text}");
         assert!(text.contains("10k"), "{text}");
@@ -6813,7 +6901,6 @@ mod tests {
         assert_eq!(app.selected_coord(), dest);
         let text = render_text(&app, 100, 32);
         assert!(text.contains("Colony   1:1:2 · "), "{text}");
-        app.open(Screen::Planet);
         assert_eq!(app.screen, Screen::Planet);
         app.handle_key(KeyCode::Enter, 1_000);
         assert!(app.state.build_queue.is_empty());

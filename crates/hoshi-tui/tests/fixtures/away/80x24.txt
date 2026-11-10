@@ -1,4 +1,4 @@
- ◆ HOSHI  │  Colony / Research                      RAID 1:00:00   Home (1:1:1)
+ ◆ HOSHI  │  Colony / Research                            RAID 1:00:00   Empire
   Fe       │ Si       │ REE      │ Poll     │ Fleet    │ D        │ Energy
   500      │ 500      │ 0        │ 9        │ 0        │ 0        │ +2
    ▦ While you were away   10h 00m                                          x
@@ -11,14 +11,14 @@
     builds 1  research 0  fleets returned 0  expeditions 0  raids 1
 
     EVENTS
- ▌  story 5
-    story 4
+    story 5
+ ▌  story 4
     story 3
     story 2
     1-4 of 6, newest first (space for more)
 
     enter  dismiss   r  replay   w  reopen on overview
+    Orbital harvesting          200   400     —   3m 00s   NEED RESEARCH LAB 1
   TIER 3
-    Adaptive routes             800  1.2k   400   6m 40s   NEED RESEARCH LAB 3
                                                                     ⏎ research
-      [/]  planet   h/l  branch   j/k  select          0000-0000-0000-00 gen 1
+      h/l  branch   j/k  select   enter  research      0000-0000-0000-00 gen 1

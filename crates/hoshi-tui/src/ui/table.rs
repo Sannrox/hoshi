@@ -50,6 +50,10 @@ pub struct DataTable<'a> {
     pub selected: Option<usize>,
     pub striped: bool,
     pub surface: Surface,
+    /// Leading rows the cursor never reaches, such as the research queue
+    /// above the techs. They stay under the header while the rest scrolls,
+    /// cut from the bottom only when the selection would get no line.
+    pub lead: usize,
     /// Label rows drawn before the data row at each index, such as `SHIPS`.
     pub groups: Vec<(usize, String)>,
 }
@@ -175,12 +179,20 @@ impl Widget for DataTable<'_> {
             Group(&'a str),
             Row(usize),
         }
+        // Rows before `lead`, with their labels, stay under the header; the
+        // rest scrolls beneath them.
+        let mut frozen = Vec::new();
         let mut entries = Vec::with_capacity(self.rows.len() + self.groups.len());
         for i in 0..self.rows.len() {
+            let part = if i < self.lead {
+                &mut frozen
+            } else {
+                &mut entries
+            };
             for (_, label) in self.groups.iter().filter(|(at, _)| *at == i) {
-                entries.push(Entry::Group(label));
+                part.push(Entry::Group(label));
             }
-            entries.push(Entry::Row(i));
+            part.push(Entry::Row(i));
         }
         let selected_line = self.selected.and_then(|sel| {
             entries
@@ -188,9 +200,13 @@ impl Widget for DataTable<'_> {
                 .position(|e| matches!(e, Entry::Row(i) if *i == sel))
         });
         let visible = (area.height - 1) as usize;
-        let start = Self::scroll(selected_line, entries.len(), visible);
-        for (n, entry) in entries.iter().enumerate().skip(start).take(visible) {
-            let y = area.y + 1 + (n - start) as u16;
+        // Keep one line for the selection when the frozen rows run long.
+        frozen.truncate(visible.saturating_sub(1));
+        let body = visible - frozen.len();
+        let start = Self::scroll(selected_line, entries.len(), body);
+        let shown = frozen.iter().chain(entries.iter().skip(start).take(body));
+        for (n, entry) in shown.enumerate() {
+            let y = area.y + 1 + n as u16;
             let band = Rect::new(area.x, y, area.width, 1);
             let i = match entry {
                 Entry::Group(label) => {
@@ -277,6 +293,7 @@ mod tests {
             selected,
             striped: true,
             surface: Surface::Raised,
+            lead: 0,
             groups: Vec::new(),
         }
     }
@@ -352,6 +369,28 @@ mod tests {
         assert_eq!(row_text(&buf, 4).trim_end(), " DEFENCES");
         assert!(row_text(&buf, 5).contains("row2"));
         assert_eq!(buf[(0, 5)].symbol(), "▌");
+    }
+
+    #[test]
+    fn lead_rows_stay_under_the_header_while_the_rest_scrolls() {
+        let theme = Theme::default();
+        // A header and five body lines: two frozen, three scrolling.
+        let area = Rect::new(0, 0, 30, 6);
+        let mut buf = Buffer::empty(area);
+        let mut t = table(&theme, Some(12), 20);
+        t.lead = 2;
+        t.render(area, &mut buf);
+        assert!(row_text(&buf, 1).contains("row0"));
+        assert!(row_text(&buf, 2).contains("row1"));
+        assert!(row_text(&buf, 4).contains("row12"));
+        // More frozen rows than lines: the first ones and the selection show.
+        let mut buf = Buffer::empty(area);
+        let mut t = table(&theme, Some(8), 20);
+        t.lead = 8;
+        t.render(area, &mut buf);
+        assert!(row_text(&buf, 1).contains("row0"));
+        assert!(row_text(&buf, 4).contains("row3"));
+        assert!(row_text(&buf, 5).contains("row8"));
     }
 
     #[test]
