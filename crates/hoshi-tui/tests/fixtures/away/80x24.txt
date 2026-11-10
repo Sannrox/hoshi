@@ -1,4 +1,4 @@
- ◆ HOSHI  │  Colony / Research                             RAID 1:00:00   1:1:1
+ ◆ HOSHI  │  Colony / Research                      RAID 1:00:00   Home (1:1:1)
   Fe       │ Si       │ REE      │ Poll     │ Fleet    │ D        │ Energy
   500      │ 500      │ 0        │ 9        │ 0        │ 0        │ +2
    ▦ While you were away   10h 00m                                          x

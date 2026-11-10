@@ -214,6 +214,8 @@ pub struct App {
     ops_register: Option<mission_form::RegisterForm>,
     pub support: Option<crate::support_ui::SupportUi>,
     cheat_prompt: Option<String>,
+    /// Rename dialog: the world and what the player has typed so far.
+    world_rename: Option<(Coord, String)>,
     bug: Option<crate::bug_ui::BugUi>,
     pub state: GameState,
     pub portraits: PortraitView,
@@ -277,6 +279,9 @@ pub struct App {
     detail_overlay: bool,
     detail_dirty: bool,
     last_width: Cell<u16>,
+    /// Width of the area the last list view was drawn in; the star map fits
+    /// its notes to it.
+    list_width: Cell<u16>,
     scenario: Option<Scenario>,
     /// Bumped on input so idle skip-draw still repaints after a key.
     ui_epoch: u64,
@@ -302,6 +307,7 @@ impl App {
         Self {
             support: None,
             cheat_prompt: None,
+            world_rename: None,
             bug: None,
             state,
             portraits: PortraitView::default(),
@@ -363,6 +369,7 @@ impl App {
             detail_overlay: false,
             detail_dirty: false,
             last_width: Cell::new(80),
+            list_width: Cell::new(u16::MAX),
             scenario: None,
             ui_epoch: 0,
         }
@@ -847,6 +854,39 @@ impl App {
             return Action::None;
         }
 
+        if let Some((world, typed)) = &mut self.world_rename {
+            match code {
+                KeyCode::Esc => self.world_rename = None,
+                KeyCode::Enter => {
+                    let intent = hoshi_core::Intent::RenameWorld {
+                        world: *world,
+                        name: typed.clone(),
+                    };
+                    // A refused name keeps the dialog open; its error is
+                    // already on screen.
+                    if hoshi_core::propose(&self.state, &intent, now_unix)
+                        .and_then(|proposal| {
+                            hoshi_core::apply(&mut self.state, &proposal, now_unix)
+                        })
+                        .is_ok()
+                    {
+                        let world = *world;
+                        self.world_rename = None;
+                        self.status = format!("renamed {}", self.state.world_label(world));
+                    }
+                }
+                KeyCode::Backspace => {
+                    typed.pop();
+                }
+                // Room to type past the limit, so the counter can say so.
+                KeyCode::Char(ch) if typed.chars().count() < 2 * hoshi_core::MAX_NAME_COLUMNS => {
+                    typed.push(ch);
+                }
+                _ => {}
+            }
+            return Action::None;
+        }
+
         if let Some(report) = &mut self.support {
             if report.handle_key(code) {
                 self.support = None;
@@ -1168,6 +1208,18 @@ impl App {
             Some(Binding::SendProbe) if self.screen == Screen::Map && self.dispatch.is_none() => {
                 self.scan_signal(now_unix);
             }
+            Some(Binding::RenameWorld) if self.screen == Screen::Planet => {
+                let world = self.selected_coord();
+                if self.state.owns_world(world) {
+                    let typed = self
+                        .state
+                        .world_names
+                        .get(&world)
+                        .cloned()
+                        .unwrap_or_default();
+                    self.world_rename = Some((world, typed));
+                }
+            }
             Some(Binding::Dismantle) if self.screen == Screen::Planet => {
                 if let Some(kind) = BuildingKind::ALL.get(self.selected).copied() {
                     self.dismantle_confirm = Some((self.selected_coord(), kind));
@@ -1409,12 +1461,16 @@ impl App {
         ])
         .areas(area);
         let hub = Hub::of(self.screen);
+        let crumbs: Vec<String> = vec![hub.title().into(), hubs::label(self.screen).into()];
+        // " ◆ HOSHI  │  " then crumbs joined by " / ".
+        let left = 13 + crumbs.iter().map(|c| c.chars().count() + 3).sum::<usize>() - 3;
+        let right = self.navbar_right(usize::from(area.width).saturating_sub(left));
         frame.render_widget(
             Navbar {
                 theme: t,
                 mark: "HOSHI",
-                crumbs: vec![hub.title().into(), hubs::label(self.screen).into()],
-                right: self.navbar_right(),
+                crumbs,
+                right,
             },
             nav,
         );
@@ -1479,7 +1535,7 @@ impl App {
         let dialog = Dialog {
             theme: t,
             title: hub.title().into(),
-            subtitle: self.window_subtitle(hub),
+            subtitle: self.window_subtitle(hub, area.width),
             close_hint: "✕ esc".into(),
             footer_note: note,
             buttons: self.window_buttons(),
@@ -1558,13 +1614,22 @@ impl App {
         frame.render_widget(Paragraph::new(footer).style(t.muted()), footer_area);
     }
 
-    fn window_subtitle(&self, hub: Hub) -> String {
+    /// `Name (coord) · details` for the window header. When it would not
+    /// fit beside the title and close hint in `width` columns, only the
+    /// label stays, its name cut first and its coord kept.
+    fn window_subtitle(&self, hub: Hub, width: u16) -> String {
         let coord = self.selected_coord();
-        let place = if coord == self.state.home {
-            "Home"
-        } else {
-            "Colony"
-        };
+        let place = self.state.world_label(coord);
+        let full = self.window_subtitle_full(hub, coord, &place);
+        // " ▦ " + title + "   " before, "✕ esc " after.
+        let room = usize::from(width).saturating_sub(hub.title().chars().count() + 6 + 7);
+        if hoshi_core::name_columns(&full) <= room {
+            return full;
+        }
+        hoshi_core::fit_label(self.state.world_name(coord), coord, room)
+    }
+
+    fn window_subtitle_full(&self, hub: Hub, coord: Coord, place: &str) -> String {
         match hub {
             Hub::Colony => {
                 let kind = self
@@ -1592,13 +1657,13 @@ impl App {
                     let queue = self.state.queue_at(coord).map_or(0, <[_]>::len);
                     format!("queue {queue}/{}", self.state.build_queue_cap())
                 };
-                format!("{place} {coord} · {kind} · {work}")
+                format!("{place} · {kind} · {work}")
             }
             Hub::Fleet => format!(
-                "{place} {coord} · ship queue {}",
+                "{place} · ship queue {}",
                 self.state.ship_queue_at(coord).map_or(0, <[_]>::len)
             ),
-            _ => format!("{place} {coord}"),
+            _ => place.to_string(),
         }
     }
 
@@ -1717,7 +1782,9 @@ impl App {
         ))
     }
 
-    fn navbar_right(&self) -> Vec<Span<'static>> {
+    /// Right side of the navbar within `room` columns. The world label is
+    /// cut to fit so a long name never pushes the raid timer off the bar.
+    fn navbar_right(&self, room: usize) -> Vec<Span<'static>> {
         let t = &self.theme;
         let mut spans = Vec::new();
         // The next raid shows as soon as it is scheduled; inside the warning
@@ -1742,7 +1809,15 @@ impl App {
             spans.push(Span::styled(run.name.clone(), t.muted()));
             spans.push(Span::raw("  "));
         }
-        spans.push(Span::styled(self.selected_coord().to_string(), t.text()));
+        // One gap to the crumbs and the navbar's trailing space.
+        let used: usize = spans.iter().map(Span::width).sum::<usize>() + 2;
+        let coord = self.selected_coord();
+        let label = hoshi_core::fit_label(
+            self.state.world_name(coord),
+            coord,
+            room.saturating_sub(used),
+        );
+        spans.push(Span::styled(label, t.text()));
         spans
     }
 
@@ -2167,9 +2242,70 @@ impl App {
                 &[],
             );
         }
+        if let Some((world, typed)) = &self.world_rename {
+            self.draw_world_rename(frame, *world, typed);
+        }
         if let Some(bug) = &self.bug {
             bug.draw(frame);
         }
+    }
+
+    /// Rename dialog: the typed name with a column counter, then either the
+    /// label it will show as or, in plain words, why it can't be saved.
+    fn draw_world_rename(&self, frame: &mut Frame<'_>, world: Coord, typed: &str) {
+        let t = &self.theme;
+        let kind = self
+            .state
+            .planet_kind(world)
+            .map_or("unknown", |k| k.as_key());
+        // Characters a name refuses are drawn as a marker, never raw.
+        let shown: String = typed
+            .chars()
+            .map(|c| {
+                if hoshi_core::is_unsafe_name_char(c) {
+                    '�'
+                } else {
+                    c
+                }
+            })
+            .collect();
+        let columns = hoshi_core::name_columns(typed.trim());
+        let result = self.state.preview_world_label(world, typed);
+        let counter_style = if result.is_err() {
+            t.intent(Intent::Danger)
+        } else {
+            t.muted()
+        };
+        let empty = if world == self.state.home {
+            format!("empty name returns to {}", hoshi_core::HOME_NAME)
+        } else {
+            "empty name shows the coord only".to_string()
+        };
+        let second = match &result {
+            Ok(label) => Line::from(vec![
+                Span::styled("Shown as  ", t.label()),
+                Span::styled(label.clone(), t.intent(Intent::Primary)),
+            ]),
+            Err(err) => Line::styled(err.to_string(), t.intent(Intent::Danger)),
+        };
+        self.dialog(
+            frame,
+            "Rename world",
+            format!("{world} · {kind}"),
+            vec![
+                Line::from(vec![
+                    Span::styled("Name      ", t.label()),
+                    Span::styled(format!("{shown}▏"), t.text()),
+                    Span::styled(
+                        format!("  {columns}/{}", hoshi_core::MAX_NAME_COLUMNS),
+                        counter_style,
+                    ),
+                ]),
+                second,
+                Line::styled(empty, t.muted()),
+            ],
+            &[("⏎".into(), "save"), ("esc".into(), "cancel")],
+        );
     }
 
     fn current_portrait_slot(&self) -> Slot {
@@ -2339,7 +2475,7 @@ impl App {
                 Span::styled(
                     replay
                         .log
-                        .place
+                        .place_label(&self.state)
                         .map(|place| format!("at {place}  "))
                         .unwrap_or_default(),
                     t.text(),
@@ -3603,7 +3739,8 @@ impl App {
                     k.primary(Binding::Detail)
                 ),
                 Screen::Planet => format!(
-                    "{planets}  {select}  {confirm} build  {cancel} queue  {} detail",
+                    "{} rename  {planets}  {select}  {confirm} build  {cancel} queue  {} detail",
+                    k.primary(Binding::RenameWorld),
                     k.primary(Binding::Detail)
                 ),
                 Screen::Shipyard => format!(
@@ -3859,7 +3996,8 @@ impl App {
             .unwrap_or("unknown");
         let size = self.state.planet_size(coord).unwrap_or(0);
         rows.push(Line::from(format!(
-            "Planet {coord}  {kind}  size {size}  Queue {}/{}",
+            "Planet {}  {kind}  size {size}  Queue {}/{}",
+            self.state.world_label(coord),
             queue.len(),
             self.state.build_queue_cap()
         )));
@@ -6025,6 +6163,7 @@ mod tests {
         CombatLog {
             at: 1_000,
             place: None,
+            place_name: None,
             report: CombatReport {
                 rounds: 1,
                 attacker_before: attacker,
@@ -6673,7 +6812,7 @@ mod tests {
         app.handle_key(KeyCode::Char(']'), 1_000);
         assert_eq!(app.selected_coord(), dest);
         let text = render_text(&app, 100, 32);
-        assert!(text.contains("Colony 1:1:2"), "{text}");
+        assert!(text.contains("Colony   1:1:2 · "), "{text}");
         app.open(Screen::Planet);
         assert_eq!(app.screen, Screen::Planet);
         app.handle_key(KeyCode::Enter, 1_000);
@@ -8088,6 +8227,178 @@ mod tests {
         (app.map_galaxy, app.map_system, app.map_position) =
             (dest.galaxy, dest.system, dest.position);
         (app, dest)
+    }
+
+    /// Home named Forge, and a colony with the longest allowed name.
+    fn app_with_named_worlds() -> (App, Coord) {
+        let (mut app, colony) = app_with_new_colony();
+        let home = app.state.home;
+        app.state.rename_world(home, "Forge", 1_000).unwrap();
+        app.state
+            .rename_world(colony, "Northern Reach Forge Two", 1_000)
+            .unwrap();
+        (app, colony)
+    }
+
+    #[test]
+    fn world_labels_show_name_and_coord_on_planet_map_and_combat_report() {
+        let (mut app, colony) = app_with_named_worlds();
+        let home = app.state.home;
+        let forge = format!("Forge ({home})");
+        let ridge = format!("Northern Reach Forge Two ({colony})");
+        app.open(Screen::Planet);
+        let text = render_text(&app, 120, 36);
+        assert!(text.contains(&format!("Planet {forge}")), "{text}");
+        assert!(text.contains(&format!("▦ Colony   {forge} · ")), "{text}");
+        let header = text.lines().next().unwrap_or_default();
+        assert!(header.ends_with(&forge), "{header}");
+        app.handle_key(KeyCode::Char(']'), 1_000);
+        let text = render_text(&app, 120, 36);
+        assert!(text.contains(&format!("Planet {ridge}")), "{text}");
+
+        app.open(Screen::Map);
+        let text = render_text(&app, 180, 36);
+        assert!(
+            text.contains(&format!("home {forge}  colony {ridge}")),
+            "{text}"
+        );
+
+        app.state.trigger_raid(1_000);
+        app.state.combat_logs.last_mut().unwrap().place = Some(colony);
+        app.open(Screen::Overview);
+        app.handle_key(KeyCode::Char('r'), 1_000);
+        let text = render_text(&app, 100, 30);
+        assert!(text.contains(&format!("at {ridge}")), "{text}");
+    }
+
+    #[test]
+    fn a_narrow_map_cuts_names_to_keep_every_coord_and_note() {
+        let (mut app, colony) = app_with_named_worlds();
+        let home = app.state.home;
+        app.open(Screen::Map);
+        let row = |width| {
+            let text = render_text(&app, width, 36);
+            let row = text
+                .lines()
+                .find(|line| line.starts_with(" ▌  1 "))
+                .map(str::to_string);
+            row.unwrap_or_default()
+        };
+        // Names share the notes column; both coords stay whole.
+        let mid = row(100);
+        assert!(mid.contains(&format!("home Forge ({home})")), "{mid}");
+        assert!(mid.contains(&format!("… ({colony})")), "{mid}");
+        // A docked panel leaves no room for names: the notes read as before.
+        let docked = row(120);
+        assert!(
+            docked.contains(&format!("home  colony {colony}")),
+            "{docked}"
+        );
+    }
+
+    #[test]
+    fn an_unnamed_colony_reads_as_its_bare_coord() {
+        let (mut app, colony) = app_with_new_colony();
+        app.open(Screen::Map);
+        let text = render_text(&app, 180, 36);
+        assert!(text.contains(&format!("colony {colony}")), "{text}");
+        assert!(
+            text.contains(&format!("home Home ({})", app.state.home)),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn rename_dialog_refuses_a_bad_name_in_plain_words_and_saves_a_good_one() {
+        let (mut app, _) = app_with_new_colony();
+        let home = app.state.home;
+        app.open(Screen::Planet);
+        app.handle_key(KeyCode::Char('n'), 1_000);
+        for ch in "Forge\u{200B}".chars() {
+            app.handle_key(KeyCode::Char(ch), 1_000);
+        }
+        let text = render_text(&app, 100, 32);
+        assert!(text.contains("Rename world"), "{text}");
+        assert!(
+            text.contains("An invisible character follows \"Forge\". Delete it."),
+            "{text}"
+        );
+        assert!(!text.contains('\u{200B}'), "{text}");
+        // Enter on a refused name keeps the dialog and the old label.
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.world_rename.is_some());
+        assert_eq!(app.state.world_label(home), format!("Home ({home})"));
+
+        app.handle_key(KeyCode::Backspace, 1_000);
+        let text = render_text(&app, 100, 32);
+        assert!(
+            text.contains(&format!("Shown as  Forge ({home})")),
+            "{text}"
+        );
+        assert!(text.contains("5/24"), "{text}");
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.world_rename.is_none());
+        assert_eq!(app.state.world_label(home), format!("Forge ({home})"));
+
+        // Control characters are refused too, and never drawn raw.
+        app.handle_key(KeyCode::Char('n'), 1_000);
+        app.handle_key(KeyCode::Char('\u{1b}'), 1_000);
+        let text = render_text(&app, 100, 32);
+        assert!(
+            text.contains("Names can't contain control characters."),
+            "{text}"
+        );
+        assert!(!text.contains('\u{1b}'), "{text}");
+        app.handle_key(KeyCode::Esc, 1_000);
+        assert!(app.world_rename.is_none());
+        assert_eq!(app.state.world_label(home), format!("Forge ({home})"));
+    }
+
+    #[test]
+    fn a_long_name_in_the_navbar_keeps_the_raid_timer_and_coord() {
+        let (mut app, colony) = app_with_named_worlds();
+        app.open(Screen::Planet);
+        app.handle_key(KeyCode::Char(']'), 1_000);
+        app.state.config.raid.enabled = true;
+        app.state.next_raid_at = Some(app.state.last_tick_unix + 7 * 3_600);
+        for width in [80, 100] {
+            let text = render_text(&app, width, 30);
+            let bar = text.lines().next().unwrap_or_default();
+            assert!(bar.contains("RAID"), "{width}: {bar}");
+            assert!(bar.contains(&colony.to_string()), "{width}: {bar}");
+        }
+    }
+
+    #[test]
+    fn a_long_name_never_pushes_its_coord_off_a_phone_row() {
+        let (mut app, colony) = app_with_named_worlds();
+        app.handle_key(KeyCode::Char(']'), 1_000);
+        let coord = format!("({colony})");
+        for screen in [
+            Screen::Planet,
+            Screen::Map,
+            Screen::Production,
+            Screen::Cockpit,
+        ] {
+            app.open(screen);
+            if screen == Screen::Planet {
+                app.handle_key(KeyCode::Char(']'), 1_000);
+            }
+            let text = render_text(&app, 48, 30);
+            for line in text.lines() {
+                assert!(line.chars().count() <= 48, "{screen:?} wide row: {line}");
+                if line.contains("Northern") {
+                    assert!(line.contains(&coord), "{screen:?} lost the coord: {line}");
+                }
+            }
+        }
+        app.open(Screen::Planet);
+        app.handle_key(KeyCode::Char('n'), 1_000);
+        let text = render_text(&app, 48, 30);
+        assert!(text.contains("Rename world"), "{text}");
+        for line in text.lines() {
+            assert!(line.chars().count() <= 48, "dialog wide row: {line}");
+        }
     }
 
     #[test]

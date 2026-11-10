@@ -119,6 +119,10 @@ pub struct CombatLog {
     /// The world the fight happened at. `None` only for logs saved before
     /// schema 66, which did not record it.
     pub place: Option<crate::Coord>,
+    /// Name of another tenant's world the fight happened at, as it was
+    /// then. `None` at the player's own worlds (their label is live), at
+    /// unnamed worlds, and for logs saved before schema 67.
+    pub place_name: Option<String>,
     pub report: CombatReport,
     /// For a raid on home, what it took (zero when nothing was reachable).
     /// `None` for every other fight, and for raids saved before schema 50.
@@ -180,6 +184,17 @@ pub struct RaidLosses {
 }
 
 impl CombatLog {
+    /// Where the fight happened as `state` labels it: the live label of an
+    /// owned world, else the recorded name of a foreign one, else the coord.
+    pub fn place_label(&self, state: &crate::GameState) -> Option<String> {
+        let place = self.place?;
+        Some(if state.owns_world(place) {
+            state.world_label(place)
+        } else {
+            crate::world_label(self.place_name.as_deref(), place)
+        })
+    }
+
     /// Losses for a raid on home; `None` for every other fight.
     pub fn raid_losses(&self) -> Option<RaidLosses> {
         self.raid_plunder?;
@@ -922,6 +937,7 @@ mod tests {
         let log = CombatLog {
             at: 0,
             place: None,
+            place_name: None,
             report: CombatReport {
                 rounds: 1,
                 attacker_before: lf(1),

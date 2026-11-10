@@ -1487,6 +1487,19 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             add_column(
                 conn, "combat_logs", column, f"ALTER TABLE combat_logs ADD COLUMN {column} INTEGER"
             )
+    elif version == 67:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS world_names (
+                galaxy INTEGER NOT NULL,
+                system INTEGER NOT NULL,
+                position INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                PRIMARY KEY (galaxy, system, position)
+            );
+            """
+        )
+        add_column(conn, "combat_logs", "place_name", "ALTER TABLE combat_logs ADD COLUMN place_name TEXT")
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"

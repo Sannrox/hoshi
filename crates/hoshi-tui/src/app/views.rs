@@ -179,6 +179,7 @@ impl App {
 
     pub(super) fn draw_list(&self, frame: &mut Frame<'_>, area: Rect) {
         let t = &self.theme;
+        self.list_width.set(area.width);
         let view = self.list_view();
         let strip_h = if view.strip.is_empty() {
             0
@@ -1672,6 +1673,44 @@ impl App {
         }
     }
 
+    /// Finish each owned world's note in `labels` (`home ` or `colony `)
+    /// so the joined notes fit `width` columns: full labels when they fit,
+    /// else names share the room the other notes leave, cut with "…".
+    /// When not even bare coords fit, notes read as before names existed:
+    /// `home` alone and `colony 1:3:5`.
+    fn fit_world_notes(&self, labels: &mut [String], worlds: &[(usize, Coord)], width: usize) {
+        if worlds.is_empty() {
+            return;
+        }
+        let cols = hoshi_core::name_columns;
+        let joined: usize =
+            labels.iter().map(|l| cols(l)).sum::<usize>() + 2 * labels.len().saturating_sub(1);
+        let full: usize = worlds
+            .iter()
+            .map(|&(_, c)| cols(&self.state.world_label(c)))
+            .sum();
+        let bare: usize = worlds.iter().map(|&(_, c)| cols(&c.to_string())).sum();
+        if joined + bare > width {
+            for &(index, coord) in worlds {
+                if coord == self.state.home {
+                    labels[index].truncate(labels[index].trim_end().len());
+                } else {
+                    labels[index].push_str(&coord.to_string());
+                }
+            }
+            return;
+        }
+        let budget = if joined + full <= width {
+            usize::MAX
+        } else {
+            (width - joined) / worlds.len()
+        };
+        for &(index, coord) in worlds {
+            let label = hoshi_core::fit_label(self.state.world_name(coord), coord, budget);
+            labels[index].push_str(&label);
+        }
+    }
+
     fn map_view(&self) -> ListView {
         let t = &self.theme;
         let cursor = self.map_cursor();
@@ -1698,10 +1737,16 @@ impl App {
         head.push(Line::from(legend_spans));
         let owned = self.state.owned_coords();
         let now = self.state.last_tick_unix;
+        // The notes column gets what the sys and slot columns, their two
+        // gaps and the lead cell leave of the list area.
+        let notes_width = usize::from(self.list_width.get())
+            .saturating_sub(3 + 3 * usize::from(MAP_SLOT_COUNT) + 5);
         let mut rows = Vec::new();
         for system in 1..=MAP_SYSTEM_MAX {
             let mut slots = Vec::new();
             let mut labels = Vec::new();
+            // (index in `labels`, owned world) for labels fitted below.
+            let mut worlds = Vec::new();
             for pos in 1..=MAP_SLOT_COUNT {
                 let coord = Coord {
                     galaxy: cursor.galaxy,
@@ -1735,9 +1780,11 @@ impl App {
                     slots.push(Span::styled(format!(" {ch} "), style));
                 }
                 if coord == self.state.home {
-                    labels.push("home".to_string());
+                    worlds.push((labels.len(), coord));
+                    labels.push("home ".into());
                 } else if owned.contains(&coord) {
-                    labels.push(format!("colony {coord}"));
+                    worlds.push((labels.len(), coord));
+                    labels.push("colony ".into());
                 } else if let Some(claim) = self.state.visible_rival_colony_at(coord) {
                     labels.push(format!("rival {} {coord}", claim.rival_id));
                 } else if let Some(out) = self.state.outposts.iter().find(|o| o.coord == coord) {
@@ -1783,6 +1830,7 @@ impl App {
                     ));
                 }
             }
+            self.fit_world_notes(&mut labels, &worlds, notes_width);
             rows.push(vec![
                 Line::styled(system.to_string(), t.label()),
                 Line::from(slots),

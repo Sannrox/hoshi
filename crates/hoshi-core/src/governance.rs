@@ -175,6 +175,7 @@ pub fn dest_of(intent: &Intent) -> Option<Coord> {
         | Intent::Dismantle { planet, .. }
         | Intent::FusionMode { planet, .. }
         | Intent::CancelBuild { planet, .. } => Some(*planet),
+        Intent::RenameWorld { world, .. } => Some(*world),
         Intent::PlaceOrder { region, .. } => Some(*region),
         Intent::ShipGoods { dest, .. } => Some(*dest),
         Intent::Cheat { .. }
@@ -298,7 +299,8 @@ pub fn spend_of(state: &GameState, intent: &Intent, _now: u64) -> f64 {
         | Intent::CancelResearch
         | Intent::CancelShips { .. }
         | Intent::Recall { .. }
-        | Intent::ChooseStory { .. } => 0.0,
+        | Intent::ChooseStory { .. }
+        | Intent::RenameWorld { .. } => 0.0,
         Intent::ScheduleMaintenance { .. } => {
             let cfg = state.maintenance_config();
             cfg.iron_cost + cfg.silicon_cost

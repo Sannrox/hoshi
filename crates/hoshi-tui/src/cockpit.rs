@@ -361,7 +361,7 @@ pub fn alerts(state: &GameState, focus: Option<hoshi_core::VictoryPath>) -> Vec<
                 raid.ships,
                 state.fleet_tactics.formation.as_key(),
                 state.fleet_tactics.stance.as_key(),
-                raid.target
+                state.world_label(raid.target)
             ),
             jump: Target::Planet(raid.target),
             decision: None,
@@ -382,7 +382,10 @@ pub fn alerts(state: &GameState, focus: Option<hoshi_core::VictoryPath>) -> Vec<
                 "Raid lost  {} ago",
                 duration(state.last_tick_unix.saturating_sub(log.at))
             ),
-            detail: format!("plunder {} · r report", taken.brief()),
+            detail: match log.place_label(state) {
+                Some(place) => format!("{place} · plunder {} · r report", taken.brief()),
+                None => format!("plunder {} · r report", taken.brief()),
+            },
             jump: Target::Planet(log.place.unwrap_or(home)),
             decision: None,
         });
@@ -444,7 +447,7 @@ pub fn alerts(state: &GameState, focus: Option<hoshi_core::VictoryPath>) -> Vec<
         rows.push(Alert {
             kind: AlertKind::IdleQueue,
             text: "Queues idle".into(),
-            detail: format!("{home} · build and research"),
+            detail: format!("{} · build and research", state.world_label(home)),
             jump: Target::Planet(home),
             decision: None,
         });
@@ -454,7 +457,7 @@ pub fn alerts(state: &GameState, focus: Option<hoshi_core::VictoryPath>) -> Vec<
             rows.push(Alert {
                 kind: AlertKind::IdleQueue,
                 text: "Queue idle".into(),
-                detail: colony.coord.to_string(),
+                detail: state.world_label(colony.coord),
                 jump: Target::Planet(colony.coord),
                 decision: None,
             });
@@ -817,13 +820,26 @@ fn wrap_words(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
+/// Columns of the `T-` countdown before each timeline row.
+const TIMELINE_LEAD: usize = 10;
+
+/// A world label cut to `width` columns; the coord is never cut.
+fn fit_world(state: &GameState, coord: Coord, width: usize) -> String {
+    hoshi_core::fit_label(state.world_name(coord), coord, width)
+}
+
 fn upcoming_lines(state: &GameState, width: usize, t: &Theme) -> Vec<Line<'static>> {
     let now = state.last_tick_unix;
     let mut items: Vec<(u64, String, Intent)> = Vec::new();
     if let Some(secs) = state.raid_countdown_secs()
         && let Some(raid) = state.upcoming_raid()
     {
-        items.push((secs, format!("raid → {}", raid.target), Intent::Danger));
+        let room = width.saturating_sub(TIMELINE_LEAD + "raid → ".chars().count());
+        items.push((
+            secs,
+            format!("raid → {}", fit_world(state, raid.target, room)),
+            Intent::Danger,
+        ));
     }
     let queues = std::iter::once((state.home, &state.build_queue))
         .chain(state.colonies.iter().map(|c| (c.coord, &c.build_queue)));
@@ -831,18 +847,20 @@ fn upcoming_lines(state: &GameState, width: usize, t: &Theme) -> Vec<Line<'stati
         if let Some(job) = queue.first()
             && let Some(at) = job.completes_at
         {
+            let what = format!(
+                "[{}] {} lv{} ",
+                job.kind.as_key(),
+                job.building,
+                if job.kind == hoshi_core::BuildJobKind::Dismantle {
+                    job.from_level.saturating_sub(1)
+                } else {
+                    job.from_level.saturating_add(1)
+                }
+            );
+            let room = width.saturating_sub(TIMELINE_LEAD + what.chars().count());
             items.push((
                 at.saturating_sub(now),
-                format!(
-                    "[{}] {} lv{} {coord}",
-                    job.kind.as_key(),
-                    job.building,
-                    if job.kind == hoshi_core::BuildJobKind::Dismantle {
-                        job.from_level.saturating_sub(1)
-                    } else {
-                        job.from_level.saturating_add(1)
-                    }
-                ),
+                format!("{what}{}", fit_world(state, coord, room)),
                 Intent::Success,
             ));
         }
@@ -855,24 +873,17 @@ fn upcoming_lines(state: &GameState, width: usize, t: &Theme) -> Vec<Line<'stati
         ));
     }
     for mission in &state.missions {
+        let what = format!("fleet #{} {} → ", mission.id, mission.phase.as_key());
+        let cargo = if mission.deploy {
+            format!(" · cargo {}", mission.cargo.brief())
+        } else {
+            String::new()
+        };
+        let room =
+            width.saturating_sub(TIMELINE_LEAD + what.chars().count() + cargo.chars().count());
         items.push((
             mission.phase_ends_at.saturating_sub(now),
-            if mission.deploy {
-                format!(
-                    "fleet #{} {} → {} · cargo {}",
-                    mission.id,
-                    mission.phase.as_key(),
-                    mission.dest,
-                    mission.cargo.brief()
-                )
-            } else {
-                format!(
-                    "fleet #{} {} → {}",
-                    mission.id,
-                    mission.phase.as_key(),
-                    mission.dest
-                )
-            },
+            format!("{what}{}{cargo}", fit_world(state, mission.dest, room)),
             Intent::Primary,
         ));
     }
@@ -892,6 +903,7 @@ fn upcoming_lines(state: &GameState, width: usize, t: &Theme) -> Vec<Line<'stati
     }
     for (secs, text, intent) in items {
         out.push(Line::from(vec![
+            // TIMELINE_LEAD columns.
             Span::styled(format!("T-{:<8}", countdown(secs)), t.intent(intent)),
             Span::styled(text, t.text()),
         ]));
@@ -1169,7 +1181,7 @@ fn queue_lines(state: &GameState, height: usize, selected: usize, t: &Theme) -> 
     let mut entries = Vec::new();
     push_planet_queue(
         &mut entries,
-        state.home,
+        fit_world(state, state.home, QUEUE_LABEL_COLS),
         &state.build_queue,
         now,
         selected,
@@ -1179,7 +1191,7 @@ fn queue_lines(state: &GameState, height: usize, selected: usize, t: &Theme) -> 
     for (idx, colony) in (1..).zip(state.colonies.iter()) {
         push_planet_queue(
             &mut entries,
-            colony.coord,
+            fit_world(state, colony.coord, QUEUE_LABEL_COLS),
             &colony.build_queue,
             now,
             selected,
@@ -1202,9 +1214,12 @@ fn queue_lines(state: &GameState, height: usize, selected: usize, t: &Theme) -> 
     )
 }
 
+/// Widest world label on a queue row.
+const QUEUE_LABEL_COLS: usize = 20;
+
 fn push_planet_queue(
     entries: &mut Vec<Line<'static>>,
-    coord: Coord,
+    label: String,
     queue: &[hoshi_core::BuildJob],
     now: u64,
     selected: usize,
@@ -1221,7 +1236,7 @@ fn push_planet_queue(
         let eta = job.completes_at.unwrap_or(now).saturating_sub(now);
         entries.push(Line::from(Span::styled(
             format!(
-                "{mark} {coord} {} {eta}s  +{}",
+                "{mark} {label} {} {eta}s  +{}",
                 job.building,
                 queue.len() - 1
             ),
@@ -1229,7 +1244,7 @@ fn push_planet_queue(
         )));
     } else {
         entries.push(Line::from(Span::styled(
-            format!("{mark} {coord} idle"),
+            format!("{mark} {label} idle"),
             style,
         )));
     }
@@ -1498,7 +1513,7 @@ fn detail_lines(
 
 fn planet_detail(state: &GameState, coord: Coord, height: usize, t: &Theme) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(Span::styled(
-        format!("planet {coord}"),
+        format!("planet {}", state.world_label(coord)),
         t.strong(),
     ))];
     let owned = state.owned_coords().contains(&coord);
@@ -2026,6 +2041,119 @@ mod tests {
         };
         assert!(row(colony.system).contains("raid "), "{map:?}");
         assert!(!row(state.home.system).contains("raid "), "{map:?}");
+    }
+
+    #[test]
+    fn bridge_rows_and_the_timeline_name_worlds_and_keep_the_coord() {
+        let mut state = GameState::new(1_000);
+        let colony = Coord {
+            galaxy: state.home.galaxy,
+            system: state.home.system,
+            position: 7,
+        };
+        state.colonies.push(hoshi_core::Colony {
+            coord: colony,
+            kind: hoshi_core::PlanetType::Rocky,
+            size: 3,
+            resources: Resources::ZERO,
+            buildings: hoshi_core::Buildings::default(),
+            fleet: hoshi_core::Fleet::default(),
+            defences: hoshi_core::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: Default::default(),
+        });
+        state
+            .rename_world(colony, "Northern Reach Forge Two", 1_000)
+            .unwrap();
+        state.next_raid_at = Some(1_120);
+        state.next_raid_target = Some(colony);
+        let label = format!("Northern Reach Forge Two ({colony})");
+        let rows = alerts(&state, None);
+        let incoming = rows
+            .iter()
+            .find(|row| row.text.contains("Incoming raid"))
+            .expect("warning");
+        assert!(
+            incoming.detail.ends_with(&format!("pirates → {label}")),
+            "{}",
+            incoming.detail
+        );
+
+        let text = |state: &GameState, width| -> Vec<String> {
+            upcoming_lines(state, width, &Theme::default())
+                .iter()
+                .map(|line| {
+                    line.spans
+                        .iter()
+                        .map(|span| span.content.to_string())
+                        .collect()
+                })
+                .collect()
+        };
+        assert!(
+            text(&state, 120)
+                .iter()
+                .any(|row| row.ends_with(&format!("raid → {label}")))
+        );
+        let phone = text(&state, 46);
+        let raid = phone.iter().find(|row| row.contains("raid → ")).unwrap();
+        assert!(raid.ends_with(&format!("… ({colony})")), "{raid}");
+        assert!(Span::raw(raid.clone()).width() <= 46, "{raid}");
+
+        state.missions.push(hoshi_core::Mission {
+            id: 9,
+            ships: hoshi_core::Fleet::default(),
+            origin: state.home,
+            dest: colony,
+            speed_percent: 100,
+            phase: hoshi_core::MissionPhase::Outbound,
+            launched_at: 1_000,
+            outbound_secs: 60,
+            hold_secs: 0,
+            phase_ends_at: 1_060,
+            fuel_paid: 0.0,
+            colonize: false,
+            expedition_seed: None,
+            expedition_applied: false,
+            cargo: Resources::ZERO,
+            transport: false,
+            attack: false,
+            invade: false,
+            spy: false,
+            site_id: None,
+            recycle: false,
+            deploy: true,
+        });
+        let fleet_row = |width| {
+            let rows = text(&state, width);
+            rows.into_iter()
+                .find(|row| row.contains("fleet #9"))
+                .unwrap()
+        };
+        let fleet = fleet_row(64);
+        assert!(fleet.contains(&format!("… ({colony}) · cargo")), "{fleet}");
+        assert!(Span::raw(fleet.clone()).width() <= 64, "{fleet}");
+        // No room for a name: the bare coord, as before names existed.
+        let fleet = fleet_row(46);
+        assert!(fleet.contains(&format!("→ {colony} · cargo")), "{fleet}");
+
+        state.trigger_raid(1_000);
+        let log = state.combat_logs.last_mut().unwrap();
+        log.place = Some(colony);
+        log.report.winner = hoshi_core::CombatWinner::Attacker;
+        log.raid_plunder = Some(Resources::ZERO);
+        let rows = alerts(&state, None);
+        let lost = rows
+            .iter()
+            .find(|row| row.text.starts_with("Raid lost"))
+            .expect("lost raid row");
+        assert!(
+            lost.detail.starts_with(&format!("{label} · plunder")),
+            "{}",
+            lost.detail
+        );
     }
 
     #[test]

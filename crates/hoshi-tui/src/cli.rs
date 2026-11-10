@@ -96,6 +96,8 @@ crate::help::catalog_commands! {
     FusionMode { planet: Coord, mode: FusionMode, actor: Actor },
     #[help("fusion status", "Show fusion output, mode, fuel burn, start-up progress, and cooling cap.", "fusion status [PLANET]", "fusion status home")]
     FusionStatus { planet: Option<Coord> },
+    #[help("rename", "Name an owned world, shown as Name (coord). Other tenants on a shard see it. No name clears it; home reads Home.", "rename PLANET [NAME...]", "rename home Forge")]
+    Rename { planet: Coord, name: String },
     #[help("research", "Start research, or queue it behind the running job.", "research TECH", "research energy")]
     Research {
         tech: String,
@@ -1184,6 +1186,17 @@ fn apply(
                 now,
             )?;
             Ok(ok_state(state, "queued build"))
+        }
+        Command::Rename { planet, name } => {
+            governed(
+                state,
+                Intent::RenameWorld {
+                    world: *planet,
+                    name: name.clone(),
+                },
+                now,
+            )?;
+            Ok(ok_state(state, "renamed world"))
         }
         Command::Research { tech } => {
             let queued = state.research_queue.len();
@@ -2611,6 +2624,7 @@ fn state_value(state: &GameState, actor: Actor) -> Value {
         .map(|coord| {
             json!({
                 "coord": coord.to_string(),
+                "label": state.world_label(coord),
                 "home": coord == state.home,
                 "rare": state.rare_bonus_at(coord).map(|row| row.id.clone()),
             })
@@ -3433,6 +3447,13 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
         "vehicle" => parse_vehicle_command(args),
         "mission" => parse_mission_command(args),
         "market" => parse_market_command(args),
+        "rename" => {
+            let planet = parse_coord(nth(args, 1, "rename <planet> [name...]")?)?;
+            Ok(Command::Rename {
+                planet,
+                name: args[2..].join(" "),
+            })
+        }
         "research" => {
             let tech = nth(args, 1, "research <tech>")?.to_string();
             expect_end(args, 2)?;
@@ -5504,6 +5525,28 @@ mod tests {
         let out = run_cli(&argv);
         let value: Value = serde_json::from_str(&out.json).unwrap();
         (value, out.exit)
+    }
+
+    #[test]
+    fn rename_names_home_in_state_json_and_refuses_a_world_you_do_not_hold() {
+        let save = unique_save("rename-world");
+        let (_, exit) = run_on(&save, &["--seed=3", "state"]);
+        assert_eq!(exit, EXIT_OK);
+        let label = |out: &Value| out["planets"][0]["label"].clone();
+        let (out, exit) = run_on(&save, &["rename", "home", "Old", "Gate"]);
+        assert_eq!(exit, EXIT_OK, "{out}");
+        assert_eq!(label(&out), "Old Gate (1:1:1)", "{out}");
+        let (out, _) = run_on(&save, &["state"]);
+        assert_eq!(label(&out), "Old Gate (1:1:1)", "{out}");
+        let (out, exit) = run_on(&save, &["rename", "1:9:9", "Mine"]);
+        assert_eq!(exit, EXIT_REFUSED, "{out}");
+        assert_eq!(out["error"]["message"], "You don't hold 1:9:9.", "{out}");
+        let (out, exit) = run_on(&save, &["rename", "home", "Bad\u{1b}[31m"]);
+        assert_eq!(exit, EXIT_REFUSED, "{out}");
+        let (out, exit) = run_on(&save, &["rename", "home"]);
+        assert_eq!(exit, EXIT_OK, "{out}");
+        assert_eq!(label(&out), "Home (1:1:1)", "{out}");
+        let _ = std::fs::remove_file(&save);
     }
 
     #[test]

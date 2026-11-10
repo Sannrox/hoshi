@@ -20,6 +20,8 @@ serde_json = { version = "1.0.152", features = ["float_roundtrip"] }
 toml = { version = "1.1.8", default-features = false, features = ["parse", "serde"] }
 hmac = "0.12"
 sha2 = "0.10"
+# Name width in terminal columns, as the TUI measures it.
+unicode-width = "0.2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

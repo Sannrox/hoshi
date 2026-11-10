@@ -389,11 +389,15 @@ pub struct ShardTarget {
 }
 
 /// One coord the tenant may see. `tag` is `you`, `occupied`, or `empty`.
-/// Another tenant's name and stockpile are not on this row.
+/// Another tenant's identity and stockpile are not on this row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShardSlot {
     pub coord: Coord,
     pub tag: String,
+    /// The holder's world label (`Name (coord)` or the bare coord) for a
+    /// world a tenant holds; `None` for outposts, sites and empty slots.
+    /// World names are public wherever the coord is visible (ADR 0024).
+    pub label: Option<String>,
 }
 
 /// Who holds a coord on the shard map. At most one kind.
@@ -539,10 +543,14 @@ impl ShardView {
             "factor": self.factor,
             "home": self.home.to_string(),
             "occupancy": self.occupancy.iter().map(|slot| {
-                serde_json::json!({
+                let mut row = serde_json::json!({
                     "coord": slot.coord.to_string(),
                     "tag": slot.tag,
-                })
+                });
+                if let Some(label) = &slot.label {
+                    row["label"] = label.clone().into();
+                }
+                row
             }).collect::<Vec<_>>(),
             "resources": {
                 "iron": self.resources.iron,
@@ -2277,7 +2285,8 @@ fn fight_raid(
     with_shared_debris(debris, defender, |defender| {
         defender.note_fight_debris(fought_at, defender.home, &report);
     });
-    attacker.land_tenant_raid(mission_id, report, plunder, at);
+    let place_name = defender.world_name(defender.home).map(str::to_string);
+    attacker.land_tenant_raid(mission_id, report, plunder, at, place_name);
 }
 
 /// Run `f` on `state` with the shared debris stock in its debris map, then
@@ -2439,6 +2448,14 @@ fn tenant_holds(state: &GameState, coord: Coord) -> bool {
     state.home == coord || state.colonies.iter().any(|colony| colony.coord == coord)
 }
 
+/// The world label of whichever tenant holds `coord`, if one does.
+fn holder_label(empires: &BTreeMap<String, GameState>, coord: Coord) -> Option<String> {
+    empires
+        .values()
+        .find(|state| tenant_holds(state, coord))
+        .map(|state| state.world_label(coord))
+}
+
 fn shard_view(
     identity: &str,
     empires: &BTreeMap<String, GameState>,
@@ -2548,6 +2565,7 @@ fn occupancy_slots(
         .map(|target| ShardSlot {
             coord: target.coord,
             tag: target.kind.view_tag().to_string(),
+            label: holder_label(empires, target.coord),
         })
         .collect()
 }
@@ -3608,11 +3626,13 @@ mod tests {
         assert!(slots.iter().any(|slot| {
             slot["coord"] == site_coord().to_string() && slot["tag"] == "occupied"
         }));
+        // Coord, tag, and a label only on a world a tenant holds.
         for slot in slots {
             let obj = slot.as_object().unwrap();
-            assert_eq!(obj.len(), 2);
             assert!(obj.contains_key("coord"));
             assert!(obj.contains_key("tag"));
+            let held = slot["coord"] == "1:1:1" || slot["coord"] == B_HOME.to_string();
+            assert_eq!(obj.len(), if held { 3 } else { 2 }, "{slot}");
         }
         let planets = json["planets"].as_array().unwrap();
         let other_home = B_HOME.to_string();
@@ -4133,6 +4153,77 @@ mod tests {
         // Both sides log the fight at the defended world.
         assert_eq!(empires["b"].combat_logs.last().unwrap().place, Some(B_HOME));
         assert_eq!(empires["a"].combat_logs.last().unwrap().place, Some(B_HOME));
+    }
+
+    #[test]
+    fn a_raid_report_names_the_world_it_hit_and_the_inbound_names_no_attacker() {
+        let mut shard = raid_session(RAID_START, 0, 3);
+        let mut empires = raid_empires(20, 2);
+        let now = empires["b"].last_tick_unix;
+        empires
+            .get_mut("b")
+            .unwrap()
+            .rename_world(B_HOME, "Kestrel", now)
+            .unwrap();
+        empires
+            .get_mut("a")
+            .unwrap()
+            .rename_world(Coord::HOME, "Forge", now)
+            .unwrap();
+        let arrive = launch(&mut shard, &mut empires);
+        shard.clock.set(arrive - 1);
+        let before = shard.view("b", &mut empires).unwrap().to_json();
+        let inbound = serde_json::to_string(&before["inbound"]).unwrap();
+        assert!(inbound.contains("arrives_at"), "{inbound}");
+        assert!(
+            !inbound.contains("Forge") && !inbound.contains("1:1:1"),
+            "{inbound}"
+        );
+        shard.clock.set(arrive);
+        shard.view("b", &mut empires).unwrap();
+        let a = &empires["a"];
+        let log = a.combat_logs.last().unwrap();
+        assert_eq!(log.place_name.as_deref(), Some("Kestrel"));
+        assert_eq!(log.place_label(a), Some(format!("Kestrel ({B_HOME})")));
+        let b = &empires["b"];
+        assert_eq!(
+            b.combat_logs.last().unwrap().place_label(b),
+            Some(format!("Kestrel ({B_HOME})"))
+        );
+    }
+
+    #[test]
+    fn an_occupied_slot_carries_the_holders_label_and_nothing_else_does() {
+        let mut shard = session(1_000);
+        place_sites(&mut shard);
+        let mut empires = two_empires(tenant_a(1_000), tenant_b(1_000));
+        empires
+            .get_mut("tenant-b")
+            .unwrap()
+            .rename_world(B_HOME, "Kestrel", 1_000)
+            .unwrap();
+        let view = shard.view("tenant-a", &mut empires).unwrap();
+        let label_at = |coord: Coord| {
+            view.occupancy
+                .iter()
+                .find(|slot| slot.coord == coord)
+                .map(|slot| slot.label.clone())
+        };
+        assert_eq!(label_at(B_HOME), Some(Some(format!("Kestrel ({B_HOME})"))));
+        assert_eq!(
+            label_at(Coord::HOME),
+            Some(Some(format!("Home ({})", Coord::HOME)))
+        );
+        assert_eq!(label_at(pirate_coord()), Some(None));
+        assert!(
+            view.occupancy
+                .iter()
+                .filter(|slot| slot.tag == "empty")
+                .all(|slot| slot.label.is_none())
+        );
+        let text = serde_json::to_string(&view.to_json()).unwrap();
+        assert!(text.contains("\"label\":\"Kestrel (1:"), "{text}");
+        assert!(!text.contains("tenant-b"), "{text}");
     }
 
     #[test]

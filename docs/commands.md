@@ -1239,6 +1239,22 @@ Environment: HOSHI_SAVE, HOSHI_BALANCE
 
 Area: cli.
 
+## rename
+
+Name an owned world, shown as Name (coord). Other tenants on a shard see it. No name clears it; home reads Home.
+
+```text
+hoshi rename PLANET [NAME...]
+```
+
+Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair-play restrictions.
+
+Example: `hoshi rename home Forge`
+
+Environment: HOSHI_SAVE, HOSHI_BALANCE
+
+Area: cli.
+
 ## report
 
 Preview and write a redacted local support report.
