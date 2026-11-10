@@ -339,7 +339,7 @@ impl GameState {
         let enemy = hostile_fleet(signal.seed, &self.config.signals);
         let mut rng = signal.seed.wrapping_add(0xA5A5_A5A5_A5A5_A5A5);
         let report = self.resolve_player_attack(self.missions[index].ships, enemy, &mut rng);
-        self.push_combat_log(done_at, report.clone());
+        self.push_combat_log(done_at, dest, report.clone());
         let debris = self.fight_debris(&report);
         self.note_fight_debris(done_at, dest, &report);
         self.signals[at].outcome = Some(SignalOutcome::Fought);

@@ -2568,6 +2568,7 @@ fn state_value(state: &GameState, actor: Actor) -> Value {
         }
         Some(json!({
             "at": log.at,
+            "place": log.place.map(|place| place.to_string()),
             "ships_lost": ships,
             "defences_returned": losses.defences_returned,
             "batteries_missing": losses.batteries_missing,
@@ -6036,6 +6037,7 @@ mod tests {
         let losses = log.raid_losses().unwrap();
         let value = &state_value(&state, Actor::Player)["last_raid"];
         assert_eq!(value["at"], log.at);
+        assert_eq!(value["place"], state.home.to_string());
         assert_eq!(
             value["ships_lost"]["light_fighter"],
             losses.ships_lost.get(ShipKind::LightFighter)

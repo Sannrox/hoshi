@@ -2335,6 +2335,15 @@ impl App {
                     format!("round {}/{}  ", snap.round, report.rounds.max(snap.round)),
                     t.text(),
                 ),
+                // Where it happened; logs saved before schema 66 have no place.
+                Span::styled(
+                    replay
+                        .log
+                        .place
+                        .map(|place| format!("at {place}  "))
+                        .unwrap_or_default(),
+                    t.text(),
+                ),
                 ui::spans::tag(
                     t,
                     &format!("WINNER {}", winner.to_uppercase()),
@@ -5981,6 +5990,28 @@ mod tests {
         assert!(app.away_hidden);
     }
 
+    #[test]
+    fn replay_header_names_where_the_fight_happened() {
+        let mut state = GameState::new(1_000);
+        state.trigger_raid(1_000);
+        let colony = hoshi_core::Coord {
+            galaxy: 1,
+            system: 7,
+            position: 9,
+        };
+        state.combat_logs.last_mut().unwrap().place = Some(colony);
+        let mut app = App::new(state);
+        app.handle_key(KeyCode::Char('r'), 1_000);
+        let text = render_text(&app, 80, 24);
+        assert!(text.contains(&format!("at {colony}")), "{text}");
+
+        app.handle_key(KeyCode::Char('x'), 1_000);
+        app.state.combat_logs.last_mut().unwrap().place = None;
+        app.handle_key(KeyCode::Char('r'), 1_000);
+        let text = render_text(&app, 80, 24);
+        assert!(!text.contains(" at "), "{text}");
+    }
+
     fn fighters(n: u32) -> Fleet {
         let mut ships = Fleet::default();
         ships.add(ShipKind::LightFighter, n);
@@ -5993,6 +6024,7 @@ mod tests {
         let defender = fighters(outpost);
         CombatLog {
             at: 1_000,
+            place: None,
             report: CombatReport {
                 rounds: 1,
                 attacker_before: attacker,
