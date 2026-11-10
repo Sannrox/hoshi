@@ -39,6 +39,7 @@ mod ledger;
 mod maintenance;
 mod market;
 mod moons;
+mod names;
 mod ontology;
 mod orbits;
 mod outposts;
@@ -197,6 +198,10 @@ pub use market::{
     TradeQuote, TraderId,
 };
 pub use moons::{Moon, MoonConfig, MoonError, MoonFacility, PhalanxContact};
+pub use names::{
+    HOME_NAME, MAX_NAME_COLUMNS, NameError, clean_world_name, fit_label, is_unsafe_name_char,
+    label as world_label, name_columns, validate_world_name,
+};
 pub use ontology::{
     ACTIONS as ONTOLOGY_ACTIONS, BalanceLineage, CHISEI_API_VERSION, OBJECT_TYPES,
     ONTOLOGY_PACKAGE, ONTOLOGY_SCHEMA_VERSION, OntologyError, RELATIONS, bundled_ontology,

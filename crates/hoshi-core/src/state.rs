@@ -351,6 +351,9 @@ pub struct GameState {
     pub home_kind: PlanetType,
     pub home_size: u8,
     pub colonies: Vec<Colony>,
+    /// Player-chosen names for home and colonies, each passed
+    /// [`crate::validate_world_name`]. Read through [`GameState::world_label`].
+    pub world_names: BTreeMap<Coord, String>,
     pub missions: Vec<Mission>,
     pub next_mission_id: u64,
     pub routes: Vec<TradeRoute>,
@@ -504,6 +507,7 @@ impl GameState {
             home_kind,
             home_size,
             colonies: Vec::new(),
+            world_names: BTreeMap::new(),
             missions: Vec::new(),
             next_mission_id: 0,
             routes: Vec::new(),
@@ -5128,13 +5132,15 @@ impl GameState {
 
     /// Shard host only: raid mission `id` fought at `at` with `report`.
     /// Survivors keep flying and carry `plunder` home as cargo; a fleet with
-    /// no survivors is gone. The fight is logged on this save too.
+    /// no survivors is gone. The fight is logged on this save too, with
+    /// `place_name`, the defender's name for the world it hit.
     pub(crate) fn land_tenant_raid(
         &mut self,
         id: u64,
         report: CombatReport,
         plunder: Resources,
         at: u64,
+        place_name: Option<String>,
     ) {
         let Some(index) = self.missions.iter().position(|m| m.id == id) else {
             return;
@@ -5142,6 +5148,9 @@ impl GameState {
         let dest = self.missions[index].dest;
         let (winner, rounds, survivors) = (report.winner, report.rounds, report.attacker_after);
         self.push_combat_log(at, dest, report);
+        if let Some(log) = self.combat_logs.last_mut() {
+            log.place_name = place_name;
+        }
         if survivors.is_empty() {
             self.missions.remove(index);
             self.push_event(at, format!("raid on {dest}: fleet lost"));
@@ -5809,6 +5818,7 @@ impl GameState {
         self.combat_logs.push(crate::CombatLog {
             at,
             place: Some(place),
+            place_name: None,
             report,
             raid_plunder: None,
             raid_defence: None,

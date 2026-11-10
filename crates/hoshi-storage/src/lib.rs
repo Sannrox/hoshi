@@ -415,9 +415,19 @@ pub(crate) fn assert_storage_contract(store: &mut dyn Storage) {
         last_rebuild_at: now,
         homeworld: false,
     });
+    let colony_coord = original.colonies[0].coord;
+    original.rename_world(original.home, "Forge", now).unwrap();
+    original
+        .rename_world(colony_coord, "Ridge 星", now)
+        .unwrap();
     store.apply_batch(&original).unwrap();
     let batched = store.load(cfg.clone()).unwrap();
     assert_eq!(batched.colonies.len(), 1, "atomic colony");
+    assert_eq!(batched.world_names, original.world_names, "world names");
+    assert_eq!(
+        batched.world_label(colony_coord),
+        format!("Ridge 星 ({colony_coord})")
+    );
     assert_eq!(
         batched.outposts.len(),
         original.outposts.len(),

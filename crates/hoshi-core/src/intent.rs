@@ -169,6 +169,11 @@ pub enum Intent {
     ChooseStory {
         choice: String,
     },
+    /// Name an owned world. An empty name clears it.
+    RenameWorld {
+        world: Coord,
+        name: String,
+    },
 }
 
 impl Intent {
@@ -206,6 +211,7 @@ impl Intent {
             Intent::Spy { .. } => "spy",
             Intent::Expedition { .. } => "expedition",
             Intent::ChooseStory { .. } => "choose_story",
+            Intent::RenameWorld { .. } => "rename_world",
         }
     }
 }
@@ -231,6 +237,7 @@ pub enum IntentError {
     Incident(crate::IncidentError),
     Maintenance(crate::MaintenanceError),
     Story(crate::StoryError),
+    Name(crate::NameError),
     Save(String),
 }
 
@@ -249,6 +256,7 @@ impl fmt::Display for IntentError {
             IntentError::Incident(e) => write!(f, "{e}"),
             IntentError::Maintenance(e) => write!(f, "{e}"),
             IntentError::Story(e) => write!(f, "{e}"),
+            IntentError::Name(e) => write!(f, "{e}"),
             IntentError::Save(e) => write!(f, "save backend: {e}"),
         }
     }
@@ -471,6 +479,9 @@ fn proposal_id(intent: &Intent, now_unix: u64, tick: u64) -> String {
             origin_sig(*origin)
         ),
         Intent::ChooseStory { choice } => format!("choose_story:{now_unix}:{tick}:{choice}"),
+        Intent::RenameWorld { world, name } => {
+            format!("rename_world:{now_unix}:{tick}:{world}:{name}")
+        }
     }
 }
 
@@ -741,6 +752,9 @@ fn apply_inner(state: &mut GameState, intent: &Intent, now_unix: u64) -> Result<
         Intent::ChooseStory { choice } => state
             .choose_story(choice, now_unix)
             .map_err(IntentError::Story),
+        Intent::RenameWorld { world, name } => state
+            .rename_world(*world, name, now_unix)
+            .map_err(IntentError::Name),
     }
 }
 
@@ -904,6 +918,11 @@ mod tests {
             .as_key(),
             Intent::ChooseStory {
                 choice: "answer".into(),
+            }
+            .as_key(),
+            Intent::RenameWorld {
+                world: Coord::HOME,
+                name: "Forge".into(),
             }
             .as_key(),
         ];

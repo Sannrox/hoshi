@@ -261,6 +261,7 @@
     {
       "coord": "1:1:1",
       "home": true,
+      "label": "Home (1:1:1)",
       "rare": null
     }
   ],
@@ -338,7 +339,7 @@
     "empires": [],
     "enabled": false
   },
-  "save_schema": 66,
+  "save_schema": 67,
   "schema_version": 2,
   "season": null,
   "signals": [],

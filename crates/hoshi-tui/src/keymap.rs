@@ -6,6 +6,7 @@ use ratatui::crossterm::event::KeyCode;
 pub enum Binding {
     CheatConsole,
     Dismantle,
+    RenameWorld,
     Quit,
     Help,
     NextScreen,
@@ -120,12 +121,14 @@ impl Binding {
         Binding::Detail,
         Binding::CheatConsole,
         Binding::Dismantle,
+        Binding::RenameWorld,
     ];
 
     pub fn config_key(self) -> &'static str {
         match self {
             Binding::CheatConsole => "cheat_console",
             Binding::Dismantle => "dismantle",
+            Binding::RenameWorld => "rename_world",
             Binding::Quit => "quit",
             Binding::Help => "help",
             Binding::NextScreen => "next_screen",
@@ -165,6 +168,7 @@ impl Binding {
         match self {
             Binding::CheatConsole => vec![KeyCode::Char('`')],
             Binding::Dismantle => vec![KeyCode::Char('D')],
+            Binding::RenameWorld => vec![KeyCode::Char('n')],
             Binding::Quit => vec![KeyCode::Char('q')],
             Binding::Help => vec![KeyCode::Char('?')],
             Binding::NextScreen => vec![KeyCode::Tab],
@@ -266,6 +270,7 @@ impl HelpContext {
             ],
             HelpContext::Planet => &[
                 Binding::Dismantle,
+                Binding::RenameWorld,
                 Binding::Help,
                 Binding::Quit,
                 Binding::NextScreen,
@@ -667,6 +672,7 @@ impl HelpContext {
             Binding::Cockpit => "bridge dashboard",
             Binding::CheatConsole => "local cheat console",
             Binding::Dismantle => "dismantle one level",
+            Binding::RenameWorld => "rename this world",
             Binding::Detail => "toggle detail panel",
         }
     }

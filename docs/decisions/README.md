@@ -25,3 +25,4 @@
 | [0021](0021-shard-progression-is-per-tenant.md) | Shard progression is per tenant | Accepted; blitz finish line is 0022 |
 | [0022](0022-blitz-shards-run-on-a-scaled-clock-and-end-with-a-winner.md) | Blitz shards run on a scaled clock and end with a winner | Accepted |
 | [0023](0023-planet-raids-keep-sequential-combat-layers.md) | Planet raids keep sequential combat layers | Accepted |
+| [0024](0024-world-names-are-public-on-a-shard.md) | World names are public on a shard | Accepted |

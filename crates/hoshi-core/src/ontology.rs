@@ -68,7 +68,7 @@ pub const RELATIONS: [&str; 17] = [
     "closed-by",
     "reviewed-in",
 ];
-pub const ACTIONS: [&str; 29] = [
+pub const ACTIONS: [&str; 30] = [
     "build",
     "research",
     "launch",
@@ -98,6 +98,7 @@ pub const ACTIONS: [&str; 29] = [
     "spy",
     "expedition",
     "choose_story",
+    "rename_world",
 ];
 
 const ONTOLOGY_JSON: &str = include_str!("../data/ontology/hoshi-v1.json");

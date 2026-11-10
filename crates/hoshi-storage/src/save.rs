@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 66;
+pub const SCHEMA_VERSION: u32 = 67;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -211,6 +211,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM combat_plunder;
          DELETE FROM combat_defence;
          DELETE FROM combat_logs;
+         DELETE FROM world_names;
          DELETE FROM daily_slots;
          DELETE FROM daily_meta;
          DELETE FROM moons;
@@ -729,6 +730,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
         params![state.raids_survived, state.outposts_conquered],
     )?;
     insert_combat_logs(&tx, state)?;
+    insert_world_names(&tx, state)?;
     insert_daily(&tx, state)?;
     insert_moons(&tx, state)?;
     insert_tutorial(&tx, state)?;
@@ -2131,6 +2133,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     load_laws(conn, &mut state)?;
     load_achievements(conn, &mut state)?;
     load_combat_logs(conn, &mut state)?;
+    load_world_names(conn, &mut state)?;
     load_daily(conn, &mut state)?;
     load_moons(conn, &mut state)?;
     load_tutorial(conn, &mut state)?;
@@ -3857,6 +3860,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     if found < 66 {
         migrate_v66(conn)?;
     }
+    if found < 67 {
+        migrate_v67(conn)?;
+    }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
 }
@@ -5113,6 +5119,25 @@ fn load_raid_targets(conn: &Connection) -> Result<(Option<Coord>, Option<Coord>)
         Some((next, event)) => Ok((coord(next)?, coord(event)?)),
         None => Ok((None, None)),
     }
+}
+
+/// v67: player-chosen world names, and the name of another tenant's world a
+/// logged fight hit. Each step is idempotent, so a crash mid-way finishes on
+/// reopen.
+fn migrate_v67(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS world_names (
+            galaxy INTEGER NOT NULL,
+            system INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            PRIMARY KEY (galaxy, system, position)
+        );",
+    )?;
+    if !table_has_column(conn, "combat_logs", "place_name")? {
+        conn.execute_batch("ALTER TABLE combat_logs ADD COLUMN place_name TEXT")?;
+    }
+    Ok(())
 }
 
 /// v66: the world each logged fight happened at. Null for older logs.
@@ -7607,8 +7632,8 @@ fn insert_combat_logs(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Resu
         tx.execute(
             "INSERT INTO combat_logs (id, at, seed, winner, rounds, layered,
                 ground_atk, ground_def, ground_atk_roll, ground_def_roll, ground_winner,
-                place_galaxy, place_system, place_position)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                place_galaxy, place_system, place_position, place_name)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 log_id,
                 log.at as i64,
@@ -7624,6 +7649,7 @@ fn insert_combat_logs(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Resu
                 log.place.map(|c| c.galaxy),
                 log.place.map(|c| c.system),
                 log.place.map(|c| c.position),
+                log.place_name,
             ],
         )?;
         for (frame_i, frame) in log.report.frames.iter().enumerate() {
@@ -7766,6 +7792,7 @@ fn load_combat_logs(conn: &Connection, state: &mut GameState) -> Result<(), Save
         let raid_plunder = load_combat_plunder(conn, id)?;
         let raid_defence = load_combat_defence(conn, id)?;
         let place = load_combat_place(conn, id)?;
+        let place_name = load_combat_place_name(conn, id)?;
         let (attacker_before, defender_before) = frames
             .first()
             .map(|f| (f.attacker, f.defender))
@@ -7777,6 +7804,7 @@ fn load_combat_logs(conn: &Connection, state: &mut GameState) -> Result<(), Save
         state.combat_logs.push(CombatLog {
             at: unix_ts(at)?,
             place,
+            place_name,
             report: CombatReport {
                 rounds: u8::try_from(rounds).map_err(|_| SaveError::Corrupt("combat rounds"))?,
                 attacker_before,
@@ -7793,6 +7821,52 @@ fn load_combat_logs(conn: &Connection, state: &mut GameState) -> Result<(), Save
             raid_defence,
         });
     }
+    Ok(())
+}
+
+/// The recorded name of a foreign world a fight hit. A name that fails
+/// validation is dropped, so the report falls back to the coord.
+fn load_combat_place_name(conn: &Connection, log_id: i64) -> Result<Option<String>, SaveError> {
+    let name: Option<String> = conn.query_row(
+        "SELECT place_name FROM combat_logs WHERE id = ?1",
+        [log_id],
+        |row| row.get(0),
+    )?;
+    Ok(name.filter(|name| hoshi_core::validate_world_name(name).is_ok()))
+}
+
+/// Names of held worlds. A lost colony's name is not written.
+fn insert_world_names(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<(), SaveError> {
+    for (coord, name) in state.held_world_names() {
+        tx.execute(
+            "INSERT INTO world_names (galaxy, system, position, name) VALUES (?1, ?2, ?3, ?4)",
+            params![coord.galaxy, coord.system, coord.position, name],
+        )?;
+    }
+    Ok(())
+}
+
+/// Load world names. Player text reaches other terminals, so a name that
+/// fails validation (a hand-edited save) is dropped and the world shows its
+/// default label.
+fn load_world_names(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
+    let mut stmt = conn.prepare("SELECT galaxy, system, position, name FROM world_names")?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                Coord {
+                    galaxy: row.get(0)?,
+                    system: row.get(1)?,
+                    position: row.get(2)?,
+                },
+                row.get::<_, String>(3)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    state.world_names = rows
+        .into_iter()
+        .filter(|(_, name)| hoshi_core::validate_world_name(name).is_ok())
+        .collect();
     Ok(())
 }
 
@@ -10207,6 +10281,71 @@ label = "Leave it"
     }
 
     #[test]
+    fn world_names_survive_save_and_v66_saves_have_none() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let mut state = GameState::new(0);
+        let home = state.home;
+        state.rename_world(home, "Forge", 0).unwrap();
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.world_label(home), format!("Forge ({home})"));
+        conn.execute_batch(
+            "DROP TABLE world_names;
+             ALTER TABLE combat_logs DROP COLUMN place_name;
+             PRAGMA user_version = 66;",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        let old = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert!(old.world_names.is_empty());
+        assert_eq!(old.world_label(home), format!("Home ({home})"));
+    }
+
+    #[test]
+    fn a_half_applied_v67_migration_finishes_on_reopen() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let mut state = GameState::new(0);
+        state.trigger_raid(0);
+        state.combat_logs.last_mut().unwrap().place_name = Some("Kestrel".into());
+        // A crash after the table landed but before the column and version did.
+        conn.execute_batch(
+            "ALTER TABLE combat_logs DROP COLUMN place_name;
+             PRAGMA user_version = 66;",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.combat_logs, state.combat_logs);
+    }
+
+    #[test]
+    fn an_unsafe_name_in_a_save_is_dropped_on_load() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let mut state = GameState::new(0);
+        state.trigger_raid(0);
+        save_state(&mut conn, &state).unwrap();
+        conn.execute_batch(
+            "INSERT INTO world_names (galaxy, system, position, name)
+                 VALUES (1, 1, 1, 'Forge' || char(27) || '[31m');
+             UPDATE combat_logs SET place_name = 'Kes' || char(8238) || 'trel';",
+        )
+        .unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert!(loaded.world_names.is_empty());
+        assert_eq!(
+            loaded.world_label(loaded.home),
+            format!("Home ({})", loaded.home)
+        );
+        assert!(
+            loaded
+                .combat_logs
+                .iter()
+                .all(|log| log.place_name.is_none())
+        );
+    }
+
+    #[test]
     fn a_half_applied_v66_migration_finishes_on_reopen() {
         let mut conn = open_save(Path::new(":memory:")).unwrap();
         let mut state = GameState::new(0);
@@ -11319,6 +11458,7 @@ label = "Leave it"
         state.combat_logs.push(CombatLog {
             at: 10,
             place: Some(state.home),
+            place_name: None,
             report: CombatReport {
                 rounds: 6,
                 attacker_before: before,
