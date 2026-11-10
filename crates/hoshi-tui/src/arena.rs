@@ -628,11 +628,10 @@ mod tests {
     }
 
     #[test]
-    fn crash_timeout_and_invalid_bots_are_isolated() {
+    fn crash_and_invalid_bots_are_isolated() {
         let dir = unique_dir("isolate");
         let greedy = sample("greedy.sh");
         let crash = write_bot(&dir, "crash.sh", "#!/bin/sh\nexit 1\n");
-        let timeout = write_bot(&dir, "timeout.sh", "#!/bin/sh\nsleep 2\n");
         let invalid = write_bot(
             &dir,
             "invalid.sh",
@@ -647,10 +646,10 @@ mod tests {
         let spec = spec(
             &dir,
             11,
-            vec![greedy, crash, timeout, invalid, malformed, tick],
-            // Well under the timeout bot's 2 s sleep, but long enough that a
-            // busy machine starting sh does not turn a crash into a timeout.
-            1_000,
+            vec![greedy, crash, invalid, malformed, tick],
+            // Every bot here exits at once; the deadline only has to outlast
+            // starting sh on a machine saturated by parallel test runs.
+            60_000,
         );
         let value = run(&spec).expect("arena");
         let rows = value["bots"].as_array().unwrap();
@@ -659,12 +658,23 @@ mod tests {
         assert!(rows[0]["score"].as_f64().unwrap() > 0.0);
         assert_eq!(rows[1]["status"], "crash");
         assert_eq!(rows[1]["score"], 0.0);
-        assert_eq!(rows[2]["status"], "timeout");
+        assert_eq!(rows[2]["status"], "invalid");
         assert_eq!(rows[2]["score"], 0.0);
         assert_eq!(rows[3]["status"], "invalid");
-        assert_eq!(rows[3]["score"], 0.0);
         assert_eq!(rows[4]["status"], "invalid");
-        assert_eq!(rows[5]["status"], "invalid");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bot_past_the_step_deadline_times_out() {
+        let dir = unique_dir("timeout");
+        // `exec` so the kill reaches the sleep itself, which outlives any
+        // deadline a loaded machine could stretch the short one below to.
+        let slow = write_bot(&dir, "slow.sh", "#!/bin/sh\nexec sleep 60\n");
+        let value = run(&spec(&dir, 11, vec![slow], 200)).expect("arena");
+        let row = &value["bots"][0];
+        assert_eq!(row["status"], "timeout");
+        assert_eq!(row["score"], 0.0);
         let _ = fs::remove_dir_all(&dir);
     }
 
