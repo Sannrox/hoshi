@@ -4998,8 +4998,12 @@ mod tests {
             store.load(BalanceConfig::default()).unwrap().last_tick_unix
         };
         let addr = spawn_run(ephemeral(save.clone()));
-        let (status, body) = get_path(addr, "/").unwrap();
-        assert_eq!(status, 404, "{body}");
+        // Not `/`: with the `ui` feature the root redirects to the web UI.
+        let (status, headers, body) = get_full(addr, "/nonesuch", None).unwrap();
+        assert_eq!(
+            status, 404,
+            "status line and headers:\n{headers}\nbody:\n{body}"
+        );
         let after = {
             let store = open_storage(&save).unwrap();
             store.load(BalanceConfig::default()).unwrap().last_tick_unix
