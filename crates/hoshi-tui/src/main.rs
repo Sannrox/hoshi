@@ -10,6 +10,7 @@ mod support_ui;
 mod app;
 mod arena;
 mod b64url;
+mod catchup;
 mod cli;
 mod clip;
 mod cockpit;
@@ -982,10 +983,28 @@ fn play_path(
         state.effective_time(now),
     );
     let before = snapshot_away(&state);
-    let ledger = state.catch_up_ledger(state.effective_time(now));
+    // The terminal opens before catch-up so a long gap shows progress
+    // instead of a blank screen. Every early return below restores it.
+    let mut terminal = ratatui::init();
+    let caught_up_to = state.effective_time(now);
+    let ledger = catchup::run(
+        &mut terminal,
+        &mut state,
+        caught_up_to,
+        title::slot_name(path).as_deref().unwrap_or("save"),
+        now.saturating_sub(before.tick) >= user.away_threshold_secs,
+        &ui::Theme::resolve(
+            ui::Depth::detect(|key| std::env::var(key).ok()),
+            user.high_contrast,
+        ),
+        catchup::REDRAW_EVERY,
+    );
     if user.reset_tutorial {
         state.reset_hints();
-        store.save(&state)?;
+        if let Err(e) = store.save(&state) {
+            ratatui::restore();
+            return Err(e.into());
+        }
         let mut cfg = user.clone();
         cfg.reset_tutorial = false;
         let dir = path.parent().unwrap_or_else(|| Path::new("."));
@@ -1033,19 +1052,19 @@ fn play_path(
         if update::offline(&std::env::args().collect::<Vec<_>>()) {
             bridge_config.github_repos.clear();
         }
-        Some(
-            hoshi_bridge::Bridge::open(bridge_config).map_err(|e| LaunchError {
+        Some(hoshi_bridge::Bridge::open(bridge_config).map_err(|e| {
+            ratatui::restore();
+            LaunchError {
                 message: e.to_string(),
                 exit: 1,
-            })?,
-        )
+            }
+        })?)
     } else {
         None
     };
     #[cfg(not(feature = "bridge"))]
     let _ = open_bridge;
 
-    let mut terminal = ratatui::init();
     let mut last_save_unix = now;
     let mut last_drawn: Option<idle::FrameSig> = None;
     let mut command_since_save = false;

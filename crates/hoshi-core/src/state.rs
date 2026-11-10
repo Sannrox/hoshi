@@ -660,8 +660,19 @@ impl GameState {
     /// [`GameState::catch_up`] that also reports where every planet's
     /// stockpile went. The away summary reads it.
     pub fn catch_up_ledger(&mut self, now_unix: u64) -> crate::CatchUpLedger {
+        self.catch_up_ledger_with(now_unix, &mut |_| {})
+    }
+
+    /// [`GameState::catch_up_ledger`] that calls `on_step` with the time
+    /// reached before each event it applies, so a long catch-up can show
+    /// progress. The callback only observes; the result is the same.
+    pub fn catch_up_ledger_with(
+        &mut self,
+        now_unix: u64,
+        on_step: &mut dyn FnMut(u64),
+    ) -> crate::CatchUpLedger {
         self.ledger = Some(crate::CatchUpLedger::start(self.stockpiles()));
-        self.catch_up(now_unix);
+        self.catch_up_with(now_unix, on_step);
         self.settle_ledger(Term::Other);
         self.ledger.take().unwrap_or_default()
     }
@@ -683,10 +694,15 @@ impl GameState {
     }
 
     pub fn catch_up(&mut self, now_unix: u64) {
+        self.catch_up_with(now_unix, &mut |_| {});
+    }
+
+    fn catch_up_with(&mut self, now_unix: u64, on_step: &mut dyn FnMut(u64)) {
         if now_unix <= self.last_tick_unix {
             return;
         }
         loop {
+            on_step(self.last_tick_unix);
             self.settle_ledger(Term::Other);
             if self.build_queue.first().is_some_and(|job| {
                 job.kind == crate::BuildJobKind::Dismantle && job.started_at.is_none()
@@ -9264,6 +9280,25 @@ mod tests {
         // SAFETY: `ts` is a valid out-pointer for the duration of the call.
         unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
         std::time::Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
+    }
+
+    #[test]
+    fn catch_up_progress_reports_each_step_and_changes_nothing() {
+        let mut cfg = test_config();
+        cfg.raid.enabled = true;
+        let start = GameState::with_config(0, cfg);
+        let now = 7 * 86_400;
+        let mut plain = start.clone();
+        let plain_ledger = plain.catch_up_ledger(now);
+        let mut watched = start.clone();
+        let mut steps = Vec::new();
+        let ledger = watched.catch_up_ledger_with(now, &mut |at| steps.push(at));
+        assert_eq!(ledger, plain_ledger);
+        assert_eq!(watched, plain);
+        assert!(steps.len() > 1, "{steps:?}");
+        assert_eq!(steps[0], start.last_tick_unix);
+        assert!(steps.windows(2).all(|w| w[0] <= w[1]), "{steps:?}");
+        assert!(steps.iter().all(|&at| at <= now), "{steps:?}");
     }
 
     #[test]
