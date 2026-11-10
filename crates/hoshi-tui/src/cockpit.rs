@@ -350,17 +350,20 @@ pub fn parse_panels(spec: &str) -> Vec<Panel> {
 pub fn alerts(state: &GameState, focus: Option<hoshi_core::VictoryPath>) -> Vec<Alert> {
     let mut rows = Vec::new();
     let home = state.home;
-    if let Some(secs) = state.raid_countdown_secs() {
-        let ships = state.scheduled_raid_ships();
+    if let Some(secs) = state.raid_countdown_secs()
+        && let Some(raid) = state.upcoming_raid()
+    {
         rows.push(Alert {
             kind: AlertKind::Raid,
             text: format!("Incoming raid  T-{}", countdown(secs)),
             detail: format!(
-                "{ships} attackers · formation {} · stance {} · pirates → {home}",
+                "{} attackers · formation {} · stance {} · pirates → {}",
+                raid.ships,
                 state.fleet_tactics.formation.as_key(),
-                state.fleet_tactics.stance.as_key()
+                state.fleet_tactics.stance.as_key(),
+                raid.target
             ),
-            jump: Target::Planet(home),
+            jump: Target::Planet(raid.target),
             decision: None,
         });
     }
@@ -817,8 +820,10 @@ fn wrap_words(text: &str, width: usize) -> Vec<String> {
 fn upcoming_lines(state: &GameState, width: usize, t: &Theme) -> Vec<Line<'static>> {
     let now = state.last_tick_unix;
     let mut items: Vec<(u64, String, Intent)> = Vec::new();
-    if let Some(secs) = state.raid_countdown_secs() {
-        items.push((secs, format!("raid → {}", state.home), Intent::Danger));
+    if let Some(secs) = state.raid_countdown_secs()
+        && let Some(raid) = state.upcoming_raid()
+    {
+        items.push((secs, format!("raid → {}", raid.target), Intent::Danger));
     }
     let queues = std::iter::once((state.home, &state.build_queue))
         .chain(state.colonies.iter().map(|c| (c.coord, &c.build_queue)));
@@ -1103,7 +1108,9 @@ fn map_lines(
             }
         }
         if let Some(secs) = state.raid_countdown_secs()
-            && system == state.home.system
+            && let Some(raid) = state.upcoming_raid()
+            && raid.target.galaxy == state.home.galaxy
+            && raid.target.system == system
         {
             labels.push(format!("raid {}", countdown(secs)));
         }
@@ -1926,6 +1933,78 @@ mod tests {
         );
         assert!(raid.detail.contains("stance aggressive"), "{}", raid.detail);
         assert!(raid.detail.contains("formation wedge"), "{}", raid.detail);
+    }
+
+    #[test]
+    fn a_raid_on_a_colony_is_announced_at_the_colony_not_home() {
+        let mut state = GameState::new(1_000);
+        let colony = Coord {
+            galaxy: state.home.galaxy,
+            system: state.home.system % MAP_SYSTEM_MAX + 1,
+            position: 4,
+        };
+        state.colonies.push(hoshi_core::Colony {
+            coord: colony,
+            kind: hoshi_core::PlanetType::Rocky,
+            size: 3,
+            resources: Resources::ZERO,
+            buildings: hoshi_core::Buildings::default(),
+            fleet: hoshi_core::Fleet::default(),
+            defences: hoshi_core::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: Default::default(),
+        });
+        state.next_raid_at = Some(1_120);
+        state.next_raid_target = Some(colony);
+        let rows = alerts(&state, None);
+        let raid = rows
+            .iter()
+            .find(|row| row.text.contains("Incoming raid"))
+            .expect("warning");
+        assert!(
+            raid.detail.contains(&format!("pirates → {colony}")),
+            "{}",
+            raid.detail
+        );
+        assert_eq!(raid.jump, Target::Planet(colony));
+        let flat = |lines: Vec<Line<'static>>| -> Vec<String> {
+            lines
+                .iter()
+                .map(|line| {
+                    line.spans
+                        .iter()
+                        .map(|span| span.content.to_string())
+                        .collect()
+                })
+                .collect()
+        };
+        let upcoming = flat(upcoming_lines(&state, 120, &Theme::default())).concat();
+        assert!(upcoming.contains(&format!("raid → {colony}")), "{upcoming}");
+        assert!(
+            !upcoming.contains(&format!("raid → {}", state.home)),
+            "{upcoming}"
+        );
+        let map = flat(map_lines(
+            &state,
+            colony.system,
+            1,
+            200,
+            400,
+            &Theme::default(),
+        ));
+        let row = |system: u16| {
+            map.iter()
+                .find(|line| {
+                    line.trim_start_matches(['▸', ' '])
+                        .starts_with(&format!("{system} "))
+                })
+                .cloned()
+                .unwrap_or_default()
+        };
+        assert!(row(colony.system).contains("raid "), "{map:?}");
+        assert!(!row(state.home.system).contains("raid "), "{map:?}");
     }
 
     #[test]

@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 64;
+pub const SCHEMA_VERSION: u32 = 65;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -601,12 +601,20 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
         )?;
     }
     tx.execute(
-        "INSERT INTO raids (id, next_raid_at, next_raid_ships, event_raid_at)
-         VALUES (1, ?1, ?2, ?3)",
+        "INSERT INTO raids (id, next_raid_at, next_raid_ships, event_raid_at,
+            next_target_galaxy, next_target_system, next_target_position,
+            event_target_galaxy, event_target_system, event_target_position)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             state.next_raid_at.map(|t| t as i64),
             state.next_raid_ships.map(i64::from),
-            state.event_raid_at.map(|t| t as i64)
+            state.event_raid_at.map(|t| t as i64),
+            state.next_raid_target.map(|c| c.galaxy),
+            state.next_raid_target.map(|c| c.system),
+            state.next_raid_target.map(|c| c.position),
+            state.event_raid_target.map(|c| c.galaxy),
+            state.event_raid_target.map(|c| c.system),
+            state.event_raid_target.map(|c| c.position),
         ],
     )?;
     for (i, event) in state.events.iter().enumerate() {
@@ -2074,6 +2082,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         ),
         None => None,
     };
+    (state.next_raid_target, state.event_raid_target) = load_raid_targets(conn)?;
 
     let mut stmt = conn.prepare("SELECT at, text FROM event_log ORDER BY position")?;
     let rows = stmt.query_map([], |row| {
@@ -3842,6 +3851,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     if found < 64 {
         migrate_v64(conn)?;
     }
+    if found < 65 {
+        migrate_v65(conn)?;
+    }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
 }
@@ -5064,6 +5076,58 @@ fn migrate_v50(conn: &Connection) -> Result<(), SaveError> {
             deuterium REAL NOT NULL CHECK (deuterium >= 0)
         );",
     )?;
+    Ok(())
+}
+
+/// Locked raid targets, scheduled then event. Null columns (v64 and older
+/// saves) load as `None`, so that raid picks its world on landing.
+fn load_raid_targets(conn: &Connection) -> Result<(Option<Coord>, Option<Coord>), SaveError> {
+    type Cols = [Option<u16>; 3];
+    let row: Option<(Cols, Cols)> = conn
+        .query_row(
+            "SELECT next_target_galaxy, next_target_system, next_target_position,
+                event_target_galaxy, event_target_system, event_target_position
+             FROM raids WHERE id = 1",
+            [],
+            |row| {
+                Ok((
+                    [row.get(0)?, row.get(1)?, row.get(2)?],
+                    [row.get(3)?, row.get(4)?, row.get(5)?],
+                ))
+            },
+        )
+        .optional()?;
+    let coord = |cols: Cols| match cols {
+        [Some(galaxy), Some(system), Some(position)] => Ok(Some(Coord {
+            galaxy,
+            system,
+            position,
+        })),
+        [None, None, None] => Ok(None),
+        _ => Err(SaveError::Corrupt("raid target")),
+    };
+    match row {
+        Some((next, event)) => Ok((coord(next)?, coord(event)?)),
+        None => Ok((None, None)),
+    }
+}
+
+/// v65: the world each pending raid locked on when it was scheduled or
+/// brought. Null for older saves, whose raids pick a world on landing.
+fn migrate_v65(conn: &Connection) -> Result<(), SaveError> {
+    let has = conn
+        .prepare("SELECT 1 FROM pragma_table_info('raids') WHERE name = 'next_target_galaxy'")?
+        .exists([])?;
+    if !has {
+        conn.execute_batch(
+            "ALTER TABLE raids ADD COLUMN next_target_galaxy INTEGER;
+             ALTER TABLE raids ADD COLUMN next_target_system INTEGER;
+             ALTER TABLE raids ADD COLUMN next_target_position INTEGER;
+             ALTER TABLE raids ADD COLUMN event_target_galaxy INTEGER;
+             ALTER TABLE raids ADD COLUMN event_target_system INTEGER;
+             ALTER TABLE raids ADD COLUMN event_target_position INTEGER;",
+        )?;
+    }
     Ok(())
 }
 
@@ -10091,6 +10155,39 @@ label = "Leave it"
             loaded.story_pending.as_ref().map(|p| p.event_id.as_str()),
             Some("alpha")
         );
+    }
+
+    #[test]
+    fn locked_raid_targets_survive_save_and_v64_saves_have_none() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let mut state = GameState::new(100);
+        let colony = Coord {
+            galaxy: 1,
+            system: 3,
+            position: 5,
+        };
+        state.next_raid_target = Some(colony);
+        state.event_raid_at = Some(160);
+        state.event_raid_target = Some(state.home);
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.next_raid_target, Some(colony));
+        assert_eq!(loaded.event_raid_target, Some(state.home));
+        conn.execute_batch(
+            "ALTER TABLE raids DROP COLUMN next_target_galaxy;
+             ALTER TABLE raids DROP COLUMN next_target_system;
+             ALTER TABLE raids DROP COLUMN next_target_position;
+             ALTER TABLE raids DROP COLUMN event_target_galaxy;
+             ALTER TABLE raids DROP COLUMN event_target_system;
+             ALTER TABLE raids DROP COLUMN event_target_position;
+             PRAGMA user_version = 64;",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        let old = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(old.next_raid_target, None);
+        assert_eq!(old.event_raid_target, None);
+        assert_eq!(old.next_raid_at, state.next_raid_at);
     }
 
     #[test]
