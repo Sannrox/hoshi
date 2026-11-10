@@ -57,6 +57,14 @@ pub struct GameEvent {
     pub text: String,
 }
 
+/// The next raid to land: when, how many attackers, and the world it hits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpcomingRaid {
+    pub at: u64,
+    pub ships: u32,
+    pub target: Coord,
+}
+
 /// Session glance for an offline gap. Not saved; catch-up fills it for the away overlay.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LogisticsGlance {
@@ -354,9 +362,15 @@ pub struct GameState {
     /// Pirate light fighters in the scheduled raid, fixed when it was
     /// scheduled. `None` sizes the raid from the home's strength on landing.
     pub next_raid_ships: Option<u32>,
+    /// World the scheduled raid will hit, fixed when it was scheduled so the
+    /// warning names the world it lands on. `None` (older saves) or a world no
+    /// longer owned picks the weakest world on landing.
+    pub next_raid_target: Option<Coord>,
     /// A raid a story choice, standing change or bridge event brought. It
     /// lands on its own and leaves the scheduled raid where it was.
     pub event_raid_at: Option<u64>,
+    /// World the event raid will hit, fixed when it was brought.
+    pub event_raid_target: Option<Coord>,
     pub events: Vec<GameEvent>,
     pub activity: ActivityTracker,
     pub last_tick_unix: u64,
@@ -503,7 +517,9 @@ impl GameState {
                 None
             },
             next_raid_ships: None,
+            next_raid_target: None,
             event_raid_at: None,
+            event_raid_target: None,
             events: Vec::new(),
             activity: ActivityTracker::default(),
             last_tick_unix: now_unix,
@@ -584,9 +600,10 @@ impl GameState {
         state.apply_prestige_start();
         state.sync_daily(now_unix);
         state.sync_maintenance_assets(now_unix);
-        // Size the first raid from the starting home, prestige bonuses included.
+        // Size and aim the first raid from the starting home, prestige bonuses included.
         if state.next_raid_at.is_some() {
             state.next_raid_ships = Some(state.live_raid_ships());
+            state.next_raid_target = Some(state.raid_target());
         }
         state
     }
@@ -5277,7 +5294,11 @@ impl GameState {
     }
 
     /// Bring an event raid at `at`, or keep an earlier one already coming.
+    /// A new one is aimed now; one already coming keeps its target.
     fn bring_event_raid(&mut self, at: u64) {
+        if self.event_raid_at.is_none() {
+            self.event_raid_target = Some(self.raid_target());
+        }
         self.event_raid_at = Some(self.event_raid_at.map_or(at, |e| e.min(at)));
     }
 
@@ -5286,16 +5307,26 @@ impl GameState {
     /// never open the interactive tactical round.
     fn land_event_raid(&mut self, done_at: u64) {
         self.event_raid_at = None;
+        let locked = self.event_raid_target.take();
+        let dest = self.locked_raid_dest(locked);
         // A scheduled battle still open finishes first, outcome and all,
         // before the event raid meets the fleet it left.
         self.finish_pending_tactical();
-        let held = (self.next_raid_at, self.next_raid_ships);
+        let held = (
+            self.next_raid_at,
+            self.next_raid_ships,
+            self.next_raid_target,
+        );
         self.next_raid_ships = None;
-        let _ = self.resolve_raid_now(done_at);
+        let _ = self.resolve_raid_now(done_at, dest);
         // Resolving reschedules; put the scheduled raid back unless the
         // landing turned raids off (a pact) or none was scheduled.
         if held.0.is_some() && self.next_raid_at.is_some() {
-            (self.next_raid_at, self.next_raid_ships) = held;
+            (
+                self.next_raid_at,
+                self.next_raid_ships,
+                self.next_raid_target,
+            ) = held;
         }
     }
 
@@ -5321,8 +5352,9 @@ impl GameState {
 
     fn resolve_raid_at(&mut self, done_at: u64) -> CombatReport {
         self.finish_pending_tactical();
+        let dest = self.locked_raid_dest(self.next_raid_target);
         // Interactive rounds stay a home-fleet pause. A colony raid auto-resolves.
-        if self.raid_target() == self.home && self.interactive_tactics && self.defences.is_empty() {
+        if dest == self.home && self.interactive_tactics && self.defences.is_empty() {
             self.begin_home_raid_pending(done_at);
             if let Some(pending) = &self.pending_tactical {
                 return CombatReport {
@@ -5339,7 +5371,7 @@ impl GameState {
                 };
             }
         }
-        self.resolve_raid_now(done_at)
+        self.resolve_raid_now(done_at, dest)
     }
 
     fn begin_home_raid_pending(&mut self, done_at: u64) {
@@ -5566,8 +5598,7 @@ impl GameState {
         )
     }
 
-    fn resolve_raid_now(&mut self, done_at: u64) -> CombatReport {
-        let dest = self.raid_target();
+    fn resolve_raid_now(&mut self, done_at: u64, dest: Coord) -> CombatReport {
         let pirates = self.pirate_fleet();
         let parked = self.fleet_at(dest).unwrap_or_default();
         let defences = self.defences_at(dest).unwrap_or_default();
@@ -5838,6 +5869,30 @@ impl GameState {
         out
     }
 
+    /// The world a raid locked on lands on: that world while still owned,
+    /// else (older saves, a lost colony) the weakest world now.
+    fn locked_raid_dest(&self, locked: Option<Coord>) -> Coord {
+        locked
+            .filter(|coord| self.owned_coords().contains(coord))
+            .unwrap_or_else(|| self.raid_target())
+    }
+
+    /// The next raid to land, scheduled or event-brought, with the world it
+    /// will hit. Warnings and the raid itself read the same target.
+    pub fn upcoming_raid(&self) -> Option<UpcomingRaid> {
+        let at = self.upcoming_raid_at()?;
+        let target = if self.event_raid_at == Some(at) {
+            self.event_raid_target
+        } else {
+            self.next_raid_target
+        };
+        Some(UpcomingRaid {
+            at,
+            ships: self.scheduled_raid_ships(),
+            target: self.locked_raid_dest(target),
+        })
+    }
+
     /// Weakest owned world by parked fleet plus defence points. A tie keeps home.
     pub(crate) fn raid_target(&self) -> Coord {
         let mut best = self.home;
@@ -5906,9 +5961,13 @@ impl GameState {
     /// its size, so building during the countdown never grows it.
     pub(crate) fn set_raid_schedule(&mut self, at: Option<u64>) {
         match at {
-            None => self.next_raid_ships = None,
+            None => {
+                self.next_raid_ships = None;
+                self.next_raid_target = None;
+            }
             Some(_) if self.next_raid_at.is_none() || self.next_raid_ships.is_none() => {
                 self.next_raid_ships = Some(self.live_raid_ships());
+                self.next_raid_target = Some(self.raid_target());
             }
             Some(_) => {}
         }
@@ -6885,6 +6944,7 @@ impl GameState {
                 // A pact cancels a pending event raid as well.
                 self.set_raid_schedule(None);
                 self.event_raid_at = None;
+                self.event_raid_target = None;
             }
             (None, Some(wait)) => {
                 self.set_raid_schedule(Some(at.saturating_add(wait)));
@@ -10699,12 +10759,109 @@ modifiers = []
         assert!(!text.contains(&format!(" at {colony}")), "{text}");
     }
 
+    /// Home with ten fighters, an unarmed colony, and a raid scheduled from
+    /// that state (so it locks on the colony) landing at 40.
+    fn raid_locked_on_colony() -> (GameState, Coord) {
+        let mut state = quiet_home();
+        state.fleet.add(ShipKind::LightFighter, 10);
+        let colony = unarmed_colony(&mut state);
+        state.set_raid_schedule(None);
+        state.set_raid_schedule(Some(40));
+        (state, colony)
+    }
+
+    #[test]
+    fn a_scheduled_raid_lands_on_the_world_it_named_after_ships_move() {
+        let (mut state, colony) = raid_locked_on_colony();
+        assert_eq!(state.next_raid_target, Some(colony));
+        assert_eq!(state.upcoming_raid().map(|raid| raid.target), Some(colony));
+        // The whole home fleet moves to the colony during the countdown.
+        let moved = std::mem::take(&mut state.fleet);
+        state.colonies[0].fleet = moved;
+        assert_eq!(state.raid_target(), state.home);
+        assert_eq!(state.upcoming_raid().map(|raid| raid.target), Some(colony));
+        let mut step = state.clone();
+        state.catch_up(40);
+        for now in 1..=40 {
+            step.catch_up(now);
+        }
+        let text = raid_text(&state);
+        assert!(text.contains(&format!(" at {colony}")), "{text}");
+        assert_eq!(raid_text(&step), text);
+        assert_eq!(step.colonies[0].fleet, state.colonies[0].fleet);
+    }
+
+    #[test]
+    fn moving_a_scheduled_raid_keeps_its_target() {
+        let (mut state, colony) = raid_locked_on_colony();
+        state.colonies[0].fleet.add(ShipKind::LightFighter, 50);
+        state.set_raid_schedule(Some(80));
+        assert_eq!(state.next_raid_target, Some(colony));
+    }
+
+    #[test]
+    fn an_event_raid_keeps_the_target_it_was_brought_with() {
+        let mut state = quiet_home();
+        state.fleet.add(ShipKind::LightFighter, 10);
+        let colony = unarmed_colony(&mut state);
+        state.next_raid_at = None;
+        state.bring_event_raid(100);
+        assert_eq!(state.event_raid_target, Some(colony));
+        state.colonies[0].fleet.add(ShipKind::LightFighter, 50);
+        state.bring_event_raid(60);
+        assert_eq!(state.event_raid_at, Some(60));
+        assert_eq!(state.upcoming_raid().map(|raid| raid.target), Some(colony));
+        state.catch_up(60);
+        let text = raid_text(&state);
+        assert!(text.contains(&format!(" at {colony}")), "{text}");
+        assert_eq!(state.event_raid_target, None);
+    }
+
+    #[test]
+    fn a_lost_target_or_an_unlocked_raid_picks_the_weakest_world_on_landing() {
+        let (mut lost, colony) = raid_locked_on_colony();
+        lost.colonies.retain(|c| c.coord != colony);
+        assert_eq!(
+            lost.upcoming_raid().map(|raid| raid.target),
+            Some(lost.home)
+        );
+        lost.catch_up(40);
+        assert!(!raid_text(&lost).contains(" at "));
+
+        let (mut unlocked, colony) = raid_locked_on_colony();
+        unlocked.next_raid_target = None;
+        assert_eq!(
+            unlocked.upcoming_raid().map(|raid| raid.target),
+            Some(colony)
+        );
+        unlocked.catch_up(40);
+        assert!(raid_text(&unlocked).contains(&format!(" at {colony}")));
+    }
+
+    #[test]
+    fn interactive_rounds_open_only_for_a_raid_locked_on_home() {
+        let (mut colony_raid, _) = raid_locked_on_colony();
+        colony_raid.interactive_tactics = true;
+        colony_raid.catch_up(40);
+        assert!(colony_raid.pending_tactical.is_none());
+
+        let mut home_raid = quiet_home();
+        home_raid.fleet.add(ShipKind::LightFighter, 10);
+        home_raid.interactive_tactics = true;
+        home_raid.set_raid_schedule(None);
+        home_raid.set_raid_schedule(Some(40));
+        assert_eq!(home_raid.next_raid_target, Some(home_raid.home));
+        home_raid.catch_up(40);
+        assert!(home_raid.pending_tactical.is_some());
+    }
+
     #[test]
     fn colony_raid_catch_up_matches_steps() {
         let mut gap = quiet_home();
         gap.fleet.add(ShipKind::LightFighter, 10);
         let colony = unarmed_colony(&mut gap);
-        gap.next_raid_at = Some(40);
+        gap.set_raid_schedule(None);
+        gap.set_raid_schedule(Some(40));
         let mut step = gap.clone();
         gap.catch_up(40);
         for now in 1..=40 {
@@ -12656,6 +12813,9 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         let mut state = GameState::with_config(0, cfg);
         plant_colony(&mut state, neighbor());
         state.fleet.add(ShipKind::SmallCargo, 2);
+        // Re-aim the first raid: the unarmed colony is now the weakest world.
+        state.set_raid_schedule(None);
+        state.set_raid_schedule(Some(1800));
         state
             .schedule_route(
                 state.home,

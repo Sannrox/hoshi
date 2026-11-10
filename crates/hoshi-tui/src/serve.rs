@@ -3938,8 +3938,12 @@ mod tests {
         if let Some(raid) = state.get("raid")
             && raid.is_object()
         {
+            // `target` is the world the bridge warning already names.
             for key in raid.as_object().unwrap().keys() {
-                assert_eq!(key, "lands_in_secs", "hidden raid field {key}");
+                assert!(
+                    key == "lands_in_secs" || key == "target",
+                    "hidden raid field {key}"
+                );
             }
         }
         let (tick_get, body) = handle_v1(&save, "GET", "/v1/tick", b"");

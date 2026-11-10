@@ -2545,10 +2545,16 @@ fn resources_json(r: hoshi_core::Resources) -> Value {
 }
 
 fn state_value(state: &GameState, actor: Actor) -> Value {
-    let raid = state.upcoming_raid_at().map(|at| {
-        json!({
-            "lands_in_secs": at.saturating_sub(state.last_tick_unix),
-        })
+    // The target appears once the warning does, as on the bridge; before
+    // that only the landing time is known.
+    let raid = state.upcoming_raid().map(|raid| {
+        let mut value = json!({
+            "lands_in_secs": raid.at.saturating_sub(state.last_tick_unix),
+        });
+        if state.raid_countdown_secs().is_some() {
+            value["target"] = json!(raid.target.to_string());
+        }
+        value
     });
     // The same counts the continue screen and raid alert lead with.
     let last_raid = state.combat_logs.iter().rev().find_map(|log| {
@@ -5984,6 +5990,37 @@ mod tests {
         assert_eq!(after["resources"]["iron"], before);
         let _ = std::fs::remove_file(&save);
         let _ = std::fs::remove_file(&log);
+    }
+
+    #[test]
+    fn state_names_the_world_the_next_raid_will_hit() {
+        let mut state = GameState::new(0);
+        let target = hoshi_core::Coord {
+            galaxy: 1,
+            system: 3,
+            position: 5,
+        };
+        state.colonies.push(hoshi_core::Colony {
+            coord: target,
+            kind: hoshi_core::PlanetType::Rocky,
+            size: 3,
+            resources: hoshi_core::Resources::ZERO,
+            buildings: hoshi_core::Buildings::default(),
+            fleet: hoshi_core::Fleet::default(),
+            defences: hoshi_core::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: Default::default(),
+        });
+        state.next_raid_target = Some(target);
+        state.next_raid_at = Some(state.config.raid.min_warning_secs + 1);
+        let before = &state_value(&state, Actor::Player)["raid"];
+        assert!(before.get("target").is_none(), "{before}");
+        state.next_raid_at = Some(state.config.raid.min_warning_secs);
+        let raid = &state_value(&state, Actor::Player)["raid"];
+        assert_eq!(raid["target"], "1:3:5");
+        assert_eq!(state.upcoming_raid().map(|raid| raid.target), Some(target));
     }
 
     #[test]

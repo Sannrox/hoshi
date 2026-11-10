@@ -257,7 +257,8 @@
     "unlocked_species": []
   },
   "raid": {
-    "lands_in_secs": 3000
+    "lands_in_secs": 3000,
+    "target": "1:1:1"
   },
   "rates": {
     "deuterium": 0.0,
@@ -320,7 +321,7 @@
     "empires": [],
     "enabled": false
   },
-  "save_schema": 64,
+  "save_schema": 65,
   "schema_version": 2,
   "season": null,
   "signals": [],

@@ -413,7 +413,7 @@
     "empires": [],
     "enabled": false
   },
-  "save_schema": 64,
+  "save_schema": 65,
   "schema_version": 2,
   "season": null,
   "signals": [],

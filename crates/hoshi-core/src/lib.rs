@@ -257,7 +257,7 @@ pub use simulate::{
     simulate_victory_paths_with_rivals, tactics_no_combo_dominates,
 };
 pub use species::{Flagship, SpeciesCatalog, SpeciesError, SpeciesRun, SpeciesSpec};
-pub use state::{GameEvent, GameState, LogisticsGlance, ResourceKind, Resources};
+pub use state::{GameEvent, GameState, LogisticsGlance, ResourceKind, Resources, UpcomingRaid};
 pub use story::{PendingStory, StoryCatalog, StoryChoice, StoryError, StoryEvent};
 pub use tactics::{
     Admiral, AdmiralTrait, FleetTactics, Formation, PendingTactical, Stance, TacticalPlan,
