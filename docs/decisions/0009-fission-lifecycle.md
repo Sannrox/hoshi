@@ -18,7 +18,9 @@ complex exists. Building specifications can require research levels.
 The reactor caps output at available cooling. Catch-up integrates fabrication
 and burnup together under fuel starvation, rather than scheduling each small
 fuel delivery as a world event. Shutdowns from failure, servicing or exhausted
-fuel/pool capacity retain a timestamp and rated thermal power per planet.
+fuel retain a timestamp and rated thermal power per planet. A full spent-fuel
+pool no longer shuts the reactor down: dry casking (#501) drains it, and a full
+pool throttles output to the cask rate the way cooling does.
 Schema 46 stores those values transactionally alongside the existing generic
 building, goods and research rows. Decay heat survives restart and repair.
 

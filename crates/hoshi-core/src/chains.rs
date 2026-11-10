@@ -109,6 +109,10 @@ impl ChainConfig {
                 produced.insert(good.id.as_str());
             }
         }
+        // Reactor burnup, outside the recipes, fills the spent-fuel pool.
+        if good_ids.contains("spent_fuel") {
+            produced.insert("spent_fuel");
+        }
         let mut recipe_ids = BTreeSet::new();
         for recipe in &self.recipes {
             if !recipe.energy.is_finite() || recipe.energy < 0.0 {

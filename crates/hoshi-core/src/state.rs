@@ -6271,6 +6271,11 @@ impl GameState {
                 }
             }
         }
+        if consume.contains_key("spent_fuel") {
+            // Reactor burnup fills the pool that casking drains.
+            *produce.entry("spent_fuel".into()).or_insert(0.0) += self.reactor_output_at(coord)
+                * self.config.fission_reactor.reactor_fuel_per_energy_hour;
+        }
         let mut out = Vec::new();
         for (id, used) in consume {
             let made = produce.get(&id).copied().unwrap_or(0.0);
@@ -7170,7 +7175,7 @@ impl GameState {
         let boost = self.prod_boost_mult();
         let home_staff = self.governor_factor(self.home);
         if self.config.chains.enabled() {
-            self.produce_chains(hours, factor, boost, from, now_unix);
+            self.produce_chains(hours, factor, boost, (from, now_unix), &reactor_power);
         } else {
             let mut home_capped = Resources::ZERO;
             for kind in ResourceKind::ALL {
@@ -7323,16 +7328,12 @@ impl GameState {
             let fuel = goods.entry("reactor_fuel".into()).or_default();
             *fuel = (*fuel - burn).max(0.0);
             let empty = *fuel <= 1e-12;
-            let spent = goods.entry("spent_fuel".into()).or_default();
-            *spent += burn;
-            let spent = *spent;
-            let level = self
-                .buildings_at(coord)
-                .map(|b| b.fission_reactor)
-                .unwrap_or(0);
-            if (empty && self.reactor_output_at(coord) <= 1e-9)
-                || spent + 1e-12 >= self.config.fission_reactor.pool_capacity(level)
-            {
+            if !self.config.chains.enabled() {
+                // With chains, produce_chains banked the burnup before casking.
+                *goods.entry("spent_fuel".into()).or_default() += burn;
+            }
+            // A full pool only throttles; running out of fuel scrams.
+            if empty && self.reactor_output_at(coord) <= 1e-9 {
                 self.note_reactor_shutdown(coord, now_unix);
             }
         }
@@ -7343,7 +7344,17 @@ impl GameState {
         self.settle_ledger(Term::Other);
     }
 
-    fn produce_chains(&mut self, hours: f64, home_factor: f64, boost: f64, from: u64, to: u64) {
+    /// Run every site's recipes for `hours`. Each site's reactor burnup from
+    /// `reactor_power` enters its spent-fuel pool just before its recipes, so
+    /// casking can clear it in the same span; output was already sized to that.
+    fn produce_chains(
+        &mut self,
+        hours: f64,
+        home_factor: f64,
+        boost: f64,
+        (from, to): (u64, u64),
+        reactor_power: &[(Coord, f64)],
+    ) {
         let chains = self.config.chains.clone();
         let home_deposits = self.chain_deposits(self.home_kind, self.galaxy_seed, self.home);
         let home_buildings = self
@@ -7387,6 +7398,7 @@ impl GameState {
             (from, to),
             self.home,
         );
+        self.bank_spent_fuel(self.home, hours, reactor_power);
         let tally = apply_recipes(
             RecipeRun {
                 config: &chains,
@@ -7490,6 +7502,7 @@ impl GameState {
                 (from, to),
                 coord,
             );
+            self.bank_spent_fuel(coord, hours, reactor_power);
             let colony = &mut self.colonies[i];
             let tally = apply_recipes(
                 RecipeRun {
@@ -7520,6 +7533,26 @@ impl GameState {
             );
             self.ledger_recipes(coord, tally);
         }
+    }
+
+    /// Add the spent fuel `coord`'s reactor makes over `hours` to its pool.
+    fn bank_spent_fuel(&mut self, coord: Coord, hours: f64, reactor_power: &[(Coord, f64)]) {
+        let Some(&(_, power)) = reactor_power.iter().find(|(at, _)| *at == coord) else {
+            return;
+        };
+        if power <= 0.0 {
+            return;
+        }
+        let burn = power * hours * self.config.fission_reactor.reactor_fuel_per_energy_hour;
+        let goods = if coord == self.home {
+            &mut self.goods
+        } else {
+            let Some(colony) = self.colonies.iter_mut().find(|c| c.coord == coord) else {
+                return;
+            };
+            &mut colony.goods
+        };
+        *goods.entry("spent_fuel".into()).or_default() += burn;
     }
 
     fn ledger_cap(&mut self, coord: Coord, lost: Resources) {
@@ -7985,6 +8018,9 @@ impl GameState {
     fn chain_net_per_hour(&self, site: ChainSite<'_>, kind: ResourceKind) -> f64 {
         let mut stock = *site.resources;
         let mut bag = site.goods.clone();
+        // An hour of burnup reaches the pool before casking, as in the tick.
+        *bag.entry("spent_fuel".into()).or_default() += self.reactor_output_at(site.coord)
+            * self.config.fission_reactor.reactor_fuel_per_energy_hour;
         let before = stock.get(kind);
         let deposits = self.chain_deposits(site.planet, self.galaxy_seed, site.coord);
         let now = self.last_tick_unix;

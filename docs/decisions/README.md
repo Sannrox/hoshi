@@ -10,7 +10,7 @@
 | [0006](0006-storage-trait.md) | Persistence through a Storage trait | Accepted, amended by 0018 |
 | [0007](0007-optional-chisei-backend.md) | Optional in-process Chisei backend | Accepted; TUI-client rejection superseded by 0017 |
 | [0008](0008-human-help-catalog.md) | Human help from the command catalog | Accepted |
-| [0009](0009-fission-lifecycle.md) | Fuelled fission lifecycle in core | Accepted |
+| [0009](0009-fission-lifecycle.md) | Fuelled fission lifecycle in core | Accepted; full-pool shutdown replaced by a cask-rate throttle (#501) |
 | [0010](0010-signed-managed-updates.md) | Signed metadata and managed updates | Accepted |
 | [0011](0011-dismantling-in-the-build-queue.md) | Powered dismantling in the build queue | Accepted |
 | [0012](0012-local-support-diagnostics.md) | Local support diagnostics | Accepted |

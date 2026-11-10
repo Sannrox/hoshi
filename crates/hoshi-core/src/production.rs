@@ -45,6 +45,7 @@ impl LimitingFactor {
             Self::Heat => "build radiators to reject heat".into(),
             Self::Pollution => "build scrubbers to dump pollution".into(),
             Self::Input { good } => format!("feed {} into the chain", good.replace('_', " ")),
+            Self::FullBuffer { good } if good == "spent_fuel" => "steel for casks".into(),
             Self::FullBuffer { good } => {
                 format!("upgrade storage or spend {}", good.replace('_', " "))
             }
@@ -65,13 +66,15 @@ impl LimitingFactor {
 
     fn rank(&self) -> u8 {
         match self {
-            Self::Energy => 0,
-            Self::Heat => 1,
-            Self::Pollution => 2,
-            Self::Input { .. } => 3,
-            Self::FullBuffer { .. } => 4,
-            Self::Transport { .. } => 5,
-            Self::None => 6,
+            // A full pool throttles the reactor, which is why energy runs short.
+            Self::FullBuffer { good } if good == "spent_fuel" => 0,
+            Self::Energy => 1,
+            Self::Heat => 2,
+            Self::Pollution => 3,
+            Self::Input { .. } => 4,
+            Self::FullBuffer { .. } => 5,
+            Self::Transport { .. } => 6,
+            Self::None => 7,
         }
     }
 }
@@ -201,6 +204,9 @@ impl GameState {
         if self.config.chains.enabled() {
             let mut resources = self.resources_at(coord).copied().unwrap_or(Resources::ZERO);
             let mut goods = self.goods_at(coord);
+            // An hour of burnup reaches the pool before casking, as in the tick.
+            *goods.entry("spent_fuel".into()).or_default() += self.reactor_output_at(coord)
+                * self.config.fission_reactor.reactor_fuel_per_energy_hour;
             let mut steps = Vec::new();
             for recipe in &self.config.chains.recipes {
                 if buildings.get(recipe.building) == 0 {
@@ -225,6 +231,7 @@ impl GameState {
                 }
                 steps.push(flow);
             }
+            steps.extend(self.reactor_flow(coord, buildings));
             return steps;
         }
         let energy = self.site_energy_factor(coord, buildings, kind);
@@ -344,7 +351,7 @@ impl GameState {
         }
     }
 
-    fn goods_at(&self, coord: Coord) -> BTreeMap<String, f64> {
+    pub(crate) fn goods_at(&self, coord: Coord) -> BTreeMap<String, f64> {
         if coord == self.home {
             self.goods.clone()
         } else {
@@ -410,17 +417,14 @@ impl GameState {
                 let need = *qty * scale;
                 let have = available(resources, goods, id);
                 if have + 1e-9 < need {
-                    if matches!(limiter, LimitingFactor::None) {
+                    // Casking idles when the pool is nearly empty; that is health.
+                    if matches!(limiter, LimitingFactor::None) && id != "spent_fuel" {
                         limiter = self
                             .transport_for(coord, id)
                             .unwrap_or_else(|| LimitingFactor::Input { good: id.clone() });
                     }
-                    limited = if need > 0.0 {
-                        (have / need).clamp(0.0, 1.0)
-                    } else {
-                        0.0
-                    };
-                    break;
+                    // The scarcest input sets the rate, as in apply_recipes.
+                    limited = limited.min((have / need).clamp(0.0, 1.0));
                 }
             }
         }
@@ -449,6 +453,38 @@ impl GameState {
             buffers,
             limited_by: limiter,
         }
+    }
+
+    /// The fission reactor's burn: fuel in, spent fuel into the pool. A pool
+    /// at capacity is the reactor's limit; casking sets its output.
+    fn reactor_flow(&self, coord: Coord, buildings: crate::Buildings) -> Option<RecipeFlow> {
+        if buildings.fission_reactor == 0 {
+            return None;
+        }
+        let goods = self.goods_at(coord);
+        let fuel = goods.get("reactor_fuel").copied().unwrap_or(0.0);
+        let spent = goods.get("spent_fuel").copied().unwrap_or(0.0);
+        let config = &self.config.fission_reactor;
+        let burn = self.reactor_output_at(coord) * config.reactor_fuel_per_energy_hour;
+        let limited_by = if self.spent_pool_limits_output(coord) {
+            LimitingFactor::FullBuffer {
+                good: "spent_fuel".into(),
+            }
+        } else if fuel <= 1e-9 && burn <= 1e-12 {
+            LimitingFactor::Input {
+                good: "reactor_fuel".into(),
+            }
+        } else {
+            LimitingFactor::None
+        };
+        Some(RecipeFlow {
+            id: "burn_fuel".into(),
+            planet: coord,
+            inputs_per_hour: BTreeMap::from([("reactor_fuel".into(), burn)]),
+            outputs_per_hour: BTreeMap::from([("spent_fuel".into(), burn)]),
+            buffers: BTreeMap::from([("reactor_fuel".into(), fuel), ("spent_fuel".into(), spent)]),
+            limited_by,
+        })
     }
 
     fn transport_for(&self, dest: Coord, good: &str) -> Option<LimitingFactor> {
