@@ -6,6 +6,7 @@ use crate::ships::{Fleet, ShipKind};
 use crate::state::{GameState, ResourceKind, Resources};
 use serde::Deserialize;
 use std::fmt;
+use std::sync::LazyLock;
 
 const DEFAULT: &str = include_str!("../data/automation.toml");
 
@@ -61,8 +62,12 @@ pub struct AutomationTier {
 }
 
 impl AutomationCatalog {
-    pub fn bundled() -> Self {
-        Self::parse(DEFAULT).expect("bundled automation.toml")
+    /// The catalog shipped in the binary, parsed once per process. Energy
+    /// accounting reads it on every flow computation, so it must not reparse.
+    pub fn bundled() -> &'static Self {
+        static BUNDLED: LazyLock<AutomationCatalog> =
+            LazyLock::new(|| AutomationCatalog::parse(DEFAULT).expect("bundled automation.toml"));
+        &BUNDLED
     }
 
     pub fn parse(raw: &str) -> Result<Self, AutomationError> {
@@ -210,7 +215,7 @@ pub struct RulePreview {
 }
 
 impl GameState {
-    pub fn automation_catalog(&self) -> AutomationCatalog {
+    pub fn automation_catalog(&self) -> &'static AutomationCatalog {
         AutomationCatalog::bundled()
     }
 
@@ -593,6 +598,14 @@ mod tests {
 
     fn state_at(now: u64) -> GameState {
         GameState::with_seed(now, BalanceConfig::default(), 1)
+    }
+
+    #[test]
+    fn bundled_catalog_is_parsed_once_and_shared() {
+        assert!(std::ptr::eq(
+            AutomationCatalog::bundled(),
+            GameState::new(0).automation_catalog()
+        ));
     }
 
     #[test]
