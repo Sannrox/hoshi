@@ -32,6 +32,15 @@ impl PlanetType {
             _ => return None,
         })
     }
+
+    /// Inclusive 1-based slot positions this band covers on the star map.
+    pub fn slot_range(self) -> std::ops::RangeInclusive<u16> {
+        match self {
+            PlanetType::Rocky => 1..=8,
+            PlanetType::Ice => 9..=12,
+            PlanetType::GasGiant => 13..=16,
+        }
+    }
 }
 
 /// Production multipliers added through [`crate::GameState::modifier_for`].
@@ -201,6 +210,10 @@ mod tests {
         );
         assert_eq!(a, b);
         assert_eq!(a.0, PlanetType::GasGiant);
+        assert!(PlanetType::Rocky.slot_range().contains(&1));
+        assert!(PlanetType::Rocky.slot_range().contains(&8));
+        assert!(PlanetType::Ice.slot_range().contains(&9));
+        assert!(PlanetType::GasGiant.slot_range().contains(&16));
         let inner = planet_profile(
             7,
             Coord {

@@ -920,6 +920,7 @@ mod tests {
             attack: false,
             invade: false,
             spy: false,
+            survey: false,
             site_id: None,
             recycle: false,
             deploy: false,

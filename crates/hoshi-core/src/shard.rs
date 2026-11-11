@@ -648,7 +648,7 @@ pub enum ShardError {
         identity: String,
         retry_after_secs: u64,
     },
-    /// A spy dest is `Empty` or a `Site`: nothing there to read.
+    /// A spy dest is a `Site`: nothing there to read. Empty slots survey.
     NothingToSpy {
         coord: Coord,
         kind: Occupancy,
@@ -1460,9 +1460,12 @@ impl<C: Clock> ShardSession<C> {
     /// the host reads the target planet's stock and parked fleet at that
     /// moment and writes a noisy report with the current sensor error,
     /// delivered after light-time from the spy's home (see
-    /// [`catch_up_empires`]). An `Outpost` dest is today's local spy.
-    /// `You` is refused as [`ShardError::SameEmpire`]; `Empty` and `Site` as
-    /// [`ShardError::NothingToSpy`]. A refusal launches nothing.
+    /// [`catch_up_empires`]). An `Outpost` dest is today's local spy. An
+    /// `Empty` dest surveys that system on this tenant's save (exact,
+    /// permanent, no detection). The mark lives on that save, not as intel
+    /// facts and not on [`ShardView`]: occupancy is the target list, not the
+    /// map, and intel ages. `You` is refused as [`ShardError::SameEmpire`];
+    /// `Site` as [`ShardError::NothingToSpy`]. A refusal launches nothing.
     pub fn spy(
         &mut self,
         empires: &mut BTreeMap<String, GameState>,
@@ -1495,13 +1498,13 @@ impl<C: Clock> ShardSession<C> {
         let kind = occupancy(identity, empires, self.commons.sites(), cmd.dest);
         match kind {
             Occupancy::You => return Err(ShardError::SameEmpire),
-            Occupancy::Empty | Occupancy::Site => {
+            Occupancy::Site => {
                 return Err(ShardError::NothingToSpy {
                     coord: cmd.dest,
                     kind,
                 });
             }
-            Occupancy::Tenant | Occupancy::Outpost => {}
+            Occupancy::Empty | Occupancy::Tenant | Occupancy::Outpost => {}
         }
         self.admit(identity, real)?;
         let state = empires
@@ -1514,6 +1517,13 @@ impl<C: Clock> ShardSession<C> {
                 .launch_tenant_spy(cmd.ships, cmd.dest, cmd.speed_percent, now)
                 .map_err(|e| ShardError::Intent(IntentError::Fleet(e)))?;
         } else {
+            // Outpost spy stays local: this save must already hold that
+            // outpost. An empty dest surveys. Both use Intent::Spy.
+            if kind == Occupancy::Outpost && state.outpost(cmd.dest).is_none() {
+                return Err(ShardError::Intent(IntentError::Fleet(
+                    crate::FleetError::UnknownOutpost,
+                )));
+            }
             let intent = Intent::Spy {
                 origin: None,
                 ships: cmd.ships,
@@ -1682,7 +1692,8 @@ impl<C: Clock> ShardSession<C> {
     /// other tenant's raid still flying at home and the expiring decision
     /// with those inbounds as candidates. It has no RNG, pirate timer, or
     /// other tenant's parked fleet and stockpile, and an inbound names no
-    /// attacker. Local play does not call this.
+    /// attacker. Surveyed deposits stay on the tenant save (`surveyed_systems`);
+    /// this view does not list them. Local play does not call this.
     /// Occupancy reads the session's [`ShardCommons`]. The site list stays
     /// empty until those sites exist.
     pub fn view(
@@ -2318,7 +2329,7 @@ fn next_stop(empires: &BTreeMap<String, GameState>, now: u64) -> Option<u64> {
                     mission.colonize
                         || mission.recycle
                         || tenant_raid(state, mission)
-                        || (mission.spy && aims_at_tenant(state, mission))
+                        || (mission.spy && !mission.survey && aims_at_tenant(state, mission))
                 })
                 .filter_map(action_at)
                 .filter(|&at| at > state.last_tick_unix && at <= now)
@@ -3191,6 +3202,7 @@ mod tests {
             attack: false,
             invade: false,
             spy: false,
+            survey: false,
             site_id: None,
             recycle: false,
             deploy: false,
@@ -3930,19 +3942,12 @@ mod tests {
     }
 
     #[test]
-    fn spy_refuses_own_home_empty_and_site_and_keeps_the_outpost_path() {
+    fn spy_refuses_own_home_and_site_and_keeps_the_outpost_path() {
         let mut shard = session(SPY_START);
         let mut empires = spy_empires();
         place_sites(&mut shard);
         let refused = [
             (Coord::HOME, ShardError::SameEmpire),
-            (
-                empty_slot(),
-                ShardError::NothingToSpy {
-                    coord: empty_slot(),
-                    kind: Occupancy::Empty,
-                },
-            ),
             (
                 site_coord(),
                 ShardError::NothingToSpy {
@@ -3962,16 +3967,39 @@ mod tests {
             assert_eq!(empires["tenant-a"].fleet.get(ShipKind::EspionageProbe), 4);
         }
         let a = empires.get_mut("tenant-a").unwrap();
-        assert_eq!(
-            a.launch_spy(
-                a.home,
-                spy_cmd(B_HOME, "local").ships,
-                B_HOME,
-                100,
-                SPY_START
-            ),
-            Err(crate::FleetError::UnknownOutpost)
-        );
+        a.launch_spy(
+            a.home,
+            spy_cmd(B_HOME, "local").ships,
+            B_HOME,
+            100,
+            SPY_START,
+        )
+        .unwrap();
+        assert!(a.missions[0].survey);
+        assert_eq!(a.missions[0].dest, B_HOME);
+    }
+
+    #[test]
+    fn empty_slot_spy_surveys_the_system_for_that_tenant() {
+        let mut shard = session(SPY_START);
+        let mut empires = spy_empires();
+        let dest = Coord {
+            galaxy: 1,
+            system: 5,
+            position: 4,
+        };
+        shard.spy(&mut empires, spy_cmd(dest, "survey")).unwrap();
+        let mission = &empires["tenant-a"].missions[0];
+        assert!(mission.survey);
+        assert!(mission.spy);
+        let arrive = mission.phase_ends_at;
+        shard.clock.set(arrive);
+        shard.view("tenant-a", &mut empires).unwrap();
+        let a = &empires["tenant-a"];
+        assert!(a.system_surveyed(dest.galaxy, dest.system));
+        assert!(a.deposits_known_at(dest).is_some());
+        assert!(a.spy_reports.is_empty());
+        assert!(!empires["tenant-b"].system_surveyed(dest.galaxy, dest.system));
     }
 
     /// Tenant-a at home and tenant-b at `B_HOME`, each with fuel, `ships`, and

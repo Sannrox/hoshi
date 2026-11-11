@@ -144,14 +144,17 @@ stockpiled, and overflow drops as soon as capacity catches up.
 ## Intel
 
 A probe is a ship. It flies on the same distance and drive rules as any other
-mission. What it learns is a score from how many probes arrived and the
-espionage research gap, not a narrative reveal. Detection and destruction are
-seeded chances from config. The snapshot is taken on site; it becomes visible
-at home after light-time `distance / c` along the difference of heliocentric
-radii. Measurement error is `error_base + error_per_au * range_au / quality`.
-A detected wave can be fed a biased decoy. Stored reports age; later attacks
-read those snapshots, not live omniscience. Two reports of the same field both
-stay visible.
+mission. Orbit class of every slot is known without a flight. Deposits of
+unowned slots stay unknown until a probe surveys that system: the reading is
+exact and permanent, with no detection or losses, and owned systems already
+count. What a probe learns at an outpost is a score from how many probes
+arrived and the espionage research gap, not a narrative reveal. Detection and
+destruction are seeded chances from config. The snapshot is taken on site; it
+becomes visible at home after light-time `distance / c` along the difference of
+heliocentric radii. Measurement error is
+`error_base + error_per_au * range_au / quality`. A detected wave can be fed a
+biased decoy. Stored reports age; later attacks read those snapshots, not live
+omniscience. Two reports of the same field both stay visible.
 
 ## Combat maths
 

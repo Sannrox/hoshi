@@ -22,6 +22,25 @@ pub(super) struct TableView {
     pub selected: Option<usize>,
 }
 
+/// Slot-column header: band names sit above the slots they cover.
+fn slot_band_header() -> String {
+    let mut out = String::new();
+    for kind in [
+        hoshi_core::PlanetType::Rocky,
+        hoshi_core::PlanetType::Ice,
+        hoshi_core::PlanetType::GasGiant,
+    ] {
+        let width = 3 * kind.slot_range().count();
+        let label = match kind {
+            hoshi_core::PlanetType::Rocky => "rocky",
+            hoshi_core::PlanetType::Ice => "ice",
+            hoshi_core::PlanetType::GasGiant => "gas giant",
+        };
+        out.push_str(&format!("{label:<width$}"));
+    }
+    out
+}
+
 /// What one legacy bonus gives a new run, from its config fields.
 fn bonus_effect(spec: &hoshi_core::PrestigeBonusSpec) -> String {
     let mut parts = Vec::new();
@@ -1799,6 +1818,23 @@ impl App {
             ("galaxy", cursor.galaxy.to_string()),
             ("cursor", cursor.to_string()),
         ])];
+        let kind = self.state.slot_type(cursor);
+        let type_name = self.state.display_name(kind.as_key());
+        let deposits = match self.state.deposits_known_at(cursor) {
+            Some(map) => {
+                let parts: Vec<String> = map
+                    .iter()
+                    .map(|(id, richness)| format!("{} {richness:.2}", self.state.display_name(id)))
+                    .collect();
+                if parts.is_empty() {
+                    "deposits none".into()
+                } else {
+                    parts.join(", ")
+                }
+            }
+            None => "deposits unknown".into(),
+        };
+        head.push(Line::styled(format!("{type_name} · {deposits}"), t.muted()));
         let mut legend_spans = Vec::new();
         for (glyph, name, intent) in legend {
             legend_spans.push(Span::styled(
@@ -1904,8 +1940,13 @@ impl App {
                 }
             }
             self.fit_world_notes(&mut labels, &worlds, notes_width);
+            let sys = if self.state.system_surveyed(cursor.galaxy, system) {
+                format!("*{system}")
+            } else {
+                system.to_string()
+            };
             rows.push(vec![
-                Line::styled(system.to_string(), t.label()),
+                Line::styled(sys, t.label()),
                 Line::from(slots),
                 Line::styled(labels.join("  "), t.muted()),
             ]);
@@ -1915,7 +1956,7 @@ impl App {
             table: Some(TableView {
                 columns: vec![
                     Column::right("sys", 3),
-                    Column::left("slots", MAP_SLOT_COUNT * 3),
+                    Column::left(&slot_band_header(), MAP_SLOT_COUNT * 3),
                     Column::fill("notes"),
                 ],
                 rows,

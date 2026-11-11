@@ -126,8 +126,9 @@ config keys (`metal_mine`, `light_fighter`). Queue item is `0`, `build:0`, or
 running job (as many entries as the build queue); prerequisites count queued
 levels. `cancel research` refunds the newest queued entry, then the running job. Mission is `attack`, `invade`, `colonize`, `expedition`, or `spy`. Ships look like
 `light_fighter:2`. `attack` fights an outpost's defences; `invade` lands troop
-transports and is refused while defences remain. `spy` sends espionage probes and
-writes a report that arrives after light-time; `state` lists arrived reports with
+transports and is refused while defences remain. `spy` sends espionage probes: an outpost writes a report that arrives after
+light-time; an unowned empty slot surveys that system for exact deposits, with
+no detection or losses. `state` lists arrived reports with
 age, source and confidence and attaches the latest arrived report to each
 outpost so attack and invade can read it. `intel` lists every arrived fact;
 `intel provenance <coord> <field>` prints the chain for one field. Pending
