@@ -2,6 +2,7 @@
 
 use crate::chains::{Recipe, add_good, available, component_kind, take_good};
 use crate::fleets::{Coord, MissionPhase};
+use crate::planets::PlanetType;
 use crate::state::{GameState, ResourceKind, Resources};
 use std::collections::BTreeMap;
 
@@ -64,6 +65,19 @@ impl LimitingFactor {
         }
     }
 
+    /// Row cell. [`Self::as_key`] stays the JSON and notification token.
+    pub fn row_label(&self, name: impl Fn(&str) -> String) -> String {
+        match self {
+            Self::None => "ok".into(),
+            Self::Energy => "energy".into(),
+            Self::Heat => "heat".into(),
+            Self::Pollution => "pollution".into(),
+            Self::Input { good } => format!("input {}", name(good)),
+            Self::FullBuffer { good } => format!("buffer {}", name(good)),
+            Self::Transport { good, .. } => format!("transport {}", name(good)),
+        }
+    }
+
     fn rank(&self) -> u8 {
         match self {
             // A full pool throttles the reactor, which is why energy runs short.
@@ -105,6 +119,16 @@ pub struct ProductionReport {
     pub water_ice_per_hour: f64,
     pub helium_3_per_hour: f64,
     pub limited_by: LimitingFactor,
+}
+
+impl ProductionReport {
+    /// The stalled step whose limiter ranks worst, if any.
+    pub fn worst_step(&self) -> Option<&RecipeFlow> {
+        self.steps
+            .iter()
+            .filter(|step| step.limited_by != LimitingFactor::None)
+            .min_by_key(|step| step.limited_by.rank())
+    }
 }
 
 impl GameState {
@@ -579,6 +603,92 @@ impl GameState {
             });
         }
         steps
+    }
+
+    /// Production-row limit text. Names the missing good when there is one.
+    pub fn limiter_row_label(&self, limiter: &LimitingFactor) -> String {
+        limiter.row_label(|id| self.display_name(id))
+    }
+
+    /// Two lines for the selected production row: what is missing, then one step.
+    pub fn limiter_hint(&self, limiter: &LimitingFactor, planet: Coord) -> [String; 2] {
+        match limiter {
+            LimitingFactor::Input { good } => self.input_limit_hint(good, planet),
+            other => [other.suggestion(), String::new()],
+        }
+    }
+
+    fn input_limit_hint(&self, good: &str, planet: Coord) -> [String; 2] {
+        let name = self.display_name(good);
+        let quoted =
+            ResourceKind::from_key(good).is_some_and(|kind| ResourceKind::QUOTED.contains(&kind));
+        let extractor = self.config.chains.recipes.iter().find(|recipe| {
+            recipe.deposit.as_deref() == Some(good)
+                || (recipe.deposit.is_some() && recipe.outputs.contains_key(good))
+        });
+        let producer = self
+            .config
+            .chains
+            .recipes
+            .iter()
+            .find(|recipe| recipe.deposit.is_none() && recipe.outputs.contains_key(good));
+        if let Some(recipe) = extractor {
+            let here = self.deposits_at(planet).get(good).copied().unwrap_or(0.0);
+            let line1 = format!(
+                "Need {name}. {} extracts it (deposit {here:.2}).",
+                recipe.building
+            );
+            let line2 = self
+                .richer_deposit_hint(good, planet, here)
+                .or_else(|| quoted.then(|| format!("Buy {name} on the market.")))
+                .unwrap_or_else(|| format!("Build or upgrade the {}.", recipe.building));
+            return [line1, line2];
+        }
+        if let Some(recipe) = producer {
+            let line1 = format!(
+                "Need {name}. {} makes it ({}).",
+                recipe.building,
+                self.display_name(&recipe.id)
+            );
+            let line2 = if quoted {
+                format!("Buy {name} on the market.")
+            } else {
+                format!("Build or run the {}.", recipe.building)
+            };
+            return [line1, line2];
+        }
+        [
+            format!("Need {name}."),
+            if quoted {
+                format!("Buy {name} on the market.")
+            } else {
+                format!("Feed {name} into the chain.")
+            },
+        ]
+    }
+
+    fn richer_deposit_hint(&self, good: &str, planet: Coord, here: f64) -> Option<String> {
+        let (kind, rich) = self
+            .config
+            .chains
+            .deposits
+            .iter()
+            .filter_map(|(kind, table)| table.get(good).copied().map(|rich| (*kind, rich)))
+            .max_by(|a, b| a.1.total_cmp(&b.1))?;
+        if rich <= here * 2.0 + 1e-9 || self.planet_kind(planet) == Some(kind) {
+            return None;
+        }
+        let slots = kind.slot_range();
+        let worlds = match kind {
+            PlanetType::Rocky => "Rocky worlds",
+            PlanetType::Ice => "Ice worlds",
+            PlanetType::GasGiant => "Gas giants",
+        };
+        Some(format!(
+            "{worlds} in slots {}-{} are richer.",
+            slots.start(),
+            slots.end()
+        ))
     }
 }
 
@@ -1174,5 +1284,58 @@ mod tests {
             "{:?}",
             home.steps
         );
+    }
+
+    #[test]
+    fn input_hint_names_extractor_and_richer_slots_when_the_deposit_is_thin() {
+        let state = GameState::new(1_000);
+        assert_eq!(state.planet_kind(state.home), Some(PlanetType::Rocky));
+        let limiter = LimitingFactor::Input {
+            good: "water_ice".into(),
+        };
+        assert_eq!(state.limiter_row_label(&limiter), "input water ice");
+        let [need, next] = state.limiter_hint(&limiter, state.home);
+        let text = format!("{need} {next}");
+        assert!(need.contains("deuterium synthesizer"), "{need}");
+        assert!(need.contains("deposit"), "{need}");
+        assert!(next.contains("Ice worlds"), "{next}");
+        assert!(next.contains("9"), "{next}");
+        assert!(next.contains("12"), "{next}");
+        assert!(!text.to_lowercase().contains("buy"), "{text}");
+    }
+
+    #[test]
+    fn input_hint_names_the_recipe_that_makes_a_refined_good() {
+        let state = GameState::new(1_000);
+        let limiter = LimitingFactor::Input {
+            good: "steel".into(),
+        };
+        assert_eq!(state.limiter_row_label(&limiter), "input steel");
+        let [need, next] = state.limiter_hint(&limiter, state.home);
+        assert!(need.contains("iron mine"), "{need}");
+        assert!(need.contains("smelt steel"), "{need}");
+        assert!(next.contains("iron mine"), "{next}");
+        assert!(!format!("{need} {next}").to_lowercase().contains("buy"));
+    }
+
+    #[test]
+    fn input_hint_offers_buying_only_for_quoted_market_goods() {
+        let state = GameState::new(1_000);
+        let silicon = LimitingFactor::Input {
+            good: "silicon".into(),
+        };
+        let [need, next] = state.limiter_hint(&silicon, state.home);
+        assert!(need.contains("silicon mine"), "{need}");
+        assert!(next.to_lowercase().contains("buy"), "{next}");
+        let ore = LimitingFactor::Input {
+            good: "iron_ore".into(),
+        };
+        let [need, next] = state.limiter_hint(&ore, state.home);
+        assert!(!format!("{need} {next}").to_lowercase().contains("buy"));
+        let deuterium = LimitingFactor::Input {
+            good: "deuterium".into(),
+        };
+        let [_, next] = state.limiter_hint(&deuterium, state.home);
+        assert!(next.to_lowercase().contains("buy"), "{next}");
     }
 }
