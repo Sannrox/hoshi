@@ -490,7 +490,8 @@ rare_earths = 0.0
 water_ice = 0.25
 helium_3 = 0.0
 deuterium = 0.25
-energy = -0.10
+# Flux is the ice-orbit tax. Cold panels are not worse than warm ones.
+energy = 0.0
 
 [planet_types.gas_giant]
 iron = 0.0

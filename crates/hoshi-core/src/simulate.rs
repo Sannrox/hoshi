@@ -98,14 +98,17 @@ pub struct EnergyRecoveryRow {
 }
 
 fn energy_recovery_matrix(config: &BalanceConfig) -> Vec<EnergyRecoveryRow> {
-    [PlanetType::Rocky, PlanetType::Ice, PlanetType::GasGiant]
+    let representative = [PlanetType::Rocky, PlanetType::Ice, PlanetType::GasGiant]
         .into_iter()
         .flat_map(|planet| {
             [1, 8, 15]
                 .into_iter()
                 .map(move |slot| energy_recovery(config.clone(), planet, slot))
-        })
-        .collect()
+        });
+    let ice_floor = PlanetType::Ice
+        .slot_range()
+        .map(|slot| energy_recovery(config.clone(), PlanetType::Ice, slot));
+    representative.chain(ice_floor).collect()
 }
 
 pub fn energy_recovery(
@@ -121,21 +124,42 @@ pub fn energy_recovery(
         system: 1,
         position: slot,
     };
-    let size = match planet {
-        PlanetType::Rocky => 160,
-        PlanetType::Ice => 100,
-        PlanetType::GasGiant => 25,
+    let ice_floor = planet == PlanetType::Ice && PlanetType::Ice.slot_range().contains(&slot);
+    let size = if ice_floor {
+        crate::planet_profile(state.galaxy_seed, coord, state.generator_version).1
+    } else {
+        match planet {
+            PlanetType::Rocky => 160,
+            PlanetType::Ice => 100,
+            PlanetType::GasGiant => 25,
+        }
+    };
+    let mut buildings = state.config.starting_buildings;
+    if ice_floor {
+        // Ice floor is deuterium under the cap, not the home mine package.
+        buildings.metal_mine = 0;
+        buildings.crystal_mine = 0;
+    }
+    // Ice floor: cargo can pay construction; mines are not the contract.
+    let resources = if ice_floor {
+        crate::Resources::from_parts(1e8, 1e8, 1e8)
+    } else {
+        state.config.starting_resources
     };
     if slot == 1 {
         state.home_kind = planet;
         state.home_size = size;
+        state.buildings = buildings;
+        if ice_floor {
+            state.resources = resources;
+        }
     } else {
         state.colonies.push(Colony {
             coord,
             kind: planet,
             size,
-            resources: state.config.starting_resources,
-            buildings: state.config.starting_buildings,
+            resources,
+            buildings,
             fleet: Fleet::default(),
             defences: crate::DefenceGrid::default(),
             build_queue: Vec::new(),
@@ -266,6 +290,7 @@ impl SimReport {
             .first()
             .and_then(|row| row.elapsed_secs)
             .is_some_and(|secs| secs <= self.pacing.energy_recovery_secs)
+            && self.ice_energy_floor_ok()
             && self.first_upgrade_ok()
             && self.mine_goal_ok()
             && self.bridge_ok()
@@ -274,6 +299,20 @@ impl SimReport {
             && self.ladder_ok()
             && self.frontier_ok()
             && self.raided_shipyard_ok()
+    }
+
+    fn ice_energy_floor_ok(&self) -> bool {
+        let rows: Vec<_> = self
+            .energy_recovery
+            .iter()
+            .filter(|row| {
+                row.planet == PlanetType::Ice && PlanetType::Ice.slot_range().contains(&row.slot)
+            })
+            .collect();
+        !rows.is_empty()
+            && rows
+                .iter()
+                .all(|row| row.elapsed_secs.is_some() && !row.cap_binds)
     }
 
     pub fn frontier_ok(&self) -> bool {
@@ -734,7 +773,7 @@ mod energy_tests {
         for row in &rows {
             println!("{row:?}");
         }
-        assert_eq!(rows.len(), 9);
+        assert_eq!(rows.len(), 13);
         assert!(
             rows[0]
                 .elapsed_secs
@@ -745,6 +784,93 @@ mod energy_tests {
         for row in rows.iter().filter(|row| row.slot == 1) {
             assert!(!row.cap_binds, "{row:?}");
             assert!(row.elapsed_secs.is_some(), "{row:?}");
+        }
+        for row in rows.iter().filter(|row| {
+            row.planet == PlanetType::Ice && PlanetType::Ice.slot_range().contains(&row.slot)
+        }) {
+            assert!(row.elapsed_secs.is_some(), "{row:?}");
+            assert!(!row.cap_binds, "{row:?}");
+        }
+    }
+
+    fn generated_ice(state: &mut GameState, position: u16) -> crate::Coord {
+        let coord = crate::Coord {
+            galaxy: 1,
+            system: 1,
+            position,
+        };
+        let (kind, size) = crate::planet_profile(state.galaxy_seed, coord, state.generator_version);
+        assert_eq!(kind, PlanetType::Ice, "slot {position}");
+        state.colonies.push(Colony {
+            coord,
+            kind,
+            size,
+            resources: crate::Resources::ZERO,
+            buildings: Buildings::default(),
+            fleet: Fleet::default(),
+            defences: crate::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: BTreeMap::new(),
+        });
+        coord
+    }
+
+    #[test]
+    fn ice_slots_run_deuterium_under_the_solar_cap() {
+        for position in PlanetType::Ice.slot_range() {
+            let mut state = GameState::new(0);
+            state.config.raid = crate::RaidConfig::inactive();
+            let coord = generated_ice(&mut state, position);
+            let cap = state.max_solar_level(coord).unwrap();
+            let colony = state.colonies.last_mut().unwrap();
+            colony.buildings.solar_plant = cap;
+            colony.buildings.deuterium_synthesizer = 1;
+            let balance = state.energy_balance_at(coord).unwrap();
+            assert!(
+                balance >= 0.0,
+                "slot {position} cap {cap} balance {balance}"
+            );
+            assert!(
+                state
+                    .goods_at(coord)
+                    .get("reactor_fuel")
+                    .copied()
+                    .unwrap_or(0.0)
+                    <= 1e-12
+            );
+        }
+    }
+
+    #[test]
+    fn unfueled_ice_fission_is_not_poorer_than_no_reactor() {
+        for position in PlanetType::Ice.slot_range() {
+            let mut state = GameState::new(0);
+            state.config.raid = crate::RaidConfig::inactive();
+            let coord = generated_ice(&mut state, position);
+            let cap = state.max_solar_level(coord).unwrap();
+            {
+                let colony = state.colonies.last_mut().unwrap();
+                colony.buildings.solar_plant = cap;
+                colony.buildings.deuterium_synthesizer = 1;
+            }
+            let without = state.energy_balance_at(coord).unwrap();
+            state.colonies.last_mut().unwrap().buildings.fission_reactor = 1;
+            state.catch_up(3_600);
+            let with = state.energy_balance_at(coord).unwrap();
+            assert!(
+                with + 1e-9 >= without,
+                "slot {position} without {without} with {with}"
+            );
+            assert!(
+                state
+                    .goods_at(coord)
+                    .get("reactor_fuel")
+                    .copied()
+                    .unwrap_or(0.0)
+                    <= 1e-12
+            );
         }
     }
 

@@ -112,7 +112,7 @@ impl Default for PlanetTypeCatalog {
                 water_ice: 0.25,
                 helium_3: 0.0,
                 deuterium: 0.25,
-                energy: -0.10,
+                energy: 0.0,
             },
             gas_giant: PlanetTypeBonus {
                 iron: 0.0,

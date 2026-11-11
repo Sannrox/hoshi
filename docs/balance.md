@@ -315,6 +315,18 @@ rated power.
 upgrades, cannot raise them. The inspector, build refusal and advisor explain
 when the next power source must be a reactor.
 
+Ice worlds spawn in slots 9–12. Inverse-square flux is the orbit tax (about
+31%–23% at those slots). `planet_types.ice.energy` is 0: cold panels are not a
+second solar penalty on top of that flux. A generated ice colony can run
+deuterium synthesizer 1 at or below its planet-size solar cap. Construction
+iron can arrive as cargo; three level-1 mines are not the ice floor. An
+unfueled fission reactor does not draw fabrication energy, so building one from
+local deposits cannot make the planet poorer than leaving it off. The advisor
+does not tell the player to add fission on that unfueled ice world. `energy_recovery`
+includes ice at slots 9–12; those rows must recover with the synthesizer.
+Rocky home still meets `energy_recovery_secs`. First-reactor hours are unchanged:
+ice and solar knobs did not move rocky home.
+
 `hoshi simulate` includes an `energy_recovery` scenario: build the first
 synthesizer, then only solar until supply covers demand. It uses ordinary
 construction, spending and catch-up with raids off. The home target defaults to
