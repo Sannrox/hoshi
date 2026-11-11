@@ -3555,14 +3555,25 @@ impl App {
         match self.screen {
             Screen::Planet => {
                 let coord = self.selected_coord();
-                match self.state.cancel_build_on(coord, 0, now_unix) {
+                // Newest queued entry first; the running job only when it is alone.
+                let index = self
+                    .state
+                    .queue_at(coord)
+                    .map(|queue| queue.len().saturating_sub(1))
+                    .unwrap_or(0);
+                match self.state.cancel_build_on(coord, index, now_unix) {
                     Ok(_) => self.status.clear(),
                     Err(e) => self.status = e.to_string(),
                 }
             }
             Screen::Shipyard => {
                 let coord = self.selected_coord();
-                match self.state.cancel_ships_at(coord, 0, now_unix) {
+                let index = self
+                    .state
+                    .ship_queue_at(coord)
+                    .map(|queue| queue.len().saturating_sub(1))
+                    .unwrap_or(0);
+                match self.state.cancel_ships_at(coord, index, now_unix) {
                     Ok(_) => self.status.clear(),
                     Err(e) => self.status = e.to_string(),
                 }
@@ -7006,6 +7017,136 @@ mod tests {
         assert_eq!(app.screen, Screen::Planet);
         app.handle_key(KeyCode::Char('x'), 1_000);
         assert!(app.state.build_queue.is_empty());
+    }
+
+    #[test]
+    fn planet_x_cancels_the_newest_queued_build() {
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 2,
+        };
+        let mut state = GameState::new(1_000);
+        state.colonies.push(Colony {
+            coord: dest,
+            kind: PlanetType::Rocky,
+            size: 120,
+            resources: Resources::from_parts(100_000.0, 100_000.0, 100_000.0),
+            buildings: Buildings::default(),
+            fleet: Fleet::default(),
+            defences: hoshi_core::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: std::collections::BTreeMap::new(),
+        });
+        let mut app = App::new(state);
+        app.open(Screen::Planet);
+        app.handle_key(KeyCode::Char(']'), 1_000);
+        assert_eq!(app.selected_coord(), dest);
+        app.handle_key(KeyCode::Enter, 1_000);
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert_eq!(app.state.colonies[0].build_queue.len(), 2, "{}", app.status);
+        let running = app.state.colonies[0].build_queue[0].building;
+        let queued_paid = app.state.colonies[0].build_queue[1].paid;
+        let before = app.state.colonies[0].resources;
+        let home_before = app.state.resources;
+        app.handle_key(KeyCode::Char('x'), 1_000);
+        assert_eq!(app.state.colonies[0].build_queue.len(), 1, "{}", app.status);
+        assert_eq!(app.state.colonies[0].build_queue[0].building, running);
+        assert_eq!(
+            app.state.colonies[0].resources,
+            before.saturating_add(queued_paid)
+        );
+        assert_eq!(app.state.resources, home_before);
+        let running_paid = app.state.colonies[0].build_queue[0].paid;
+        let before = app.state.colonies[0].resources;
+        app.handle_key(KeyCode::Char('x'), 1_000);
+        assert!(
+            app.state.colonies[0].build_queue.is_empty(),
+            "{}",
+            app.status
+        );
+        assert_eq!(
+            app.state.colonies[0].resources,
+            before.saturating_add(running_paid)
+        );
+        assert_eq!(app.state.resources, home_before);
+    }
+
+    #[test]
+    fn shipyard_x_cancels_the_newest_queued_batch() {
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 2,
+        };
+        let mut state = GameState::new(1_000);
+        state.tech_levels.insert("combustion_drive".into(), 1);
+        state.colonies.push(Colony {
+            coord: dest,
+            kind: PlanetType::Rocky,
+            size: 120,
+            resources: Resources::from_parts(100_000.0, 100_000.0, 100_000.0),
+            buildings: Buildings {
+                shipyard: 1,
+                ..Buildings::default()
+            },
+            fleet: Fleet::default(),
+            defences: hoshi_core::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: std::collections::BTreeMap::new(),
+        });
+        let mut app = App::new(state);
+        app.open(Screen::Shipyard);
+        app.handle_key(KeyCode::Char(']'), 1_000);
+        assert_eq!(app.selected_coord(), dest);
+        app.selected = ShipKind::ALL
+            .iter()
+            .position(|k| *k == ShipKind::LightFighter)
+            .unwrap();
+        app.handle_key(KeyCode::Enter, 1_000);
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert_eq!(app.state.colonies[0].ship_queue.len(), 2, "{}", app.status);
+        let running = app.state.colonies[0].ship_queue[0].ship;
+        let queued = &app.state.colonies[0].ship_queue[1];
+        let n = f64::from(queued.remaining);
+        let queued_paid = Resources::from_parts(
+            queued.unit_paid.iron * n,
+            queued.unit_paid.silicon * n,
+            queued.unit_paid.deuterium * n,
+        );
+        let before = app.state.colonies[0].resources;
+        let home_before = app.state.resources;
+        app.handle_key(KeyCode::Char('x'), 1_000);
+        assert_eq!(app.state.colonies[0].ship_queue.len(), 1, "{}", app.status);
+        assert_eq!(app.state.colonies[0].ship_queue[0].ship, running);
+        assert_eq!(
+            app.state.colonies[0].resources,
+            before.saturating_add(queued_paid)
+        );
+        assert_eq!(app.state.resources, home_before);
+        let remaining = &app.state.colonies[0].ship_queue[0];
+        let n = f64::from(remaining.remaining);
+        let running_paid = Resources::from_parts(
+            remaining.unit_paid.iron * n,
+            remaining.unit_paid.silicon * n,
+            remaining.unit_paid.deuterium * n,
+        );
+        let before = app.state.colonies[0].resources;
+        app.handle_key(KeyCode::Char('x'), 1_000);
+        assert!(
+            app.state.colonies[0].ship_queue.is_empty(),
+            "{}",
+            app.status
+        );
+        assert_eq!(
+            app.state.colonies[0].resources,
+            before.saturating_add(running_paid)
+        );
+        assert_eq!(app.state.resources, home_before);
     }
 
     #[test]
