@@ -156,6 +156,16 @@ const DISPATCH_CARGO: [ResourceKind; 3] = [
     ResourceKind::Deuterium,
 ];
 
+/// Header strip order: quoted materials, fuel, extras. Core `ALL` is unchanged.
+const HEADER_MATERIALS: [ResourceKind; 6] = [
+    ResourceKind::Iron,
+    ResourceKind::Silicon,
+    ResourceKind::Deuterium,
+    ResourceKind::RareEarths,
+    ResourceKind::WaterIce,
+    ResourceKind::Helium3,
+];
+
 /// What a star map dispatch does at its target: the same core actions as
 /// `hoshi fleet send`, plus a transport from home to an own colony.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1838,10 +1848,10 @@ impl App {
         spans
     }
 
-    /// Header cells for the selected planet: stock, cap and rate per
-    /// resource, then its power balance and heat. Idle water ice and
-    /// helium-3 yield those two cells to pollution and parked fleet. The
-    /// Research screen shows Home, whose stockpile pays for research.
+    /// Header cells for the selected planet: materials (quoted, fuel, extras),
+    /// then parked fleet, energy and heat, then pollution. Idle water ice and
+    /// helium-3 yield those two cells to fleet and pollution. The Research
+    /// screen shows Home, whose stockpile pays for research.
     fn metrics(&self, width: u16) -> Vec<Metric> {
         let t = &self.theme;
         let s = &self.state;
@@ -1965,19 +1975,15 @@ impl App {
                 t.label(),
             ),
         };
-        let mut pollution_cell = ice_idle.then_some(pollution_cell);
-        let mut fleet_cell = ice_idle.then_some(fleet_cell);
         let mut out: Vec<Metric> = Vec::with_capacity(8);
-        for &kind in ResourceKind::ALL.iter() {
-            if ice_idle && kind == ResourceKind::WaterIce {
-                out.push(pollution_cell.take().expect("one pollution cell"));
-                continue;
-            }
-            if ice_idle && kind == ResourceKind::Helium3 {
-                out.push(fleet_cell.take().expect("one fleet cell"));
+        for kind in HEADER_MATERIALS {
+            if ice_idle && matches!(kind, ResourceKind::WaterIce | ResourceKind::Helium3) {
                 continue;
             }
             out.push(resource_cell(kind));
+        }
+        if ice_idle {
+            out.push(fleet_cell);
         }
         let balance = s.energy_balance_at(coord).unwrap_or(0.0);
         let energy_style = if balance < 0.0 {
@@ -2057,6 +2063,9 @@ impl App {
                     },
                 ),
             });
+        }
+        if ice_idle {
+            out.push(pollution_cell);
         }
         out
     }
@@ -5963,6 +5972,104 @@ mod tests {
         assert!(narrow.contains("H2O"), "{narrow}");
         assert!(narrow.contains("He3"), "{narrow}");
         assert!(!narrow.contains("Poll"), "{narrow}");
+    }
+
+    fn header_labels(app: &App, width: u16) -> Vec<String> {
+        app.metrics(width).into_iter().map(|m| m.label).collect()
+    }
+
+    fn assert_labels_left_to_right(text: &str, labels: &[&str]) {
+        let line = text
+            .lines()
+            .nth(1)
+            .unwrap_or_else(|| panic!("missing header line: {text}"));
+        let mut from = 0;
+        for label in labels {
+            let rest = &line[from..];
+            let at = rest
+                .find(label)
+                .unwrap_or_else(|| panic!("header missing {label} after byte {from}: {line}"));
+            from += at + label.len();
+        }
+    }
+
+    #[test]
+    fn starter_header_orders_materials_fleet_energy_then_pollution() {
+        let app = App::new(GameState::new(1_000));
+        let cases: [(u16, u16, &[&str]); 3] = [
+            (80, 24, &["Fe", "Si", "D", "REE", "Fleet", "Energy", "Poll"]),
+            (
+                120,
+                40,
+                &[
+                    "IRON",
+                    "SILICON",
+                    "DEUTERIUM",
+                    "RARE EARTHS",
+                    "FLEET",
+                    "ENERGY",
+                    "HEAT",
+                    "POLLUTION",
+                ],
+            ),
+            (
+                160,
+                48,
+                &[
+                    "IRON",
+                    "SILICON",
+                    "DEUTERIUM",
+                    "RARE EARTHS",
+                    "FLEET",
+                    "ENERGY",
+                    "HEAT",
+                    "POLLUTION",
+                ],
+            ),
+        ];
+        for (w, h, want) in cases {
+            let got = header_labels(&app, w);
+            assert_eq!(
+                got.iter().map(String::as_str).collect::<Vec<_>>(),
+                want,
+                "{w}x{h} metrics: {got:?}"
+            );
+            assert_labels_left_to_right(&render_text(&app, w, h), want);
+        }
+    }
+
+    #[test]
+    fn header_orders_materials_then_energy_when_ice_is_in_play() {
+        let mut state = GameState::new(1_000);
+        state.resources.water_ice = 10.0;
+        let app = App::new(state);
+        let wide = [
+            "IRON",
+            "SILICON",
+            "DEUTERIUM",
+            "RARE EARTHS",
+            "WATER ICE",
+            "HELIUM-3",
+            "ENERGY",
+            "HEAT",
+        ];
+        assert_eq!(
+            header_labels(&app, 160)
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            wide
+        );
+        assert_labels_left_to_right(&render_text(&app, 160, 48), &wide);
+        let narrow = ["Fe", "Si", "D", "REE", "H2O", "He3", "Energy"];
+        assert_eq!(
+            header_labels(&app, 80)
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            narrow
+        );
+        assert_labels_left_to_right(&render_text(&app, 80, 24), &narrow);
     }
 
     #[test]
