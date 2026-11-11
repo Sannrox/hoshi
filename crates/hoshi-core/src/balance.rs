@@ -565,6 +565,17 @@ impl BalanceConfig {
                 .sum::<f64>()
     }
 
+    /// Fabrication energy charged for fission recipes at these building levels.
+    /// Live consumption skips this when the core has no fuel.
+    pub(crate) fn fission_recipe_energy(&self, buildings: &Buildings) -> f64 {
+        self.chains
+            .recipes
+            .iter()
+            .filter(|recipe| recipe.energy > 0.0 && recipe.building == BuildingKind::FissionReactor)
+            .map(|recipe| recipe.energy * self.recipe_scale(recipe.building, buildings))
+            .sum()
+    }
+
     /// Energy multiplier on a recipe's level-1 draw. Fission fabrication follows
     /// rated output (fuel demand), not its run rate; other recipes scale by level.
     fn recipe_scale(&self, building: BuildingKind, buildings: &Buildings) -> f64 {

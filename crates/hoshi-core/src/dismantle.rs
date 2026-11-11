@@ -333,16 +333,32 @@ impl GameState {
     }
 
     pub fn energy_consumed_at(&self, coord: Coord) -> f64 {
-        self.operational_buildings_at(coord)
-            .map(|buildings| self.config.energy_draw(&buildings))
-            .unwrap_or(0.0)
-            + self.dismantle_energy_at(coord)
+        let draw = self
+            .operational_buildings_at(coord)
+            .map(|buildings| {
+                let mut draw = self.config.energy_draw(&buildings);
+                // Skip rated fabrication draw when there is nothing to enrich or burn.
+                // Same-interval extraction is ignored here: energy_consumed_at cannot
+                // call reactor_output_at (that path reads consumption).
+                if buildings.fission_reactor > 0 && !self.fission_has_feedstock_at(coord) {
+                    draw = (draw - self.config.fission_recipe_energy(&buildings)).max(0.0);
+                }
+                draw
+            })
+            .unwrap_or(0.0);
+        draw + self.dismantle_energy_at(coord)
             + self.fusion_startup_draw_at(coord)
             + if coord == self.home {
                 self.automation_control_energy()
             } else {
                 0.0
             }
+    }
+
+    pub(crate) fn fission_has_feedstock_at(&self, coord: Coord) -> bool {
+        let goods = self.goods_at(coord);
+        goods.get("reactor_fuel").copied().unwrap_or(0.0) > 1e-12
+            || goods.get("uranium_ore").copied().unwrap_or(0.0) > 1e-12
     }
 
     fn dismantle_work_in_secs(&self, coord: Coord, seconds: u64) -> f64 {

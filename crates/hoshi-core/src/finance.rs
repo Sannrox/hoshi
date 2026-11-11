@@ -507,11 +507,10 @@ impl GameState {
     }
 
     fn empire_energy_draw(&self) -> f64 {
-        self.colonies
-            .iter()
-            .fold(self.energy_consumed(), |sum, colony| {
-                sum + self.config.energy_draw(&colony.buildings)
-            })
+        self.owned_coords()
+            .into_iter()
+            .map(|coord| self.energy_consumed_at(coord))
+            .sum()
     }
 
     pub(crate) fn credit_income(&mut self, amount: f64, kind: IncomeKind) {
@@ -1389,10 +1388,7 @@ mod tests {
             rare: None,
             goods: std::collections::BTreeMap::new(),
         });
-        let expected = (empire.energy_consumed()
-            + empire.config.energy_draw(&empire.colonies[0].buildings))
-            * hours
-            * credit;
+        let expected = empire.empire_energy_draw() * hours * credit;
         empire.catch_up(1_000 + 1_800);
         assert!(
             (empire.finance.expense.logistics - expected).abs() < 1e-9,

@@ -105,7 +105,17 @@ fn push_energy(state: &GameState, out: &mut Vec<Advice>) {
         }
         let cap = state.max_solar_level(coord).unwrap_or(0);
         if buildings.solar_plant >= cap {
-            out.push(Advice { id: "energy", text: format!("energy is short at {coord} ({produced:.0}/{consumed:.0}); solar is at this planet's cap of {cap}; add fission or fusion for more power") });
+            let next = if kind == crate::PlanetType::Ice && !state.fission_has_feedstock_at(coord) {
+                "idle a mine"
+            } else {
+                "add fission or fusion for more power"
+            };
+            out.push(Advice {
+                id: "energy",
+                text: format!(
+                    "energy is short at {coord} ({produced:.0}/{consumed:.0}); solar is at this planet's cap of {cap}; {next}"
+                ),
+            });
             continue;
         }
         out.push(Advice {
@@ -503,6 +513,59 @@ mod tests {
                 .iter()
                 .any(|a| a.text.contains("solar") || a.text.contains("energy"))
         );
+    }
+
+    #[test]
+    fn unfueled_ice_at_solar_cap_does_not_recommend_fission() {
+        for position in 9..=12_u16 {
+            let mut state = GameState::new(0);
+            state.config.raid.enabled = false;
+            let coord = crate::Coord {
+                galaxy: 1,
+                system: 1,
+                position,
+            };
+            let (kind, size) =
+                crate::planet_profile(state.galaxy_seed, coord, state.generator_version);
+            assert_eq!(kind, crate::PlanetType::Ice);
+            state.colonies.push(crate::Colony {
+                coord,
+                kind,
+                size,
+                resources: crate::Resources::ZERO,
+                buildings: Buildings {
+                    metal_mine: 5,
+                    crystal_mine: 1,
+                    deuterium_synthesizer: 1,
+                    solar_plant: 0,
+                    ..Buildings::default()
+                },
+                fleet: crate::Fleet::default(),
+                defences: crate::DefenceGrid::default(),
+                build_queue: Vec::new(),
+                ship_queue: Vec::new(),
+                rare: None,
+                goods: std::collections::BTreeMap::new(),
+            });
+            let cap = state.max_solar_level(coord).unwrap();
+            state.colonies[0].buildings.solar_plant = cap;
+            let energy: Vec<_> = advise(&state, None)
+                .into_iter()
+                .filter(|advice| advice.id == "energy" && advice.text.contains(&coord.to_string()))
+                .collect();
+            assert!(
+                energy
+                    .iter()
+                    .any(|advice| advice.text.contains("idle a mine")),
+                "slot {position}: {energy:?}"
+            );
+            assert!(
+                energy
+                    .iter()
+                    .all(|advice| !advice.text.contains("add fission")),
+                "slot {position}: {energy:?}"
+            );
+        }
     }
 
     #[test]
