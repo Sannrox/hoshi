@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 68;
+pub const SCHEMA_VERSION: u32 = 69;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -168,6 +168,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM tech_levels;
          DELETE FROM exclusive_picks;
          DELETE FROM research;
+         DELETE FROM research_extra;
          DELETE FROM research_queue;
          DELETE FROM ships;
          DELETE FROM ship_queue;
@@ -342,6 +343,24 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 started_at, completes_at
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
+                job.tech,
+                job.from_level,
+                job.paid.iron,
+                job.paid.silicon,
+                job.paid.deuterium,
+                job.started_at as i64,
+                job.completes_at as i64,
+            ],
+        )?;
+    }
+    for (position, job) in state.research_extra.iter().enumerate() {
+        tx.execute(
+            "INSERT INTO research_extra (
+                position, tech, from_level, paid_metal, paid_crystal, paid_deuterium,
+                started_at, completes_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                position as i64,
                 job.tech,
                 job.from_level,
                 job.paid.iron,
@@ -1860,6 +1879,36 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
         })?
         .collect::<Result<Vec<_>, _>>()?;
     drop(stmt);
+
+    let mut extra_stmt = conn.prepare(
+        "SELECT tech, from_level, paid_metal, paid_crystal, paid_deuterium, started_at, completes_at
+         FROM research_extra ORDER BY position",
+    )?;
+    state.research_extra = extra_stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, u32>(1)?,
+                row.get::<_, f64>(2)?,
+                row.get::<_, f64>(3)?,
+                row.get::<_, f64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+            ))
+        })?
+        .map(|row| {
+            let (tech, from_level, metal, crystal, deuterium, started_at, completes_at) = row?;
+            Ok(ResearchJob {
+                tech,
+                from_level,
+                paid: Resources::from_parts(metal, crystal, deuterium),
+                credits: 0.0,
+                started_at: unix_ts(started_at)?,
+                completes_at: unix_ts(completes_at)?,
+            })
+        })
+        .collect::<Result<Vec<_>, SaveError>>()?;
+    drop(extra_stmt);
 
     let mut fleet = Fleet::default();
     let mut stmt = conn.prepare("SELECT kind, count FROM ships WHERE planet_id = 1")?;
@@ -3436,6 +3485,7 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "tech_levels" => "SELECT COUNT(*) FROM tech_levels",
         "exclusive_picks" => "SELECT COUNT(*) FROM exclusive_picks",
         "research" => "SELECT COUNT(*) FROM research",
+        "research_extra" => "SELECT COUNT(*) FROM research_extra",
         "research_queue" => "SELECT COUNT(*) FROM research_queue",
         "ships" => "SELECT COUNT(*) FROM ships",
         "ship_queue" => "SELECT COUNT(*) FROM ship_queue",
@@ -3561,6 +3611,7 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "tech_levels")?
         + count_rows(conn, "exclusive_picks")?
         + count_rows(conn, "research")?
+        + count_rows(conn, "research_extra")?
         + count_rows(conn, "research_queue")?
         + count_rows(conn, "ships")?
         + count_rows(conn, "ship_queue")?
@@ -3887,6 +3938,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 68 {
         migrate_v68(conn)?;
+    }
+    if found < 69 {
+        migrate_v69(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -5144,6 +5198,25 @@ fn load_raid_targets(conn: &Connection) -> Result<(Option<Coord>, Option<Coord>)
         Some((next, event)) => Ok((coord(next)?, coord(event)?)),
         None => Ok((None, None)),
     }
+}
+
+/// v69: extra running research jobs after the first slot. The first job stays
+/// in `research`; a missing table is no extra slots, so older saves load
+/// unchanged. Each step is idempotent, so a crash mid-way finishes on reopen.
+fn migrate_v69(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS research_extra (
+            position INTEGER PRIMARY KEY,
+            tech TEXT NOT NULL,
+            from_level INTEGER NOT NULL CHECK (from_level >= 0),
+            paid_metal REAL NOT NULL CHECK (paid_metal >= 0),
+            paid_crystal REAL NOT NULL CHECK (paid_crystal >= 0),
+            paid_deuterium REAL NOT NULL CHECK (paid_deuterium >= 0),
+            started_at INTEGER NOT NULL,
+            completes_at INTEGER NOT NULL
+        );",
+    )?;
+    Ok(())
 }
 
 /// v68: surveyed systems, and a survey flag on probe missions. Each step is
@@ -8885,6 +8958,9 @@ fn persist_job_credits(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Res
     if let Some(job) = &state.research {
         write("research", 0, None, job.credits)?;
     }
+    for (idx, job) in state.research_extra.iter().enumerate() {
+        write("research_extra", idx, None, job.credits)?;
+    }
     for (idx, job) in state.research_queue.iter().enumerate() {
         write("research_queue", idx, None, job.credits)?;
     }
@@ -9786,6 +9862,11 @@ fn apply_job_credits(conn: &Connection, state: &mut GameState) -> Result<(), Sav
                     job.credits = credits;
                 }
             }
+            "research_extra" => {
+                if let Some(job) = state.research_extra.get_mut(idx) {
+                    job.credits = credits;
+                }
+            }
             "research_queue" => {
                 if let Some(job) = state.research_queue.get_mut(idx) {
                     job.credits = credits;
@@ -10414,6 +10495,72 @@ label = "Leave it"
         let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
         assert_eq!(loaded.surveyed_systems, state.surveyed_systems);
         assert!(missions_has_column(&conn, "survey").unwrap());
+    }
+
+    #[test]
+    fn migrate_v69_keeps_the_first_research_slot_and_queue() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let mut state = GameState::new(100);
+        state.buildings.research_lab = 1;
+        state.resources = hoshi_core::Resources::from_parts(10_000.0, 10_000.0, 10_000.0);
+        state.start_research("energy", 100).unwrap();
+        state.queue_research("computer", 100).unwrap();
+        save_state(&mut conn, &state).unwrap();
+        conn.execute_batch("DROP TABLE research_extra; PRAGMA user_version = 68;")
+            .unwrap();
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap();
+        let loaded = load_state(&conn, state.config.clone()).unwrap();
+        assert_eq!(loaded.research, state.research);
+        assert_eq!(loaded.research_queue, state.research_queue);
+        assert!(loaded.research_extra.is_empty());
+    }
+
+    #[test]
+    fn a_half_applied_v69_migration_finishes_on_reopen() {
+        let conn = open_save(Path::new(":memory:")).unwrap();
+        conn.execute_batch("PRAGMA user_version = 68;").unwrap();
+        migrate(&conn).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM research_extra", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn extra_research_slots_round_trip() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let mut state = GameState::new(100);
+        state.buildings.research_lab = 1;
+        state.resources = hoshi_core::Resources::from_parts(10_000.0, 10_000.0, 10_000.0);
+        state.colonies.push(hoshi_core::Colony {
+            coord: hoshi_core::Coord {
+                galaxy: 1,
+                system: 1,
+                position: 2,
+            },
+            kind: hoshi_core::PlanetType::Rocky,
+            size: 100,
+            resources: hoshi_core::Resources::ZERO,
+            buildings: hoshi_core::Buildings {
+                research_lab: 1,
+                solar_plant: 1,
+                ..hoshi_core::Buildings::default()
+            },
+            fleet: hoshi_core::Fleet::default(),
+            defences: hoshi_core::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: std::collections::BTreeMap::new(),
+        });
+        state.start_research("energy", 100).unwrap();
+        state.start_research("computer", 100).unwrap();
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, state.config.clone()).unwrap();
+        assert_eq!(loaded.research, state.research);
+        assert_eq!(loaded.research_extra, state.research_extra);
+        assert_eq!(loaded.research_extra[0].tech, "computer");
     }
 
     #[test]

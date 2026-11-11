@@ -698,6 +698,7 @@ impl GameState {
         pocket.fleet = rival.fleet;
         pocket.tech_levels = rival.tech_levels.clone();
         pocket.research = rival.research.clone();
+        pocket.research_extra.clear();
         pocket.research_queue.clear();
         pocket.ship_queue = rival.ship_queue.clone();
         pocket.home = rival.home;

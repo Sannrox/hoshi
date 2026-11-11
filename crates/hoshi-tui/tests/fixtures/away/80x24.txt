@@ -12,13 +12,13 @@
 
     EVENTS
     story 5
- ▌  story 4
+    story 4
     story 3
     story 2
     1-4 of 6, newest first (space for more)
-
+ ▌
     enter  dismiss   r  replay   w  reopen on overview
-    Orbital harvesting          200   400     —   3m 00s   NEED RESEARCH LAB 1
-  TIER 3
+  TIER 2
+    Deep-core mining            400   200     —   3m 00s   NEED RESEARCH LAB 1
                                                                     ⏎ research
       h/l  branch   j/k  select   enter  research      0000-0000-0000-00 gen 1

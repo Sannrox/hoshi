@@ -2756,6 +2756,11 @@ fn state_value(state: &GameState, actor: Actor) -> Value {
                 "from_level": j.from_level,
                 "completes_at": j.completes_at,
             })),
+            "slots": state.running_research().map(|j| json!({
+                "tech": j.tech,
+                "from_level": j.from_level,
+                "completes_at": j.completes_at,
+            })).collect::<Vec<_>>(),
             "queue": state.research_queue.iter().map(|j| json!({
                 "tech": j.tech,
                 "from_level": j.from_level,

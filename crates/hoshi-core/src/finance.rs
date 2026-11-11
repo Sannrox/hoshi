@@ -668,9 +668,8 @@ impl GameState {
             })
             .collect();
         let research_paid: Vec<Resources> = self
-            .research
-            .iter()
-            .chain(&self.research_queue)
+            .running_research()
+            .chain(self.research_queue.iter())
             .map(|job| job.paid)
             .collect();
         let ship_paid: Vec<Resources> = self

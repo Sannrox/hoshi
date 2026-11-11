@@ -1312,7 +1312,7 @@ fn simulate_keystones(mut config: BalanceConfig, limit: u64) -> BTreeMap<String,
 }
 
 fn try_research_toward_keystones(state: &mut GameState) {
-    if state.research.is_some() {
+    if state.running_research().count() >= state.research_slot_count() {
         return;
     }
     let mut candidates: Vec<(u64, String)> = Vec::new();
@@ -1714,7 +1714,9 @@ fn frontier_tech_need(state: &GameState) -> BTreeMap<String, u32> {
 }
 
 fn try_research_toward_frontier(state: &mut GameState) {
-    if state.research.is_some() || state.research_unlocks_frontier() {
+    if state.running_research().count() >= state.research_slot_count()
+        || state.research_unlocks_frontier()
+    {
         return;
     }
     let need = frontier_tech_need(state);
@@ -1764,7 +1766,7 @@ fn frontier_next_afford_at(state: &GameState) -> Option<u64> {
 }
 
 fn secs_until_path_research(state: &GameState) -> Option<u64> {
-    if state.research.is_some() {
+    if state.running_research().count() >= state.research_slot_count() {
         return None;
     }
     let need = frontier_tech_need(state);

@@ -224,6 +224,7 @@
   "research": {
     "current": null,
     "exclusive_picks": {},
+    "slots": [],
     "levels": {
       "ancient_drive": 0,
       "ancient_weapon": 0,
@@ -274,7 +275,7 @@
     "empires": [],
     "enabled": false
   },
-  "save_schema": 68,
+  "save_schema": 69,
   "schema_version": 2,
   "season": null,
   "signals": [],

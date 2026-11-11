@@ -679,10 +679,10 @@ impl App {
                 .unwrap_or_default();
             let research = self
                 .state
-                .research
-                .as_ref()
+                .running_research()
                 .map(|job| ui::spans::duration(job.completes_at.saturating_sub(now)))
-                .unwrap_or_default();
+                .collect::<Vec<_>>()
+                .join("+");
             let fleet = self
                 .state
                 .missions
@@ -742,7 +742,11 @@ impl App {
                 .build_queue
                 .first()
                 .and_then(|job| job.completes_at),
-            research_head: self.state.research.as_ref().map(|job| job.completes_at),
+            research_head: self
+                .state
+                .running_research()
+                .map(|job| job.completes_at)
+                .min(),
             build_len: self.state.build_queue.len()
                 + self
                     .state
@@ -1673,15 +1677,19 @@ impl App {
         }
     }
 
-    /// `research energy → lv1 4m 00s +2 queued`, or `research idle`.
+    /// `research energy → lv1 4m 00s +1 running +2 queued`, or `research idle`.
     fn research_summary(&self) -> String {
+        let extra = match self.state.research_extra.len() {
+            0 => String::new(),
+            n => format!(" +{n} running"),
+        };
         let queued = match self.state.research_queue.len() {
             0 => String::new(),
             n => format!(" +{n} queued"),
         };
         match &self.state.research {
             Some(job) => format!(
-                "research {} → lv{} {}{queued}",
+                "research {} → lv{} {}{extra}{queued}",
                 job.tech,
                 job.from_level + 1,
                 ui::spans::duration(job.completes_at.saturating_sub(self.state.last_tick_unix))
@@ -6166,18 +6174,20 @@ mod tests {
                 .unwrap_or_else(|| panic!("{needle}: {text}"))
         };
         let cap = app.state.build_queue_cap();
-        assert!(at(&format!("QUEUE 2/{cap}")) < at("1. Energy Technology → lv1"));
-        assert!(at("1. Energy Technology → lv1") < at("2. Energy Technology → lv2"));
-        assert!(at("2. Energy Technology → lv2") < at("3. Laser Technology → lv1"));
-        assert!(at("3. Laser Technology → lv1") < at("TIER 1"));
+        let slots = app.state.research_slot_cap();
+        assert!(at(&format!("SLOTS 1/{slots}")) < at(&format!("QUEUE 2/{cap}")));
+        assert!(at("1. Home · Energy Technology → lv1") < at(&format!("QUEUE 2/{cap}")));
+        assert!(at(&format!("QUEUE 2/{cap}")) < at("1. Energy Technology → lv2"));
+        assert!(at("1. Energy Technology → lv2") < at("2. Laser Technology → lv1"));
+        assert!(at("2. Laser Technology → lv1") < at("TIER 1"));
         let row = |needle: &str| {
             text.lines()
                 .find(|l| l.contains(needle))
                 .unwrap()
                 .to_owned()
         };
-        assert!(row("1. Energy").contains("IN PROGRESS"), "{text}");
-        assert!(row("3. Laser").contains("QUEUED"), "{text}");
+        assert!(row("Home · Energy").contains("IN PROGRESS"), "{text}");
+        assert!(row("2. Laser").contains("QUEUED"), "{text}");
         // The cursor skips the queue and starts on the first tech.
         let first = app.overview_techs()[0].name.clone();
         assert!(text.contains(&format!("▌  {first}")), "{text}");
@@ -6190,7 +6200,7 @@ mod tests {
         let military = render_text(&app, 160, 48);
         let laser = military
             .lines()
-            .find(|l| l.contains("Laser Technology") && !l.contains("3. "))
+            .find(|l| l.contains("Laser Technology") && !l.contains("2. "))
             .unwrap();
         assert!(laser.contains("QUEUED"), "{military}");
     }
@@ -6209,6 +6219,55 @@ mod tests {
         let phone = render_text(&research_queue_app(), 48, 32);
         assert!(phone.contains(&format!("QUEUE 2/{cap}")), "{phone}");
         assert!(phone.contains("▦ Colony   Empire"), "{phone}");
+    }
+
+    #[test]
+    fn research_screen_shows_running_free_and_locked_slots() {
+        let mut state = GameState::new(1_000);
+        state.buildings.research_lab = 1;
+        state.resources = Resources::from_parts(100_000.0, 100_000.0, 100_000.0);
+        state.colonies.push(Colony {
+            coord: Coord {
+                galaxy: 1,
+                system: 1,
+                position: 2,
+            },
+            kind: PlanetType::Rocky,
+            size: 100,
+            resources: Resources::ZERO,
+            buildings: Buildings {
+                research_lab: 1,
+                solar_plant: 1,
+                ..Buildings::default()
+            },
+            fleet: Fleet::default(),
+            defences: hoshi_core::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: std::collections::BTreeMap::new(),
+        });
+        state.queue_research("energy", 1_000).unwrap();
+        let app = App::new(state);
+        let text = render_text(&app, 120, 40);
+        assert!(text.contains("IN PROGRESS"), "{text}");
+        assert!(text.contains("FREE"), "{text}");
+        assert!(text.contains("LOCKED"), "{text}");
+        assert!(text.contains("Home ·"), "{text}");
+
+        for (w, h) in [(80, 24), (120, 40), (160, 48)] {
+            let frame = render_text(&app, w, h);
+            assert!(frame.contains("IN PROGRESS"), "{w}x{h}: {frame}");
+            assert!(frame.contains("FREE"), "{w}x{h}: {frame}");
+            assert!(frame.contains("LOCKED"), "{w}x{h}: {frame}");
+            for line in frame.lines() {
+                assert!(
+                    line.chars().count() <= w as usize,
+                    "{w}x{h} truncated ({width}): {line}",
+                    width = line.chars().count()
+                );
+            }
+        }
     }
 
     #[test]
@@ -6611,6 +6670,35 @@ mod tests {
         app.state.ship_queue[0].remaining = 1;
         let after = app.idle_frame_sig();
         assert_ne!(before.ship_remaining, after.ship_remaining);
+        assert!(crate::idle::should_draw(Some(&before), &after));
+    }
+
+    #[test]
+    fn idle_frame_sig_redraws_when_an_extra_research_timer_ticks() {
+        let mut state = GameState::new(1_000);
+        state.buildings.research_lab = 1;
+        state.research = Some(hoshi_core::ResearchJob {
+            tech: "energy".into(),
+            from_level: 0,
+            paid: Resources::ZERO,
+            credits: 0.0,
+            started_at: 1_000,
+            completes_at: 10_000,
+        });
+        state.research_extra.push(hoshi_core::ResearchJob {
+            tech: "computer".into(),
+            from_level: 0,
+            paid: Resources::ZERO,
+            credits: 0.0,
+            started_at: 1_000,
+            completes_at: 1_200,
+        });
+        let mut app = App::new(state);
+        app.portraits.enabled = false;
+        let before = app.idle_frame_sig();
+        app.catch_up_now(1_001);
+        let after = app.idle_frame_sig();
+        assert_ne!(before.timer_label, after.timer_label);
         assert!(crate::idle::should_draw(Some(&before), &after));
     }
 

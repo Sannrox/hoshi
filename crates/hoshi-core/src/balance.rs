@@ -510,6 +510,8 @@ pub struct BalanceConfig {
     pub ships: crate::ShipCatalog,
     /// Maximum shipyard batches waiting or in progress on one planet.
     pub max_ship_queue: usize,
+    /// Parallel research slots from the home lab and colony labs.
+    pub research_slots: ResearchSlotsConfig,
     pub flight: crate::FlightConfig,
     pub raid: RaidConfig,
     pub planet_types: crate::PlanetTypeCatalog,
@@ -658,6 +660,50 @@ struct File {
     frontier: crate::frontier::FileFrontier,
     #[serde(default)]
     self_play: FileSelfPlay,
+    #[serde(default)]
+    research_slots: FileResearchSlots,
+}
+
+/// How many research jobs can run at once. The home lab is the first slot;
+/// each colony whose lab reaches `colony_lab_level` adds one, up to `cap`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResearchSlotsConfig {
+    pub colony_lab_level: u32,
+    pub cap: usize,
+}
+
+impl Default for ResearchSlotsConfig {
+    fn default() -> Self {
+        Self {
+            colony_lab_level: 1,
+            cap: 3,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct FileResearchSlots {
+    #[serde(default = "default_colony_lab_level")]
+    colony_lab_level: u32,
+    #[serde(default = "default_research_slot_cap")]
+    cap: usize,
+}
+
+impl Default for FileResearchSlots {
+    fn default() -> Self {
+        Self {
+            colony_lab_level: default_colony_lab_level(),
+            cap: default_research_slot_cap(),
+        }
+    }
+}
+
+fn default_colony_lab_level() -> u32 {
+    1
+}
+
+fn default_research_slot_cap() -> usize {
+    3
 }
 
 #[derive(Deserialize)]
@@ -1833,6 +1879,10 @@ impl File {
             techs: crate::TechTree::default(),
             ships: crate::ShipCatalog::default(),
             max_ship_queue: self.queues.max_ship_queue,
+            research_slots: ResearchSlotsConfig {
+                colony_lab_level: self.research_slots.colony_lab_level,
+                cap: self.research_slots.cap,
+            },
             flight: FlightConfig {
                 galaxy_unit: self.flight.galaxy_unit,
                 system_base: self.flight.system_base,
@@ -2291,6 +2341,16 @@ impl BalanceConfig {
         if self.self_play.curve_days < 1 {
             return Err(BalanceError::Invalid(
                 "self_play.curve_days must be >= 1".into(),
+            ));
+        }
+        if self.research_slots.colony_lab_level < 1 {
+            return Err(BalanceError::Invalid(
+                "research_slots.colony_lab_level must be >= 1".into(),
+            ));
+        }
+        if !(1..=3).contains(&self.research_slots.cap) {
+            return Err(BalanceError::Invalid(
+                "research_slots.cap must be in 1..=3".into(),
             ));
         }
         if self.pacing.min_metal_mine_per_day == 0 {
