@@ -72,7 +72,7 @@ jobs:
           key: release-${{ matrix.target }}
       - name: Cross linker (Linux aarch64)
         if: matrix.cross == 'true'
-        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu qemu-user-static
+        run: sh scripts/apt-install.sh gcc-aarch64-linux-gnu qemu-user-static
       - name: Build
         if: matrix.cross != 'true'
         run: cargo build --locked --release --target ${{ matrix.target }} -p hoshi --bin hoshi --features ui
