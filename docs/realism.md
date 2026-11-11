@@ -234,6 +234,7 @@ silent extra departure; they extend this list.
 | Story, species and faction flavour | Out of scope for realism; they must not mint mass or energy. |
 | Expedition sites are placed stockpiles drawn down by the existing outcome roll, not extractors on a deposit | Fuel and flight time stay on the current flight rules. The config-slot expedition still has no deposit. |
 | Signal hostiles are a seeded NPC fleet with no home, supply or flight of their own | A scanned contact is a short local fight. Its wreckage joins the debris field on the same hull-loss rule as any fight; it pays no find. |
+| Survey probe loss per unit distance is an abstract rate, not derived from flux and cross-section | A long flight sweeps more space; asteroid belts are almost empty, so the cause is a micrometeoroid strike or a radiation fault. Catch-up stays one seeded roll. |
 
 ## Known gaps in current config
 

@@ -1531,6 +1531,17 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             );
             """
         )
+    elif version == 70:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS surveyed_slots (
+                galaxy INTEGER NOT NULL,
+                system INTEGER NOT NULL,
+                position INTEGER NOT NULL,
+                PRIMARY KEY (galaxy, system, position)
+            );
+            """
+        )
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"

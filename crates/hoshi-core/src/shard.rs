@@ -1668,13 +1668,14 @@ impl<C: Clock> ShardSession<C> {
 
     /// Catch every empire up at the host clock on the shared map.
     ///
-    /// Empires step together to each colony, recycler, and raid arrival, in
-    /// time order and, at one instant, in identity order, except that a
-    /// raid's target steps to its arrival first. A colony ship whose
+    /// Empires step together to each colony, recycler, survey, and raid
+    /// arrival, in time order and, at one instant, in identity order, except
+    /// that a raid's target steps to its arrival first. A colony ship whose
     /// dest another tenant, an outpost, or a site holds by then turns back
     /// with the ship; the first arrival founds. A recycler harvests the
-    /// shared stock that earlier arrivals left. A raid fights the target's
-    /// home as it is at arrival. The regional book runs its NPC ticks and
+    /// shared stock that earlier arrivals left, including debris a survey
+    /// find has already written. A raid fights the target's home as it is
+    /// at arrival. The regional book runs its NPC ticks and
     /// order expiries at their instants. [`Self::view`], [`Self::book`],
     /// [`Self::colonize`], [`Self::spy`], [`Self::recycle`],
     /// [`Self::place_order`] and [`Self::launch_raid`] settle first; a host
@@ -2123,9 +2124,9 @@ pub fn targets(
 }
 
 /// Catch every empire up to `now` on the shared map, stopping at each
-/// colony, recycler, and raid arrival (see [`ShardSession::settle`]) and at
-/// each probe arrival at another tenant's planet, so the host reads that
-/// planet as it was then. The regional book runs at each NPC tick and
+/// colony, recycler, survey, and raid arrival (see [`ShardSession::settle`])
+/// and at each probe arrival at another tenant's planet, so the host reads
+/// that planet as it was then. The regional book runs at each NPC tick and
 /// tenant order expiry after every empire has stepped there.
 ///
 /// One long gap and many short ones read the same numbers. A lone
@@ -2133,8 +2134,8 @@ pub fn targets(
 /// report is then filled from the target as it is now and stamped with the
 /// target's time, never back-dated to the arrival. A raid on a target that
 /// ran ahead fights it as it is now in the same way. A lone catch-up never
-/// runs an empire past its own colony, recycler, or raid arrival; it is
-/// refused as [`ShardError::Unsettled`].
+/// runs an empire past its own colony, recycler, survey, or raid arrival;
+/// it is refused as [`ShardError::Unsettled`].
 fn catch_up_empires(
     empires: &mut BTreeMap<String, GameState>,
     commons: &mut ShardCommons,
@@ -2316,8 +2317,9 @@ fn with_shared_debris<T>(
     out
 }
 
-/// Earliest stop due by `now` and not yet reached: a colony, recycler, or
-/// raid Action, or a probe Action at a planet its owner does not hold.
+/// Earliest stop due by `now` and not yet reached: a colony, recycler,
+/// survey, or raid Action, or a probe Action at a planet its owner does
+/// not hold. Survey arrivals can write debris onto the shared stock.
 fn next_stop(empires: &BTreeMap<String, GameState>, now: u64) -> Option<u64> {
     empires
         .values()
@@ -2328,6 +2330,7 @@ fn next_stop(empires: &BTreeMap<String, GameState>, now: u64) -> Option<u64> {
                 .filter(|mission| {
                     mission.colonize
                         || mission.recycle
+                        || mission.survey
                         || tenant_raid(state, mission)
                         || (mission.spy && !mission.survey && aims_at_tenant(state, mission))
                 })
@@ -2353,11 +2356,11 @@ fn inbound_raids(empires: &BTreeMap<String, GameState>) -> BTreeMap<Coord, u64> 
     inbound
 }
 
-/// Whether `state` has a colony, recycler, or raid Action due by `now` that
-/// its own catch-up would run without the shard map.
+/// Whether `state` has a colony, recycler, survey, or raid Action due by
+/// `now` that its own catch-up would run without the shard map.
 fn race_due(state: &GameState, now: u64) -> bool {
     state.missions.iter().any(|mission| {
-        (mission.colonize || mission.recycle || tenant_raid(state, mission))
+        (mission.colonize || mission.recycle || mission.survey || tenant_raid(state, mission))
             && due_by(state, mission, now)
     })
 }
@@ -2660,6 +2663,7 @@ mod tests {
     fn test_state(now: u64) -> GameState {
         let mut cfg = BalanceConfig::default();
         cfg.raid.enabled = false;
+        cfg.survey = crate::SurveyConfig::default();
         GameState::with_config(now, cfg)
     }
 
@@ -4000,6 +4004,86 @@ mod tests {
         assert!(a.deposits_known_at(dest).is_some());
         assert!(a.spy_reports.is_empty());
         assert!(!empires["tenant-b"].system_surveyed(dest.galaxy, dest.system));
+    }
+
+    #[test]
+    fn a_survey_find_lands_on_shared_debris_before_a_later_recycler() {
+        let start = 1_000u64;
+        let mut shard = session(start);
+        let dest = Coord {
+            position: 14,
+            ..B_HOME
+        };
+        let find = 800.0;
+        let stock = 100.0;
+        let mut a = test_state(start);
+        a.resources.deuterium = 100_000.0;
+        a.fleet.add(ShipKind::Recycler, 1);
+        let mut b = test_state(start);
+        b.home = B_HOME;
+        b.resources.deuterium = 100_000.0;
+        b.fleet.add(ShipKind::EspionageProbe, 1);
+        b.config.survey.weights.find = 1;
+        b.config.survey.find_debris = find;
+        let mut empires = two_empires(a, b);
+        shard.commons_mut().debris.insert(dest, stock);
+        shard
+            .spy(
+                &mut empires,
+                ShardSpy {
+                    identity: "tenant-b".into(),
+                    idempotency_id: "survey".into(),
+                    ships: one(ShipKind::EspionageProbe),
+                    dest,
+                    speed_percent: 100,
+                },
+            )
+            .unwrap();
+        shard
+            .recycle(
+                &mut empires,
+                ShardRecycle {
+                    identity: "tenant-a".into(),
+                    idempotency_id: "rec".into(),
+                    ships: one(ShipKind::Recycler),
+                    dest,
+                    speed_percent: 100,
+                },
+            )
+            .unwrap();
+        let survey_at = action_at(&empires["tenant-b"].missions[0]).unwrap();
+        let recycle_at = action_at(&empires["tenant-a"].missions[0]).unwrap();
+        assert!(
+            survey_at < recycle_at,
+            "survey={survey_at} recycle={recycle_at}"
+        );
+        shard.clock.set(survey_at);
+        let build = ShardCommand {
+            intent: Intent::Build {
+                planet: B_HOME,
+                building: BuildingKind::MetalMine,
+                actor: Actor::Player,
+            },
+            ..build_cmd("tenant-b", "build", None)
+        };
+        let b = empires.get_mut("tenant-b").unwrap();
+        assert_eq!(
+            shard.submit(b, build),
+            Err(ShardError::Unsettled {
+                identity: "tenant-b".into()
+            })
+        );
+        shard.clock.set(recycle_at);
+        shard.settle(&mut empires);
+        let hold = empires["tenant-a"].cargo_capacity(one(ShipKind::Recycler));
+        let taken = empires["tenant-a"].missions[0].cargo.total();
+        let want = (stock + find).min(hold);
+        assert!(
+            (taken - want).abs() < 1e-9,
+            "taken={taken} want={want} hold={hold}"
+        );
+        let left = shard.commons().debris.get(&dest).copied().unwrap_or(0.0);
+        assert!((left - (stock + find - want)).abs() < 1e-9, "left={left}");
     }
 
     /// Tenant-a at home and tenant-b at `B_HOME`, each with fuel, `ships`, and

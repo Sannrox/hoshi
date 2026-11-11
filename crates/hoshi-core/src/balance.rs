@@ -13,6 +13,7 @@ use crate::prestige::{PrestigeBonusSpec, PrestigeConfig};
 use crate::research::{ModifierKind, TechPrereq};
 use crate::ships::ShipKind;
 use crate::state::Resources;
+use crate::survey::{SurveyConfig, SurveyWeights};
 use crate::waste::WasteConfig;
 use crate::wonders::{WonderModifier, WonderSpec, WonderStage};
 use serde::Deserialize;
@@ -517,6 +518,7 @@ pub struct BalanceConfig {
     pub planet_types: crate::PlanetTypeCatalog,
     pub activity: crate::ActivityEffectsConfig,
     pub expedition: crate::ExpeditionConfig,
+    pub survey: crate::SurveyConfig,
     pub starting_resources: Resources,
     pub starting_buildings: Buildings,
     pub pacing: PacingTargets,
@@ -630,6 +632,8 @@ struct File {
     raid: FileRaid,
     activity: FileActivity,
     expedition: FileExpedition,
+    #[serde(default)]
+    survey: FileSurvey,
     flight: FileFlight,
     planet_types: FilePlanetTypes,
     #[serde(default)]
@@ -704,6 +708,43 @@ fn default_colony_lab_level() -> u32 {
 
 fn default_research_slot_cap() -> usize {
     3
+}
+
+#[derive(Deserialize)]
+struct FileSurvey {
+    #[serde(default)]
+    loss_per_distance: f64,
+    #[serde(default = "default_survey_partial_slots")]
+    partial_slots: u32,
+    #[serde(default)]
+    find_debris: f64,
+    #[serde(default)]
+    weights: FileSurveyWeights,
+}
+
+impl Default for FileSurvey {
+    fn default() -> Self {
+        Self {
+            loss_per_distance: 0.0,
+            partial_slots: default_survey_partial_slots(),
+            find_debris: 0.0,
+            weights: FileSurveyWeights::default(),
+        }
+    }
+}
+
+fn default_survey_partial_slots() -> u32 {
+    6
+}
+
+#[derive(Deserialize, Default)]
+struct FileSurveyWeights {
+    #[serde(default)]
+    clean: u32,
+    #[serde(default)]
+    partial: u32,
+    #[serde(default)]
+    find: u32,
 }
 
 #[derive(Deserialize)]
@@ -1973,6 +2014,16 @@ impl File {
                     lane: site_budget(self.expedition.sites.lane),
                 },
             },
+            survey: SurveyConfig {
+                weights: SurveyWeights {
+                    clean: self.survey.weights.clean,
+                    partial: self.survey.weights.partial,
+                    find: self.survey.weights.find,
+                },
+                loss_per_distance: self.survey.loss_per_distance,
+                partial_slots: self.survey.partial_slots.max(1),
+                find_debris: self.survey.find_debris.max(0.0),
+            },
             starting_resources: self.starting_resources.into_resources(),
             starting_buildings: Buildings {
                 metal_mine: self.starting_buildings.metal_mine,
@@ -2351,6 +2402,13 @@ impl BalanceConfig {
         if !(1..=3).contains(&self.research_slots.cap) {
             return Err(BalanceError::Invalid(
                 "research_slots.cap must be in 1..=3".into(),
+            ));
+        }
+        nonneg_finite("survey.loss_per_distance", self.survey.loss_per_distance)?;
+        nonneg_finite("survey.find_debris", self.survey.find_debris)?;
+        if self.survey.partial_slots < 1 {
+            return Err(BalanceError::Invalid(
+                "survey.partial_slots must be >= 1".into(),
             ));
         }
         if self.pacing.min_metal_mine_per_day == 0 {

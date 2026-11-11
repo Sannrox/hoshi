@@ -36,6 +36,7 @@ use crate::research::{
     ModifierKind, PrereqGap, ResearchError, ResearchJob, TechBranch, TechNodeState,
 };
 use crate::ships::{Fleet, ShipError, ShipJob, ShipKind, ShipStats};
+use crate::survey::{SurveyEvent, roll_survey, survey_event_text, survey_history_outcome};
 use crate::wonders::{WonderError, WonderJob};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -412,6 +413,9 @@ pub struct GameState {
     /// Systems this empire has surveyed. Owned systems count even when absent.
     /// `(galaxy, system)`. Older saves load this empty.
     pub surveyed_systems: BTreeSet<(u16, u16)>,
+    /// Slots a partial survey has read. A full system survey drops these.
+    /// Older saves load this empty.
+    pub surveyed_slots: BTreeSet<Coord>,
     pub laws: crate::LawState,
     /// Achievement id → unix unlock time. Survives prestige.
     pub achievements: BTreeMap<String, u64>,
@@ -556,6 +560,7 @@ impl GameState {
             spy_reports: Vec::new(),
             next_report_id: 0,
             surveyed_systems: BTreeSet::new(),
+            surveyed_slots: BTreeSet::new(),
             laws: crate::LawState::default(),
             achievements: BTreeMap::new(),
             raids_survived: 0,
@@ -2779,7 +2784,7 @@ impl GameState {
     fn expedition_used(&self) -> u32 {
         self.missions
             .iter()
-            .filter(|m| m.expedition_seed.is_some())
+            .filter(|m| m.expedition_seed.is_some() && !m.survey)
             .count() as u32
     }
 
@@ -3449,7 +3454,7 @@ impl GameState {
 
     /// Send probes from `origin` to an outpost or an unowned empty slot.
     /// An outpost writes a report; detection may destroy probes. An unowned
-    /// empty slot surveys that system: exact deposits, no detection, no losses.
+    /// empty slot surveys that system: a seeded outcome at arrival, no detection.
     pub fn launch_spy(
         &mut self,
         origin: Coord,
@@ -3468,6 +3473,7 @@ impl GameState {
         let id = self.launch_probes(origin, ships, dest, speed_percent, now_unix)?;
         if let Some(mission) = self.missions.last_mut() {
             mission.survey = true;
+            mission.expedition_seed = Some(next_u64(&mut self.rng_seed));
         }
         Ok(id)
     }
@@ -3690,15 +3696,17 @@ impl GameState {
                 .any(|coord| coord.galaxy == galaxy && coord.system == system)
     }
 
-    /// Deposits of `coord` when they are known: owned worlds and surveyed systems.
+    /// Deposits of `coord` when they are known: owned worlds, fully surveyed
+    /// systems, and slots a partial survey has read.
     pub fn deposits_known_at(&self, coord: Coord) -> Option<BTreeMap<String, f64>> {
         if self.planet_kind(coord).is_some() {
             return Some(self.deposits_at(coord));
         }
-        if !self.system_surveyed(coord.galaxy, coord.system) {
-            return None;
+        if self.system_surveyed(coord.galaxy, coord.system) || self.surveyed_slots.contains(&coord)
+        {
+            return Some(self.chain_deposits(self.slot_type(coord), self.galaxy_seed, coord));
         }
-        Some(self.chain_deposits(self.slot_type(coord), self.galaxy_seed, coord))
+        None
     }
 
     pub fn colony_cap(&self) -> u32 {
@@ -4890,6 +4898,9 @@ impl GameState {
 
     /// Apply a pending expedition when Action starts. Returns true if the mission was removed.
     fn apply_expedition_at(&mut self, index: usize, done_at: u64) -> bool {
+        if self.missions[index].survey {
+            return false;
+        }
         let Some(seed) = self.missions[index].expedition_seed else {
             return false;
         };
@@ -5130,26 +5141,122 @@ impl GameState {
         self.fleet_combat_points() / unit
     }
 
-    /// Record the destination's system as surveyed. Insert is idempotent, so a
-    /// crash between arrival and the next save neither loses nor repeats it.
-    fn apply_survey_at(&mut self, index: usize, done_at: u64) {
-        let dest = self.missions[index].dest;
-        let key = (dest.galaxy, dest.system);
-        if !self.surveyed_systems.insert(key) {
-            return;
+    /// Resolve a survey at arrival. The stored seed makes a replay match; the
+    /// applied flag makes a second catch-up a no-op.
+    fn apply_survey_at(&mut self, index: usize, done_at: u64) -> bool {
+        if self.missions[index].expedition_applied {
+            return false;
         }
+        self.missions[index].expedition_applied = true;
+        let dest = self.missions[index].dest;
+        let origin = self.missions[index].origin;
+        let mission_id = self.missions[index].id;
+        let probes = self.missions[index].ships.get(ShipKind::EspionageProbe);
+        let Some(seed) = self.missions[index].expedition_seed else {
+            self.complete_system_survey(dest);
+            self.note_survey(dest, done_at, mission_id, "surveyed system", "surveyed");
+            return false;
+        };
+        let dist = distance(origin, dest, &self.config.flight);
+        let mut cfg = self.config.survey.clone();
+        if self.cheats.god_mode {
+            cfg.loss_per_distance = 0.0;
+        }
+        let rolled = roll_survey(seed, probes, dist, dest.position, &cfg);
+        self.missions[index]
+            .ships
+            .saturating_sub(ShipKind::EspionageProbe, rolled.probes_lost);
         let system = format!("{}:{}", dest.galaxy, dest.system);
-        self.push_event(done_at, format!("surveyed system {system}"));
+        let text = survey_event_text(
+            &system,
+            rolled.event,
+            rolled.probes_lost,
+            rolled.probes_left,
+        );
+        let outcome = survey_history_outcome(rolled.event, rolled.probes_lost, rolled.probes_left);
+        if rolled.probes_left == 0 {
+            self.note_survey(dest, done_at, mission_id, &text, &outcome);
+            if self.missions[index].ships.is_empty() {
+                self.missions.remove(index);
+                return true;
+            }
+            return false;
+        }
+        match rolled.event {
+            SurveyEvent::Partial => self.apply_partial_survey(dest, &rolled.slots),
+            SurveyEvent::Find => {
+                self.complete_system_survey(dest);
+                let mass = cfg.find_debris.max(0.0);
+                if mass > 0.0 {
+                    *self.debris.entry(dest).or_insert(0.0) += mass;
+                }
+            }
+            SurveyEvent::Clean => self.complete_system_survey(dest),
+        }
+        self.note_survey(dest, done_at, mission_id, &text, &outcome);
+        if self.missions[index].ships.is_empty() {
+            self.missions.remove(index);
+            return true;
+        }
+        false
+    }
+
+    fn note_survey(
+        &mut self,
+        dest: Coord,
+        done_at: u64,
+        mission_id: u64,
+        event_text: &str,
+        outcome: &str,
+    ) {
+        let system = format!("{}:{}", dest.galaxy, dest.system);
+        let text = if event_text.contains(&system) {
+            event_text.to_string()
+        } else {
+            format!("{event_text} {system}")
+        };
+        self.push_event(done_at, text);
         self.record_history(crate::HistoryDraft {
             at: done_at,
             kind: crate::HistoryKind::Fleet,
             actor: "player".into(),
             action: "survey".into(),
             objects: vec![system],
-            outcome: "surveyed".into(),
-            cause_key: Some(format!("mission:{}", self.missions[index].id)),
+            outcome: outcome.into(),
+            cause_key: Some(format!("mission:{mission_id}")),
             ..crate::HistoryDraft::default()
         });
+    }
+
+    fn complete_system_survey(&mut self, dest: Coord) {
+        let key = (dest.galaxy, dest.system);
+        self.surveyed_systems.insert(key);
+        self.surveyed_slots
+            .retain(|coord| coord.galaxy != dest.galaxy || coord.system != dest.system);
+    }
+
+    fn apply_partial_survey(&mut self, dest: Coord, slots: &[u16]) {
+        if self.surveyed_systems.contains(&(dest.galaxy, dest.system)) {
+            return;
+        }
+        for &position in slots {
+            self.surveyed_slots.insert(Coord {
+                galaxy: dest.galaxy,
+                system: dest.system,
+                position,
+            });
+        }
+        let complete = (1u16..=16).all(|position| {
+            self.deposits_known_at(Coord {
+                galaxy: dest.galaxy,
+                system: dest.system,
+                position,
+            })
+            .is_some()
+        });
+        if complete {
+            self.complete_system_survey(dest);
+        }
     }
 
     /// Write a spy report on arrival. Returns true when every ship was lost.
@@ -5165,8 +5272,7 @@ impl GameState {
             return false;
         }
         if self.missions[index].survey {
-            self.apply_survey_at(index, done_at);
-            return false;
+            return self.apply_survey_at(index, done_at);
         }
         let dest = self.missions[index].dest;
         let probes = self.missions[index].ships.get(ShipKind::EspionageProbe);
@@ -8907,6 +9013,7 @@ mod tests {
             frontier: crate::FrontierConfig::default(),
             self_play: crate::SelfPlayConfig::default(),
             research_slots: crate::ResearchSlotsConfig::default(),
+            survey: crate::SurveyConfig::default(),
         }
     }
 
@@ -14422,6 +14529,345 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         assert_eq!(events, 1);
         assert_eq!(again, 1);
         assert_eq!(state.surveyed_systems, after);
+    }
+
+    fn survey_ready(probes: u32) -> (GameState, Coord) {
+        let mut state = GameState::with_config(0, outpost_config());
+        state.resources.deuterium = 10_000.0;
+        state.fleet.add(ShipKind::EspionageProbe, probes);
+        let dest = empty_survey_dest(&state);
+        (state, dest)
+    }
+
+    fn pin_survey_seed(state: &mut GameState, seed: u64) {
+        state.missions[0].expedition_seed = Some(seed);
+    }
+
+    #[test]
+    fn the_same_survey_seed_replays_the_same_outcome() {
+        let mut cfg = outpost_config();
+        cfg.survey.weights.partial = 1;
+        cfg.survey.loss_per_distance = 0.0001;
+        let mut a = GameState::with_config(0, cfg.clone());
+        a.resources.deuterium = 10_000.0;
+        a.fleet.add(ShipKind::EspionageProbe, 2);
+        let dest = empty_survey_dest(&a);
+        let mut b = a.clone();
+        a.launch_spy(a.home, probes(2), dest, 100, 0).unwrap();
+        b.launch_spy(b.home, probes(2), dest, 100, 0).unwrap();
+        pin_survey_seed(&mut a, 42);
+        pin_survey_seed(&mut b, 42);
+        let arrive = a.missions[0].phase_ends_at;
+        a.catch_up(arrive);
+        b.catch_up(arrive);
+        assert_eq!(a.surveyed_systems, b.surveyed_systems);
+        assert_eq!(a.surveyed_slots, b.surveyed_slots);
+        assert_eq!(a.debris, b.debris);
+        assert_eq!(
+            a.missions[0].ships.get(ShipKind::EspionageProbe),
+            b.missions[0].ships.get(ShipKind::EspionageProbe)
+        );
+        let text_a: Vec<_> = a.events.iter().map(|e| e.text.as_str()).collect();
+        let text_b: Vec<_> = b.events.iter().map(|e| e.text.as_str()).collect();
+        assert_eq!(text_a, text_b);
+    }
+
+    #[test]
+    fn a_far_survey_loses_probes_more_often_than_a_near_one() {
+        let mut cfg = outpost_config();
+        cfg.survey.loss_per_distance = 0.0001;
+        let mut near = GameState::with_config(0, cfg.clone());
+        near.resources.deuterium = 10_000.0;
+        let mut far = near.clone();
+        let near_dest = (2u16..=16)
+            .map(|position| survey_slot(&near, near.home.system, position))
+            .find(|coord| !near.occupied(*coord) && near.site_at(*coord).is_none())
+            .expect("near empty slot");
+        far.resources.deuterium = 10_000.0;
+        let far_dest = empty_survey_dest(&far);
+        assert_ne!(far_dest.system, far.home.system);
+        let near_d = distance(near.home, near_dest, &near.config.flight);
+        let far_d = distance(far.home, far_dest, &far.config.flight);
+        assert!(far_d > near_d, "far={far_d} near={near_d}");
+        let n = 10_000u32;
+        let mut near_lost = 0u32;
+        let mut far_lost = 0u32;
+        for i in 0..n {
+            near_lost +=
+                roll_survey(u64::from(i), 1, near_d, near_dest.position, &cfg.survey).probes_lost;
+            far_lost += roll_survey(
+                u64::from(i) + 50_000,
+                1,
+                far_d,
+                far_dest.position,
+                &cfg.survey,
+            )
+            .probes_lost;
+        }
+        let near_rate = f64::from(near_lost) / f64::from(n);
+        let far_rate = f64::from(far_lost) / f64::from(n);
+        let near_p = crate::probe_loss_chance(near_d, &cfg.survey);
+        let far_p = crate::probe_loss_chance(far_d, &cfg.survey);
+        assert!(far_rate > near_rate, "far={far_rate} near={near_rate}");
+        assert!(
+            (near_rate - near_p).abs() < 0.02,
+            "near {near_rate} vs {near_p}"
+        );
+        assert!((far_rate - far_p).abs() < 0.02, "far {far_rate} vs {far_p}");
+    }
+
+    #[test]
+    fn a_lost_probe_does_not_return_and_the_survey_still_completes() {
+        let mut cfg = outpost_config();
+        cfg.survey.loss_per_distance = 0.0002;
+        let mut state = GameState::with_config(0, cfg.clone());
+        state.resources.deuterium = 10_000.0;
+        state.fleet.add(ShipKind::EspionageProbe, 2);
+        let dest = empty_survey_dest(&state);
+        state
+            .launch_spy(state.home, probes(2), dest, 100, 0)
+            .unwrap();
+        let dist = distance(state.home, dest, &state.config.flight);
+        let seed = (0..50_000u64)
+            .find(|&seed| {
+                let rolled = roll_survey(seed, 2, dist, dest.position, &cfg.survey);
+                rolled.probes_lost == 1 && rolled.probes_left == 1
+            })
+            .expect("one lost probe");
+        pin_survey_seed(&mut state, seed);
+        let arrive = state.missions[0].phase_ends_at;
+        state.catch_up(arrive);
+        assert!(state.system_surveyed(dest.galaxy, dest.system));
+        assert_eq!(state.missions[0].ships.get(ShipKind::EspionageProbe), 1);
+        assert!(
+            state
+                .events
+                .iter()
+                .any(|event| event.text.contains("a probe was lost")),
+            "{:?}",
+            state.events
+        );
+    }
+
+    #[test]
+    fn a_survey_in_flight_does_not_use_an_expedition_slot() {
+        let mut state = GameState::with_config(0, outpost_config());
+        state.resources.deuterium = 10_000.0;
+        state.fleet.add(ShipKind::EspionageProbe, 1);
+        state.fleet.add(ShipKind::LightFighter, 2);
+        let dest = empty_survey_dest(&state);
+        state
+            .launch_spy(state.home, probes(1), dest, 100, 0)
+            .unwrap();
+        assert!(state.missions[0].survey);
+        assert!(state.missions[0].expedition_seed.is_some());
+        assert_eq!(state.expedition_slots(), 1);
+        state
+            .launch_expedition(
+                state.home,
+                fighters(2),
+                state.config.expedition.min_hold_secs,
+                100,
+                0,
+            )
+            .unwrap();
+        assert_eq!(
+            state
+                .missions
+                .iter()
+                .filter(|mission| mission.expedition_seed.is_some() && !mission.survey)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn all_lost_probes_leave_the_system_unsurveyed() {
+        let mut cfg = outpost_config();
+        cfg.survey.loss_per_distance = 1.0;
+        let mut state = GameState::with_config(0, cfg);
+        state.resources.deuterium = 10_000.0;
+        state.fleet.add(ShipKind::EspionageProbe, 2);
+        let dest = empty_survey_dest(&state);
+        state
+            .launch_spy(state.home, probes(2), dest, 100, 0)
+            .unwrap();
+        let arrive = state.missions[0].phase_ends_at;
+        state.catch_up(arrive);
+        assert!(!state.system_surveyed(dest.galaxy, dest.system));
+        assert!(state.deposits_known_at(dest).is_none());
+        assert!(state.missions.is_empty());
+        assert_eq!(state.fleet.get(ShipKind::EspionageProbe), 0);
+        assert!(
+            state
+                .events
+                .iter()
+                .any(|event| event.text.contains("probes lost")),
+            "{:?}",
+            state.events
+        );
+    }
+
+    #[test]
+    fn escorts_return_when_every_survey_probe_is_lost() {
+        let mut cfg = outpost_config();
+        cfg.survey.loss_per_distance = 1.0;
+        let mut state = GameState::with_config(0, cfg);
+        state.resources.deuterium = 10_000.0;
+        state.fleet.add(ShipKind::EspionageProbe, 2);
+        state.fleet.add(ShipKind::LightFighter, 1);
+        let dest = empty_survey_dest(&state);
+        let mut ships = probes(2);
+        ships.add(ShipKind::LightFighter, 1);
+        state.launch_spy(state.home, ships, dest, 100, 0).unwrap();
+        let arrive = state.missions[0].phase_ends_at;
+        state.catch_up(arrive);
+        assert!(!state.system_surveyed(dest.galaxy, dest.system));
+        assert_eq!(state.missions[0].ships.get(ShipKind::EspionageProbe), 0);
+        assert_eq!(state.missions[0].ships.get(ShipKind::LightFighter), 1);
+        fly_home(&mut state);
+        assert_eq!(state.fleet.get(ShipKind::LightFighter), 1);
+        assert_eq!(state.fleet.get(ShipKind::EspionageProbe), 0);
+    }
+
+    #[test]
+    fn a_partial_survey_reads_some_slots_and_a_second_survey_completes_the_system() {
+        let mut cfg = outpost_config();
+        cfg.survey.weights.partial = 1;
+        cfg.survey.partial_slots = 4;
+        let mut state = GameState::with_config(0, cfg);
+        state.resources.deuterium = 10_000.0;
+        state.fleet.add(ShipKind::EspionageProbe, 2);
+        let dest = empty_survey_dest(&state);
+        state
+            .launch_spy(state.home, probes(1), dest, 100, 0)
+            .unwrap();
+        let arrive = state.missions[0].phase_ends_at;
+        state.catch_up(arrive);
+        assert!(!state.surveyed_systems.contains(&(dest.galaxy, dest.system)));
+        assert!(state.deposits_known_at(dest).is_some());
+        let known: Vec<_> = (1u16..=16)
+            .filter(|&position| {
+                state
+                    .deposits_known_at(survey_slot(&state, dest.system, position))
+                    .is_some()
+            })
+            .collect();
+        assert!(known.contains(&dest.position), "{known:?}");
+        assert!(known.len() < 16, "{known:?}");
+        assert!(
+            state
+                .events
+                .iter()
+                .any(|event| event.text.contains("partial survey")),
+            "{:?}",
+            state.events
+        );
+        let home = state.missions[0]
+            .phase_ends_at
+            .saturating_add(state.missions[0].outbound_secs);
+        state.catch_up(home);
+        assert!(state.missions.is_empty());
+        state.config.survey.weights.partial = 0;
+        state.config.survey.weights.clean = 1;
+        state
+            .launch_spy(state.home, probes(1), dest, 100, 0)
+            .unwrap();
+        let arrive = state.missions[0].phase_ends_at;
+        state.catch_up(arrive);
+        assert!(state.surveyed_systems.contains(&(dest.galaxy, dest.system)));
+        for position in 1..=16 {
+            let slot = survey_slot(&state, dest.system, position);
+            assert!(state.deposits_known_at(slot).is_some(), "{slot}");
+        }
+    }
+
+    #[test]
+    fn a_survey_find_leaves_recyclable_debris() {
+        let mut cfg = outpost_config();
+        cfg.survey.weights.find = 1;
+        cfg.survey.find_debris = 500.0;
+        let mut state = GameState::with_config(0, cfg);
+        state.resources.deuterium = 10_000.0;
+        state.fleet.add(ShipKind::EspionageProbe, 1);
+        let dest = empty_survey_dest(&state);
+        state
+            .launch_spy(state.home, probes(1), dest, 100, 0)
+            .unwrap();
+        let arrive = state.missions[0].phase_ends_at;
+        state.catch_up(arrive);
+        assert!(state.system_surveyed(dest.galaxy, dest.system));
+        close(state.debris.get(&dest).copied().unwrap_or(0.0), 500.0);
+        assert!(
+            state
+                .events
+                .iter()
+                .any(|event| event.text.contains("found debris")),
+            "{:?}",
+            state.events
+        );
+    }
+
+    #[test]
+    fn a_survey_crash_between_arrival_and_save_neither_loses_nor_repeats() {
+        let mut cfg = outpost_config();
+        cfg.survey.weights.find = 1;
+        cfg.survey.find_debris = 200.0;
+        let mut state = GameState::with_config(0, cfg);
+        state.resources.deuterium = 10_000.0;
+        state.fleet.add(ShipKind::EspionageProbe, 1);
+        let dest = empty_survey_dest(&state);
+        state
+            .launch_spy(state.home, probes(1), dest, 100, 0)
+            .unwrap();
+        let before_arrival = state.clone();
+        let arrive = state.missions[0].phase_ends_at;
+        state.catch_up(arrive);
+        let mut replay = before_arrival;
+        replay.catch_up(arrive);
+        assert_eq!(replay.surveyed_systems, state.surveyed_systems);
+        assert_eq!(replay.surveyed_slots, state.surveyed_slots);
+        assert_eq!(replay.debris, state.debris);
+        let finds = state
+            .events
+            .iter()
+            .filter(|event| event.text.contains("found debris"))
+            .count();
+        state.catch_up(arrive.saturating_add(1_000));
+        let again = state
+            .events
+            .iter()
+            .filter(|event| event.text.contains("found debris"))
+            .count();
+        assert_eq!(finds, 1);
+        assert_eq!(again, 1);
+    }
+
+    #[test]
+    fn zero_survey_weights_behave_as_an_always_clean_survey() {
+        let (mut state, dest) = survey_ready(1);
+        assert_eq!(state.config.survey.weights.total(), 0);
+        assert_eq!(state.config.survey.loss_per_distance, 0.0);
+        state
+            .launch_spy(state.home, probes(1), dest, 100, 0)
+            .unwrap();
+        let arrive = state.missions[0].phase_ends_at;
+        state.catch_up(arrive);
+        assert!(state.system_surveyed(dest.galaxy, dest.system));
+        for position in 1..=16 {
+            let slot = survey_slot(&state, dest.system, position);
+            assert!(state.deposits_known_at(slot).is_some(), "{slot}");
+        }
+        assert_eq!(state.missions[0].ships.get(ShipKind::EspionageProbe), 1);
+        assert!(
+            state
+                .events
+                .iter()
+                .any(|event| event.text
+                    == format!("surveyed system {}:{}", dest.galaxy, dest.system)),
+            "{:?}",
+            state.events
+        );
     }
 
     #[test]

@@ -61,6 +61,7 @@ mod simulate;
 mod species;
 mod state;
 mod story;
+mod survey;
 mod tactics;
 mod tutorial;
 mod victory;
@@ -264,6 +265,10 @@ pub use simulate::{
 pub use species::{Flagship, SpeciesCatalog, SpeciesError, SpeciesRun, SpeciesSpec};
 pub use state::{GameEvent, GameState, LogisticsGlance, ResourceKind, Resources, UpcomingRaid};
 pub use story::{PendingStory, StoryCatalog, StoryChoice, StoryError, StoryEvent};
+pub use survey::{
+    SurveyConfig, SurveyEvent, SurveyRoll, SurveyWeights, probe_loss_chance, roll_survey,
+    survey_event_text, survey_history_outcome,
+};
 pub use tactics::{
     Admiral, AdmiralTrait, FleetTactics, Formation, PendingTactical, Stance, TacticalPlan,
     TacticsConfig, TacticsError, Terrain, auto_action, resolve_tactical,

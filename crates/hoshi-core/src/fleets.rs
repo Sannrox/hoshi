@@ -158,9 +158,9 @@ pub struct Mission {
     pub fuel_paid: f64,
     /// When true, Action tries to found a colony instead of holding for return.
     pub colonize: bool,
-    /// Seed drawn at launch. `None` means this is not an expedition.
+    /// Seed drawn at launch. `None` means this mission has no seeded outcome.
     pub expedition_seed: Option<u64>,
-    /// Outcome already applied when Action started, so a delay cannot re-roll.
+    /// Outcome already applied, so a replay cannot re-roll.
     pub expedition_applied: bool,
     /// Cargo delivered on Action when `transport` is set.
     pub cargo: crate::state::Resources,
@@ -174,8 +174,8 @@ pub struct Mission {
     pub invade: bool,
     /// Action writes a spy report and may lose probes.
     pub spy: bool,
-    /// Action records a system survey: exact deposits, no detection, no losses.
-    /// Set with [`Self::spy`] when probes fly to an unowned empty slot.
+    /// Action rolls a seeded survey outcome. Set with [`Self::spy`] when
+    /// probes fly to an unowned empty slot.
     pub survey: bool,
     /// Expedition site this mission draws from. `None` is the config slot.
     pub site_id: Option<u64>,
