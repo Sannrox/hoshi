@@ -1,6 +1,6 @@
  ◆ HOSHI  │  Colony / Research                            RAID 1:00:00   Empire
-  Fe       │ Si       │ REE      │ Poll     │ Fleet    │ D        │ Energy
-  500      │ 500      │ 0        │ 9        │ 0        │ 0        │ +2
+  Fe       │ Si       │ D        │ REE      │ Fleet    │ Energy   │ Poll
+  500      │ 500      │ 0        │ 0        │ 0        │ +2       │ 9
    ▦ While you were away   10h 00m                                          x
 ──                                                                            ──
  ▦  Pirates plundered Fe 2.7k Si 1.0k while you were away.                    c
