@@ -5083,8 +5083,8 @@ mod tests {
     use super::*;
     use hoshi_core::{
         BalanceConfig, Buildings, Clock, Colony, CombatFrame, CombatReport, Coord, DiplomacyConfig,
-        FakeClock, Fleet, GameState, MarketConfig, Outpost, PlanetType, RaidConfig, Resources,
-        StoryCatalog, Vehicle, VictoryPath, VictoryRecord,
+        FakeClock, Fleet, GameState, MarketConfig, Outpost, PlanetType, RaidConfig, Recipe,
+        Resources, StoryCatalog, Vehicle, VictoryPath, VictoryRecord,
     };
     use hoshi_storage::{load_state, open_save, save_state};
     use ratatui::Terminal;
@@ -7427,7 +7427,7 @@ mod tests {
             .find(|line| line.contains("Forge frames"))
             .unwrap_or_default();
         assert!(
-            frames.contains("frames 0.0") && frames.contains("BUFFER"),
+            frames.contains("frames 0.0") && frames.to_ascii_lowercase().contains("buffer"),
             "{frames}"
         );
         assert!(text.contains("2 stalled"), "{text}");
@@ -7491,7 +7491,10 @@ mod tests {
         let mut app = App::new(state);
         app.open(Screen::Production);
         let text = render_text(&app, 80, 24);
-        assert!(text.contains("steel for casks"), "{text}");
+        assert!(
+            text.contains("steel for casks") || text.contains("spent fuel"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -7543,6 +7546,96 @@ mod tests {
         );
         assert!(text.contains(&colony_fe), "colony Fe missing: {text}");
         assert!(!text.contains(&home_energy), "home energy lingered: {text}");
+    }
+
+    fn two_input_stalls() -> GameState {
+        let mut state = GameState::new(1_000);
+        state.next_raid_at = None;
+        state.buildings.metal_mine = 0;
+        state.buildings.crystal_mine = 0;
+        state.buildings.deuterium_synthesizer = 0;
+        state.buildings.solar_plant = 20;
+        state.buildings.shipyard = 1;
+        state.config.chains.recipes.push(Recipe {
+            id: "need_ice".into(),
+            building: BuildingKind::Shipyard,
+            deposit: None,
+            inputs: std::collections::BTreeMap::from([("water_ice".into(), 1.0)]),
+            outputs: std::collections::BTreeMap::from([("propellant".into(), 1.0)]),
+            energy: 0.0,
+            heat: 0.0,
+            pollution: 0.0,
+        });
+        state.config.chains.recipes.push(Recipe {
+            id: "need_steel".into(),
+            building: BuildingKind::Shipyard,
+            deposit: None,
+            inputs: std::collections::BTreeMap::from([("steel".into(), 1.0)]),
+            outputs: std::collections::BTreeMap::from([("frames".into(), 1.0)]),
+            energy: 0.0,
+            heat: 0.0,
+            pollution: 0.0,
+        });
+        state
+    }
+
+    #[test]
+    fn production_rows_name_the_missing_good_and_the_hint_follows_the_cursor() {
+        let mut app = App::new(two_input_stalls());
+        app.open(Screen::Production);
+        let wide = render_text(&app, 120, 40);
+        assert!(wide.contains("input water ice"), "{wide}");
+        assert!(wide.contains("input steel"), "{wide}");
+        let steps = app.state.production_report_at(app.state.home).steps;
+        let ice = steps
+            .iter()
+            .position(|step| {
+                matches!(
+                    &step.limited_by,
+                    hoshi_core::LimitingFactor::Input { good } if good == "water_ice"
+                )
+            })
+            .expect("the ice stall");
+        let steel = steps
+            .iter()
+            .position(|step| {
+                matches!(
+                    &step.limited_by,
+                    hoshi_core::LimitingFactor::Input { good } if good == "steel"
+                )
+            })
+            .expect("the steel stall");
+        assert_ne!(ice, steel);
+        app.selected = ice;
+        let [need, next] = app
+            .state
+            .limiter_hint(&steps[ice].limited_by, steps[ice].planet);
+        let first = render_text(&app, 120, 40);
+        assert!(first.contains(&need) || first.contains(&next), "{first}");
+        app.selected = steel;
+        let [need2, next2] = app
+            .state
+            .limiter_hint(&steps[steel].limited_by, steps[steel].planet);
+        let after = render_text(&app, 120, 40);
+        assert!(after.contains(&need2) || after.contains(&next2), "{after}");
+        assert_ne!(need, need2);
+    }
+
+    #[test]
+    fn production_stall_rows_and_hints_fit_80_120_and_160() {
+        let mut app = App::new(two_input_stalls());
+        app.open(Screen::Production);
+        for (w, h) in [(80, 24), (120, 40), (160, 48)] {
+            let text = render_text(&app, w, h);
+            assert!(text.contains("input"), "{w}x{h}: {text}");
+            for line in text.lines() {
+                assert!(
+                    line.chars().count() <= w as usize,
+                    "{w}x{h} truncated ({width}): {line}",
+                    width = line.chars().count()
+                );
+            }
+        }
     }
 
     #[test]

@@ -1086,7 +1086,7 @@ impl App {
             metric(
                 t,
                 "LIMIT",
-                // How many chains are held back; the line below names the worst.
+                // How many chains are held back; the line below names the worst recipe.
                 match report
                     .steps
                     .iter()
@@ -1102,7 +1102,10 @@ impl App {
                 } else {
                     Intent::Warning
                 },
-                report.limited_by.suggestion().to_string(),
+                report
+                    .worst_step()
+                    .map(|step| self.state.display_name(&step.id))
+                    .unwrap_or_else(|| humanize(limited)),
             ),
             rate,
         ];
@@ -1129,27 +1132,41 @@ impl App {
             .steps
             .iter()
             .map(|step| {
-                let limit = step.limited_by.as_key();
+                let limit = self.state.limiter_row_label(&step.limited_by);
                 vec![
                     Line::styled(humanize(&step.id), t.text()),
                     Line::styled(goods(&step.outputs_per_hour, 1), t.text()),
-                    if limit == "none" {
+                    if matches!(step.limited_by, hoshi_core::LimitingFactor::None) {
                         self.chip("ok", Intent::Success, true)
                     } else {
-                        self.chip(&limit.replace('_', " "), Intent::Warning, true)
+                        Line::styled(limit, t.intent(Intent::Warning))
                     },
                     Line::styled(goods(&step.buffers, 0), t.muted()),
                 ]
             })
             .collect();
+        let foot = report
+            .steps
+            .get(self.selected)
+            .filter(|step| !matches!(step.limited_by, hoshi_core::LimitingFactor::None))
+            .map(|step| {
+                self.state
+                    .limiter_hint(&step.limited_by, step.planet)
+                    .into_iter()
+                    .filter(|line| !line.is_empty())
+                    .enumerate()
+                    .map(|(i, line)| Line::styled(line, if i == 0 { t.text() } else { t.muted() }))
+                    .collect()
+            })
+            .unwrap_or_default();
         ListView {
             strip,
             head,
             table: Some(TableView {
                 columns: vec![
-                    Column::left("recipe", 18),
-                    Column::left("out /h", 18),
-                    Column::left("limit", 10),
+                    Column::left("recipe", 16),
+                    Column::left("out /h", 16),
+                    Column::left("limit", 18),
                     Column::fill("buffer"),
                 ],
                 rows,
@@ -1157,7 +1174,7 @@ impl App {
                 groups: Vec::new(),
                 selected: Some(self.selected),
             }),
-            ..ListView::default()
+            foot,
         }
     }
 
