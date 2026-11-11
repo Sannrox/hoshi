@@ -1516,6 +1516,21 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             "survey",
             "ALTER TABLE missions ADD COLUMN survey INTEGER NOT NULL DEFAULT 0 CHECK (survey IN (0, 1))",
         )
+    elif version == 69:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS research_extra (
+                position INTEGER PRIMARY KEY,
+                tech TEXT NOT NULL,
+                from_level INTEGER NOT NULL CHECK (from_level >= 0),
+                paid_metal REAL NOT NULL CHECK (paid_metal >= 0),
+                paid_crystal REAL NOT NULL CHECK (paid_crystal >= 0),
+                paid_deuterium REAL NOT NULL CHECK (paid_deuterium >= 0),
+                started_at INTEGER NOT NULL,
+                completes_at INTEGER NOT NULL
+            );
+            """
+        )
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"

@@ -83,7 +83,7 @@ pub use automation::{
 };
 pub use balance::{
     BalanceConfig, BalanceError, BuildingCatalog, BuildingSpec, EnergyProducerSpec, PacingTargets,
-    ProducerSpec, RaidConfig, StorageSpec,
+    ProducerSpec, RaidConfig, ResearchSlotsConfig, StorageSpec,
 };
 pub use blueprint::{
     APPLY_ORDER, Blueprint, BlueprintApply, BlueprintCatalog, BlueprintError, BlueprintMismatch,

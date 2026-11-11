@@ -169,16 +169,18 @@ impl GameState {
                 }
             }
         }
-        if coord == self.home
-            && let Some(job) = &self.research
-            && let Some(spec) = self.config.techs.get(&job.tech)
-        {
-            for required in &spec.prereq_buildings {
-                if required.building == kind {
-                    reasons.push(format!(
-                        "research {} requires {kind} {}",
-                        job.tech, required.level
-                    ));
+        if coord == self.home {
+            for job in self.running_research() {
+                let Some(spec) = self.config.techs.get(&job.tech) else {
+                    continue;
+                };
+                for required in &spec.prereq_buildings {
+                    if required.building == kind {
+                        reasons.push(format!(
+                            "research {} requires {kind} {}",
+                            job.tech, required.level
+                        ));
+                    }
                 }
             }
         }

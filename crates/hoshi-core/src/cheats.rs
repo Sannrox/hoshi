@@ -158,6 +158,9 @@ impl crate::GameState {
                 if let Some(job) = &mut self.research {
                     job.completes_at = until;
                 }
+                for job in &mut self.research_extra {
+                    job.completes_at = until;
+                }
             }
             Command::Reveal => {
                 self.cheats.reveal_map = true;

@@ -5,6 +5,12 @@
 
 version = 1
 
+[research_slots]
+# Home lab is the first slot. Each colony lab at this level adds one more.
+colony_lab_level = 1
+# Total running jobs, home included.
+cap = 3
+
 [pacing]
 energy_recovery_secs = 7200
 # First building upgrade must complete within this many seconds.

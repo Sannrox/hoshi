@@ -514,23 +514,34 @@ impl App {
         }
         tabs.push(Span::styled("  h/l branch", t.muted()));
         let specs = self.overview_techs();
-        // The empire-wide queue leads the table on every branch tab. Its rows
-        // sit above the techs and the cursor skips them, so `selected` keeps
-        // indexing `specs`. The count is queued entries against the cap; the
-        // running job sits outside it, as in `GameState::queue_research`.
-        let mut rows = self.research_queue_rows();
-        let queued = rows.len();
-        let mut groups = vec![(
-            0,
-            format!(
-                "queue {}/{}",
-                self.state.research_queue.len(),
-                self.state.build_queue_cap()
+        // Slots (up to the cap) sit above the queue. Both groups are skipped
+        // by the cursor, so `selected` keeps indexing `specs`.
+        let slot_rows = self.research_slot_rows();
+        let queue_rows = self.research_queue_rows();
+        let lead = slot_rows.len() + queue_rows.len();
+        let mut groups = vec![
+            (
+                0,
+                format!(
+                    "slots {}/{}",
+                    self.state.research_slot_count(),
+                    self.state.research_slot_cap()
+                ),
             ),
-        )];
+            (
+                slot_rows.len(),
+                format!(
+                    "queue {}/{}",
+                    self.state.research_queue.len(),
+                    self.state.build_queue_cap()
+                ),
+            ),
+        ];
+        let mut rows = slot_rows;
+        rows.extend(queue_rows);
         let mut last_group = None;
         for (i, spec) in specs.iter().enumerate() {
-            let i = i + queued;
+            let i = i + lead;
             // Keystones close a branch and open its victory path.
             let group = if spec.keystone {
                 "keystone ★ victory path".to_string()
@@ -592,48 +603,88 @@ impl App {
             table: Some(TableView {
                 columns,
                 rows,
-                lead: queued,
+                lead,
                 groups,
-                selected: Some(self.selected + queued),
+                selected: Some(self.selected + lead),
             }),
             ..ListView::default()
         }
     }
 
-    /// One row per research job, running first: `1. Tech → lvN`, then its
-    /// countdown, or for a queued entry its estimated duration.
-    fn research_queue_rows(&self) -> Vec<Vec<Line<'static>>> {
+    /// One row per slot up to the cap: running job and source, free, or what
+    /// unlocks it.
+    fn research_slot_rows(&self) -> Vec<Vec<Line<'static>>> {
         let t = &self.theme;
         let now = self.state.last_tick_unix;
-        let running = self.state.research.iter().map(|job| (job, true));
-        let queued = self.state.research_queue.iter().map(|job| (job, false));
-        running
-            .chain(queued)
-            .enumerate()
-            .map(|(i, (job, running))| {
-                let spec = self.state.config.techs.get(&job.tech);
-                let name = spec.map_or(job.tech.as_str(), |s| s.name.as_str());
-                let (secs, chip, style) = if running {
+        let cap = self.state.research_slot_cap();
+        let granted = self.state.research_slot_count();
+        let running: Vec<&hoshi_core::ResearchJob> = self.state.running_research().collect();
+        let sources = self.state.research_slot_sources();
+        let need = self.state.config.research_slots.colony_lab_level;
+        (0..cap)
+            .map(|i| {
+                let mut row;
+                let (time, chip, style) = if i < running.len() {
+                    let job = running[i];
+                    let spec = self.state.config.techs.get(&job.tech);
+                    let name = spec.map_or(job.tech.as_str(), |s| s.name.as_str());
+                    let source = sources
+                        .get(i)
+                        .cloned()
+                        .unwrap_or_else(|| "lost colony".into());
+                    row = vec![Line::from(format!(
+                        "  {}. {source} · {name} → lv{}",
+                        i + 1,
+                        job.from_level + 1
+                    ))];
                     (
-                        job.completes_at.saturating_sub(now),
+                        duration(job.completes_at.saturating_sub(now)),
                         self.chip("in progress", Intent::Warning, false),
                         t.intent(Intent::Warning),
                     )
-                } else {
+                } else if i < granted {
+                    let source = sources.get(i).cloned().unwrap_or_else(|| "Home".into());
+                    row = vec![Line::from(format!("  {}. {source} · free", i + 1))];
                     (
-                        spec.map_or(0, |s| self.state.research_secs(s, job.from_level)),
-                        self.chip("queued", Intent::Neutral, true),
+                        String::new(),
+                        self.chip("free", Intent::Success, true),
+                        t.muted(),
+                    )
+                } else {
+                    row = vec![Line::from(format!("  {}. colony lab {need}", i + 1))];
+                    (
+                        String::new(),
+                        self.chip("locked", Intent::Neutral, true),
                         t.muted(),
                     )
                 };
+                row.extend(ResourceKind::QUOTED.iter().map(|_| Line::default()));
+                row.push(Line::styled(time, style));
+                row.push(chip);
+                row
+            })
+            .collect()
+    }
+
+    /// One row per queued research job: `1. Tech → lvN` and its estimated duration.
+    fn research_queue_rows(&self) -> Vec<Vec<Line<'static>>> {
+        let t = &self.theme;
+        self.state
+            .research_queue
+            .iter()
+            .enumerate()
+            .map(|(i, job)| {
+                let spec = self.state.config.techs.get(&job.tech);
+                let name = spec.map_or(job.tech.as_str(), |s| s.name.as_str());
+                let secs = spec.map_or(0, |s| self.state.research_secs(s, job.from_level));
                 let mut row = vec![Line::from(format!(
                     "  {}. {name} → lv{}",
                     i + 1,
                     job.from_level + 1
                 ))];
                 row.extend(ResourceKind::QUOTED.iter().map(|_| Line::default()));
-                row.push(Line::styled(duration(secs), style));
-                row.push(chip);
+                row.push(Line::styled(duration(secs), t.muted()));
+                row.push(self.chip("queued", Intent::Neutral, true));
                 row
             })
             .collect()
