@@ -11,6 +11,20 @@ colony_lab_level = 1
 # Total running jobs, home included.
 cap = 3
 
+[survey]
+# Chance a probe is lost per unit of flight distance. Abstract rate, not flux.
+loss_per_distance = 0.00002
+# Positions a partial survey reads, always including the destination.
+partial_slots = 6
+# Debris mass a find leaves at the destination; recyclers can lift it.
+find_debris = 800.0
+
+[survey.weights]
+# Most surveys complete with nothing else happening.
+clean = 80
+partial = 12
+find = 8
+
 [pacing]
 energy_recovery_secs = 7200
 # First building upgrade must complete within this many seconds.

@@ -1359,6 +1359,7 @@ pub(crate) fn timeline_text(state: &GameState, event: &hoshi_core::HistoryEvent)
             Some("defender") => format!("fight: defenders held ({outcome})"),
             _ => format!("fight: draw ({outcome})"),
         },
+        (HistoryKind::Fleet, "survey") => format!("survey of {}: {outcome}", obj(0)),
         (_, "story_choice") => format!("story: {} → {outcome}", obj(0)),
         (_, "request_spend") => format!("{last} spending {outcome}"),
         (_, "open_incident") => format!("incident opened: {} ({outcome})", obj(1)),

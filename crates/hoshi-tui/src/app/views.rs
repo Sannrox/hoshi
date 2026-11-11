@@ -2150,16 +2150,21 @@ impl App {
                     self.chip(event.kind.as_key(), Intent::Neutral, true),
                     Line::styled(event.actor.clone(), t.text()),
                     Line::styled(
-                        format!(
-                            "{}  {}",
-                            event.action.replace('_', " "),
-                            event
+                        {
+                            let action = event.action.replace('_', " ");
+                            let objects = event
                                 .objects
                                 .iter()
                                 .map(|id| self.state.object_label(id))
                                 .collect::<Vec<_>>()
-                                .join(", ")
-                        ),
+                                .join(", ");
+                            let outcome = event.outcome.replace('_', " ");
+                            if outcome.is_empty() {
+                                format!("{action}  {objects}")
+                            } else {
+                                format!("{action}  {objects}  {outcome}")
+                            }
+                        },
                         t.text(),
                     ),
                 ]

@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 69;
+pub const SCHEMA_VERSION: u32 = 70;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -195,6 +195,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM story_pending;
          DELETE FROM story_flags;
          DELETE FROM surveyed_systems;
+         DELETE FROM surveyed_slots;
          DELETE FROM market_prices;
          DELETE FROM market_history;
          DELETE FROM faction_standing;
@@ -662,6 +663,12 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
         tx.execute(
             "INSERT INTO surveyed_systems (galaxy, system) VALUES (?1, ?2)",
             params![galaxy, system],
+        )?;
+    }
+    for coord in &state.surveyed_slots {
+        tx.execute(
+            "INSERT INTO surveyed_slots (galaxy, system, position) VALUES (?1, ?2, ?3)",
+            params![coord.galaxy, coord.system, coord.position],
         )?;
     }
     for kind in hoshi_core::ResourceKind::QUOTED {
@@ -2195,6 +2202,20 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     for row in survey_rows {
         state.surveyed_systems.insert(row?);
     }
+    let mut slot_stmt = conn.prepare(
+        "SELECT galaxy, system, position FROM surveyed_slots ORDER BY galaxy, system, position",
+    )?;
+    let slot_rows = slot_stmt.query_map([], |row| {
+        Ok(Coord {
+            galaxy: row.get(0)?,
+            system: row.get(1)?,
+            position: row.get(2)?,
+        })
+    })?;
+    state.surveyed_slots.clear();
+    for row in slot_rows {
+        state.surveyed_slots.insert(row?);
+    }
 
     load_market(conn, &mut state)?;
     load_diplomacy(conn, &mut state)?;
@@ -3509,6 +3530,7 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "story_pending" => "SELECT COUNT(*) FROM story_pending",
         "story_flags" => "SELECT COUNT(*) FROM story_flags",
         "surveyed_systems" => "SELECT COUNT(*) FROM surveyed_systems",
+        "surveyed_slots" => "SELECT COUNT(*) FROM surveyed_slots",
         "expedition_sites" => "SELECT COUNT(*) FROM expedition_sites",
         "signals" => "SELECT COUNT(*) FROM signals",
         "merchant_visit" => "SELECT COUNT(*) FROM merchant_visit",
@@ -3635,6 +3657,7 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "story_pending")?
         + count_rows(conn, "story_flags")?
         + count_rows(conn, "surveyed_systems")?
+        + count_rows(conn, "surveyed_slots")?
         + count_rows(conn, "expedition_sites")?
         + count_rows(conn, "signals")?
         + count_rows(conn, "merchant_visit")?
@@ -3941,6 +3964,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 69 {
         migrate_v69(conn)?;
+    }
+    if found < 70 {
+        migrate_v70(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -5198,6 +5224,21 @@ fn load_raid_targets(conn: &Connection) -> Result<(Option<Coord>, Option<Coord>)
         Some((next, event)) => Ok((coord(next)?, coord(event)?)),
         None => Ok((None, None)),
     }
+}
+
+/// v70: per-slot partial surveys. A missing table is no partial slots, so
+/// older saves load unchanged. Each step is idempotent, so a crash mid-way
+/// finishes on reopen. Previous versions fail closed on this schema.
+fn migrate_v70(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS surveyed_slots (
+            galaxy INTEGER NOT NULL,
+            system INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            PRIMARY KEY (galaxy, system, position)
+        );",
+    )?;
+    Ok(())
 }
 
 /// v69: extra running research jobs after the first slot. The first job stays
@@ -10514,6 +10555,36 @@ label = "Leave it"
         assert_eq!(loaded.research, state.research);
         assert_eq!(loaded.research_queue, state.research_queue);
         assert!(loaded.research_extra.is_empty());
+    }
+
+    #[test]
+    fn surveyed_slots_survive_save_and_v69_saves_have_none() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let mut state = GameState::new(0);
+        state.surveyed_slots.insert(Coord {
+            galaxy: 2,
+            system: 7,
+            position: 4,
+        });
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.surveyed_slots, state.surveyed_slots);
+        conn.execute_batch("DROP TABLE surveyed_slots; PRAGMA user_version = 69;")
+            .unwrap();
+        migrate(&conn).unwrap();
+        let old = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert!(old.surveyed_slots.is_empty());
+    }
+
+    #[test]
+    fn a_half_applied_v70_migration_finishes_on_reopen() {
+        let conn = open_save(Path::new(":memory:")).unwrap();
+        conn.execute_batch("PRAGMA user_version = 69;").unwrap();
+        migrate(&conn).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM surveyed_slots", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
     }
 
     #[test]

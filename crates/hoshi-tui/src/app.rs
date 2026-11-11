@@ -8345,6 +8345,62 @@ mod tests {
     }
 
     #[test]
+    fn survey_result_and_history_name_the_outcome_in_plain_words() {
+        let mut cfg = BalanceConfig {
+            survey: hoshi_core::SurveyConfig::default(),
+            ..BalanceConfig::default()
+        };
+        cfg.raid.enabled = false;
+        cfg.market.enabled = false;
+        let mut state = GameState::with_config(0, cfg);
+        state.resources.deuterium = 10_000.0;
+        state.fleet.add(ShipKind::EspionageProbe, 1);
+        let dest = (2u16..=16)
+            .flat_map(|system| {
+                (2u16..=16).map(move |position| Coord {
+                    galaxy: state.home.galaxy,
+                    system,
+                    position,
+                })
+            })
+            .find(|coord| {
+                !state.owned_coords().contains(coord)
+                    && state.outpost(*coord).is_none()
+                    && state.site_at(*coord).is_none()
+            })
+            .expect("empty unowned slot");
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::EspionageProbe, 1);
+        state.launch_spy(state.home, ships, dest, 100, 0).unwrap();
+        let arrive = state.missions[0].phase_ends_at;
+        state.catch_up(arrive);
+        let system = format!("{}:{}", dest.galaxy, dest.system);
+        let mut app = App::new(state);
+        app.open(Screen::Overview);
+        let overview = render_text(&app, 120, 40);
+        assert!(
+            overview.contains(&format!("surveyed system {system}")),
+            "{overview}"
+        );
+        assert!(!overview.contains("SurveyEvent"), "{overview}");
+        assert!(!overview.contains("partial_survey"), "{overview}");
+        assert!(!overview.contains("SurveyKind"), "{overview}");
+        app.open(Screen::History);
+        let history = render_text(&app, 120, 40);
+        assert!(history.contains("survey"), "{history}");
+        assert!(history.contains("surveyed"), "{history}");
+        assert!(history.contains(&system), "{history}");
+        assert!(!history.contains("SurveyEvent"), "{history}");
+        assert!(!history.contains("partial_survey"), "{history}");
+        app.open(Screen::Cockpit);
+        let cockpit = render_text(&app, 120, 40);
+        assert!(
+            cockpit.contains(&format!("survey of {system}: surveyed")),
+            "{cockpit}"
+        );
+    }
+
+    #[test]
     fn map_and_planet_switcher_label_moons() {
         let mut state = GameState::new(1_000);
         state.moons.push(hoshi_core::Moon::new(Coord::HOME));

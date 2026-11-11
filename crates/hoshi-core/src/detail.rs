@@ -1017,6 +1017,7 @@ mod tests {
     #[test]
     fn star_map_detail_lists_deposits_after_a_survey() {
         let mut state = GameState::new(0);
+        state.config.survey = crate::SurveyConfig::default();
         state.resources.deuterium = 10_000.0;
         state.fleet.add(crate::ShipKind::EspionageProbe, 1);
         let dest = (2u16..=16)
