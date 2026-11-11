@@ -164,8 +164,9 @@ view shows it as intel, never the target's save. When a lone catch-up (a
 `submit`) ran the spy or the target past the arrival, the next
 host catch-up reads the target as it is then and stamps the report with
 that time. An
-`outpost` coord keeps the local spy, `you` is refused, and `empty` and `site`
-have nothing to spy. Local `launch_spy` still takes outposts only.
+`outpost` coord keeps the local spy, `you` is refused, `empty` surveys that
+system on this tenant's save, and `site` has nothing to spy. Local
+`launch_spy` takes outposts or unowned empty slots.
 
 An idempotency id is remembered for the longer of the command and attack
 windows (`ShardConfig::seen_ttl_secs`); an older id is forgotten and may

@@ -406,6 +406,9 @@ pub struct GameState {
     pub last_diplomacy_at: u64,
     pub spy_reports: Vec<crate::SpyReport>,
     pub next_report_id: u64,
+    /// Systems this empire has surveyed. Owned systems count even when absent.
+    /// `(galaxy, system)`. Older saves load this empty.
+    pub surveyed_systems: BTreeSet<(u16, u16)>,
     pub laws: crate::LawState,
     /// Achievement id → unix unlock time. Survives prestige.
     pub achievements: BTreeMap<String, u64>,
@@ -548,6 +551,7 @@ impl GameState {
             last_diplomacy_at: 0,
             spy_reports: Vec::new(),
             next_report_id: 0,
+            surveyed_systems: BTreeSet::new(),
             laws: crate::LawState::default(),
             achievements: BTreeMap::new(),
             raids_survived: 0,
@@ -2609,6 +2613,7 @@ impl GameState {
             attack: false,
             invade: false,
             spy: false,
+            survey: false,
             site_id: None,
             recycle: false,
             deploy: false,
@@ -3118,6 +3123,7 @@ impl GameState {
             attack: false,
             invade: false,
             spy: false,
+            survey: false,
             site_id: None,
             recycle: false,
             deploy,
@@ -3306,8 +3312,9 @@ impl GameState {
         Ok(mission.id)
     }
 
-    /// Send probes from `origin` to an outpost. Arrival writes a report;
-    /// detection may destroy probes.
+    /// Send probes from `origin` to an outpost or an unowned empty slot.
+    /// An outpost writes a report; detection may destroy probes. An unowned
+    /// empty slot surveys that system: exact deposits, no detection, no losses.
     pub fn launch_spy(
         &mut self,
         origin: Coord,
@@ -3317,10 +3324,22 @@ impl GameState {
         now_unix: u64,
     ) -> Result<u64, FleetError> {
         self.catch_up(now_unix);
-        if self.outpost(dest).is_none() {
+        if self.outpost(dest).is_some() {
+            return self.launch_probes(origin, ships, dest, speed_percent, now_unix);
+        }
+        if !self.can_survey(dest) {
             return Err(FleetError::UnknownOutpost);
         }
-        self.launch_probes(origin, ships, dest, speed_percent, now_unix)
+        let id = self.launch_probes(origin, ships, dest, speed_percent, now_unix)?;
+        if let Some(mission) = self.missions.last_mut() {
+            mission.survey = true;
+        }
+        Ok(id)
+    }
+
+    /// Unowned empty slot: not home, a colony, an outpost, a rival claim, or a site.
+    fn can_survey(&self, dest: Coord) -> bool {
+        !self.occupied(dest) && self.site_at(dest).is_none()
     }
 
     /// Shard host only: send probes to another tenant's planet. The caller
@@ -3519,6 +3538,32 @@ impl GameState {
             return BTreeMap::new();
         };
         self.chain_deposits(kind, self.galaxy_seed, coord)
+    }
+
+    /// Orbit class of any slot. Type follows the band; no survey required.
+    pub fn slot_type(&self, coord: Coord) -> PlanetType {
+        self.planet_kind(coord)
+            .unwrap_or_else(|| planet_profile(self.galaxy_seed, coord, self.generator_version).0)
+    }
+
+    /// Whether this empire knows the deposits of `coord`'s system.
+    pub fn system_surveyed(&self, galaxy: u16, system: u16) -> bool {
+        self.surveyed_systems.contains(&(galaxy, system))
+            || self
+                .owned_coords()
+                .iter()
+                .any(|coord| coord.galaxy == galaxy && coord.system == system)
+    }
+
+    /// Deposits of `coord` when they are known: owned worlds and surveyed systems.
+    pub fn deposits_known_at(&self, coord: Coord) -> Option<BTreeMap<String, f64>> {
+        if self.planet_kind(coord).is_some() {
+            return Some(self.deposits_at(coord));
+        }
+        if !self.system_surveyed(coord.galaxy, coord.system) {
+            return None;
+        }
+        Some(self.chain_deposits(self.slot_type(coord), self.galaxy_seed, coord))
     }
 
     pub fn colony_cap(&self) -> u32 {
@@ -4950,15 +4995,42 @@ impl GameState {
         self.fleet_combat_points() / unit
     }
 
+    /// Record the destination's system as surveyed. Insert is idempotent, so a
+    /// crash between arrival and the next save neither loses nor repeats it.
+    fn apply_survey_at(&mut self, index: usize, done_at: u64) {
+        let dest = self.missions[index].dest;
+        let key = (dest.galaxy, dest.system);
+        if !self.surveyed_systems.insert(key) {
+            return;
+        }
+        let system = format!("{}:{}", dest.galaxy, dest.system);
+        self.push_event(done_at, format!("surveyed system {system}"));
+        self.record_history(crate::HistoryDraft {
+            at: done_at,
+            kind: crate::HistoryKind::Fleet,
+            actor: "player".into(),
+            action: "survey".into(),
+            objects: vec![system],
+            outcome: "surveyed".into(),
+            cause_key: Some(format!("mission:{}", self.missions[index].id)),
+            ..crate::HistoryDraft::default()
+        });
+    }
+
     /// Write a spy report on arrival. Returns true when every ship was lost.
     ///
     /// A probe at another tenant's planet (no outpost, not held by this
     /// empire) writes a pending report marked for the intel compartment.
     /// Only the shard host can read the target, through [`Self::fill_tenant_spy`].
-    /// Local `launch_spy` targets outposts only, and an outpost leaves the
-    /// map only as a colony, so a single save never takes that branch.
+    /// Local `launch_spy` targets outposts or unowned empty slots. Empty
+    /// slots set `survey` and return above. An outpost leaves the map only
+    /// as a colony, so a single save never writes a tenant report here.
     fn try_spy_at(&mut self, index: usize, done_at: u64) -> bool {
         if !self.missions[index].spy {
+            return false;
+        }
+        if self.missions[index].survey {
+            self.apply_survey_at(index, done_at);
             return false;
         }
         let dest = self.missions[index].dest;
@@ -13840,6 +13912,143 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
             state.launch_spy(state.home, ships, dest, 100, 0),
             Err(FleetError::NeedEspionageProbe)
         );
+    }
+
+    fn survey_slot(state: &GameState, system: u16, position: u16) -> Coord {
+        Coord {
+            galaxy: state.home.galaxy,
+            system,
+            position,
+        }
+    }
+
+    fn empty_survey_dest(state: &GameState) -> Coord {
+        (2u16..=16)
+            .flat_map(|system| {
+                (2u16..=16).map(move |position| survey_slot(state, system, position))
+            })
+            .find(|coord| !state.occupied(*coord) && state.site_at(*coord).is_none())
+            .expect("empty unowned slot")
+    }
+
+    #[test]
+    fn survey_probes_reveal_system_deposits_matching_a_colony() {
+        let mut state = GameState::with_config(0, outpost_config());
+        state.resources.deuterium = 10_000.0;
+        state.fleet.add(ShipKind::EspionageProbe, 1);
+        let dest = empty_survey_dest(&state);
+        assert!(state.deposits_known_at(dest).is_none());
+        assert!(!state.slot_type(dest).as_key().is_empty());
+        state
+            .launch_spy(state.home, probes(1), dest, 100, 0)
+            .unwrap();
+        assert!(state.missions[0].survey);
+        assert!(state.missions[0].spy);
+        let arrive = state.missions[0].phase_ends_at;
+        state.catch_up(arrive);
+        let known = state.deposits_known_at(dest).expect("surveyed deposits");
+        let founded = state.chain_deposits(state.slot_type(dest), state.galaxy_seed, dest);
+        assert_eq!(known, founded);
+        for position in 1..=16 {
+            let slot = survey_slot(&state, dest.system, position);
+            assert!(state.deposits_known_at(slot).is_some(), "{slot}");
+        }
+        assert!(
+            state
+                .events
+                .iter()
+                .any(|event| event.text.contains("surveyed system")),
+            "{:?}",
+            state.events
+        );
+        assert_eq!(state.missions[0].ships.get(ShipKind::EspionageProbe), 1);
+        assert!(state.spy_reports.is_empty());
+    }
+
+    #[test]
+    fn unsurveyed_unowned_slot_hides_deposits_and_shows_type() {
+        let state = GameState::with_config(0, outpost_config());
+        let dest = empty_survey_dest(&state);
+        assert_ne!(dest.system, state.home.system);
+        assert!(state.deposits_known_at(dest).is_none());
+        let kind = state.slot_type(dest);
+        assert_eq!(
+            kind,
+            planet_profile(state.galaxy_seed, dest, state.generator_version).0
+        );
+        assert!(state.system_surveyed(state.home.galaxy, state.home.system));
+        assert!(state.deposits_known_at(state.home).is_some());
+    }
+
+    #[test]
+    fn a_far_survey_costs_more_fuel_and_arrives_later_than_a_near_one() {
+        let mut near = GameState::with_config(0, outpost_config());
+        near.resources.deuterium = 10_000.0;
+        near.fleet.add(ShipKind::EspionageProbe, 1);
+        let mut far = near.clone();
+        far.fleet.add(ShipKind::EspionageProbe, 1);
+        let near_dest = (2u16..=16)
+            .map(|position| survey_slot(&near, near.home.system, position))
+            .find(|coord| !near.occupied(*coord) && near.site_at(*coord).is_none())
+            .expect("near empty slot");
+        let far_dest = empty_survey_dest(&far);
+        assert_ne!(far_dest.system, far.home.system);
+        near.launch_spy(near.home, probes(1), near_dest, 100, 0)
+            .unwrap();
+        far.launch_spy(far.home, probes(1), far_dest, 100, 0)
+            .unwrap();
+        assert!(far.missions[0].fuel_paid > near.missions[0].fuel_paid);
+        assert!(far.missions[0].outbound_secs > near.missions[0].outbound_secs);
+        let mut dry = GameState::with_config(0, outpost_config());
+        dry.fleet.add(ShipKind::EspionageProbe, 1);
+        let err = dry
+            .launch_spy(dry.home, probes(1), far_dest, 100, 0)
+            .unwrap_err();
+        assert!(matches!(err, FleetError::InsufficientFuel { .. }), "{err}");
+    }
+
+    #[test]
+    fn survey_refuses_an_occupied_slot() {
+        let mut state = GameState::with_config(0, outpost_config());
+        state.resources.deuterium = 10_000.0;
+        state.fleet.add(ShipKind::EspionageProbe, 1);
+        assert_eq!(
+            state.launch_spy(state.home, probes(1), state.home, 100, 0),
+            Err(FleetError::UnknownOutpost)
+        );
+    }
+
+    #[test]
+    fn a_survey_survives_replay_and_does_not_double_apply() {
+        let mut state = GameState::with_config(0, outpost_config());
+        state.resources.deuterium = 10_000.0;
+        state.fleet.add(ShipKind::EspionageProbe, 1);
+        let dest = empty_survey_dest(&state);
+        state
+            .launch_spy(state.home, probes(1), dest, 100, 0)
+            .unwrap();
+        let before_arrival = state.clone();
+        let arrive = state.missions[0].phase_ends_at;
+        state.catch_up(arrive);
+        let after = state.surveyed_systems.clone();
+        assert!(after.contains(&(dest.galaxy, dest.system)));
+        let mut replay = before_arrival;
+        replay.catch_up(arrive);
+        assert_eq!(replay.surveyed_systems, after);
+        let events = state
+            .events
+            .iter()
+            .filter(|event| event.text.contains("surveyed system"))
+            .count();
+        state.catch_up(arrive.saturating_add(1_000));
+        let again = state
+            .events
+            .iter()
+            .filter(|event| event.text.contains("surveyed system"))
+            .count();
+        assert_eq!(events, 1);
+        assert_eq!(again, 1);
+        assert_eq!(state.surveyed_systems, after);
     }
 
     #[test]

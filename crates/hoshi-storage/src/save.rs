@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 67;
+pub const SCHEMA_VERSION: u32 = 68;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -193,6 +193,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
          DELETE FROM goods;
          DELETE FROM story_pending;
          DELETE FROM story_flags;
+         DELETE FROM surveyed_systems;
          DELETE FROM market_prices;
          DELETE FROM market_history;
          DELETE FROM faction_standing;
@@ -382,8 +383,8 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 phase_ends_at, fuel_paid, colonize, expedition_seed, expedition_applied,
                 cargo_metal, cargo_crystal, cargo_deuterium,
                 cargo_rare_earths, cargo_water_ice, cargo_helium_3,
-                transport, attack, invade, spy, site_id, recycle, deploy
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)",
+                transport, attack, invade, spy, survey, site_id, recycle, deploy
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31)",
             params![
                 mission.id as i64,
                 mission.origin.galaxy as i64,
@@ -412,6 +413,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 mission.attack as i64,
                 mission.invade as i64,
                 mission.spy as i64,
+                mission.survey as i64,
                 mission.site_id.map(|id| id as i64),
                 mission.recycle as i64,
                 mission.deploy as i64,
@@ -636,6 +638,12 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
     }
     for flag in &state.story_flags {
         tx.execute("INSERT INTO story_flags (flag) VALUES (?1)", params![flag])?;
+    }
+    for (galaxy, system) in &state.surveyed_systems {
+        tx.execute(
+            "INSERT INTO surveyed_systems (galaxy, system) VALUES (?1, ?2)",
+            params![galaxy, system],
+        )?;
     }
     for kind in hoshi_core::ResourceKind::QUOTED {
         tx.execute(
@@ -1874,7 +1882,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
                 phase_ends_at, fuel_paid, colonize, expedition_seed, expedition_applied,
                 cargo_metal, cargo_crystal, cargo_deuterium,
                 cargo_rare_earths, cargo_water_ice, cargo_helium_3,
-                transport, attack, invade, spy, site_id, recycle, deploy
+                transport, attack, invade, spy, survey, site_id, recycle, deploy
          FROM missions ORDER BY id",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -1906,9 +1914,10 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             row.get::<_, i64>(24)?,
             row.get::<_, i64>(25)?,
             row.get::<_, i64>(26)?,
-            row.get::<_, Option<i64>>(27)?,
-            row.get::<_, i64>(28)?,
+            row.get::<_, i64>(27)?,
+            row.get::<_, Option<i64>>(28)?,
             row.get::<_, i64>(29)?,
+            row.get::<_, i64>(30)?,
         ))
     })?;
     let mut missions = Vec::new();
@@ -1941,6 +1950,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             attack,
             invade,
             spy,
+            survey,
             site_id,
             recycle,
             deploy,
@@ -1993,6 +2003,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             attack: attack != 0,
             invade: invade != 0,
             spy: spy != 0,
+            survey: survey != 0,
             site_id: site_id.map(|id| id as u64),
             recycle: recycle != 0,
             deploy: deploy != 0,
@@ -2125,6 +2136,15 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
     let flag_rows = flag_stmt.query_map([], |row| row.get::<_, String>(0))?;
     for flag in flag_rows {
         state.story_flags.insert(flag?);
+    }
+
+    let mut survey_stmt =
+        conn.prepare("SELECT galaxy, system FROM surveyed_systems ORDER BY galaxy, system")?;
+    let survey_rows =
+        survey_stmt.query_map([], |row| Ok((row.get::<_, u16>(0)?, row.get::<_, u16>(1)?)))?;
+    state.surveyed_systems.clear();
+    for row in survey_rows {
+        state.surveyed_systems.insert(row?);
     }
 
     load_market(conn, &mut state)?;
@@ -3438,6 +3458,7 @@ fn count_rows(conn: &Connection, table: &str) -> Result<i64, SaveError> {
         "goods" => "SELECT COUNT(*) FROM goods",
         "story_pending" => "SELECT COUNT(*) FROM story_pending",
         "story_flags" => "SELECT COUNT(*) FROM story_flags",
+        "surveyed_systems" => "SELECT COUNT(*) FROM surveyed_systems",
         "expedition_sites" => "SELECT COUNT(*) FROM expedition_sites",
         "signals" => "SELECT COUNT(*) FROM signals",
         "merchant_visit" => "SELECT COUNT(*) FROM merchant_visit",
@@ -3562,6 +3583,7 @@ fn leftover_rows(conn: &Connection) -> Result<i64, SaveError> {
         + count_rows(conn, "goods")?
         + count_rows(conn, "story_pending")?
         + count_rows(conn, "story_flags")?
+        + count_rows(conn, "surveyed_systems")?
         + count_rows(conn, "expedition_sites")?
         + count_rows(conn, "signals")?
         + count_rows(conn, "merchant_visit")?
@@ -3862,6 +3884,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     }
     if found < 67 {
         migrate_v67(conn)?;
+    }
+    if found < 68 {
+        migrate_v68(conn)?;
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -5119,6 +5144,27 @@ fn load_raid_targets(conn: &Connection) -> Result<(Option<Coord>, Option<Coord>)
         Some((next, event)) => Ok((coord(next)?, coord(event)?)),
         None => Ok((None, None)),
     }
+}
+
+/// v68: surveyed systems, and a survey flag on probe missions. Each step is
+/// idempotent, so a crash mid-way finishes on reopen. Older saves load with
+/// no explicit surveys; owned systems still count as surveyed in core.
+fn migrate_v68(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS surveyed_systems (
+            galaxy INTEGER NOT NULL,
+            system INTEGER NOT NULL,
+            PRIMARY KEY (galaxy, system)
+        );",
+    )?;
+    if !missions_has_column(conn, "survey")? {
+        conn.execute(
+            "ALTER TABLE missions ADD COLUMN survey INTEGER NOT NULL DEFAULT 0
+                CHECK (survey IN (0, 1))",
+            [],
+        )?;
+    }
+    Ok(())
 }
 
 /// v67: player-chosen world names, and the name of another tenant's world a
@@ -10299,6 +10345,75 @@ label = "Leave it"
         let old = load_state(&conn, BalanceConfig::default()).unwrap();
         assert!(old.world_names.is_empty());
         assert_eq!(old.world_label(home), format!("Home ({home})"));
+    }
+
+    #[test]
+    fn surveyed_systems_survive_save_and_v67_saves_have_none() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let mut state = GameState::new(0);
+        state.surveyed_systems.insert((2, 7));
+        state.resources.deuterium = 10_000.0;
+        state.fleet.add(ShipKind::EspionageProbe, 1);
+        let dest = (2u16..=16)
+            .flat_map(|system| {
+                (2u16..=16).map(move |position| Coord {
+                    galaxy: 1,
+                    system,
+                    position,
+                })
+            })
+            .find(|coord| {
+                state.outpost(*coord).is_none()
+                    && state.site_at(*coord).is_none()
+                    && !state.owned_coords().contains(coord)
+            })
+            .expect("empty unowned slot");
+        state
+            .launch_spy(
+                state.home,
+                {
+                    let mut ships = Fleet::default();
+                    ships.add(ShipKind::EspionageProbe, 1);
+                    ships
+                },
+                dest,
+                100,
+                0,
+            )
+            .unwrap();
+        assert!(state.missions[0].survey);
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.surveyed_systems, state.surveyed_systems);
+        assert!(loaded.missions[0].survey);
+        conn.execute_batch(
+            "DROP TABLE surveyed_systems;
+             ALTER TABLE missions DROP COLUMN survey;
+             PRAGMA user_version = 67;",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        let old = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert!(old.surveyed_systems.is_empty());
+        assert!(!old.missions[0].survey);
+        assert!(old.system_surveyed(old.home.galaxy, old.home.system));
+    }
+
+    #[test]
+    fn a_half_applied_v68_migration_finishes_on_reopen() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let mut state = GameState::new(0);
+        state.surveyed_systems.insert((3, 4));
+        conn.execute_batch(
+            "ALTER TABLE missions DROP COLUMN survey;
+             PRAGMA user_version = 67;",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.surveyed_systems, state.surveyed_systems);
+        assert!(missions_has_column(&conn, "survey").unwrap());
     }
 
     #[test]

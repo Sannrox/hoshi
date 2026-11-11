@@ -3240,7 +3240,7 @@ impl App {
         } else if self.state.owned_coords().contains(&dest) {
             vec![Mission::Transport]
         } else {
-            vec![Mission::Colonize]
+            vec![Mission::Colonize, Mission::Spy]
         };
         if self.state.debris.get(&dest).is_some_and(|&d| d > 0.0) {
             missions.push(Mission::Recycle);
@@ -8000,6 +8000,63 @@ mod tests {
     }
 
     #[test]
+    fn map_shows_slot_bands_survey_mark_and_unknown_deposits() {
+        let state = GameState::new(1_000);
+        let dest = (2u16..=16)
+            .map(|system| Coord {
+                galaxy: state.home.galaxy,
+                system,
+                position: 16,
+            })
+            .find(|coord| {
+                state.outpost(*coord).is_none()
+                    && state.site_at(*coord).is_none()
+                    && !state.owned_coords().contains(coord)
+            })
+            .expect("empty unowned gas-giant slot");
+        let mut app = App::new(state);
+        app.open(Screen::Map);
+        app.map_galaxy = dest.galaxy;
+        app.map_system = dest.system;
+        app.map_position = dest.position;
+        for (width, height) in [(80u16, 24u16), (120, 40), (160, 48)] {
+            let text = render_text(&app, width, height);
+            for line in text.lines() {
+                assert!(
+                    line.chars().count() <= usize::from(width),
+                    "{width}x{height} overflow: {line}"
+                );
+            }
+            let lower = text.to_ascii_lowercase();
+            assert!(lower.contains("rocky"), "{width}: {text}");
+            assert!(lower.contains("deposits unknown"), "{width}: {text}");
+            assert!(
+                !text.contains(&format!("*{}", dest.system)),
+                "{width}: surveyed mark before a survey\n{text}"
+            );
+        }
+        let wide = render_text(&app, 160, 48).to_ascii_lowercase();
+        assert!(wide.contains("ice"), "{wide}");
+        assert!(wide.contains("gas giant"), "{wide}");
+        app.state
+            .surveyed_systems
+            .insert((dest.galaxy, dest.system));
+        let after = render_text(&app, 160, 48);
+        assert!(after.contains(&format!("*{}", dest.system)), "{after}");
+        assert!(!after.contains("deposits unknown"), "{after}");
+        let home_map = {
+            app.map_galaxy = app.state.home.galaxy;
+            app.map_system = app.state.home.system;
+            app.map_position = app.state.home.position;
+            render_text(&app, 80, 24)
+        };
+        assert!(
+            home_map.contains(&format!("*{}", app.state.home.system)),
+            "{home_map}"
+        );
+    }
+
+    #[test]
     fn map_and_planet_switcher_label_moons() {
         let mut state = GameState::new(1_000);
         state.moons.push(hoshi_core::Moon::new(Coord::HOME));
@@ -8212,9 +8269,10 @@ mod tests {
         let mut app = App::new(state);
         assert_eq!(
             app.dispatch_missions(app.state.home, dest),
-            vec![Mission::Colonize, Mission::Recycle]
+            vec![Mission::Colonize, Mission::Spy, Mission::Recycle]
         );
         open_dispatch(&mut app, dest, ShipKind::Recycler, 1);
+        app.handle_key(KeyCode::Char(' '), 1_000);
         app.handle_key(KeyCode::Char(' '), 1_000);
         assert_eq!(app.dispatch.unwrap().mission, Mission::Recycle);
         let before = crate::title::snapshot_away(&app.state);
@@ -8367,7 +8425,7 @@ mod tests {
             let text = render_text(&app, width, 36);
             let row = text
                 .lines()
-                .find(|line| line.starts_with(" ▌  1 "))
+                .find(|line| line.contains("*1") && line.contains("home"))
                 .map(str::to_string);
             row.unwrap_or_default()
         };

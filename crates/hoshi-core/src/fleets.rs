@@ -174,6 +174,9 @@ pub struct Mission {
     pub invade: bool,
     /// Action writes a spy report and may lose probes.
     pub spy: bool,
+    /// Action records a system survey: exact deposits, no detection, no losses.
+    /// Set with [`Self::spy`] when probes fly to an unowned empty slot.
+    pub survey: bool,
     /// Expedition site this mission draws from. `None` is the config slot.
     pub site_id: Option<u64>,
     /// Action lifts debris into `cargo`; Return credits it at the origin.

@@ -766,18 +766,34 @@ impl GameState {
     /// What the star map knows about a slot. Size is only shown for owned
     /// planets; outposts and frontier worlds show the type the map rows show.
     fn describe_coord(&self, coord: Coord) -> Detail {
-        let description =
-            if let (Some(kind), Some(size)) = (self.planet_kind(coord), self.planet_size(coord)) {
-                format!("{} size {size}", kind.as_key())
-            } else if let Some(outpost) = self.outpost(coord) {
-                format!("pirate outpost · {}", outpost.kind.as_key())
-            } else if let Some(world) = self.frontier.visible_worlds().find(|w| w.coord == coord) {
-                format!("frontier world · {}", world.kind.as_key())
-            } else if let Some(claim) = self.visible_rival_colony_at(coord) {
-                format!("rival {} colony", claim.rival_id)
-            } else {
-                "empty slot".into()
-            };
+        let description = if let (Some(kind), Some(size)) =
+            (self.planet_kind(coord), self.planet_size(coord))
+        {
+            format!("{} size {size}", kind.as_key())
+        } else if let Some(outpost) = self.outpost(coord) {
+            format!("pirate outpost · {}", outpost.kind.as_key())
+        } else if let Some(world) = self.frontier.visible_worlds().find(|w| w.coord == coord) {
+            format!("frontier world · {}", world.kind.as_key())
+        } else if let Some(claim) = self.visible_rival_colony_at(coord) {
+            format!("rival {} colony", claim.rival_id)
+        } else {
+            let kind = self.slot_type(coord);
+            let type_name = self.display_name(kind.as_key());
+            match self.deposits_known_at(coord) {
+                Some(deposits) => {
+                    let parts: Vec<String> = deposits
+                        .iter()
+                        .map(|(id, richness)| format!("{} {richness:.2}", self.display_name(id)))
+                        .collect();
+                    if parts.is_empty() {
+                        format!("{type_name} · deposits none")
+                    } else {
+                        format!("{type_name} · {}", parts.join(", "))
+                    }
+                }
+                None => format!("{type_name} · deposits unknown"),
+            }
+        };
         Detail {
             name: coord.to_string(),
             description,
@@ -987,11 +1003,60 @@ mod tests {
             position: 15,
         };
         let detail = state.describe(DetailSubject::Coord(empty), None).unwrap();
-        assert_eq!(detail.description, "empty slot");
+        let kind = state.slot_type(empty);
+        assert_eq!(
+            detail.description,
+            format!("{} · deposits unknown", state.display_name(kind.as_key()))
+        );
         let home = state
             .describe(DetailSubject::Coord(state.home), None)
             .unwrap();
         assert!(home.description.contains(" size "), "{}", home.description);
+    }
+
+    #[test]
+    fn star_map_detail_lists_deposits_after_a_survey() {
+        let mut state = GameState::new(0);
+        state.resources.deuterium = 10_000.0;
+        state.fleet.add(crate::ShipKind::EspionageProbe, 1);
+        let dest = (2u16..=16)
+            .flat_map(|system| {
+                (2u16..=16).map(move |position| Coord {
+                    galaxy: state.home.galaxy,
+                    system,
+                    position,
+                })
+            })
+            .find(|coord| !state.occupied(*coord) && state.site_at(*coord).is_none())
+            .expect("empty unowned slot");
+        let before = state.describe(DetailSubject::Coord(dest), None).unwrap();
+        assert!(
+            before.description.contains("deposits unknown"),
+            "{}",
+            before.description
+        );
+        state
+            .launch_spy(
+                state.home,
+                {
+                    let mut ships = crate::Fleet::default();
+                    ships.add(crate::ShipKind::EspionageProbe, 1);
+                    ships
+                },
+                dest,
+                100,
+                0,
+            )
+            .unwrap();
+        let arrive = state.missions[0].phase_ends_at;
+        state.catch_up(arrive);
+        let after = state.describe(DetailSubject::Coord(dest), None).unwrap();
+        assert!(
+            !after.description.contains("deposits unknown"),
+            "{}",
+            after.description
+        );
+        assert!(after.description.contains(" · "), "{}", after.description);
     }
 
     #[test]
@@ -1010,7 +1075,19 @@ mod tests {
         });
         state.last_tick_unix = 9;
         let hidden = state.describe(DetailSubject::Coord(dest), None).unwrap();
-        assert_eq!(hidden.description, "empty slot");
+        let kind = state.slot_type(dest);
+        assert!(
+            hidden
+                .description
+                .starts_with(&state.display_name(kind.as_key())),
+            "{}",
+            hidden.description
+        );
+        assert!(
+            !hidden.description.contains("rival"),
+            "{}",
+            hidden.description
+        );
         state.last_tick_unix = 10;
         let seen = state.describe(DetailSubject::Coord(dest), None).unwrap();
         assert_eq!(seen.description, "rival rival-0-trader colony");

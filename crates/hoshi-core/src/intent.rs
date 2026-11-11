@@ -1128,24 +1128,6 @@ mod tests {
         assert!(same_as_direct(s, Intent::Recall { mission }, 10, |g| g
             .recall_fleet(mission, 10)
             .is_ok()));
-        let mut probes = Fleet::default();
-        probes.add(ShipKind::EspionageProbe, 1);
-        let nowhere = Coord {
-            galaxy: 1,
-            system: 1,
-            position: 8,
-        };
-        assert!(!same_as_direct(
-            s,
-            Intent::Spy {
-                origin: None,
-                ships: probes,
-                dest: nowhere,
-                speed_percent: 100,
-            },
-            10,
-            |g| g.launch_spy(g.home, probes, nowhere, 100, 10).is_ok(),
-        ));
         s.catch_up(1_800);
         assert_eq!(
             s.story_pending.as_ref().map(|p| p.event_id.as_str()),
@@ -1159,6 +1141,31 @@ mod tests {
             1_800,
             |g| g.choose_story("answer", 1_800).is_ok(),
         ));
+        s.fleet.add(ShipKind::EspionageProbe, 1);
+        let mut probes = Fleet::default();
+        probes.add(ShipKind::EspionageProbe, 1);
+        let nowhere = (2u16..=16)
+            .flat_map(|system| {
+                (2u16..=16).map(move |position| Coord {
+                    galaxy: 1,
+                    system,
+                    position,
+                })
+            })
+            .find(|coord| !s.occupied(*coord) && s.site_at(*coord).is_none())
+            .expect("empty unowned slot");
+        assert!(same_as_direct(
+            s,
+            Intent::Spy {
+                origin: None,
+                ships: probes,
+                dest: nowhere,
+                speed_percent: 100,
+            },
+            1_800,
+            |g| g.launch_spy(g.home, probes, nowhere, 100, 1_800).is_ok(),
+        ));
+        assert!(s.missions.iter().any(|mission| mission.survey));
     }
 
     #[test]
