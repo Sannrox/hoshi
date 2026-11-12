@@ -57,19 +57,91 @@ bash scripts/validate-workflow-skills.sh
 
 - `cargo fmt --all` formats before review.
 - `cargo clippy ... -D warnings` is required for ship-level local gates.
-- `scripts/validate-workflow-skills.sh` checks that the delivery Skills and
-  this file stay linked.
+- `scripts/validate-workflow-skills.sh` checks the shared Skill stubs and the
+  contract headings of this file against agent-kit `main`.
 
 There is no Makefile yet. When one is added, its targets become the source of
 truth for these commands and this section must point to them.
 
-GitHub Issues are the planning source of truth. Project-specific Skills live
-under `.agents/skills/`. Read `README.md`, [docs/realism.md](docs/realism.md)
-and accepted ADRs under `docs/decisions/` before changing system boundaries
-or balance numbers; record new boundaries, trust-model changes, and public
-contracts as ADRs with the `capture-project-decision` Skill. New design
-Issues name object types, links and core actions, and they either obey the
-realism rules or extend the simplifications list in that file.
+GitHub Issues are the planning source of truth. Read `README.md`,
+[docs/realism.md](docs/realism.md) and accepted ADRs under
+`docs/decisions/` before changing system boundaries or balance numbers;
+record new boundaries, trust-model changes, and public contracts as ADRs
+with the `capture-project-decision` Skill. New design Issues name object
+types, links and core actions, and they either obey the realism rules or
+extend the simplifications list in that file.
+
+## Shared agent skills
+
+The workflow Skills (`advance-issue-frontier`, `assess-change-impact`,
+`capture-project-decision`, `deliver-ready-issue`, `prepare-release`,
+`refactor-docs`, `shape-work-item`, `technical-documentation`, `verify-change`)
+are canonical in [Sannrox/agent-kit](https://github.com/Sannrox/agent-kit).
+There is no pin: this repository always uses the latest `main`.
+`.agents/skills/<name>/` holds only a generated stub that points to the shared
+skill; read the installed skill under `~/.agents/agent-kit/` (or
+`$AGENT_KIT_HOME`). Run `bash scripts/validate-workflow-skills.sh` to clone or
+update it.
+
+- Repository-specific facts the shared Skills need come from this file: the
+  ownership, structure, build, parallel-lane and testing sections, plus
+  `## Agent skill profile` below for anything they do not already say. Edit
+  this file, not the stubs.
+- Never edit the stubs or the vendored `scripts/validate-workflow-skills.sh`
+  here; change them upstream in agent-kit, then run
+  `bash scripts/validate-workflow-skills.sh --render` here when CI reports
+  drift.
+- Repository-only Skills live next to the stubs as full folders and stay local.
+
+## Agent skill profile
+
+Facts the shared agent-kit skills read that the sections above do not already
+state.
+
+Feature: a new observable player or operator outcome.
+
+### Compatibility and failure obligations
+
+- save schema and migrations: old saves must load; older binaries cannot open
+  a newer schema;
+- the bridge event format that agent tools and GitHub feed into the game;
+- ticks and offline catch-up stay deterministic on the injected clock;
+- optional `mikura` git tag `v0.2.0` and `chisei` API pin 1.3.0;
+- a crash or restart must not corrupt the save.
+
+### Additional impact boundaries
+
+- the `/v1` HTTP and WebSocket contract `hoshi serve` publishes
+  (`docs/schema/`);
+- signed managed-update metadata (ADR 0010);
+- portrait assets and the human help catalog;
+- the optional `ui` embedded web client pin.
+
+### Verification matrix
+
+Rows beyond `## Testing Guidelines`:
+
+| Surface | Required evidence |
+| --- | --- |
+| Rust source | focused tests plus the local gates in this file |
+| optional mikura / chisei / ui | the matching feature-test job in `.github/workflows/ci.yml` |
+| portrait assets | `bash scripts/check-portrait-assets.sh` |
+| story drafts | `bash scripts/check-drafts-unshipped.sh` |
+| docs, templates, Skills | `bash scripts/validate-workflow-skills.sh` |
+| release metadata | `python3 scripts/test-release-metadata.py` |
+| dependency pins | `Cargo.lock` diff reviewed; the pinned tag exists upstream |
+
+### Release audit
+
+- the version source is the workspace `Cargo.toml`; check it against the
+  lockfile;
+- pinned ratatui, rusqlite, mikura tag, and chisei API pin;
+- save format migrations, bridge event format, and balance changes;
+- configuration additions, removals, and defaults;
+- packaging: deb, Homebrew tap, signed managed updates;
+- release notes: draft with `bash scripts/changelog-draft.sh`; fold them into
+  `CHANGELOG.md` only in the version-bump Pull Request. Agents never push
+  `v*` tags.
 
 ## Agent delivery closeout (required)
 
@@ -141,7 +213,7 @@ confirmation, unless the lead of the same parallel run owns the stalled lane.
 
 A lane claims before it implements, under Publish or Land authority or with an
 explicit claim authorization under Implement, using
-`bash .agents/skills/deliver-ready-issue/scripts/issue-lane.sh claim <issue>`:
+`bash "${AGENT_KIT_HOME:-$HOME/.agents/agent-kit}"/skills/deliver-ready-issue/scripts/issue-lane.sh claim <issue>`:
 
 - the branch `<type>/<issue>` is created on GitHub from the default branch by
   an atomic ref creation, so when two machines race exactly one claim
@@ -189,8 +261,9 @@ Parallel lanes must not collide. Collision surfaces in this repository are
 the game state schema and save format, the tick/offline-progression model, the bridge event format, and balance config. Lanes that would
 both change one of these surfaces run in sequence, not in parallel.
 
-A lane publishes its first Verified commit to the claim branch as a draft Pull
-Request that closes the Issue. Public GitHub lane fields may list only: claim
+A lane publishes its first Verified commit to the claim branch with
+`bash "${AGENT_KIT_HOME:-$HOME/.agents/agent-kit}"/skills/deliver-ready-issue/scripts/issue-lane.sh push <issue>`
+and opens a draft Pull Request that closes the Issue. Public GitHub lane fields may list only: claim
 branch, repo-relative worktree (for example `.worktrees/issue-N` — never an
 absolute path), base SHA, and published SHA. Keep absolute paths and
 machine/host names in the private agent session only. It marks the Pull
@@ -200,16 +273,19 @@ ancestor of its head; it refreshes onto `main` only for a conflict, a failing
 gate, an explicit request, or a sibling landing on a shared surface, not
 merely because `main` advanced.
 
-Landing is sequential. After each merge, fetch, recompute the frontier, and let
-the remaining lanes recheck `mergeable` against the new `main`. A failed or
-timed-out merge response may still have merged; reconcile the remote state
-before retrying.
+Each lane lands its own reviewed head with
+`bash "${AGENT_KIT_HOME:-$HOME/.agents/agent-kit}"/skills/deliver-ready-issue/scripts/issue-lane.sh land <issue> --pr <pr>`.
+Lanes may watch concurrently, and a lane that conflicts with a sibling's
+landing stops instead of merging. After each merge, fetch, recompute the
+frontier, and let the remaining lanes recheck `mergeable` against the new
+`main`.
 
 The lead of a parallel run keeps a ledger per lane: Issue, branch, base SHA,
 owner, state, Pull Request, evidence, blockers, and cleanup. Keep hostnames
 and absolute checkout paths in the session with the maintainer, never on
 GitHub. Report verified outcomes, not launched work. The executable lead
-procedure is `.agents/skills/deliver-ready-issue/references/parallel-delivery.md`.
+procedure is `skills/deliver-ready-issue/references/parallel-delivery.md` in
+the installed agent-kit.
 
 ## Coding Style & Naming Conventions
 
@@ -237,7 +313,8 @@ subsystem when useful. Pull requests should include a concise behavior
 summary, **tests run**, **autoreview result** (for non-trivial code), linked
 issue or context, and any configuration, compatibility, or security
 implications. `.agents/skills/` is tracked; do not treat it as gitignored.
-Record user-visible changes in `CHANGELOG.md` under `Unreleased`.
+Pull requests do not edit `CHANGELOG.md`; it is release-owned. The PR title
+and body carry the change note.
 
 ### Public hygiene
 
@@ -251,30 +328,26 @@ than an environment name, a digest, or a hold).
 
 ### Verified commits on GitHub
 
-Prefer publishing PR branch tips with GitHub-signed commits so GitHub shows
-**Verified**:
+Lane branches are published with GitHub-verified commits and landed through
+the shared lane tool, never with a plain `git push` or a hand-run merge:
 
 1. Implement and commit locally as usual (`commit.gpgsign` may still apply).
-2. Publish the branch tip with `bash scripts/gh-verified-push.sh` instead of a
-   plain `git push` when you want the hosted commit Verified (GraphQL
-   `createCommitOnBranch`). That path creates one server-side commit with the
-   local `HEAD` tree; committer is typically **GitHub**.
-3. New branch:
-   `bash scripts/gh-verified-push.sh --create-branch-from origin/main --branch <topic> --sync-local`
-4. Existing PR branch:
-   `bash scripts/gh-verified-push.sh --branch <topic> --sync-local`
-   (uses the current remote tip as `expectedHeadOid`).
-5. Never pass `--no-gpg-sign` for local commits; if GPG fails, stop and fix it.
-6. After publish, confirm `verification.verified=true` (the script prints this).
+   Never pass `--no-gpg-sign`; if GPG fails, stop and fix it.
+2. Publish from the lane worktree:
+   `bash "${AGENT_KIT_HOME:-$HOME/.agents/agent-kit}"/skills/deliver-ready-issue/scripts/issue-lane.sh push <issue>`.
+   It creates the Verified commit through GraphQL `createCommitOnBranch` and
+   resets the worktree to it, so local `HEAD` is the Pull Request head.
+   Confirm it reports `verification.verified=true`.
+3. Land with
+   `bash "${AGENT_KIT_HOME:-$HOME/.agents/agent-kit}"/skills/deliver-ready-issue/scripts/issue-lane.sh land <issue> --pr <pr>`.
+   It squash-merges with the reviewed head as the precondition, so the land
+   commit on `main` is Verified and history stays linear.
 
-When merging PRs, prefer **squash** (`gh pr merge --squash --delete-branch`) so
-the land commit on `main` is also GitHub-signed/Verified and history stays
-linear. Use `gh pr merge --merge` only when multi-commit history must be kept
-(original SHAs preserved). Avoid GitHub **rebase** merges when Verified history
-matters: rebase-merge rewrites commits and drops signatures. Do not rewrite
-protected `main` after merging unless the user explicitly approves; if
-protection is temporarily relaxed, restore force-push and status-check settings
-immediately after the correction.
+Never queue GitHub auto-merge and avoid GitHub **rebase** merges: rebase-merge
+rewrites commits and drops signatures. Do not rewrite protected `main` after
+merging unless the user explicitly approves; if protection is temporarily
+relaxed, restore force-push and status-check settings immediately after the
+correction.
 
 ## Security & Configuration Tips
 
