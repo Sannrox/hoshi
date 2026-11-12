@@ -8695,6 +8695,16 @@ mod tests {
         }
     }
 
+    fn cycle_dispatch_to(app: &mut App, mission: Mission) {
+        for _ in 0..8 {
+            if app.dispatch.expect("dispatch open").mission == mission {
+                return;
+            }
+            app.handle_key(KeyCode::Char(' '), 1_000);
+        }
+        panic!("dispatch never reached {mission:?}");
+    }
+
     #[test]
     fn map_scan_then_hold_and_the_away_summary_names_the_fight() {
         let mut state = GameState::new(1_000);
@@ -9220,6 +9230,131 @@ mod tests {
         assert_eq!(app.dispatch.unwrap().mission, Mission::Spy);
         app.handle_key(KeyCode::Enter, 1_000);
         assert!(app.state.missions[0].spy, "{}", app.status);
+    }
+
+    #[test]
+    fn short_invade_dispatch_keeps_the_selected_ship_visible() {
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 2,
+        };
+        let mut state = GameState::new(1_000);
+        state.fleet.add(ShipKind::SmallCargo, 1);
+        let mut defences = Fleet::default();
+        defences.add(ShipKind::LightFighter, 1);
+        outpost_at(&mut state, dest, defences);
+        let mut app = App::new(state);
+        open_dispatch(&mut app, dest, ShipKind::SmallCargo, 1);
+        cycle_dispatch_to(&mut app, Mission::Invade);
+        let form = app.dispatch.expect("dispatch open");
+        let text: String = app
+            .dispatch_window(&form, 8)
+            .iter()
+            .map(|line| line.to_string())
+            .collect();
+        assert!(text.contains("▌Small cargo"), "{text}");
+    }
+
+    #[test]
+    fn invade_dispatch_shows_unmet_defences_before_launch() {
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 2,
+        };
+        let mut state = GameState::new(1_000);
+        state.resources.deuterium = 10_000.0;
+        state.fleet.add(ShipKind::SmallCargo, 1);
+        let mut defences = Fleet::default();
+        defences.add(ShipKind::LightFighter, 1);
+        outpost_at(&mut state, dest, defences);
+        let mut app = App::new(state);
+        open_dispatch(&mut app, dest, ShipKind::SmallCargo, 1);
+        cycle_dispatch_to(&mut app, Mission::Invade);
+        let text = render_text(&app, 100, 40);
+        assert!(text.contains("orbital defences at zero"), "{text}");
+        assert!(text.contains('✗'), "{text}");
+        assert!(!text.contains("troop_transport"), "{text}");
+        assert!(!text.contains("garrison 2"), "{text}");
+        assert!(app.dispatch.is_some());
+        assert!(app.state.missions.is_empty());
+    }
+
+    #[test]
+    fn invade_dispatch_shows_a_troop_transport_is_required() {
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 2,
+        };
+        let mut state = GameState::new(1_000);
+        state.resources.deuterium = 10_000.0;
+        state.fleet.add(ShipKind::SmallCargo, 1);
+        outpost_at(&mut state, dest, Fleet::default());
+        let mut app = App::new(state);
+        open_dispatch(&mut app, dest, ShipKind::SmallCargo, 1);
+        cycle_dispatch_to(&mut app, Mission::Invade);
+        let text = render_text(&app, 100, 40);
+        assert!(text.contains("troop transport selected"), "{text}");
+        assert!(text.contains('✗'), "{text}");
+        assert!(!text.contains("troop_transport"), "{text}");
+        assert!(!text.contains("NeedTroopTransport"), "{text}");
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.dispatch.is_some());
+        assert!(app.state.missions.is_empty());
+        assert!(app.status.contains("troop transport"), "{}", app.status);
+    }
+
+    #[test]
+    fn invade_dispatch_shows_met_requirements_and_launches() {
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 2,
+        };
+        let mut state = GameState::new(1_000);
+        state.resources.deuterium = 10_000.0;
+        state.tech_levels.insert("colonization".into(), 1);
+        state.fleet.add(ShipKind::TroopTransport, 2);
+        outpost_at(&mut state, dest, Fleet::default());
+        state.spy_reports.push(hoshi_core::SpyReport {
+            id: 1,
+            target: dest,
+            created_at: 900,
+            probes_sent: 3,
+            probes_lost: 0,
+            detected: false,
+            score: 4.0,
+            tier: "garrison".into(),
+            resources: None,
+            fleet: None,
+            defences: None,
+            garrison: Some(2),
+            kind: None,
+            size: None,
+            formation: None,
+            stance: None,
+            source: "probe".into(),
+            observed_at: 900,
+            arrives_at: 0,
+            confidence: 0.8,
+            deceived: false,
+        });
+        let mut app = App::new(state);
+        open_dispatch(&mut app, dest, ShipKind::TroopTransport, 2);
+        assert_eq!(app.dispatch.unwrap().mission, Mission::Invade);
+        let text = render_text(&app, 100, 40);
+        assert!(text.contains("orbital defences at zero"), "{text}");
+        assert!(text.contains("troop transport selected"), "{text}");
+        assert!(text.contains("free colony slot (1/2)"), "{text}");
+        assert!(text.contains('✓'), "{text}");
+        assert!(!text.contains('✗'), "{text}");
+        assert!(text.contains("troops 10 vs garrison 2"), "{text}");
+        assert!(!text.contains("troop_transport"), "{text}");
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.dispatch.is_none(), "{}", app.status);
+        assert!(app.state.missions[0].invade, "{}", app.status);
     }
 
     #[test]
