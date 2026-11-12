@@ -1407,19 +1407,62 @@ impl App {
     }
 
     /// The dispatch form cut to `height` rows. A short panel scrolls so the
-    /// selected row and the three lines below it (the hold line from any
-    /// cargo row) stay visible.
+    /// selected row and the lines below it stay visible: three for a
+    /// transport hold, more when Invade lists its launch checks. The
+    /// selected row never scrolls off the top, even if the reserved
+    /// context is taller than the panel.
     pub(super) fn dispatch_window(&self, form: &DispatchForm, height: usize) -> Vec<Line<'static>> {
-        const BELOW: usize = 3;
+        let below = if form.mission == Mission::Invade {
+            8
+        } else {
+            3
+        };
         let (lines, selected) = self.dispatch_lines(form);
-        let offset = (selected + 1 + BELOW)
+        let offset = (selected + 1 + below)
             .saturating_sub(height)
-            .min(lines.len().saturating_sub(height));
+            .min(lines.len().saturating_sub(height))
+            .min(selected);
         lines.into_iter().skip(offset).collect()
     }
 
+    /// The same three `launch_invasion` checks, shown before launch.
+    fn invasion_requirements(&self, form: &DispatchForm) -> Vec<hoshi_core::RequirementLine> {
+        let defences_clear = self
+            .state
+            .outpost(form.dest)
+            .is_some_and(|outpost| outpost.defences.total() == 0);
+        let has_transport = form.ships.get(ShipKind::TroopTransport) > 0;
+        let used = 1 + self.state.colonies.len() as u32;
+        let cap = self.state.colony_cap();
+        vec![
+            hoshi_core::RequirementLine {
+                text: "orbital defences at zero".into(),
+                met: defences_clear,
+            },
+            hoshi_core::RequirementLine {
+                text: "troop transport selected".into(),
+                met: has_transport,
+            },
+            hoshi_core::RequirementLine {
+                text: format!("free colony slot ({used}/{cap})"),
+                met: used < cap,
+            },
+        ]
+    }
+
+    /// Troop strength versus garrison, only when a delivered spy report has it.
+    fn invasion_troop_preview(&self, form: &DispatchForm) -> Option<String> {
+        let garrison = self.state.latest_report(form.dest)?.garrison?;
+        let troops = form
+            .ships
+            .get(ShipKind::TroopTransport)
+            .saturating_mul(self.state.config.outposts.troop_strength);
+        Some(format!("troops {troops} vs garrison {garrison}"))
+    }
+
     /// Dispatch form: target, ship steppers, cargo steppers and hold on a
-    /// transport, flight time and fuel. Also returns the selected row's line.
+    /// transport, flight time and fuel, and Invade launch checks. Also
+    /// returns the selected row's line.
     fn dispatch_lines(&self, form: &DispatchForm) -> (Vec<Line<'static>>, usize) {
         let t = &self.theme;
         let (origin, dest) = (form.origin, form.dest);
@@ -1598,6 +1641,24 @@ impl App {
                     }
                 }
                 Err(e) => lines.extend(callout_lines(t, Intent::Danger, &e.to_string(), "")),
+            }
+        }
+        if form.mission == Mission::Invade {
+            lines.push(Line::default());
+            lines.push(section(t, "requires"));
+            for req in self.invasion_requirements(form) {
+                let (mark, intent) = if req.met {
+                    ("✓", Intent::Success)
+                } else {
+                    ("✗", Intent::Danger)
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{mark} "), t.intent(intent)),
+                    Span::styled(req.text, if req.met { t.muted() } else { t.text() }),
+                ]));
+            }
+            if let Some(preview) = self.invasion_troop_preview(form) {
+                lines.push(Line::styled(preview, t.text()));
             }
         }
         lines.push(Line::default());
