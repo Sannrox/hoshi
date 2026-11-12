@@ -368,8 +368,8 @@ pub struct RaidConfig {
     pub first_delay_secs: u64,
     /// Delay from one landing to the next.
     pub interval_secs: u64,
-    /// Share of the home's combat points (attack + hull of fleet and defences)
-    /// a raid brings, in pirate light fighters:
+    /// Share of the locked world's combat points (attack + hull of parked
+    /// fleet and defences) a raid brings, in pirate light fighters:
     /// `max(min_ships, floor(points * this / light_fighter_points))`.
     pub strength_factor: f64,
     pub min_ships: u32,
