@@ -364,7 +364,7 @@ pub struct RaidConfig {
     pub enabled: bool,
     /// Seconds between announce and landing. Default 3600.
     pub min_warning_secs: u64,
-    /// First raid lands this many seconds after a new game. Default 3600.
+    /// First raid lands this many seconds after a new game. Default 7200.
     pub first_delay_secs: u64,
     /// Delay from one landing to the next.
     pub interval_secs: u64,
@@ -388,12 +388,12 @@ pub struct RaidConfig {
 }
 
 impl RaidConfig {
-    /// Production defaults: hourly warning, first landing after one hour, eight-hour gap.
+    /// Production defaults: hourly warning, first landing after two hours, eight-hour gap.
     pub fn default_active() -> Self {
         Self {
             enabled: true,
             min_warning_secs: 3600,
-            first_delay_secs: 3600,
+            first_delay_secs: 7200,
             interval_secs: 8 * 3600,
             strength_factor: 0.6,
             min_ships: 1,

@@ -320,7 +320,7 @@ solar_plant = 1
 [raid]
 enabled = true
 min_warning_secs = 3600
-first_delay_secs = 3600
+first_delay_secs = 7200
 interval_secs = 28800
 # A raid brings this share of the locked world's combat points (parked fleet
 # and defences, attack plus hull) as pirate light fighters.

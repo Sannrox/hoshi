@@ -6,7 +6,7 @@
     },
     {
       "id": "raid_survived",
-      "unlocked_at": 3600
+      "unlocked_at": 7200
     }
   ],
   "build_queue": [],
@@ -98,32 +98,32 @@
       "text": "achievement: First fighter"
     },
     {
-      "at": 3600,
-      "text": "standing: Pirate clans 0 -> -4 (raid)"
+      "at": 7200,
+      "text": "standing: Pirate clans 0 -> -8 (raid)"
     },
     {
-      "at": 3600,
-      "text": "raid: pirates 6 light fighter vs 5 light fighter. 6 rounds. lost 1 light fighter. pirates lost none. plunder Fe0 Si0 D0. winner draw"
+      "at": 7200,
+      "text": "raid: pirates 6 light fighter vs 10 light fighter. 6 rounds. lost none. pirates lost 6 light fighter. plunder Fe0 Si0 D0. winner defender"
     },
     {
-      "at": 3600,
+      "at": 7200,
       "text": "daily: Hold the pirates complete"
     },
     {
-      "at": 3600,
+      "at": 7200,
       "text": "achievement: Raid survived"
     },
     {
-      "at": 32400,
-      "text": "standing: Pirate clans -3 -> -11 (raid)"
+      "at": 36000,
+      "text": "standing: Pirate clans -5 -> -13 (raid)"
     },
     {
-      "at": 32400,
-      "text": "raid: pirates 2 light fighter vs 9 light fighter. 2 rounds. lost none. pirates lost 2 light fighter. plunder Fe0 Si0 D0. winner defender"
+      "at": 36000,
+      "text": "raid: pirates 6 light fighter vs 10 light fighter. 6 rounds. lost none. pirates lost 6 light fighter. plunder Fe0 Si0 D0. winner defender"
     }
   ],
   "finance": {
-    "cash": 805.1046266231284,
+    "cash": 811.3282151978684,
     "debt": 0.0,
     "pending": 0
   },
@@ -135,7 +135,7 @@
     "explorer": 0,
     "heavy_fighter": 0,
     "large_cargo": 0,
-    "light_fighter": 9,
+    "light_fighter": 10,
     "recycler": 0,
     "small_cargo": 0,
     "troop_transport": 0
@@ -177,7 +177,7 @@
     }
   },
   "last_raid": {
-    "at": 32400,
+    "at": 36000,
     "batteries_missing": null,
     "defences_returned": 0,
     "place": "1:1:1",
@@ -276,7 +276,7 @@
     "unlocked_species": []
   },
   "raid": {
-    "lands_in_secs": 18000
+    "lands_in_secs": 21600
   },
   "rates": {
     "deuterium": 0.0,
@@ -289,7 +289,6 @@
   "research": {
     "current": null,
     "exclusive_picks": {},
-    "slots": [],
     "levels": {
       "ancient_drive": 0,
       "ancient_weapon": 0,
@@ -325,7 +324,8 @@
       "trade_empire": 0,
       "weapons": 0
     },
-    "queue": []
+    "queue": [],
+    "slots": []
   },
   "resources": {
     "deuterium": 10000.0,

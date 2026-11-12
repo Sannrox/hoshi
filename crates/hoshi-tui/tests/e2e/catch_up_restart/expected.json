@@ -83,47 +83,47 @@
       "text": "achievement: Iron cut"
     },
     {
-      "at": 3600,
+      "at": 7200,
       "text": "standing: Pirate clans 0 -> -4 (raid)"
     },
     {
-      "at": 3600,
+      "at": 7200,
       "text": "incident #1 raid high"
     },
     {
-      "at": 3600,
-      "text": "raid: iron mine offline. lost none. pirates lost none. defences lost none. plunder Fe0 Si10 D0. winner attacker"
+      "at": 7200,
+      "text": "raid: iron mine offline. lost none. pirates lost none. defences lost none. plunder Fe24 Si21 D0. winner attacker"
     },
     {
-      "at": 7200,
+      "at": 18000,
       "text": "stall: missing rare earths at 1:1:1"
     },
     {
-      "at": 7200,
+      "at": 18000,
       "text": "stall: missing magnets at 1:1:1"
     },
     {
-      "at": 32400,
+      "at": 36000,
       "text": "standing: Pirate clans -3 -> -7 (raid)"
     },
     {
-      "at": 32400,
+      "at": 36000,
       "text": "incident #2 raid high"
     },
     {
-      "at": 32400,
+      "at": 36000,
       "text": "raid: iron mine offline. lost none. pirates lost none. defences lost none. plunder Fe25 Si25 D0. winner attacker"
     },
     {
-      "at": 61200,
+      "at": 64800,
       "text": "standing: Pirate clans -4 -> -8 (raid)"
     },
     {
-      "at": 61200,
+      "at": 64800,
       "text": "incident #3 raid high"
     },
     {
-      "at": 61200,
+      "at": 64800,
       "text": "raid: iron mine offline. lost none. pirates lost none. defences lost none. plunder Fe25 Si25 D0. winner attacker"
     },
     {
@@ -131,56 +131,44 @@
       "text": "story: Hail on the lane → Stay silent"
     },
     {
-      "at": 90000,
+      "at": 93600,
       "text": "standing: Pirate clans -6 -> -10 (raid)"
     },
     {
-      "at": 90000,
+      "at": 93600,
       "text": "incident #4 raid high"
     },
     {
-      "at": 90000,
+      "at": 93600,
       "text": "raid: iron mine offline. lost none. pirates lost none. defences lost none. plunder Fe25 Si25 D0. winner attacker"
     },
     {
-      "at": 118800,
+      "at": 122400,
       "text": "standing: Pirate clans -6 -> -10 (raid)"
     },
     {
-      "at": 118800,
+      "at": 122400,
       "text": "incident #5 raid high"
     },
     {
-      "at": 118800,
+      "at": 122400,
       "text": "raid: iron mine offline. lost none. pirates lost none. defences lost none. plunder Fe25 Si25 D0. winner attacker"
     },
     {
-      "at": 147600,
+      "at": 151200,
       "text": "standing: Pirate clans -7 -> -11 (raid)"
     },
     {
-      "at": 147600,
+      "at": 151200,
       "text": "incident #6 raid high"
     },
     {
-      "at": 147600,
-      "text": "raid: iron mine offline. lost none. pirates lost none. defences lost none. plunder Fe25 Si25 D0. winner attacker"
-    },
-    {
-      "at": 176400,
-      "text": "standing: Pirate clans -7 -> -11 (raid)"
-    },
-    {
-      "at": 176400,
-      "text": "incident #7 raid high"
-    },
-    {
-      "at": 176400,
+      "at": 151200,
       "text": "raid: iron mine offline. lost none. pirates lost none. defences lost none. plunder Fe25 Si25 D0. winner attacker"
     }
   ],
   "finance": {
-    "cash": 2752.4085008151033,
+    "cash": 2811.4187525055027,
     "debt": 0.0,
     "pending": 0
   },
@@ -234,7 +222,7 @@
     }
   },
   "last_raid": {
-    "at": 176400,
+    "at": 151200,
     "batteries_missing": null,
     "defences_returned": 0,
     "place": "1:1:1",
@@ -252,14 +240,14 @@
       "retires_at": 7776000,
       "role": "admiral",
       "skills": {
-        "command": 8,
+        "command": 7,
         "logistics": 0,
         "policy": 0
       },
       "species": "human",
       "target": "fleet:home",
       "trait": "flanker",
-      "xp": 7
+      "xp": 6
     },
     {
       "born_at": 0,
@@ -283,7 +271,7 @@
   ],
   "maintenance": {
     "assets": 3,
-    "orders": 1,
+    "orders": 0,
     "readings": 48
   },
   "missions": [],
@@ -352,20 +340,20 @@
     "unlocked_species": []
   },
   "raid": {
-    "lands_in_secs": 28800
+    "lands_in_secs": 3600,
+    "target": "1:1:1"
   },
   "rates": {
     "deuterium": 0.0,
     "helium_3": 0.0,
-    "iron": 0.0,
-    "rare_earths": -3.2684684999999973,
+    "iron": 49.47104250000007,
+    "rare_earths": 5.400812892709254,
     "silicon": 21.78979000000004,
     "water_ice": 0.0
   },
   "research": {
     "current": null,
     "exclusive_picks": {},
-    "slots": [],
     "levels": {
       "ancient_drive": 0,
       "ancient_weapon": 0,
@@ -401,14 +389,15 @@
       "trade_empire": 0,
       "weapons": 0
     },
-    "queue": []
+    "queue": [],
+    "slots": []
   },
   "resources": {
     "deuterium": 0.0,
     "helium_3": 0.0,
-    "iron": 1536.32751,
-    "rare_earths": 63.67396840337616,
-    "silicon": 1357.613081951491,
+    "iron": 1537.26414125,
+    "rare_earths": 58.301469510666934,
+    "silicon": 1407.4544395615358,
     "water_ice": 0.0
   },
   "rivals": {
@@ -427,7 +416,7 @@
       "id": 1,
       "name": "Home fleet",
       "trait": "flanker",
-      "xp": 7
+      "xp": 6
     },
     "formation": "neutral",
     "pending": false,

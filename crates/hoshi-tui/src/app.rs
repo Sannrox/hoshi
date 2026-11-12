@@ -5885,6 +5885,9 @@ mod tests {
         app.catch_up_now(1_010);
         app.catch_up_now(1_400);
         assert!(app.away.is_none());
+        app.state
+            .enqueue_build(BuildingKind::MetalMine, 1_400)
+            .unwrap();
         app.handle_key(KeyCode::Enter, 1_400 + 3_600);
         let away = app.away.as_ref().expect("summary after a wake");
         assert_eq!(away.elapsed_secs, 3_600);
@@ -6358,7 +6361,14 @@ mod tests {
 
     #[test]
     fn overview_shows_raid_countdown() {
-        let app = App::new(GameState::new(1_000));
+        let mut state = GameState::new(1_000);
+        let app = App::new(state.clone());
+        let text = render_text(&app, 80, 24);
+        assert!(text.contains("RAID 2h 00m"), "{text}");
+        assert!(!text.contains("RAID 1:00:00"), "{text}");
+        assert!(!text.contains("Incoming raid"), "{text}");
+        state.catch_up(1_000 + 3_600);
+        let app = App::new(state);
         let text = render_text(&app, 80, 24);
         assert!(text.contains("RAID 1:00:00"), "{text}");
     }

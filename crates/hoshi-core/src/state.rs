@@ -11102,12 +11102,19 @@ modifiers = []
     #[test]
     fn starter_survives_the_first_raid() {
         let mut state = GameState::new(0);
-        assert_eq!(state.next_raid_at, Some(3600));
-        assert_eq!(state.raid_countdown_secs(), Some(3600));
+        assert_eq!(state.config.raid.first_delay_secs, 7200);
+        assert_eq!(state.next_raid_at, Some(7200));
+        assert_eq!(state.raid_countdown_secs(), None);
         state.catch_up(3599);
         assert!(state.events.is_empty());
+        assert_eq!(state.raid_countdown_secs(), None);
         assert_eq!(state.fleet.total(), 0);
         state.catch_up(3600);
+        assert_eq!(state.raid_countdown_secs(), Some(3600));
+        assert!(state.events.is_empty());
+        state.catch_up(7199);
+        assert!(state.events.is_empty());
+        state.catch_up(7200);
         assert!(state.events.iter().any(|e| e.text.contains("raid:")));
         assert!(
             state.events.iter().any(|e| e.text.contains("plunder")),
@@ -11116,7 +11123,7 @@ modifiers = []
         );
         assert!(state.resources.iron > 0.0);
         assert!(state.resources.silicon > 0.0);
-        assert_eq!(state.next_raid_at, Some(3600 + 8 * 3600));
+        assert_eq!(state.next_raid_at, Some(7200 + 8 * 3600));
     }
 
     #[test]
