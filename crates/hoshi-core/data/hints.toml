@@ -60,3 +60,10 @@ trigger = "shipyard_ready"
 screen = "shipyard"
 title = "Shipyard online"
 body = "The shipyard builds ships and defences. Queue a fighter before the first raid lands."
+
+[[hints]]
+id = "frontier_open"
+trigger = "frontier_open"
+screen = "map"
+title = "Frontier galaxy"
+body = "A second galaxy is open. On the map, Space switches to it. Worlds there produce more, have extra fields, and can be rare. Flights need Impulse Drive 1."
