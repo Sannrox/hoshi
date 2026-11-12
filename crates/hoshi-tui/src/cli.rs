@@ -5761,20 +5761,15 @@ mod tests {
         assert!(value["frontier"]["worlds"].as_array().unwrap().is_empty());
         let conn = open_save(&save).unwrap();
         let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
-        let decision = hoshi_core::expiring_decision(&loaded).expect("warned undefended home");
         assert!(loaded.defences.is_empty());
         assert_eq!(loaded.fleet.total(), 0);
-        assert!(loaded.raid_countdown_secs().is_some());
-        assert_eq!(decision.id, hoshi_core::DecisionId::Raid);
-        assert_eq!(decision.action, hoshi_core::DecisionAction::ArmHome);
-        assert_eq!(decision.deadline, loaded.next_raid_at.unwrap());
-        assert_eq!(value["decision"]["id"], decision.id.as_key());
-        assert_eq!(value["decision"]["deadline"], decision.deadline);
-        assert_eq!(value["decision"]["action"], decision.action.as_key());
-        let rows = crate::cockpit::alerts(&loaded, None);
-        assert_eq!(rows[0].decision, Some(decision));
-        assert!(rows[0].text.contains(decision.action.as_key()));
-        assert!(rows[0].detail.contains(&decision.deadline.to_string()));
+        assert_eq!(
+            loaded.next_raid_at,
+            Some(loaded.last_tick_unix + loaded.config.raid.first_delay_secs)
+        );
+        assert!(loaded.raid_countdown_secs().is_none());
+        assert!(hoshi_core::expiring_decision(&loaded).is_none());
+        assert!(value["decision"].is_null(), "{value}");
         let _ = std::fs::remove_file(&save);
     }
 

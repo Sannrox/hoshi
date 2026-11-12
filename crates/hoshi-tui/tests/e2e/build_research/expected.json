@@ -67,11 +67,7 @@
     ],
     "streak": 0
   },
-  "decision": {
-    "action": "arm",
-    "deadline": 3600,
-    "id": "raid"
-  },
+  "decision": null,
   "defences": {
     "garrison": 0,
     "heavy_cannon": 0,
@@ -258,8 +254,7 @@
     "unlocked_species": []
   },
   "raid": {
-    "lands_in_secs": 3000,
-    "target": "1:1:1"
+    "lands_in_secs": 6600
   },
   "rates": {
     "deuterium": 0.0,
@@ -272,7 +267,6 @@
   "research": {
     "current": null,
     "exclusive_picks": {},
-    "slots": [],
     "levels": {
       "ancient_drive": 0,
       "ancient_weapon": 0,
@@ -308,7 +302,8 @@
       "trade_empire": 0,
       "weapons": 0
     },
-    "queue": []
+    "queue": [],
+    "slots": []
   },
   "resources": {
     "deuterium": 100.0,
