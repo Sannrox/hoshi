@@ -49,6 +49,7 @@ pub enum HintTrigger {
     RaidSoon,
     FleetOut,
     ShipyardReady,
+    FrontierOpen,
 }
 
 impl HintTrigger {
@@ -63,6 +64,7 @@ impl HintTrigger {
             "raid_soon" => Self::RaidSoon,
             "fleet_out" => Self::FleetOut,
             "shipyard_ready" => Self::ShipyardReady,
+            "frontier_open" => Self::FrontierOpen,
             _ => return None,
         })
     }
@@ -78,6 +80,7 @@ impl HintTrigger {
             Self::RaidSoon => "raid_soon",
             Self::FleetOut => "fleet_out",
             Self::ShipyardReady => "shipyard_ready",
+            Self::FrontierOpen => "frontier_open",
         }
     }
 }
@@ -252,6 +255,7 @@ impl GameState {
             HintTrigger::RaidSoon => self.upcoming_raid_at().is_some(),
             HintTrigger::FleetOut => !self.missions.is_empty(),
             HintTrigger::ShipyardReady => self.buildings.shipyard >= 1,
+            HintTrigger::FrontierOpen => self.frontier.revealed > 0,
         }
     }
 
@@ -321,6 +325,113 @@ mod tests {
         state.buildings.metal_mine = 2;
         let hint = state.pending_hint().expect("mine hint");
         assert_eq!(hint.trigger, HintTrigger::MetalMine2);
+    }
+
+    fn quiet() -> BalanceConfig {
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.enabled = false;
+        cfg.market.enabled = false;
+        cfg
+    }
+
+    fn dismiss_other_hints(state: &mut GameState) {
+        for spec in TutorialCatalog::bundled().iter() {
+            if spec.trigger != HintTrigger::FrontierOpen {
+                state.dismiss_hint(&spec.id);
+            }
+        }
+    }
+
+    #[test]
+    fn frontier_hint_waits_for_a_revealed_sector() {
+        let mut research = GameState::new_live_galaxy(1_000, quiet(), 1);
+        dismiss_other_hints(&mut research);
+        research.evaluate_frontier(1_000);
+        assert_eq!(research.frontier.revealed, 0);
+        assert!(research.pending_hint().is_none());
+
+        let drive = research.config.frontier.drive_id.clone();
+        let astro = research.config.frontier.astro_id.clone();
+        research.tech_levels.insert(drive, 1);
+        research.tech_levels.insert(astro, 1);
+        research.evaluate_frontier(1_010);
+        assert!(research.frontier.revealed > 0);
+        let hint = research.pending_hint().expect("frontier hint");
+        assert_eq!(hint.trigger, HintTrigger::FrontierOpen);
+        assert_eq!(hint.screen, HintScreen::Map);
+        assert!(!hint.title.contains('_'), "{}", hint.title);
+        assert!(!hint.body.contains('_'), "{}", hint.body);
+
+        let mut wonder = GameState::new_live_galaxy(2_000, quiet(), 2);
+        dismiss_other_hints(&mut wonder);
+        wonder.completed_wonders.push("dyson_ring".into());
+        wonder.evaluate_frontier(2_010);
+        assert!(wonder.frontier.revealed > 0);
+        assert_eq!(
+            wonder.pending_hint().expect("wonder frontier").trigger,
+            HintTrigger::FrontierOpen
+        );
+    }
+
+    #[test]
+    fn dismissed_frontier_hint_does_not_return() {
+        let mut state = GameState::new_live_galaxy(1_000, quiet(), 1);
+        dismiss_other_hints(&mut state);
+        let drive = state.config.frontier.drive_id.clone();
+        let astro = state.config.frontier.astro_id.clone();
+        state.tech_levels.insert(drive, 1);
+        state.tech_levels.insert(astro, 1);
+        state.evaluate_frontier(1_010);
+        let hint = state.pending_hint().expect("frontier hint");
+        let id = hint.id.clone();
+        state.dismiss_hint(&id);
+        assert!(
+            state
+                .pending_hint()
+                .is_none_or(|h| h.trigger != HintTrigger::FrontierOpen)
+        );
+
+        state.completed_wonders.push("dyson_ring".into());
+        state.evaluate_frontier(1_020);
+        assert!(state.frontier.revealed > 1);
+        assert!(
+            state
+                .pending_hint()
+                .is_none_or(|h| h.trigger != HintTrigger::FrontierOpen)
+        );
+
+        let mut reloaded = GameState::new_live_galaxy(3_000, quiet(), 3);
+        dismiss_other_hints(&mut reloaded);
+        reloaded.completed_wonders.push("dyson_ring".into());
+        reloaded.evaluate_frontier(3_010);
+        reloaded.tutorial = state.tutorial.clone();
+        assert!(
+            reloaded
+                .pending_hint()
+                .is_none_or(|h| h.trigger != HintTrigger::FrontierOpen)
+        );
+    }
+
+    #[test]
+    fn parse_rejects_an_unknown_trigger() {
+        let err = TutorialCatalog::parse(
+            r#"
+[[hints]]
+id = "a"
+trigger = "not_a_trigger"
+screen = "map"
+title = "A"
+"#,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                TutorialError::UnknownTrigger { ref id, ref trigger }
+                    if id == "a" && trigger == "not_a_trigger"
+            ),
+            "{err}"
+        );
     }
 
     #[test]
