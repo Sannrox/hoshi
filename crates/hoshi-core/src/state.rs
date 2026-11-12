@@ -367,7 +367,7 @@ pub struct GameState {
     pub next_automation_at: Option<u64>,
     pub next_raid_at: Option<u64>,
     /// Pirate light fighters in the scheduled raid, fixed when it was
-    /// scheduled. `None` sizes the raid from the home's strength on landing.
+    /// scheduled. `None` sizes the raid from the locked world's strength on landing.
     pub next_raid_ships: Option<u32>,
     /// World the scheduled raid will hit, fixed when it was scheduled so the
     /// warning names the world it lands on. `None` (older saves) or a world no
@@ -619,8 +619,9 @@ impl GameState {
         state.sync_maintenance_assets(now_unix);
         // Size and aim the first raid from the starting home, prestige bonuses included.
         if state.next_raid_at.is_some() {
-            state.next_raid_ships = Some(state.live_raid_ships());
-            state.next_raid_target = Some(state.raid_target());
+            let dest = state.raid_target();
+            state.next_raid_target = Some(dest);
+            state.next_raid_ships = Some(state.raid_ships_at(dest));
         }
         state
     }
@@ -5630,7 +5631,7 @@ impl GameState {
         self.event_raid_at = Some(self.event_raid_at.map_or(at, |e| e.min(at)));
     }
 
-    /// Land the event raid now with the home's live strength. The scheduled
+    /// Land the event raid now with the dest's live strength. The scheduled
     /// raid keeps its time and size. Event raids always auto-resolve; they
     /// never open the interactive tactical round.
     fn land_event_raid(&mut self, done_at: u64) {
@@ -5927,7 +5928,10 @@ impl GameState {
     }
 
     fn resolve_raid_now(&mut self, done_at: u64, dest: Coord) -> CombatReport {
-        let pirates = self.pirate_fleet();
+        let pirates = Self::raid_fleet(
+            self.next_raid_ships
+                .unwrap_or_else(|| self.raid_ships_at(dest)),
+        );
         let parked = self.fleet_at(dest).unwrap_or_default();
         let defences = self.defences_at(dest).unwrap_or_default();
         let mut atk_stats = stats_from_catalog(&self.config.ships);
@@ -6289,8 +6293,8 @@ impl GameState {
     }
 
     /// Set or clear the next raid. A raid that becomes scheduled is sized
-    /// from the home's strength now; moving an already scheduled raid keeps
-    /// its size, so building during the countdown never grows it.
+    /// from the locked world's strength now; moving an already scheduled raid
+    /// keeps its size, so building during the countdown never grows it.
     pub(crate) fn set_raid_schedule(&mut self, at: Option<u64>) {
         match at {
             None => {
@@ -6298,8 +6302,9 @@ impl GameState {
                 self.next_raid_target = None;
             }
             Some(_) if self.next_raid_at.is_none() || self.next_raid_ships.is_none() => {
-                self.next_raid_ships = Some(self.live_raid_ships());
-                self.next_raid_target = Some(self.raid_target());
+                let dest = self.raid_target();
+                self.next_raid_target = Some(dest);
+                self.next_raid_ships = Some(self.raid_ships_at(dest));
             }
             Some(_) => {}
         }
@@ -6316,9 +6321,13 @@ impl GameState {
 
     /// The scheduled raid: its fixed size, or the live size when none is stored.
     fn pirate_fleet(&self) -> Fleet {
-        let n = self
-            .next_raid_ships
-            .unwrap_or_else(|| self.live_raid_ships());
+        Self::raid_fleet(
+            self.next_raid_ships
+                .unwrap_or_else(|| self.live_raid_ships()),
+        )
+    }
+
+    fn raid_fleet(n: u32) -> Fleet {
         let mut fleet = Fleet::default();
         if n > 0 {
             fleet.add(ShipKind::LightFighter, n);
@@ -6326,10 +6335,20 @@ impl GameState {
         fleet
     }
 
-    /// Raid size from the home's strength right now.
+    /// Raid size from the world the next unsized raid is locked on.
     fn live_raid_ships(&self) -> u32 {
-        let points =
-            self.fleet_combat_points() + self.defences.combat_points(&self.config.defences);
+        let dest = if self.event_raid_at.is_some() && self.upcoming_raid_at() == self.event_raid_at
+        {
+            self.locked_raid_dest(self.event_raid_target)
+        } else {
+            self.locked_raid_dest(self.next_raid_target)
+        };
+        self.raid_ships_at(dest)
+    }
+
+    /// Raid size from `coord`'s parked fleet, defences and waste right now.
+    fn raid_ships_at(&self, coord: Coord) -> u32 {
+        let points = self.world_combat_points(coord);
         // Raiders fly catalog light fighters, so the share of points becomes
         // a ship count by dividing by one fighter's points.
         let fighter = self.config.ships.get(ShipKind::LightFighter);
@@ -6338,8 +6357,9 @@ impl GameState {
             .floor()
             .max(0.0) as u32;
         let signature = self
-            .waste_home()
-            .raid_ships(self.config.waste.raid_signature_per_overflow);
+            .waste_at(coord)
+            .map(|waste| waste.raid_ships(self.config.waste.raid_signature_per_overflow))
+            .unwrap_or(0);
         scaled
             .max(self.config.raid.min_ships)
             .saturating_add(signature)
@@ -11429,11 +11449,58 @@ modifiers = []
     }
 
     #[test]
-    fn moving_a_scheduled_raid_keeps_its_target() {
+    fn moving_a_scheduled_raid_keeps_its_size_and_target() {
         let (mut state, colony) = raid_locked_on_colony();
+        let scheduled = state.scheduled_raid_ships();
         state.colonies[0].fleet.add(ShipKind::LightFighter, 50);
         state.set_raid_schedule(Some(80));
+        assert_eq!(state.next_raid_at, Some(80));
         assert_eq!(state.next_raid_target, Some(colony));
+        assert_eq!(state.scheduled_raid_ships(), scheduled);
+    }
+
+    #[test]
+    fn a_raid_locked_on_an_unarmed_colony_is_sized_from_that_world() {
+        let (mut state, colony) = raid_locked_on_colony();
+        let expected = state.config.raid.min_ships;
+        assert_eq!(state.scheduled_raid_ships(), expected);
+        let mut step = state.clone();
+        state.catch_up(40);
+        for now in 1..=40 {
+            step.catch_up(now);
+        }
+        let landed = state.combat_logs.last().unwrap();
+        assert_eq!(landed.place, Some(colony));
+        assert_eq!(landed.report.attacker_before.total(), expected);
+        assert_eq!(
+            step.combat_logs
+                .last()
+                .unwrap()
+                .report
+                .attacker_before
+                .total(),
+            expected
+        );
+        assert_eq!(raid_text(&step), raid_text(&state));
+    }
+
+    #[test]
+    fn an_event_raid_is_sized_from_the_dest_on_landing() {
+        let mut state = quiet_home();
+        state.fleet.add(ShipKind::LightFighter, 10);
+        let colony = unarmed_colony(&mut state);
+        state.next_raid_at = None;
+        state.next_raid_ships = None;
+        state.next_raid_target = None;
+        state.bring_event_raid(40);
+        assert_eq!(state.scheduled_raid_ships(), state.config.raid.min_ships);
+        // Unsized until landing: ships parked on dest after the lock still count.
+        state.colonies[0].fleet.add(ShipKind::LightFighter, 50);
+        state.catch_up(40);
+        let landed = state.combat_logs.last().unwrap();
+        assert_eq!(landed.place, Some(colony));
+        // 50 dest fighters, not the home's 10 (share 6) or the empty lock (1).
+        assert_eq!(landed.report.attacker_before.total(), 30);
     }
 
     #[test]
