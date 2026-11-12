@@ -3110,8 +3110,13 @@ impl App {
     fn cycle_map_galaxy(&mut self) {
         let home = self.state.home.galaxy;
         let frontier = self.state.config.frontier.galaxy;
-        if self.state.frontier.revealed == 0 || frontier == home {
+        if frontier == home {
             self.map_galaxy = home;
+            return;
+        }
+        if self.state.frontier.revealed == 0 {
+            self.map_galaxy = home;
+            self.status = self.frontier_locked_status();
             return;
         }
         self.map_galaxy = if self.map_galaxy == home {
@@ -3120,6 +3125,24 @@ impl App {
             home
         };
         self.status = format!("map galaxy {}", self.map_galaxy);
+    }
+
+    /// Names the research still missing, or a wonder, without internal ids.
+    fn frontier_locked_status(&self) -> String {
+        if self.state.research_unlocks_frontier() {
+            return "frontier locked: complete a wonder".into();
+        }
+        let cfg = &self.state.config.frontier;
+        let mut need = Vec::new();
+        for (id, required) in [
+            (cfg.drive_id.as_str(), cfg.drive_level),
+            (cfg.astro_id.as_str(), cfg.astro_level),
+        ] {
+            if self.state.tech_level(id) < required {
+                need.push(format!("{} {required}", self.state.display_name(id)));
+            }
+        }
+        format!("frontier locked: need {}, or a wonder", need.join(" and "))
     }
 
     fn nudge_map_system(&mut self, delta: i32) {
@@ -8412,6 +8435,40 @@ mod tests {
             text.contains("prod +") || text.contains("fields +") || world.rare.is_some(),
             "{text}"
         );
+    }
+
+    #[test]
+    fn map_toggle_names_why_the_frontier_is_locked() {
+        let mut app = App::new(GameState::new(1_000));
+        app.open(Screen::Map);
+        let home = app.state.home.galaxy;
+        app.handle_key(KeyCode::Char(' '), 1_000);
+        assert_eq!(app.map_galaxy, home);
+        let drive = app.state.display_name(&app.state.config.frontier.drive_id);
+        let astro = app.state.display_name(&app.state.config.frontier.astro_id);
+        assert!(app.status.contains(&drive), "{}", app.status);
+        assert!(app.status.contains(&astro), "{}", app.status);
+        assert!(app.status.contains("wonder"), "{}", app.status);
+        assert!(!app.status.contains('_'), "{}", app.status);
+    }
+
+    #[test]
+    fn map_toggle_still_switches_when_a_frontier_sector_is_open() {
+        let mut state = GameState::new(1_000);
+        let drive = state.config.frontier.drive_id.clone();
+        let astro = state.config.frontier.astro_id.clone();
+        let frontier = state.config.frontier.galaxy;
+        let home = state.home.galaxy;
+        state.tech_levels.insert(drive, 1);
+        state.tech_levels.insert(astro, 1);
+        state.catch_up(1_001);
+        assert!(state.frontier.revealed > 0);
+        let mut app = App::new(state);
+        app.open(Screen::Map);
+        app.handle_key(KeyCode::Char(' '), 1_000);
+        assert_eq!(app.map_galaxy, frontier, "{}", app.status);
+        app.handle_key(KeyCode::Char(' '), 1_000);
+        assert_eq!(app.map_galaxy, home, "{}", app.status);
     }
 
     #[test]
