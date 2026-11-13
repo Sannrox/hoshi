@@ -7182,7 +7182,7 @@ impl GameState {
         Ok(quote)
     }
 
-    fn next_diplomacy_at(&self) -> Option<u64> {
+    pub(crate) fn next_diplomacy_at(&self) -> Option<u64> {
         if !self.config.diplomacy.enabled {
             return None;
         }

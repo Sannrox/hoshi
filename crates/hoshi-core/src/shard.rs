@@ -582,7 +582,7 @@ impl ShardView {
                     "ships": inbound.ships,
                 })
             }).collect::<Vec<_>>(),
-            "decision": self.decision.map(|decision| {
+            "decision": self.decision.as_ref().map(|decision| {
                 serde_json::json!({
                     "id": decision.id.as_key(),
                     "deadline": decision.deadline,
@@ -4469,7 +4469,7 @@ mod tests {
                 ships: None,
             }]
         );
-        let decision = b.decision.expect("inbound");
+        let decision = b.decision.as_ref().expect("inbound");
         assert_eq!(decision.id, DecisionId::Inbound);
         assert_eq!(decision.action, DecisionAction::ArmHome);
         assert_eq!(decision.deadline, arrive);
@@ -4479,7 +4479,7 @@ mod tests {
 
         let a = shard.view("a", &mut empires).unwrap();
         assert!(a.inbound.is_empty());
-        assert_ne!(a.decision.map(|d| d.id), Some(DecisionId::Inbound));
+        assert_ne!(a.decision.as_ref().map(|d| d.id), Some(DecisionId::Inbound));
         assert_eq!(a.missions.len(), 1);
         assert_eq!(a.missions[0].dest, B_HOME);
 
@@ -4536,7 +4536,7 @@ mod tests {
                 panic!("one inbound at {at}: {:?}", view.inbound);
             };
             assert_eq!(inbound.arrives_at, arrive);
-            assert_eq!(view.decision.map(|d| d.deadline), Some(arrive));
+            assert_eq!(view.decision.as_ref().map(|d| d.deadline), Some(arrive));
         }
     }
 

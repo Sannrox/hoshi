@@ -1,7 +1,9 @@
 //! One choosable deadline, derived from the save. Not stored.
 
+use crate::diplomacy::FactionSpec;
 use crate::ships::ShipKind;
 use crate::state::GameState;
+use crate::victory::VictoryPath;
 use crate::{Formation, Stance};
 
 /// Which clock the decision reads. Lower rank wins a deadline tie.
@@ -12,6 +14,10 @@ pub enum DecisionId {
     Raid,
     /// Another tenant's raid flying at a shard home. Local play never has one.
     Inbound,
+    /// A diplomacy tick that would leave a standing tier. Only when focus is
+    /// diplomacy; a story, fight, or warned raid still wins an earlier or tied
+    /// deadline.
+    Diplomacy,
 }
 
 impl DecisionId {
@@ -21,6 +27,7 @@ impl DecisionId {
             Self::Tactical => "tactical",
             Self::Raid => "raid",
             Self::Inbound => "inbound",
+            Self::Diplomacy => "diplomacy",
         }
     }
 
@@ -30,6 +37,7 @@ impl DecisionId {
             Self::Tactical => 1,
             Self::Raid => 2,
             Self::Inbound => 3,
+            Self::Diplomacy => 4,
         }
     }
 }
@@ -41,6 +49,8 @@ pub enum DecisionAction {
     QueueTacticalAction,
     SetStance,
     ArmHome,
+    Trade,
+    Tribute,
 }
 
 impl DecisionAction {
@@ -50,33 +60,61 @@ impl DecisionAction {
             Self::QueueTacticalAction => "queue_tactical_action",
             Self::SetStance => "set_stance",
             Self::ArmHome => "arm",
+            Self::Trade => "trade",
+            Self::Tribute => "tribute",
         }
     }
 }
 
-/// The earliest choice still open. Deadlines are the story, fight, or raid clock.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Faction and the tier its next crossing would leave. Present when `id` is
+/// diplomacy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiplomacyDeadline {
+    pub faction_id: String,
+    pub faction_name: String,
+    pub tier_name: String,
+}
+
+/// The earliest choice still open. Deadlines are the story, fight, raid, or
+/// (with diplomacy focus) the next standing-tier crossing.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExpiringDecision {
     pub id: DecisionId,
     pub deadline: u64,
     pub action: DecisionAction,
+    pub diplomacy: Option<DiplomacyDeadline>,
+}
+
+impl ExpiringDecision {
+    fn new(id: DecisionId, deadline: u64, action: DecisionAction) -> Self {
+        Self {
+            id,
+            deadline,
+            action,
+            diplomacy: None,
+        }
+    }
 }
 
 /// At most one decision. The earliest deadline wins. A tie keeps story, then
-/// a live fight, then the raid. An idle queue and an in-flight recall are not
-/// decisions.
-pub fn expiring_decision(state: &GameState) -> Option<ExpiringDecision> {
+/// a live fight, then the raid, then an inbound, then a diplomacy crossing. An
+/// idle queue and an in-flight recall are not decisions. Wonder and conquest
+/// focus do not add a countdown.
+pub fn expiring_decision(
+    state: &GameState,
+    focus: Option<VictoryPath>,
+) -> Option<ExpiringDecision> {
     let mut best: Option<ExpiringDecision> = None;
     if let Some(pending) = &state.story_pending
         && state.last_tick_unix < pending.timeout_at
     {
         consider(
             &mut best,
-            ExpiringDecision {
-                id: DecisionId::Story,
-                deadline: pending.timeout_at,
-                action: DecisionAction::ChooseStory,
-            },
+            ExpiringDecision::new(
+                DecisionId::Story,
+                pending.timeout_at,
+                DecisionAction::ChooseStory,
+            ),
         );
     }
     if state.interactive_tactics
@@ -85,15 +123,20 @@ pub fn expiring_decision(state: &GameState) -> Option<ExpiringDecision> {
     {
         consider(
             &mut best,
-            ExpiringDecision {
-                id: DecisionId::Tactical,
-                deadline: pending.next_at,
-                action: DecisionAction::QueueTacticalAction,
-            },
+            ExpiringDecision::new(
+                DecisionId::Tactical,
+                pending.next_at,
+                DecisionAction::QueueTacticalAction,
+            ),
         );
     }
     if let Some(raid) = raid_decision(state) {
         consider(&mut best, raid);
+    }
+    if focus == Some(VictoryPath::Diplomacy)
+        && let Some(row) = diplomacy_decision(state)
+    {
+        consider(&mut best, row);
     }
     best
 }
@@ -109,22 +152,18 @@ pub(crate) fn expiring_decision_with_inbound(
     state: &GameState,
     inbound_at: Option<u64>,
 ) -> Option<ExpiringDecision> {
-    let mut best = expiring_decision(state);
+    let mut best = expiring_decision(state, None);
     if let Some(deadline) = inbound_at.filter(|&at| state.last_tick_unix < at) {
         consider(
             &mut best,
-            ExpiringDecision {
-                id: DecisionId::Inbound,
-                deadline,
-                action: DecisionAction::ArmHome,
-            },
+            ExpiringDecision::new(DecisionId::Inbound, deadline, DecisionAction::ArmHome),
         );
     }
     best
 }
 
 fn consider(best: &mut Option<ExpiringDecision>, next: ExpiringDecision) {
-    let replace = match *best {
+    let replace = match best.as_ref() {
         None => true,
         Some(current) => {
             next.deadline < current.deadline
@@ -153,11 +192,82 @@ fn raid_decision(state: &GameState) -> Option<ExpiringDecision> {
     } else {
         return None;
     };
-    Some(ExpiringDecision {
-        id: DecisionId::Raid,
-        deadline: lands,
-        action,
-    })
+    Some(ExpiringDecision::new(DecisionId::Raid, lands, action))
+}
+
+fn diplomacy_decision(state: &GameState) -> Option<ExpiringDecision> {
+    if !state.config.diplomacy.enabled {
+        return None;
+    }
+    let first = state.next_diplomacy_at()?;
+    let tick = state.config.diplomacy.tick_secs;
+    let decay = state.config.diplomacy.decay;
+    let mut best: Option<ExpiringDecision> = None;
+    for spec in state.config.diplomacy.iter() {
+        if let Some(row) = crossing_at(state, spec, first, tick, decay) {
+            consider(&mut best, row);
+        }
+    }
+    best
+}
+
+fn crossing_at(
+    state: &GameState,
+    spec: &FactionSpec,
+    first: u64,
+    tick: u64,
+    decay: f64,
+) -> Option<ExpiringDecision> {
+    let mut standing = state.diplomacy.standing(&spec.id);
+    let current = spec.tier(standing)?;
+    let leaving_id = current.id.clone();
+    let leaving_name = current.name.clone();
+    let mut at = first;
+    for _ in 0..10_000 {
+        if at <= state.last_tick_unix {
+            return None;
+        }
+        let next = clamp_standing(state, standing + decay * (0.0 - standing));
+        let next_id = spec.tier(next).map(|tier| tier.id.as_str());
+        if next_id != Some(leaving_id.as_str()) {
+            return Some(ExpiringDecision {
+                id: DecisionId::Diplomacy,
+                deadline: at,
+                action: standing_action(spec),
+                diplomacy: Some(DiplomacyDeadline {
+                    faction_id: spec.id.clone(),
+                    faction_name: spec.name.clone(),
+                    tier_name: leaving_name,
+                }),
+            });
+        }
+        if tick == 0 || (next - standing).abs() < 1e-15 {
+            return None;
+        }
+        standing = next;
+        let next_at = at.saturating_add(tick);
+        if next_at <= at {
+            return None;
+        }
+        at = next_at;
+    }
+    None
+}
+
+fn standing_action(spec: &FactionSpec) -> DecisionAction {
+    if spec.trade_delta.abs() > 1e-12 {
+        DecisionAction::Trade
+    } else if spec.tribute_delta.abs() > 1e-12 && spec.tribute_metal > 0.0 {
+        DecisionAction::Tribute
+    } else {
+        DecisionAction::ChooseStory
+    }
+}
+
+fn clamp_standing(state: &GameState, value: f64) -> f64 {
+    value
+        .max(state.config.diplomacy.min_standing)
+        .min(state.config.diplomacy.max_standing)
 }
 
 fn home_armed(state: &GameState) -> bool {
@@ -206,7 +316,7 @@ mod tests {
         state.story_pending = Some(pending_story(1_200));
         warn(&mut state, 1_800);
         state.fleet.add(ShipKind::LightFighter, 3);
-        let decision = expiring_decision(&state).expect("story");
+        let decision = expiring_decision(&state, None).expect("story");
         assert_eq!(decision.id, DecisionId::Story);
         assert_eq!(decision.action, DecisionAction::ChooseStory);
         assert_eq!(
@@ -221,7 +331,7 @@ mod tests {
         state.story_pending = Some(pending_story(1_500));
         warn(&mut state, 1_500);
         state.fleet.add(ShipKind::LightFighter, 1);
-        let decision = expiring_decision(&state).expect("story");
+        let decision = expiring_decision(&state, None).expect("story");
         assert_eq!(decision.id, DecisionId::Story);
         assert_eq!(decision.deadline, 1_500);
     }
@@ -233,7 +343,7 @@ mod tests {
         state.fleet.add(ShipKind::LightFighter, 2);
         assert_eq!(state.fleet_tactics.stance, Stance::Neutral);
         assert_eq!(state.fleet_tactics.formation, Formation::Neutral);
-        let decision = expiring_decision(&state).expect("raid");
+        let decision = expiring_decision(&state, None).expect("raid");
         assert_eq!(decision.id, DecisionId::Raid);
         assert_eq!(decision.action, DecisionAction::SetStance);
         assert_eq!(decision.deadline, state.next_raid_at.unwrap());
@@ -245,7 +355,7 @@ mod tests {
         warn(&mut state, 1_400);
         state.fleet.add(ShipKind::ColonyShip, 2);
         assert!(state.defences.is_empty());
-        let decision = expiring_decision(&state).expect("arm");
+        let decision = expiring_decision(&state, None).expect("arm");
         assert_eq!(decision.id, DecisionId::Raid);
         assert_eq!(decision.action, DecisionAction::ArmHome);
         assert_eq!(decision.deadline, 1_400);
@@ -260,14 +370,14 @@ mod tests {
         state.defences.add(DefenceKind::LightCannon, 1);
         assert_eq!(state.fleet_tactics.stance, Stance::Neutral);
         assert_eq!(state.fleet_tactics.formation, Formation::Neutral);
-        let decision = expiring_decision(&state).expect("story");
+        let decision = expiring_decision(&state, None).expect("story");
         assert_eq!(decision.id, DecisionId::Story);
         assert_eq!(decision.action, DecisionAction::ChooseStory);
         assert_eq!(decision.deadline, 1_800);
 
         state.story_pending = None;
         assert!(
-            expiring_decision(&state).is_none(),
+            expiring_decision(&state, None).is_none(),
             "stance cannot change a raid that lands on a defence grid"
         );
     }
@@ -278,12 +388,12 @@ mod tests {
         warn(&mut armed, 1_200);
         armed.fleet.add(ShipKind::LightFighter, 1);
         armed.set_stance("aggressive").unwrap();
-        assert!(expiring_decision(&armed).is_none());
+        assert!(expiring_decision(&armed, None).is_none());
 
         let mut held = quiet(1_000);
         warn(&mut held, 1_200);
         held.defences.add(DefenceKind::LightCannon, 1);
-        assert!(expiring_decision(&held).is_none());
+        assert!(expiring_decision(&held, None).is_none());
     }
 
     #[test]
@@ -293,7 +403,7 @@ mod tests {
         state.config.raid.min_warning_secs = 100;
         state.next_raid_at = Some(1_000 + 101);
         assert!(state.raid_countdown_secs().is_none());
-        assert!(expiring_decision(&state).is_none());
+        assert!(expiring_decision(&state, None).is_none());
     }
 
     #[test]
@@ -332,7 +442,7 @@ mod tests {
             deploy: false,
             station: false,
         });
-        assert!(expiring_decision(&state).is_none());
+        assert!(expiring_decision(&state, None).is_none());
     }
 
     #[test]
@@ -351,17 +461,17 @@ mod tests {
             queued: None,
         });
         assert_eq!(
-            expiring_decision(&state).unwrap().id,
+            expiring_decision(&state, None).unwrap().id,
             DecisionId::Story,
             "a saved fight is not waiting on the player"
         );
         state.interactive_tactics = true;
-        let decision = expiring_decision(&state).unwrap();
+        let decision = expiring_decision(&state, None).unwrap();
         assert_eq!(decision.id, DecisionId::Tactical);
         assert_eq!(decision.action, DecisionAction::QueueTacticalAction);
         assert_eq!(decision.deadline, 1_100);
         state.queue_tactical_action(RoundAction::Hold);
-        assert_eq!(expiring_decision(&state).unwrap().deadline, 1_100);
+        assert_eq!(expiring_decision(&state, None).unwrap().deadline, 1_100);
     }
 
     #[test]
@@ -369,7 +479,7 @@ mod tests {
         let mut state = quiet(1_000);
         state.story_pending = Some(pending_story(1_000));
         warn(&mut state, 1_500);
-        let decision = expiring_decision(&state).expect("raid");
+        let decision = expiring_decision(&state, None).expect("raid");
         assert_eq!(decision.id, DecisionId::Raid);
     }
 
@@ -385,8 +495,8 @@ mod tests {
         for t in 1_001..=1_020 {
             step.catch_up(t);
         }
-        let gap_decision = expiring_decision(&gap).expect("still the story");
-        assert_eq!(gap_decision, expiring_decision(&step).unwrap());
+        let gap_decision = expiring_decision(&gap, None).expect("still the story");
+        assert_eq!(gap_decision, expiring_decision(&step, None).unwrap());
         assert_eq!(
             gap_decision.deadline,
             gap.story_pending.as_ref().unwrap().timeout_at
@@ -398,10 +508,108 @@ mod tests {
             step.catch_up(t);
         }
         assert!(gap.story_pending.is_none());
-        let after = expiring_decision(&gap).expect("raid remains");
-        assert_eq!(after, expiring_decision(&step).unwrap());
+        let after = expiring_decision(&gap, None).expect("raid remains");
+        assert_eq!(after, expiring_decision(&step, None).unwrap());
         assert_eq!(after.id, DecisionId::Raid);
         assert_eq!(after.action, DecisionAction::SetStance);
         assert_eq!(after.deadline, gap.next_raid_at.unwrap());
+    }
+
+    fn diplomacy_live(now: u64) -> GameState {
+        let mut state = GameState::new(now);
+        state.config.story = crate::StoryCatalog::empty();
+        state.config.market.enabled = false;
+        state.config.raid.enabled = false;
+        state.next_raid_at = None;
+        state.story_pending = None;
+        state.config.diplomacy = crate::DiplomacyConfig::default();
+        state.config.diplomacy.tick_secs = 10;
+        state.last_diplomacy_at = now;
+        state
+    }
+
+    #[test]
+    fn diplomacy_focus_names_a_tier_that_crosses_on_the_next_tick() {
+        let mut state = diplomacy_live(1_000);
+        state.diplomacy.set_standing("traders", 20.0);
+        assert!(expiring_decision(&state, None).is_none());
+        assert!(expiring_decision(&state, Some(VictoryPath::Conquest)).is_none());
+        assert!(expiring_decision(&state, Some(VictoryPath::Wonder)).is_none());
+        let decision = expiring_decision(&state, Some(VictoryPath::Diplomacy)).expect("crossing");
+        assert_eq!(decision.id, DecisionId::Diplomacy);
+        assert_eq!(decision.action, DecisionAction::Trade);
+        assert_eq!(decision.deadline, 1_010);
+        let row = decision.diplomacy.expect("faction");
+        assert_eq!(row.faction_id, "traders");
+        assert_eq!(row.faction_name, "Traders' guild");
+        assert_eq!(row.tier_name, "Favored");
+    }
+
+    #[test]
+    fn a_standing_inside_its_tier_is_not_a_decision() {
+        let mut state = diplomacy_live(1_000);
+        state.diplomacy.set_standing("traders", 5.0);
+        assert!(expiring_decision(&state, Some(VictoryPath::Diplomacy)).is_none());
+    }
+
+    #[test]
+    fn a_sooner_story_beats_a_diplomacy_crossing() {
+        let mut state = diplomacy_live(1_000);
+        state.diplomacy.set_standing("traders", 20.0);
+        state.story_pending = Some(pending_story(1_005));
+        let decision = expiring_decision(&state, Some(VictoryPath::Diplomacy)).expect("story");
+        assert_eq!(decision.id, DecisionId::Story);
+        assert_eq!(decision.deadline, 1_005);
+    }
+
+    #[test]
+    fn catch_up_and_a_stepped_tick_agree_on_the_crossing() {
+        let mut gap = diplomacy_live(1_000);
+        gap.diplomacy.set_standing("traders", 30.0);
+        let mut step = gap.clone();
+        let focus = Some(VictoryPath::Diplomacy);
+        let before = expiring_decision(&gap, focus).expect("crossing");
+        assert_eq!(before.id, DecisionId::Diplomacy);
+        assert!(before.deadline > 1_010, "{}", before.deadline);
+        assert_eq!(before.diplomacy.as_ref().unwrap().tier_name, "Favored");
+
+        let just_before = before.deadline - 1;
+        gap.catch_up(just_before);
+        for t in 1_001..=just_before {
+            step.catch_up(t);
+        }
+        let gap_decision = expiring_decision(&gap, focus).expect("still crossing");
+        assert_eq!(gap_decision, expiring_decision(&step, focus).unwrap());
+        assert_eq!(gap_decision.deadline, before.deadline);
+        assert_eq!(
+            gap.config
+                .diplomacy
+                .get("traders")
+                .unwrap()
+                .tier(gap.diplomacy.standing("traders"))
+                .unwrap()
+                .id,
+            "favored"
+        );
+
+        gap.catch_up(before.deadline);
+        for t in just_before + 1..=before.deadline {
+            step.catch_up(t);
+        }
+        assert_eq!(
+            expiring_decision(&gap, focus),
+            expiring_decision(&step, focus)
+        );
+        assert_ne!(
+            gap.config
+                .diplomacy
+                .get("traders")
+                .unwrap()
+                .tier(gap.diplomacy.standing("traders"))
+                .unwrap()
+                .id,
+            "favored"
+        );
+        assert!(expiring_decision(&gap, focus).is_none());
     }
 }

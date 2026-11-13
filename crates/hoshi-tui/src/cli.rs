@@ -1036,7 +1036,9 @@ fn apply(
             if !state.deterministic {
                 state.catch_up(now);
             }
-            Ok(state_value(state, *actor))
+            let focus =
+                crate::config::UserConfig::load(save.parent().unwrap_or(Path::new("."))).focus;
+            Ok(state_value_for(state, *actor, focus))
         }
         Command::Intel { actor, target } => {
             if !state.deterministic {
@@ -2558,6 +2560,27 @@ fn resources_json(r: hoshi_core::Resources) -> Value {
 }
 
 fn state_value(state: &GameState, actor: Actor) -> Value {
+    state_value_for(state, actor, None)
+}
+
+fn decision_value(decision: &hoshi_core::ExpiringDecision) -> Value {
+    let mut value = json!({
+        "id": decision.id.as_key(),
+        "deadline": decision.deadline,
+        "action": decision.action.as_key(),
+    });
+    if let Some(row) = &decision.diplomacy {
+        value["faction"] = json!(row.faction_name);
+        value["tier"] = json!(row.tier_name);
+    }
+    value
+}
+
+fn state_value_for(
+    state: &GameState,
+    actor: Actor,
+    focus: Option<hoshi_core::VictoryPath>,
+) -> Value {
     // The target appears once the warning does, as on the bridge; before
     // that only the landing time is known.
     let raid = state.upcoming_raid().map(|raid| {
@@ -2713,13 +2736,8 @@ fn state_value(state: &GameState, actor: Actor) -> Value {
         })
         .collect();
     let waste = state.waste_home();
-    let decision = hoshi_core::expiring_decision(state).map(|decision| {
-        json!({
-            "id": decision.id.as_key(),
-            "deadline": decision.deadline,
-            "action": decision.action.as_key(),
-        })
-    });
+    let decision =
+        hoshi_core::expiring_decision(state, focus).map(|decision| decision_value(&decision));
     let mut value = json!({
         "schema_version": SCHEMA_VERSION,
         "ok": true,
@@ -5769,7 +5787,7 @@ mod tests {
             Some(loaded.last_tick_unix + loaded.config.raid.first_delay_secs)
         );
         assert!(loaded.raid_countdown_secs().is_none());
-        assert!(hoshi_core::expiring_decision(&loaded).is_none());
+        assert!(hoshi_core::expiring_decision(&loaded, None).is_none());
         assert!(value["decision"].is_null(), "{value}");
         let _ = std::fs::remove_file(&save);
     }
@@ -5786,7 +5804,7 @@ mod tests {
         state.next_raid_at = Some(1_800);
         state.fleet.add(ShipKind::LightFighter, 2);
         state.resources.iron = state.storage_cap(ResourceKind::Iron);
-        let expected = hoshi_core::expiring_decision(&state).expect("story");
+        let expected = hoshi_core::expiring_decision(&state, None).expect("story");
         assert_eq!(expected.id, hoshi_core::DecisionId::Story);
         assert_eq!(expected.deadline, 1_200);
         let mut conn = open_save(&save).unwrap();
@@ -5798,9 +5816,9 @@ mod tests {
         assert_eq!(value["decision"]["deadline"], expected.deadline);
         assert_eq!(value["decision"]["action"], expected.action.as_key());
         let rows = crate::cockpit::alerts(&state, None);
-        assert_eq!(rows[0].decision, Some(expected));
+        assert_eq!(rows[0].decision.as_ref(), Some(&expected));
         assert_eq!(
-            rows[0].decision.unwrap().deadline,
+            rows[0].decision.as_ref().unwrap().deadline,
             value["decision"]["deadline"].as_u64().unwrap()
         );
         assert!(rows.iter().skip(1).any(|row| row.text.contains("idle")));
@@ -5815,7 +5833,7 @@ mod tests {
         state.next_raid_at = None;
         state.story_pending = None;
         assert!(state.build_queue.is_empty());
-        assert!(hoshi_core::expiring_decision(&state).is_none());
+        assert!(hoshi_core::expiring_decision(&state, None).is_none());
         let mut conn = open_save(&save).unwrap();
         save_state(&mut conn, &state).unwrap();
         drop(conn);
@@ -5826,6 +5844,47 @@ mod tests {
         assert!(rows.iter().all(|row| row.decision.is_none()));
         assert!(rows.iter().any(|row| row.text.contains("idle")));
         let _ = std::fs::remove_file(&save);
+    }
+
+    #[test]
+    fn state_and_the_bridge_share_a_diplomacy_tier_crossing() {
+        let dir = unique_save("decision-diplo").with_extension("d");
+        std::fs::create_dir_all(&dir).unwrap();
+        let save = dir.join("save.sqlite");
+        let mut state = GameState::with_seed(1_000, BalanceConfig::default(), 3);
+        state.story_pending = None;
+        state.next_raid_at = None;
+        state.last_diplomacy_at = state.last_tick_unix;
+        state.diplomacy.set_standing("traders", 20.0);
+        state.resources.iron = state.storage_cap(ResourceKind::Iron);
+        let expected =
+            hoshi_core::expiring_decision(&state, Some(hoshi_core::VictoryPath::Diplomacy))
+                .expect("crossing");
+        assert_eq!(expected.id, hoshi_core::DecisionId::Diplomacy);
+        assert_eq!(expected.action, hoshi_core::DecisionAction::Trade);
+        let mut conn = open_save(&save).unwrap();
+        save_state(&mut conn, &state).unwrap();
+        drop(conn);
+        let (plain, exit) = run_on(&save, &["state"]);
+        assert_eq!(exit, EXIT_OK, "{plain}");
+        assert!(plain["decision"].is_null(), "{plain}");
+        std::fs::write(dir.join("config.toml"), "focus = \"diplomacy\"\n").unwrap();
+        let (value, exit) = run_on(&save, &["state"]);
+        assert_eq!(exit, EXIT_OK, "{value}");
+        assert_eq!(value["decision"]["id"], "diplomacy");
+        assert_eq!(value["decision"]["deadline"], expected.deadline);
+        assert_eq!(value["decision"]["action"], "trade");
+        assert_eq!(value["decision"]["faction"], "Traders' guild");
+        assert_eq!(value["decision"]["tier"], "Favored");
+        let rows = crate::cockpit::alerts(&state, Some(hoshi_core::VictoryPath::Diplomacy));
+        assert_eq!(rows[0].decision.as_ref(), Some(&expected));
+        assert!(rows[0].text.contains("Traders' guild"), "{}", rows[0].text);
+        assert!(rows[0].text.contains("Favored"), "{}", rows[0].text);
+        assert_eq!(
+            rows[0].decision.as_ref().unwrap().deadline,
+            value["decision"]["deadline"].as_u64().unwrap()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
