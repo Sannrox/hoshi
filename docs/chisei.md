@@ -192,8 +192,10 @@ a signed `sekai.source-webhook-delivery/v1` batch of each tenant view. Clients
 never write the live save. Title-screen Join is a TUI client of that host:
 it loads credentials beside config, sends intents with per-session
 idempotency ids, and renders the tenant view. It does not open
-`save.sqlite`. Until a live Actions client is wired, an unreachable host
-is a disconnect, not yesterday's local empire. `tick --advance` is not
+`save.sqlite`. With those credentials the title may read the tenant view
+once and paint an inbound fleet plus host-clock ETA; Continue still loads
+only the local save. Until a live Actions client is wired, an unreachable
+host is a disconnect, not yesterday's local empire. `tick --advance` is not
 offered.
 
 1. **Create.** `ShardSession::new` with the host clock, the bridge MAC key,

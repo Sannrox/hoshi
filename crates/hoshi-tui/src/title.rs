@@ -9,8 +9,8 @@ use crate::ui::table::{Column, DataTable};
 use crate::ui::{Depth, Intent, Surface, Theme};
 use hoshi_core::{
     AchievementCondition, AchievementConfig, BalanceConfig, Prestige, PrestigeConfig,
-    PrestigeError, RivalCatalog, RivalSettings, SeasonCatalog, SpeciesCatalog, SpeciesSpec,
-    advisor_endpoint_allowed, encode_galaxy_seed, parse_galaxy_seed, preview_galaxy,
+    PrestigeError, RivalCatalog, RivalSettings, SeasonCatalog, ShardInbound, SpeciesCatalog,
+    SpeciesSpec, advisor_endpoint_allowed, encode_galaxy_seed, parse_galaxy_seed, preview_galaxy,
     probe_model_endpoint, season_slot_name,
 };
 use hoshi_storage::{
@@ -209,6 +209,7 @@ pub struct Title {
     rename_to: String,
     play_path: Option<PathBuf>,
     join_identity: Option<String>,
+    inbound: Option<ShardInbound>,
     help_open: bool,
     help_commands: bool,
     keys_selected: usize,
@@ -272,6 +273,7 @@ impl Title {
             rename_to: String::new(),
             play_path: None,
             join_identity: None,
+            inbound: None,
             help_open: false,
             help_commands: false,
             keys_selected: 0,
@@ -304,7 +306,24 @@ impl Title {
         if !title.slots.iter().any(|slot| slot.status.playable()) {
             title.selected = 1;
         }
+        title.glance(&mut crate::shard::UnreachableHost);
         title
+    }
+
+    /// Read inbound from the host only when Join credentials exist.
+    fn glance(&mut self, host: &mut dyn crate::shard::ShardClient) {
+        self.inbound = None;
+        let Some(creds) = crate::shard::Credentials::load(&self.dir) else {
+            return;
+        };
+        if let Ok(view) = host.view(&creds.identity) {
+            self.inbound = view.inbound.first().copied();
+        }
+    }
+
+    #[cfg(test)]
+    fn glance_with(&mut self, host: &mut dyn crate::shard::ShardClient) {
+        self.glance(host);
     }
 
     pub fn update_dir(&self) -> PathBuf {
@@ -2038,6 +2057,10 @@ impl Title {
                     });
                 }
                 lines.push(Line::from(""));
+                if let Some(inbound) = &self.inbound {
+                    lines.push(Line::from(crate::shard::inbound_title_line(inbound)));
+                    lines.push(Line::from(""));
+                }
                 lines.push(Line::from(format!(
                     "{} help  {} copy seed",
                     self.config.keys.primary(Binding::Help),
@@ -3075,6 +3098,135 @@ mod tests {
             Some(dir.join("live.sqlite").as_path())
         );
         assert!(again.take_join_identity().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn credential_plus_inbound_paints_the_title_and_leaves_the_save_alone() {
+        let dir = unique_dir();
+        let original = GameState::new(10);
+        write_save(&dir, "live", &original);
+        crate::shard::Credentials {
+            identity: "a".into(),
+        }
+        .save(&dir)
+        .unwrap();
+        let mut host = crate::shard::LoopbackHost::new("a");
+        let inbound = host.inbound_from("b");
+        let line = crate::shard::inbound_title_line(&inbound);
+        let mut title = Title::new(dir.clone(), 100);
+        title.glance_with(&mut host);
+        let text = render(&title, 80, 24);
+        assert!(text.contains(&line), "{text}");
+        assert!(text.contains("inbound fleet"), "{text}");
+        if inbound.ships.is_none() {
+            assert!(!text.contains("hulls"), "{text}");
+        }
+        let conn = open_save(&dir.join("live.sqlite")).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded, original);
+        let play = crate::shard::ShardPlay::connect(host, "a".into(), Keymap::defaults());
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| play.draw(f)).unwrap();
+        let buf = terminal.backend().buffer();
+        let area = buf.area();
+        let mut join = String::new();
+        for y in area.y..area.y + area.height {
+            for x in area.x..area.x + area.width {
+                join.push_str(buf[(x, y)].symbol());
+            }
+            join.push('\n');
+        }
+        assert!(join.contains(&line), "{join}");
+        assert!(join.contains(&inbound.arrives_at.to_string()), "{join}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn without_credentials_the_title_does_not_call_the_host() {
+        let dir = unique_dir();
+        write_save(&dir, "live", &GameState::new(10));
+        let hits = std::rc::Rc::new(std::cell::Cell::new(0));
+        struct Probe {
+            hits: std::rc::Rc<std::cell::Cell<u32>>,
+        }
+        impl crate::shard::ShardClient for Probe {
+            fn join(
+                &mut self,
+                _: &str,
+            ) -> Result<hoshi_core::ShardView, crate::shard::ClientError> {
+                self.hits.set(self.hits.get() + 1);
+                Err(crate::shard::ClientError::Gone)
+            }
+            fn view(
+                &mut self,
+                _: &str,
+            ) -> Result<hoshi_core::ShardView, crate::shard::ClientError> {
+                self.hits.set(self.hits.get() + 1);
+                Err(crate::shard::ClientError::Gone)
+            }
+            fn submit(
+                &mut self,
+                _: hoshi_core::ShardCommand,
+            ) -> Result<hoshi_core::ShardView, crate::shard::ClientError> {
+                Err(crate::shard::ClientError::Gone)
+            }
+        }
+        let mut probe = Probe { hits: hits.clone() };
+        let mut title = Title::new(dir.clone(), 100);
+        title.glance_with(&mut probe);
+        assert_eq!(hits.get(), 0);
+        let text = render(&title, 80, 24);
+        assert!(!text.contains("inbound fleet"), "{text}");
+        assert_eq!(title.handle_key(KeyCode::Enter), TitleAction::Play(0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn title_glance_reads_the_view_and_does_not_join() {
+        let dir = unique_dir();
+        crate::shard::Credentials {
+            identity: "z".into(),
+        }
+        .save(&dir)
+        .unwrap();
+        let joins = std::rc::Rc::new(std::cell::Cell::new(0));
+        let views = std::rc::Rc::new(std::cell::Cell::new(0));
+        struct Probe {
+            joins: std::rc::Rc<std::cell::Cell<u32>>,
+            views: std::rc::Rc<std::cell::Cell<u32>>,
+        }
+        impl crate::shard::ShardClient for Probe {
+            fn join(
+                &mut self,
+                _: &str,
+            ) -> Result<hoshi_core::ShardView, crate::shard::ClientError> {
+                self.joins.set(self.joins.get() + 1);
+                Err(crate::shard::ClientError::Gone)
+            }
+            fn view(
+                &mut self,
+                _: &str,
+            ) -> Result<hoshi_core::ShardView, crate::shard::ClientError> {
+                self.views.set(self.views.get() + 1);
+                Err(crate::shard::ClientError::Gone)
+            }
+            fn submit(
+                &mut self,
+                _: hoshi_core::ShardCommand,
+            ) -> Result<hoshi_core::ShardView, crate::shard::ClientError> {
+                Err(crate::shard::ClientError::Gone)
+            }
+        }
+        let mut probe = Probe {
+            joins: joins.clone(),
+            views: views.clone(),
+        };
+        let mut title = Title::new(dir.clone(), 100);
+        title.glance_with(&mut probe);
+        assert_eq!(joins.get(), 0);
+        assert_eq!(views.get(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
