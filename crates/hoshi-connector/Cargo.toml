@@ -1,0 +1,17 @@
+[package]
+description = "Chisei shard host connector: ShardSession maths behind Source apply and signed view webhooks."
+name = "hoshi-connector"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+ed25519-dalek = "2.2.0"
+hoshi-core = { workspace = true }
+hoshi-storage = { workspace = true }
+sekai-source-sdk = { version = "1.4.0", git = "https://github.com/Sannrox/sekai-chisei", tag = "v3.0.0" }
+serde = { version = "1.0.229", default-features = false, features = ["derive", "std"] }
+serde_json = { version = "1.0.152", features = ["float_roundtrip"] }
+sha2 = "0.10"

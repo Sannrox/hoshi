@@ -5,6 +5,7 @@ members = [
     "crates/hoshi-tui",
     "crates/hoshi-bridge",
     "crates/hoshi-author",
+    "crates/hoshi-connector",
 ]
 default-members = [
     "crates/hoshi-core",

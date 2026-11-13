@@ -19,6 +19,10 @@ design is recorded in [ADR 0002](docs/decisions/0002-terminal-idle-game-with-eve
 - `crates/hoshi-author`: offline `hoshi-author` CLI that drafts story events
   into `content/drafts/`. The game never depends on it or generates events at
   runtime.
+- `crates/hoshi-connector`: optional Chisei shard host. Claims `external_mutate`
+  writeback, calls `ShardSession`, and posts signed tenant-view webhooks.
+  Depends on `sekai-source-sdk` (git tag `v3.0.0`). Not a game server; sockets
+  stay out of hoshi-core.
 
 Do not commit local state (`.state/`, `*.db` saves), logs, or tokens.
 
@@ -107,6 +111,7 @@ Feature: a new observable player or operator outcome.
 - the bridge event format that agent tools and GitHub feed into the game;
 - ticks and offline catch-up stay deterministic on the injected clock;
 - optional `mikura` git tag `v0.2.0` and `chisei` API pin 1.3.0;
+- optional shard host connector pin: `sekai-source-sdk` git tag `v3.0.0`;
 - a crash or restart must not corrupt the save.
 
 ### Additional impact boundaries
@@ -135,7 +140,8 @@ Rows beyond `## Testing Guidelines`:
 
 - the version source is the workspace `Cargo.toml`; check it against the
   lockfile;
-- pinned ratatui, rusqlite, mikura tag, and chisei API pin;
+- pinned ratatui, rusqlite, mikura tag, chisei API pin, and
+  `sekai-source-sdk` git tag `v3.0.0`;
 - save format migrations, bridge event format, and balance changes;
 - configuration additions, removals, and defaults;
 - packaging: deb, Homebrew tap, signed managed updates;

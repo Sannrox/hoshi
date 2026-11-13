@@ -185,7 +185,11 @@ See [docs/demo.md](demo.md).
 
 A shard host makes these calls, in this order. The executable reference is
 [`crates/hoshi-storage/tests/shard_host_contract.rs`](../crates/hoshi-storage/tests/shard_host_contract.rs),
-which runs under the default `cargo test`.
+which runs under the default `cargo test`. The Chisei connector that drives
+those calls is `hoshi-connector`: it claims `external_mutate` writeback, calls
+`ShardSession`, persists tenant saves plus bookkeeping and commons, and posts
+a signed `sekai.source-webhook-delivery/v1` batch of each tenant view. Clients
+never write the live save. Title-screen Join is a later TUI issue.
 
 1. **Create.** `ShardSession::new` with the host clock, the bridge MAC key,
    and a `ShardConfig` whose `market` is the tenants' `[market]`. Pick a `ShardMap` once per shard; place outposts,
@@ -202,9 +206,11 @@ which runs under the default `cargo test`.
    first.
 5. **Read.** `view` per identity, and `book` for a region's market. A
    tenant never reads another tenant's `GameState`.
-6. **Persist.** Each tenant's `GameState` through `hoshi-storage`
-   (`save_state`; the save keeps the seated home), plus
-   `export_bookkeeping` and `commons().to_bytes()` beside them.
+6. **Persist.** Write one generation (each tenant's `GameState` through
+   `hoshi-storage` `save_state`, plus `export_bookkeeping`,
+   `commons().to_bytes()`, identities, and deliveries) to staging, then
+   rename it to current. Restore from current, falling back to the
+   previous generation.
 7. **Restore.** A fresh `ShardSession::new`, then `restore_bookkeeping`,
    `*commons_mut() = ShardCommons::from_bytes(..)`, and `load_tenants` over
    the migrating loader. The next `settle` and `view` match a host that
