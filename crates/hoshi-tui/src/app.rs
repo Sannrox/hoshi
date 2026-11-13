@@ -10271,6 +10271,14 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("auto routes"), "{text}");
+        assert!(text.contains("No rules yet"), "{text}");
+        assert!(text.contains(views::AUTOMATION_JOB), "{text}");
+        let narrow = render_text(&app, 80, 24);
+        assert!(narrow.contains(views::AUTOMATION_JOB), "{narrow}");
+        let (help, code) =
+            crate::help::invocation(&["hoshi".into(), "help".into(), "automation".into()]).unwrap();
+        assert_eq!(code, 0, "{help}");
+        assert!(help.contains(views::AUTOMATION_JOB), "{help}");
     }
 
     #[test]
