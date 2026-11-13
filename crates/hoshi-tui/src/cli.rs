@@ -138,7 +138,7 @@ crate::help::catalog_commands! {
     Goals,
     #[help("goals keep", "Continue playing after a victory.", "goals keep", "goals keep")]
     GoalsKeep,
-    #[help("automation", "List automation rules and progression.", "automation", "automation")]
+    #[help("automation", "Rules queue builds or transfers while away and cost control energy.", "automation", "automation")]
     Automation,
     #[help("automation dry-run", "Preview automation without applying actions.", "automation dry-run", "automation dry-run")]
     AutomationDryRun,

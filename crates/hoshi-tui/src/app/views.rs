@@ -97,6 +97,11 @@ fn one_decimal(v: f64) -> String {
     if text == "-0.0" { "0.0".into() } else { text }
 }
 
+/// Empty Automation callout and `hoshi help automation` share this job line.
+/// Kept under 76 cells so `▌ ` plus the line still fits an 80-column window.
+pub(super) const AUTOMATION_JOB: &str =
+    "Rules queue builds or transfers while away and cost control energy.";
+
 /// Turns a snake_case key into words with a capital first letter.
 pub(super) fn humanize(key: &str) -> String {
     let words = key.replace(['_', '-'], " ");
@@ -2422,15 +2427,7 @@ impl App {
         if rows.len() > tiers {
             groups.push((tiers, "rules".into()));
         } else {
-            let tech = self.state.display_name("logistics_rules");
-            foot = callout_lines(
-                t,
-                Intent::Primary,
-                "No rules yet",
-                &format!(
-                    "Research {tech}, then hoshi automation add from the CLI. Enter dry-runs."
-                ),
-            );
+            foot = callout_lines(t, Intent::Primary, "No rules yet", AUTOMATION_JOB);
         }
         ListView {
             head,

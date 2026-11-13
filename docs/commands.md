@@ -57,7 +57,7 @@ Area: cli.
 
 ## automation
 
-List automation rules and progression.
+Rules queue builds or transfers while away and cost control energy.
 
 ```text
 hoshi automation
