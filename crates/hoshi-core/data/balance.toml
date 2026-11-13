@@ -251,7 +251,8 @@ prerequisites = []
 [queues]
 max_build_queue = 5
 max_ship_queue = 5
-robotics_speed_per_level = 1.0
+# Construction speed is (1 + this) ^ robotics. 0.5 matches metal-mine time_growth.
+robotics_speed_per_level = 0.5
 
 [prestige]
 # Reset is allowed with a completed wonder, or when score reaches min_score.

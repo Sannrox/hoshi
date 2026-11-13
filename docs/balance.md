@@ -290,6 +290,15 @@ that reports it is ignored by default because it simulates months; run it with
 `cargo test --release -p hoshi-core first_fusion -- --ignored --nocapture`
 after balance changes.
 
+## Construction
+
+`[queues]` sets `max_build_queue`, `max_ship_queue`, and `robotics_speed_per_level`.
+Raw build time is `base_seconds * time_growth ^ from_level`. Construction speed is
+`(1 + robotics_speed_per_level) ^ robotics`. Bundled `robotics_speed_per_level` is 0.5,
+so each robotics level is ×1.5, matching metal-mine `time_growth`. Robotics 0 is raw
+time. A metal mine at the same level as robotics stays near that spec's `base_seconds`.
+Jobs already on the queue keep their stored duration until they restart.
+
 ## Dismantling
 
 `[dismantle]` in `balance.toml` sets `time_share = 0.5`,

@@ -8864,8 +8864,8 @@ pub(crate) fn duration_with_robotics(
     config: &BalanceConfig,
 ) -> u64 {
     let raw = config.buildings.get(kind).raw_seconds(from_level);
-    let divisor = 1.0 + f64::from(robotics) * config.robotics_speed_per_level;
-    let secs = if divisor > 0.0 { raw / divisor } else { raw };
+    let speed = config.construction_speed(robotics);
+    let secs = if speed > 0.0 { raw / speed } else { raw };
     secs.ceil().max(1.0) as u64
 }
 
@@ -10026,6 +10026,28 @@ mod tests {
         cfg.max_build_queue = 5;
         cfg.robotics_speed_per_level = 1.0;
         cfg
+    }
+
+    #[test]
+    fn duration_with_robotics_follows_exponential_speed() {
+        let cfg = BalanceConfig::default();
+        assert_eq!(cfg.robotics_speed_per_level, 0.5);
+        let spec = cfg.buildings.get(BuildingKind::MetalMine);
+        assert_eq!(spec.base_seconds, 120.0);
+        assert_eq!(spec.time_growth, 1.5);
+
+        let raw0 = spec.raw_seconds(0);
+        assert_eq!(
+            duration_with_robotics(BuildingKind::MetalMine, 0, 0, &cfg),
+            raw0.ceil().max(1.0) as u64
+        );
+        assert_eq!(
+            duration_with_robotics(BuildingKind::MetalMine, 0, 1, &cfg),
+            (raw0 / 1.5).ceil().max(1.0) as u64
+        );
+
+        let at_15 = duration_with_robotics(BuildingKind::MetalMine, 15, 15, &cfg);
+        assert_eq!(at_15, spec.base_seconds.ceil().max(1.0) as u64);
     }
 
     #[test]
