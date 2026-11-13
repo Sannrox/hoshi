@@ -435,11 +435,26 @@ impl GameState {
         }
         if limited > 0.0 {
             for (id, qty) in &recipe.inputs {
-                if *qty <= 0.0 || scale <= 0.0 {
+                if *qty <= 0.0 {
+                    continue;
+                }
+                let have = available(resources, goods, id);
+                if scale <= 0.0 {
+                    // No feeding-building throughput still names the missing feed.
+                    // Unrest, boost, or a zero deposit can also zero scale; leave those.
+                    if building_scale <= 0.0
+                        && have <= 1e-12
+                        && matches!(limiter, LimitingFactor::None)
+                        && id != "spent_fuel"
+                        && self.building_health(coord, recipe.building) > 1e-12
+                    {
+                        limiter = self
+                            .transport_for(coord, id)
+                            .unwrap_or_else(|| LimitingFactor::Input { good: id.clone() });
+                    }
                     continue;
                 }
                 let need = *qty * scale;
-                let have = available(resources, goods, id);
                 if have + 1e-9 < need {
                     // Casking idles when the pool is nearly empty; that is health.
                     if matches!(limiter, LimitingFactor::None) && id != "spent_fuel" {
@@ -1338,5 +1353,68 @@ mod tests {
         };
         let [_, next] = state.limiter_hint(&deuterium, state.home);
         assert!(next.to_lowercase().contains("buy"), "{next}");
+    }
+
+    #[test]
+    fn unfueled_ice_stalls_name_the_missing_input_or_building() {
+        let mut state = GameState::new(0);
+        state.config.raid.enabled = false;
+        let coord = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 9,
+        };
+        let (kind, size) = crate::planet_profile(state.galaxy_seed, coord, state.generator_version);
+        assert_eq!(kind, PlanetType::Ice);
+        state.colonies.push(Colony {
+            coord,
+            kind,
+            size,
+            resources: crate::Resources::ZERO,
+            buildings: Buildings::default(),
+            fleet: Fleet::default(),
+            defences: crate::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: BTreeMap::new(),
+        });
+        let cap = state.max_solar_level(coord).unwrap();
+        {
+            let colony = state.colonies.last_mut().unwrap();
+            colony.buildings.solar_plant = cap;
+            colony.buildings.deuterium_synthesizer = 1;
+            colony.buildings.fission_reactor = 1;
+        }
+        let report = state.production_report_at(coord);
+        assert!(
+            report.energy_supply + 1e-9 >= report.energy_demand,
+            "supply {} demand {}",
+            report.energy_supply,
+            report.energy_demand
+        );
+        for id in ["fabricate_fuel", "burn_fuel"] {
+            let step = report
+                .steps
+                .iter()
+                .find(|step| step.id == id)
+                .unwrap_or_else(|| panic!("missing {id} in {:?}", report.steps));
+            assert!(
+                matches!(step.limited_by, LimitingFactor::Input { .. }),
+                "{id} {:?}",
+                step.limited_by
+            );
+            let label = state.limiter_row_label(&step.limited_by);
+            let [need, next] = state.limiter_hint(&step.limited_by, coord);
+            let text = format!("{label} {need} {next}").to_lowercase();
+            assert!(label.starts_with("input "), "{id} {label}");
+            assert!(
+                text.contains("uranium")
+                    || text.contains("reactor fuel")
+                    || text.contains("fission")
+                    || text.contains("metal mine"),
+                "{id} {text}"
+            );
+        }
     }
 }

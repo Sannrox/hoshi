@@ -321,8 +321,10 @@ second solar penalty on top of that flux. A generated ice colony can run
 deuterium synthesizer 1 at or below its planet-size solar cap. Construction
 iron can arrive as cargo; three level-1 mines are not the ice floor. An
 unfueled fission reactor does not draw fabrication energy, so building one from
-local deposits cannot make the planet poorer than leaving it off. The advisor
-does not tell the player to add fission on that unfueled ice world. `energy_recovery`
+local deposits cannot make the planet poorer than leaving it off. Ice stays a
+deuterium specialist: further mines need imported `reactor_fuel` or an idled
+mine. The advisor does not tell the player to add fission on that unfueled ice
+world. `energy_recovery`
 includes ice at slots 9–12; those rows must recover with the synthesizer.
 Rocky home still meets `energy_recovery_secs`. First-reactor hours are unchanged:
 ice and solar knobs did not move rocky home.

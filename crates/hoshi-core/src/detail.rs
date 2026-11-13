@@ -158,8 +158,9 @@ impl GameState {
         apply_building_at(&mut next_state, planet, kind);
         let projected_buildings = *projected.buildings_at(planet).unwrap_or(&buildings);
         let next_buildings = *next_state.buildings_at(planet).unwrap_or(&buildings);
-        let energy_now = self.config.energy_draw(&projected_buildings);
-        let energy_next = next_state.config.energy_draw(&next_buildings);
+        // Live skip of unfueled fission fabrication must match the inspector.
+        let energy_now = projected.energy_consumed_at(planet);
+        let energy_next = next_state.energy_consumed_at(planet);
         let mut deltas = Vec::new();
         for kind_res in ResourceKind::ALL {
             deltas.push(DeltaLine {
@@ -700,22 +701,29 @@ impl GameState {
                 to: format!("{rate:.1}"),
             });
         }
-        let purpose = step
-            .outputs_per_hour
-            .keys()
-            .find_map(|id| {
-                self.config
-                    .chains
-                    .goods
-                    .iter()
-                    .find(|good| good.id == *id)
-                    .map(|good| good.purpose.clone())
-            })
-            .filter(|purpose| !purpose.is_empty())
-            .unwrap_or_else(|| match step.limited_by.as_key() {
-                "none" => format!("full rate at {planet}"),
-                limit => format!("limited by {} at {planet}", limit.replace('_', " ")),
-            });
+        let purpose = match &step.limited_by {
+            crate::LimitingFactor::None => step
+                .outputs_per_hour
+                .keys()
+                .find_map(|id| {
+                    self.config
+                        .chains
+                        .goods
+                        .iter()
+                        .find(|good| good.id == *id)
+                        .map(|good| good.purpose.clone())
+                })
+                .filter(|purpose| !purpose.is_empty())
+                .unwrap_or_else(|| format!("full rate at {planet}")),
+            limiter => {
+                let [need, next] = self.limiter_hint(limiter, planet);
+                if next.is_empty() {
+                    format!("{need} at {planet}")
+                } else {
+                    format!("{need} {next}")
+                }
+            }
+        };
         Some(Detail {
             name: self.display_name(&step.id),
             description: purpose,
@@ -1563,6 +1571,130 @@ mod tests {
             done.costs
         );
         assert_eq!(done.afford, None);
+    }
+
+    fn generated_ice(state: &mut GameState, position: u16) -> Coord {
+        let coord = Coord {
+            galaxy: 1,
+            system: 1,
+            position,
+        };
+        let (kind, size) = crate::planet_profile(state.galaxy_seed, coord, state.generator_version);
+        assert_eq!(kind, crate::PlanetType::Ice, "slot {position}");
+        state.colonies.push(crate::Colony {
+            coord,
+            kind,
+            size,
+            resources: Resources::ZERO,
+            buildings: crate::Buildings::default(),
+            fleet: crate::Fleet::default(),
+            defences: crate::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: std::collections::BTreeMap::new(),
+        });
+        coord
+    }
+
+    fn ice_floor_with_unfueled_fission(position: u16) -> (GameState, Coord) {
+        let mut state = GameState::new(0);
+        state.config.raid.enabled = false;
+        let coord = generated_ice(&mut state, position);
+        let cap = state.max_solar_level(coord).unwrap();
+        {
+            let colony = state.colonies.last_mut().unwrap();
+            colony.buildings.solar_plant = cap;
+            colony.buildings.deuterium_synthesizer = 1;
+            colony.buildings.fission_reactor = 1;
+        }
+        (state, coord)
+    }
+
+    /// #551: unfueled fission 1→2 must not look like extra output or extra draw.
+    #[test]
+    fn unfueled_ice_fission_preview_matches_live_balance() {
+        for position in crate::PlanetType::Ice.slot_range() {
+            let (mut state, coord) = ice_floor_with_unfueled_fission(position);
+            let floor = state.energy_balance_at(coord).unwrap();
+            assert!(floor >= -1e-9, "slot {position} floor {floor}");
+            let detail = state
+                .describe(
+                    DetailSubject::Building {
+                        kind: BuildingKind::FissionReactor,
+                        planet: coord,
+                    },
+                    None,
+                )
+                .unwrap();
+            let output = detail
+                .deltas
+                .iter()
+                .find(|row| row.label == "energy output")
+                .expect("energy output");
+            assert_eq!(output.from, output.to, "slot {position} {output:?}");
+            let draw = detail.energy_draw.expect("energy draw");
+            assert!(draw.abs() < 1e-9, "slot {position} draw {draw}");
+            state.colonies.last_mut().unwrap().buildings.fission_reactor = 2;
+            let after = state.energy_balance_at(coord).unwrap();
+            assert!(
+                after + 1e-9 >= floor,
+                "slot {position} floor {floor} after {after}"
+            );
+            state
+                .colonies
+                .last_mut()
+                .unwrap()
+                .goods
+                .insert("reactor_fuel".into(), 10.0);
+            assert!(
+                state.reactor_output_at(coord) > 0.0,
+                "slot {position} fueled output"
+            );
+            let fueled = state
+                .describe(
+                    DetailSubject::Building {
+                        kind: BuildingKind::FissionReactor,
+                        planet: coord,
+                    },
+                    None,
+                )
+                .unwrap();
+            let fueled_output = fueled
+                .deltas
+                .iter()
+                .find(|row| row.label == "energy output")
+                .expect("fueled energy output");
+            assert_ne!(
+                fueled_output.from, fueled_output.to,
+                "slot {position} {fueled_output:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ice_production_stall_names_missing_fuel_input() {
+        let (state, coord) = ice_floor_with_unfueled_fission(9);
+        for id in ["fabricate_fuel", "burn_fuel"] {
+            let detail = state
+                .describe(
+                    DetailSubject::Production {
+                        planet: coord,
+                        id: id.into(),
+                    },
+                    None,
+                )
+                .unwrap();
+            let text = detail.description.to_lowercase();
+            assert!(
+                text.contains("need")
+                    && (text.contains("uranium")
+                        || text.contains("reactor fuel")
+                        || text.contains("fission")
+                        || text.contains("metal mine")),
+                "{id}: {text}"
+            );
+        }
     }
 
     /// #426: the 1 -> 2 reactor preview showed +6 output against +8 draw.
