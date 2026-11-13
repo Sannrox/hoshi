@@ -758,6 +758,13 @@ mod tests {
     }
 
     #[test]
+    fn research_help_names_home_payment() {
+        let text = topic_help("research").unwrap();
+        assert!(text.contains("parallel slots"), "{text}");
+        assert!(text.contains("costs debit home"), "{text}");
+    }
+
+    #[test]
     fn mission_plan_help_names_ops_fields() {
         let text = topic_help("mission plan").unwrap();
         for needle in [

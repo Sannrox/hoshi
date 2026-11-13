@@ -98,7 +98,7 @@ crate::help::catalog_commands! {
     FusionStatus { planet: Option<Coord> },
     #[help("rename", "Name an owned world, shown as Name (coord). Other tenants on a shard see it. No name clears it; home reads Home.", "rename PLANET [NAME...]", "rename home Forge")]
     Rename { planet: Coord, name: String },
-    #[help("research", "Start research, or queue it behind the running job.", "research TECH", "research energy")]
+    #[help("research", "Start research, or queue it behind the running job. Colony labs add parallel slots; costs debit home.", "research TECH", "research energy")]
     Research {
         tech: String,
     },
