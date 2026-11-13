@@ -6319,6 +6319,75 @@ mod tests {
         }
     }
 
+    /// #557: Colony › Research names colony labs as slot sources, but the
+    /// header, cost cells, and queue still debit home.
+    #[test]
+    fn research_with_a_colony_selected_still_shows_home_costs_and_refuses_on_home_shortfall() {
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 2,
+        };
+        let mut state = GameState::new(1_000);
+        state.buildings.research_lab = 1;
+        state.resources = Resources::from_parts(500.0, 50.0, 10.0);
+        state.colonies.push(Colony {
+            coord: dest,
+            kind: PlanetType::Rocky,
+            size: 100,
+            resources: Resources::from_parts(100_000.0, 100_000.0, 100_000.0),
+            buildings: Buildings {
+                research_lab: 1,
+                solar_plant: 1,
+                ..Buildings::default()
+            },
+            fleet: Fleet::default(),
+            defences: hoshi_core::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: std::collections::BTreeMap::new(),
+        });
+        let mut app = App::new(state);
+        app.planet_index = 1;
+        assert_eq!(app.selected_coord(), dest);
+        let text = render_text(&app, 80, 24);
+        assert!(text.contains("Empire"), "{text}");
+        assert!(text.contains("COSTS DEBIT HOME"), "{text}");
+        assert!(text.contains("LABS ADD SLOTS"), "{text}");
+        assert!(text.contains(&dest.to_string()), "{text}");
+        // Narrow header: home 500/50/10, not the colony's 100k.
+        assert!(text.contains("500"), "{text}");
+        assert!(text.contains("50"), "{text}");
+        assert!(text.contains("10"), "{text}");
+        assert!(!text.contains("100k"), "{text}");
+        // Energy costs 800 Si / 400 D, quoted against home.
+        assert!(text.contains("800"), "{text}");
+        assert!(text.contains("400"), "{text}");
+
+        let energy = app
+            .overview_techs()
+            .iter()
+            .position(|spec| spec.id == "energy")
+            .unwrap();
+        app.selected = energy;
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.state.research.is_none(), "{}", app.status);
+        assert!(
+            app.status.contains("not enough resources"),
+            "{}",
+            app.status
+        );
+        assert_eq!(
+            app.state.resources,
+            Resources::from_parts(500.0, 50.0, 10.0)
+        );
+        assert_eq!(
+            app.state.colonies[0].resources,
+            Resources::from_parts(100_000.0, 100_000.0, 100_000.0)
+        );
+    }
+
     #[test]
     fn tree_view_queues_research_from_the_keyboard() {
         let mut state = GameState::new(1_000);

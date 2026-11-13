@@ -528,7 +528,7 @@ impl App {
             (
                 0,
                 format!(
-                    "slots {}/{}",
+                    "slots {}/{} · labs add slots · costs debit home",
                     self.state.research_slot_count(),
                     self.state.research_slot_cap()
                 ),

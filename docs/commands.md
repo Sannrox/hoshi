@@ -1273,7 +1273,7 @@ Area: cli.
 
 ## research
 
-Start research, or queue it behind the running job.
+Start research, or queue it behind the running job. Colony labs add parallel slots; costs debit home.
 
 ```text
 hoshi research TECH
