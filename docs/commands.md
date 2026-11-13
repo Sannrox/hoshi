@@ -1049,7 +1049,7 @@ Area: cli.
 
 ## mission plan
 
-Plan a vehicle delivery through a transfer window.
+Plan a vehicle delivery through a transfer window. Destination is where the vehicle flies. Customer is who receives the cargo. Transfer is Hohmann (cheap slow transfer), high energy (more fuel and less coast), or assist (discount when a body sits between the two radii). Cargo and amount are the payload. Fuel is rocket-equation deuterium this plan will debit, not map [flight].
 
 ```text
 hoshi mission plan TO --vehicle ID [--transfer KIND] [--customer ID] [--iron N] [--silicon N] [--deuterium N] [--window N]
