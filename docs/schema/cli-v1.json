@@ -92,12 +92,14 @@
     },
     "decision": {
       "type": ["object", "null"],
-      "description": "Soonest choice the player can still change. Null when none. Idle queues are not a decision. The bridge alert row uses the same id, deadline and action.",
+      "description": "Soonest choice the player can still change. Null when none. Idle queues are not a decision. The bridge alert row uses the same id, deadline and action. With focus=diplomacy a standing-tier crossing is a candidate and names faction and tier.",
       "required": ["id", "deadline", "action"],
       "properties": {
-        "id": { "enum": ["story", "tactical", "raid"] },
-        "deadline": { "type": "integer", "minimum": 0, "description": "Unix time of the story timeout, the tactical round, or the raid landing." },
-        "action": { "enum": ["choose_story", "queue_tactical_action", "set_stance", "arm"] }
+        "id": { "enum": ["story", "tactical", "raid", "diplomacy"] },
+        "deadline": { "type": "integer", "minimum": 0, "description": "Unix time of the story timeout, the tactical round, the raid landing, or the diplomacy tick that would leave a standing tier." },
+        "action": { "enum": ["choose_story", "queue_tactical_action", "set_stance", "arm", "trade", "tribute"] },
+        "faction": { "type": "string", "description": "Faction name when id is diplomacy." },
+        "tier": { "type": "string", "description": "Standing tier the next crossing would leave. Present when id is diplomacy." }
       }
     },
     "prestige": {

@@ -504,24 +504,40 @@ pub fn alerts(state: &GameState, focus: Option<hoshi_core::VictoryPath>) -> Vec<
         }
     }
     rows.sort_by_key(|row| row.kind.severity());
-    if let Some(decision) = hoshi_core::expiring_decision(state) {
+    if let Some(decision) = hoshi_core::expiring_decision(state, focus) {
         let left = decision.deadline.saturating_sub(state.last_tick_unix);
         let also = match decision.action {
             hoshi_core::DecisionAction::SetStance => " · set_formation",
             hoshi_core::DecisionAction::ArmHome => " · arm the home",
             _ => "",
         };
+        let (text, jump) = if let Some(row) = &decision.diplomacy {
+            (
+                format!(
+                    "{} leaves {}  T-{}",
+                    row.faction_name,
+                    row.tier_name,
+                    countdown(left)
+                ),
+                Target::Faction(row.faction_id.clone()),
+            )
+        } else {
+            (
+                format!("{}  T-{}", decision.action.as_key(), countdown(left)),
+                Target::Planet(home),
+            )
+        };
         rows.insert(
             0,
             Alert {
                 kind: AlertKind::Decision,
-                text: format!("{}  T-{}", decision.action.as_key(), countdown(left)),
+                text,
                 detail: format!(
                     "{}{also} · deadline {}",
                     decision.id.as_key(),
                     decision.deadline
                 ),
-                jump: Target::Planet(home),
+                jump,
                 decision: Some(decision),
             },
         );
@@ -1792,9 +1808,9 @@ mod tests {
         });
         state.fleet.add(hoshi_core::ShipKind::LightFighter, 2);
         state.resources.iron = state.storage_cap(ResourceKind::Iron);
-        let decision = hoshi_core::expiring_decision(&state).expect("story");
+        let decision = hoshi_core::expiring_decision(&state, None).expect("story");
         let rows = alerts(&state, None);
-        assert_eq!(rows[0].decision, Some(decision));
+        assert_eq!(rows[0].decision.as_ref(), Some(&decision));
         assert!(rows[0].text.contains(decision.action.as_key()));
         assert!(rows[0].detail.contains(&decision.deadline.to_string()));
         assert!(rows[0].detail.contains(decision.id.as_key()));
