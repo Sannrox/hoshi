@@ -756,4 +756,20 @@ mod tests {
             include_str!("../../tests/fixtures/help/fleet-send.txt")
         );
     }
+
+    #[test]
+    fn mission_plan_help_names_ops_fields() {
+        let text = topic_help("mission plan").unwrap();
+        for needle in [
+            "where the vehicle flies",
+            "who receives the cargo",
+            "cheap slow transfer",
+            "more fuel and less coast",
+            "discount when a body sits between the two radii",
+            "rocket-equation deuterium",
+            "map [flight]",
+        ] {
+            assert!(text.contains(needle), "missing {needle} in\n{text}");
+        }
+    }
 }

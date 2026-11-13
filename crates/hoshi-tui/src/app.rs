@@ -5135,9 +5135,10 @@ fn building_deposits(state: &GameState, kind: BuildingKind, planet: Coord) -> Ve
 mod tests {
     use super::*;
     use hoshi_core::{
-        BalanceConfig, Buildings, Clock, Colony, CombatFrame, CombatReport, Coord, DiplomacyConfig,
-        FakeClock, Fleet, GameState, MarketConfig, Outpost, PlanetType, RaidConfig, Recipe,
-        Resources, StoryCatalog, Vehicle, VictoryPath, VictoryRecord,
+        BalanceConfig, Buildings, Clock, Colony, CombatFrame, CombatReport, Coord, Customer,
+        DiplomacyConfig, FakeClock, Fleet, GameState, MarketConfig, Outpost, Payload, PlanRequest,
+        PlanetType, RaidConfig, Recipe, Resources, StoryCatalog, TransferKind, Vehicle,
+        VictoryPath, VictoryRecord,
     };
     use hoshi_storage::{load_state, open_save, save_state};
     use ratatui::Terminal;
@@ -8273,6 +8274,85 @@ mod tests {
         app.handle_key(KeyCode::Enter, 1_000);
         assert!(app.mission_form.is_none(), "{}", app.status);
         assert_eq!(app.state.planned.len(), 1, "{}", app.status);
+    }
+
+    fn colony_at(coord: Coord) -> Colony {
+        Colony {
+            coord,
+            kind: PlanetType::Rocky,
+            size: 100,
+            resources: Resources::ZERO,
+            buildings: Buildings::default(),
+            fleet: Fleet::default(),
+            defences: hoshi_core::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: std::collections::BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn ops_plan_form_names_fields_and_shows_rocket_equation_fuel() {
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 2,
+        };
+        let mut state = GameState::new(1_000);
+        state.fleet.add(ShipKind::SmallCargo, 2);
+        state.resources.deuterium = 5_000.0;
+        state.resources.iron = 100.0;
+        state.colonies.push(colony_at(dest));
+        let mut app = App::new(state);
+        app.open(Screen::Ops);
+        register_parked(&mut app, &[1]);
+        app.selected = 0;
+        app.handle_key(KeyCode::Enter, 1_000);
+        let form = render_text(&app, 160, 48);
+        for needle in [
+            "destination",
+            "where the vehicle flies",
+            "customer",
+            "who receives the cargo",
+            "cheap slow transfer",
+            "payload on this hop",
+            "how much to load",
+            "rocket-equation, not map [flight]",
+        ] {
+            assert!(form.contains(needle), "missing {needle} in\n{form}");
+        }
+        let request = PlanRequest {
+            vehicle_id: app.state.vehicles[0].id,
+            dest,
+            transfer: TransferKind::Hohmann,
+            customer: Customer::Colony,
+            payload: Payload {
+                cargo: Resources::ZERO,
+            },
+            window_index: None,
+        };
+        let plan = app
+            .state
+            .propose_mission(&request, app.state.last_tick_unix)
+            .unwrap();
+        let units = plan.fuel_mass / app.state.config.orbits.kg_per_cargo;
+        let fuel_bit = format!("{units:.0} deuterium");
+        assert!(form.contains(&fuel_bit), "missing {fuel_bit} in\n{form}");
+
+        let mut cargo = Resources::ZERO;
+        cargo.set(ResourceKind::Iron, 10.0);
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::SmallCargo, 1);
+        let mut map = app.state.clone();
+        let before = map.resources.deuterium;
+        map.launch_transport(Coord::HOME, dest, ships, cargo, 100, 1_000)
+            .unwrap();
+        let flight_used = before - map.resources.deuterium;
+        assert!(
+            (flight_used - units).abs() > 1.0,
+            "map send should debit [flight] fuel {flight_used}, not ops {units}"
+        );
     }
 
     /// Ops `+` opens the register panel; pick `counts[i]` of the i-th parked

@@ -279,27 +279,30 @@ impl App {
         Action::None
     }
 
-    fn submit_mission_form(&mut self, now: u64) {
-        let Some(form) = self.mission_form.clone() else {
-            return;
-        };
-        let Some(customer) = self
+    fn mission_form_request(&self, form: &MissionForm) -> Option<PlanRequest> {
+        let customer = self
             .mission_customers(form.dest())
             .get(form.customer)
-            .cloned()
-        else {
-            self.status = "no customer for that destination".into();
-            return;
-        };
+            .cloned()?;
         let mut cargo = Resources::ZERO;
         cargo.set(CARGO[form.cargo], form.amount);
-        let request = PlanRequest {
+        Some(PlanRequest {
             vehicle_id: form.vehicle_id,
             dest: form.dest(),
             transfer: TRANSFERS[form.transfer],
             customer,
             payload: Payload { cargo },
             window_index: None,
+        })
+    }
+
+    fn submit_mission_form(&mut self, now: u64) {
+        let Some(form) = self.mission_form.clone() else {
+            return;
+        };
+        let Some(request) = self.mission_form_request(&form) else {
+            self.status = "no customer for that destination".into();
+            return;
         };
         match self.state.plan_mission(request, now) {
             Ok(id) => {
@@ -307,6 +310,24 @@ impl App {
                 self.status = format!("planned mission {id}");
             }
             Err(error) => self.status = error.to_string(),
+        }
+    }
+
+    /// Rocket-equation deuterium confirm will try to debit. Show it even when
+    /// `check_mission` would refuse (unaffordable fuel is why this row exists).
+    fn mission_form_fuel_preview(&self, form: &MissionForm) -> String {
+        let Some(request) = self.mission_form_request(form) else {
+            return "no customer for that destination".into();
+        };
+        match self
+            .state
+            .propose_mission(&request, self.state.last_tick_unix)
+        {
+            Ok(plan) => {
+                let units = plan.fuel_mass / self.state.config.orbits.kg_per_cargo;
+                format!("{units:.0} deuterium")
+            }
+            Err(error) => error.to_string(),
         }
     }
 
@@ -319,24 +340,40 @@ impl App {
             .mission_customers(form.dest())
             .get(form.customer)
             .map_or_else(|| "none".to_string(), Customer::as_key);
+        let transfer = TRANSFERS[form.transfer];
         let rows = [
-            ("destination", form.dest().to_string()),
-            ("customer", customer),
+            (
+                "destination",
+                form.dest().to_string(),
+                "where the vehicle flies",
+            ),
+            ("customer", customer, "who receives the cargo"),
             (
                 "transfer",
-                TRANSFERS[form.transfer].as_key().replace('_', " "),
+                transfer.as_key().replace('_', " "),
+                transfer.meaning(),
             ),
-            ("cargo", CARGO[form.cargo].label().to_string()),
-            ("amount", format!("{:.0}", form.amount)),
+            (
+                "cargo",
+                CARGO[form.cargo].label().to_string(),
+                "payload on this hop",
+            ),
+            ("amount", format!("{:.0}", form.amount), "how much to load"),
+            (
+                "fuel",
+                self.mission_form_fuel_preview(form),
+                "rocket-equation, not map [flight]",
+            ),
         ];
         let mut lines: Vec<Line<'static>> = rows
             .into_iter()
             .enumerate()
-            .map(|(i, (label, value))| {
+            .map(|(i, (label, value, meaning))| {
                 let marker = if i == form.field { "▸ " } else { "  " };
                 Line::from(vec![
                     Span::styled(format!("{marker}{label:<12}"), t.label()),
-                    Span::styled(format!("‹ {value} ›"), t.text()),
+                    Span::styled(format!("‹ {value} ›  "), t.text()),
+                    Span::styled(meaning.to_string(), t.muted()),
                 ])
             })
             .collect();

@@ -35,6 +35,15 @@ impl TransferKind {
             _ => return None,
         })
     }
+
+    /// One-line player meaning for the Ops plan form and `hoshi help mission plan`.
+    pub fn meaning(self) -> &'static str {
+        match self {
+            TransferKind::Hohmann => "cheap slow transfer",
+            TransferKind::HighEnergy => "more fuel and less coast",
+            TransferKind::Assist => "discount when a body sits between the two radii",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -853,6 +862,19 @@ mod tests {
     use crate::balance::BalanceConfig;
     use crate::orbits::Hohmann;
     use crate::orbits::{heliocentric_radius_m, hohmann_transfer};
+
+    #[test]
+    fn transfer_kind_meanings_name_the_three_burns() {
+        assert_eq!(TransferKind::Hohmann.meaning(), "cheap slow transfer");
+        assert_eq!(
+            TransferKind::HighEnergy.meaning(),
+            "more fuel and less coast"
+        );
+        assert_eq!(
+            TransferKind::Assist.meaning(),
+            "discount when a body sits between the two radii"
+        );
+    }
 
     fn ready(now: u64) -> GameState {
         let mut state = GameState::with_seed(now, BalanceConfig::default(), 1);
