@@ -6,10 +6,12 @@
 use crate::keymap::{Binding, Keymap};
 use crate::ui::chrome::{Navbar, StatusBar};
 use crate::ui::{Depth, Intent as ColorIntent, Surface, Theme};
-use hoshi_core::{Actor, BuildingKind, Coord, Fleet, Intent, ShardCommand, ShardView, ShipKind};
+use hoshi_core::{
+    Actor, BuildingKind, Coord, Fleet, Intent, ShardCommand, ShardInbound, ShardView, ShipKind,
+};
 #[cfg(test)]
 use hoshi_core::{
-    BalanceConfig, FakeClock, GameState, ShardConfig, ShardError, ShardMap, ShardSession,
+    BalanceConfig, FakeClock, GameState, ShardConfig, ShardError, ShardMap, ShardRaid, ShardSession,
 };
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
@@ -130,7 +132,17 @@ impl std::fmt::Display for ClientError {
 /// Talks to a shard host. The TUI never `apply`s locally on this path.
 pub trait ShardClient {
     fn join(&mut self, identity: &str) -> Result<ShardView, ClientError>;
+    /// Read the tenant view. Must not seat or enroll the identity.
+    fn view(&mut self, identity: &str) -> Result<ShardView, ClientError>;
     fn submit(&mut self, cmd: ShardCommand) -> Result<ShardView, ClientError>;
+}
+
+/// One title line: inbound fleet and host-clock ETA. Hulls only when covered.
+pub fn inbound_title_line(inbound: &ShardInbound) -> String {
+    match inbound.ships {
+        Some(n) => format!("inbound fleet  {n} hulls  eta {}", inbound.arrives_at),
+        None => format!("inbound fleet  eta {}", inbound.arrives_at),
+    }
 }
 
 /// Fail closed when the plane is unreachable. Does not open a save.
@@ -139,6 +151,10 @@ pub struct UnreachableHost;
 
 impl ShardClient for UnreachableHost {
     fn join(&mut self, _identity: &str) -> Result<ShardView, ClientError> {
+        Err(ClientError::Gone)
+    }
+
+    fn view(&mut self, _identity: &str) -> Result<ShardView, ClientError> {
         Err(ClientError::Gone)
     }
 
@@ -364,6 +380,9 @@ impl<C: ShardClient> ShardPlay<C> {
                 "iron {:.0}  silicon {:.0}  deuterium {:.0}",
                 view.resources.iron, view.resources.silicon, view.resources.deuterium
             )));
+            if let Some(inbound) = view.inbound.first() {
+                lines.push(Line::from(inbound_title_line(inbound)));
+            }
             lines.push(Line::from(""));
             for (i, action) in ACTIONS.iter().enumerate() {
                 lines.push(if i == self.selected {
@@ -430,7 +449,14 @@ impl LoopbackHost {
     pub(crate) fn new(identity: &str) -> Self {
         let mut host = Self {
             identity: identity.to_string(),
-            shard: ShardSession::new(FakeClock::new(1_000), [0x5a; 32], ShardConfig::default()),
+            shard: ShardSession::new(
+                FakeClock::new(1_000),
+                [0x5a; 32],
+                ShardConfig {
+                    newbie_secs: 0,
+                    ..ShardConfig::default()
+                },
+            ),
             empires: BTreeMap::new(),
             map: ShardMap {
                 seed: 7,
@@ -476,6 +502,37 @@ impl LoopbackHost {
         &self.applied
     }
 
+    /// Seat `attacker` and fly a raid at this host's identity. Returns the
+    /// defender inbound row.
+    pub(crate) fn inbound_from(&mut self, attacker: &str) -> ShardInbound {
+        self.seat_peer(attacker);
+        let defender = self.identity.clone();
+        let dest = self.empires[&defender].home;
+        if let Some(state) = self.empires.get_mut(attacker) {
+            state.fleet = Fleet::default();
+            state.fleet.add(ShipKind::Battleship, 20);
+            state.resources.deuterium = 50_000.0;
+        }
+        let ships = self.empires[attacker].fleet;
+        self.shard
+            .launch_raid(
+                &mut self.empires,
+                ShardRaid {
+                    identity: attacker.into(),
+                    idempotency_id: "raid-1".into(),
+                    ships,
+                    dest,
+                    speed_percent: 100,
+                },
+            )
+            .expect("raid flies");
+        let view = self.view_of(&defender).expect("defender view");
+        view.inbound
+            .first()
+            .copied()
+            .expect("inbound raid on the defender view")
+    }
+
     fn queued_builds(&self) -> usize {
         self.empires
             .get(&self.identity)
@@ -508,6 +565,11 @@ impl ShardClient for LoopbackHost {
                 GameState::with_config(now, rules.clone())
             })
             .map_err(map_shard)?;
+        self.view_of(identity)
+    }
+
+    fn view(&mut self, identity: &str) -> Result<ShardView, ClientError> {
+        self.require_live()?;
         self.view_of(identity)
     }
 
