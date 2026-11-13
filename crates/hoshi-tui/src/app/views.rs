@@ -1556,7 +1556,7 @@ impl App {
             spans.push(Span::styled(format!("  of {have}"), t.muted()));
             lines.push(Line::from(spans));
         }
-        if form.mission == Mission::Transport {
+        if form.mission.carries_cargo() {
             lines.push(section(t, "cargo"));
             for (i, &kind) in DISPATCH_CARGO.iter().enumerate() {
                 let on = form.selected == ShipKind::ALL.len() + i;
@@ -1631,7 +1631,7 @@ impl App {
                             ("find", format!("x{factor}")),
                         ]));
                     }
-                    let cargo_d = if form.mission == Mission::Transport {
+                    let cargo_d = if form.mission.carries_cargo() {
                         form.cargo.deuterium
                     } else {
                         0.0
@@ -1647,6 +1647,9 @@ impl App {
                 }
                 Err(e) => lines.extend(callout_lines(t, Intent::Danger, &e.to_string(), "")),
             }
+        }
+        if form.mission == Mission::Station {
+            lines.push(Line::styled("ships park at dest", t.muted()));
         }
         if form.mission == Mission::Invade {
             lines.push(Line::default());
@@ -1667,7 +1670,7 @@ impl App {
             }
         }
         lines.push(Line::default());
-        let mut keys = if form.mission == Mission::Transport {
+        let mut keys = if form.mission.carries_cargo() {
             vec![
                 keycap(t, "⏎"),
                 Span::styled(" send  ", t.muted()),

@@ -330,6 +330,7 @@ mod tests {
             site_id: None,
             recycle: false,
             deploy: false,
+            station: false,
         });
         assert!(expiring_decision(&state).is_none());
     }

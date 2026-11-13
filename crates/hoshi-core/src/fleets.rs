@@ -184,6 +184,9 @@ pub struct Mission {
     /// Cargo lifted at launch rides along and Return credits it at the
     /// origin, out of reach of a home raid meanwhile.
     pub deploy: bool,
+    /// Action parks the ships at dest and ends the mission. Cargo still
+    /// delivers on Action like a transport. Recall still returns to origin.
+    pub station: bool,
 }
 
 /// A repeating transport between two owned planets.

@@ -2127,6 +2127,7 @@ mod tests {
             site_id: None,
             recycle: false,
             deploy: true,
+            station: false,
         });
         let fleet_row = |width| {
             let rows = text(&state, width);

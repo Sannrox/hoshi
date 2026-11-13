@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 70;
+pub const SCHEMA_VERSION: u32 = 71;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -403,8 +403,8 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 phase_ends_at, fuel_paid, colonize, expedition_seed, expedition_applied,
                 cargo_metal, cargo_crystal, cargo_deuterium,
                 cargo_rare_earths, cargo_water_ice, cargo_helium_3,
-                transport, attack, invade, spy, survey, site_id, recycle, deploy
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31)",
+                transport, attack, invade, spy, survey, site_id, recycle, deploy, station
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32)",
             params![
                 mission.id as i64,
                 mission.origin.galaxy as i64,
@@ -437,6 +437,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 mission.site_id.map(|id| id as i64),
                 mission.recycle as i64,
                 mission.deploy as i64,
+                mission.station as i64,
             ],
         )?;
         for kind in ShipKind::ALL {
@@ -1938,7 +1939,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
                 phase_ends_at, fuel_paid, colonize, expedition_seed, expedition_applied,
                 cargo_metal, cargo_crystal, cargo_deuterium,
                 cargo_rare_earths, cargo_water_ice, cargo_helium_3,
-                transport, attack, invade, spy, survey, site_id, recycle, deploy
+                transport, attack, invade, spy, survey, site_id, recycle, deploy, station
          FROM missions ORDER BY id",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -1974,6 +1975,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             row.get::<_, Option<i64>>(28)?,
             row.get::<_, i64>(29)?,
             row.get::<_, i64>(30)?,
+            row.get::<_, i64>(31)?,
         ))
     })?;
     let mut missions = Vec::new();
@@ -2010,6 +2012,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             site_id,
             recycle,
             deploy,
+            station,
         ) = row?;
         let phase =
             MissionPhase::from_key(&phase).ok_or(SaveError::Corrupt("unknown mission phase"))?;
@@ -2063,6 +2066,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             site_id: site_id.map(|id| id as u64),
             recycle: recycle != 0,
             deploy: deploy != 0,
+            station: station != 0,
         });
     }
     state.missions = missions;
@@ -3968,6 +3972,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     if found < 70 {
         migrate_v70(conn)?;
     }
+    if found < 71 {
+        migrate_v71(conn)?;
+    }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
 }
@@ -5224,6 +5231,20 @@ fn load_raid_targets(conn: &Connection) -> Result<(Option<Coord>, Option<Coord>)
         Some((next, event)) => Ok((coord(next)?, coord(event)?)),
         None => Ok((None, None)),
     }
+}
+
+/// v71: one-way station missions. Older missions were round-trips, so the
+/// column defaults to 0; an older binary refuses a v71 save instead of
+/// returning stationed ships to origin.
+fn migrate_v71(conn: &Connection) -> Result<(), SaveError> {
+    if !missions_has_column(conn, "station")? {
+        conn.execute(
+            "ALTER TABLE missions ADD COLUMN station INTEGER NOT NULL DEFAULT 0
+                CHECK (station IN (0, 1))",
+            [],
+        )?;
+    }
+    Ok(())
 }
 
 /// v70: per-slot partial surveys. A missing table is no partial slots, so
@@ -10797,6 +10818,54 @@ label = "Leave it"
             "{:?}",
             old.next_raid_ships
         );
+    }
+
+    #[test]
+    fn a_station_survives_save_and_v70_saves_load_as_not_stationing() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let mut state = GameState::new(100);
+        state.resources = Resources::from_parts(5_000.0, 5_000.0, 10_000.0);
+        state.fleet.add(ShipKind::Cruiser, 1);
+        let dest = hoshi_core::Coord {
+            galaxy: 1,
+            system: 1,
+            position: 2,
+        };
+        state.colonies.push(hoshi_core::Colony {
+            coord: dest,
+            kind: hoshi_core::PlanetType::Rocky,
+            size: 120,
+            resources: hoshi_core::Resources::ZERO,
+            buildings: hoshi_core::Buildings::default(),
+            fleet: Fleet::default(),
+            defences: hoshi_core::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: std::collections::BTreeMap::new(),
+        });
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::Cruiser, 1);
+        state
+            .launch_station(
+                state.home,
+                dest,
+                ships,
+                hoshi_core::Resources::ZERO,
+                100,
+                100,
+            )
+            .unwrap();
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert!(loaded.missions[0].station);
+        assert!(loaded.missions[0].transport);
+        conn.execute_batch("ALTER TABLE missions DROP COLUMN station; PRAGMA user_version = 70;")
+            .unwrap();
+        migrate(&conn).unwrap();
+        let old = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert!(!old.missions[0].station);
+        assert!(old.missions[0].transport);
     }
 
     #[test]

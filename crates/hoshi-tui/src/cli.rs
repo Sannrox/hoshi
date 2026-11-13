@@ -2777,6 +2777,7 @@ fn state_value(state: &GameState, actor: Actor) -> Value {
             "phase": m.phase.as_key(),
             "phase_ends_at": m.phase_ends_at,
             "deploy": m.deploy,
+            "station": m.station,
             "cargo": resources_json(m.cargo),
         })).collect::<Vec<_>>(),
         "planets": planets,

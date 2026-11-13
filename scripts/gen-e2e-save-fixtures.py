@@ -1542,6 +1542,13 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             );
             """
         )
+    elif version == 71:
+        add_column(
+            conn,
+            "missions",
+            "station",
+            "ALTER TABLE missions ADD COLUMN station INTEGER NOT NULL DEFAULT 0 CHECK (station IN (0, 1))",
+        )
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"
