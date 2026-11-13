@@ -328,7 +328,8 @@ Ice worlds spawn in slots 9–12. Inverse-square flux is the orbit tax (about
 31%–23% at those slots). `planet_types.ice.energy` is 0: cold panels are not a
 second solar penalty on top of that flux. A generated ice colony can run
 deuterium synthesizer 1 at or below its planet-size solar cap. Construction
-iron can arrive as cargo; three level-1 mines are not the ice floor. An
+iron can arrive as cargo; water ice and helium-3 extracted there can be sent
+home on the same star-map transport. Three level-1 mines are not the ice floor. An
 unfueled fission reactor does not draw fabrication energy, so building one from
 local deposits cannot make the planet poorer than leaving it off. Ice stays a
 deuterium specialist: further mines need imported `reactor_fuel` or an idled

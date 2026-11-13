@@ -150,13 +150,6 @@ impl DispatchForm {
     }
 }
 
-/// Stock a star map transport can carry from home to an own colony.
-const DISPATCH_CARGO: [ResourceKind; 3] = [
-    ResourceKind::Iron,
-    ResourceKind::Silicon,
-    ResourceKind::Deuterium,
-];
-
 /// Header strip order: quoted materials, fuel, extras. Core `ALL` is unchanged.
 const HEADER_MATERIALS: [ResourceKind; 6] = [
     ResourceKind::Iron,
@@ -166,6 +159,9 @@ const HEADER_MATERIALS: [ResourceKind; 6] = [
     ResourceKind::WaterIce,
     ResourceKind::Helium3,
 ];
+
+/// Construction stockpiles a star map transport can carry between owned worlds.
+const DISPATCH_CARGO: [ResourceKind; 6] = HEADER_MATERIALS;
 
 /// What a star map dispatch does at its target: the same core actions as
 /// `hoshi fleet send`, plus a transport from home to an own colony.
@@ -9419,16 +9415,22 @@ mod tests {
 
     #[test]
     fn short_terminal_scrolls_dispatch_to_the_selected_cargo_row() {
-        let (mut app, _) = app_with_new_colony();
-        open_transport(&mut app);
-        load_cargo(&mut app, ResourceKind::Silicon, 500.0);
-        app.handle_key(KeyCode::Char('k'), 1_000);
         // Iron, the first cargo row, keeps the hold line in view.
         // Overlay dialog, then the inspector dock beside the map.
-        for width in [100, 140] {
-            let text = render_text(&app, width, 24);
-            assert!(text.contains("▌iron"), "{width}:\n{text}");
-            assert!(text.contains("hold 500 / 5000"), "{width}:\n{text}");
+        for mission in [Mission::Transport, Mission::Station] {
+            let (mut app, _) = app_with_new_colony();
+            open_transport(&mut app);
+            cycle_dispatch_to(&mut app, mission);
+            load_cargo(&mut app, ResourceKind::Silicon, 500.0);
+            app.handle_key(KeyCode::Char('k'), 1_000);
+            for width in [100, 140] {
+                let text = render_text(&app, width, 24);
+                assert!(text.contains("▌iron"), "{mission:?} {width}:\n{text}");
+                assert!(
+                    text.contains("hold 500 / 5000"),
+                    "{mission:?} {width}:\n{text}"
+                );
+            }
         }
     }
 
@@ -9457,6 +9459,79 @@ mod tests {
             cap: 5_000.0,
         };
         assert_eq!(app.status, refusal.to_string());
+    }
+
+    #[test]
+    fn ice_colony_dispatch_sends_water_ice_home() {
+        let mut state = GameState::new(1_000);
+        state.config.raid.enabled = false;
+        state.next_raid_at = None;
+        let home = state.home;
+        let ice = (9..=12)
+            .map(|position| Coord {
+                galaxy: 1,
+                system: home.system,
+                position,
+            })
+            .find(|c| state.site_at(*c).is_none() && state.outpost(*c).is_none())
+            .expect("an empty ice slot");
+        let mut fleet = Fleet::default();
+        fleet.add(ShipKind::SmallCargo, 1);
+        let mut stock = Resources::from_parts(0.0, 0.0, 2_000.0);
+        stock.water_ice = 400.0;
+        stock.helium_3 = 50.0;
+        state.colonies.push(Colony {
+            coord: ice,
+            kind: PlanetType::Ice,
+            size: 120,
+            resources: stock,
+            buildings: Buildings::default(),
+            fleet,
+            defences: hoshi_core::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: std::collections::BTreeMap::new(),
+        });
+        let mut app = App::new(state);
+        app.planet_index = 1;
+        app.open(Screen::Map);
+        (app.map_galaxy, app.map_system, app.map_position) =
+            (home.galaxy, home.system, home.position);
+        app.handle_key(KeyCode::Enter, 1_000);
+        let form = app.dispatch.expect("dispatch opens to home");
+        assert_eq!(form.origin, ice);
+        assert_eq!(form.dest, home);
+        assert_eq!(form.mission, Mission::Transport);
+
+        app.dispatch.as_mut().unwrap().selected = ShipKind::ALL
+            .iter()
+            .position(|k| *k == ShipKind::SmallCargo)
+            .unwrap();
+        app.handle_key(KeyCode::Char('+'), 1_000);
+        load_cargo(&mut app, ResourceKind::WaterIce, 400.0);
+        let text = render_text(&app, 100, 48);
+        assert!(text.contains("water ice"), "{text}");
+        assert!(text.contains("helium-3"), "{text}");
+        let before_home = app.state.resources.water_ice;
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.dispatch.is_none(), "{}", app.status);
+        let mission = app.state.missions[0].clone();
+        assert!(mission.transport);
+        assert_eq!(mission.cargo.water_ice, 400.0);
+        assert_eq!(app.state.resources_at(ice).unwrap().water_ice, 0.0);
+
+        let land = mission.phase_ends_at + 1;
+        app.state.catch_up(land);
+        assert_eq!(app.state.resources.water_ice, before_home + 400.0);
+        let back = mission.phase_ends_at + mission.outbound_secs + 1;
+        app.state.catch_up(back);
+        assert!(app.state.missions.is_empty());
+        assert_eq!(app.state.resources.water_ice, before_home + 400.0);
+        assert_eq!(
+            app.state.fleet_at(ice).unwrap().get(ShipKind::SmallCargo),
+            1
+        );
     }
 
     #[test]

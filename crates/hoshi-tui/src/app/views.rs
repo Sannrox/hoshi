@@ -1412,13 +1412,15 @@ impl App {
     }
 
     /// The dispatch form cut to `height` rows. A short panel scrolls so the
-    /// selected row and the lines below it stay visible: three for a
-    /// transport hold, more when Invade lists its launch checks. The
-    /// selected row never scrolls off the top, even if the reserved
-    /// context is taller than the panel.
+    /// selected row and the lines below it stay visible: the rest of the
+    /// cargo list plus the hold when cargo rides, more when Invade lists
+    /// its launch checks. The selected row never scrolls off the top, even
+    /// if the reserved context is taller than the panel.
     pub(super) fn dispatch_window(&self, form: &DispatchForm, height: usize) -> Vec<Line<'static>> {
         let below = if form.mission == Mission::Invade {
             8
+        } else if form.mission.carries_cargo() {
+            DISPATCH_CARGO.len()
         } else {
             3
         };
