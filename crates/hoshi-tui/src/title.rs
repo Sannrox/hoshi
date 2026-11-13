@@ -1,4 +1,4 @@
-//! Title screen: continue, new game, load, settings. No game rules live here.
+//! Title screen: continue, new game, join shard, load, settings. No game rules live here.
 
 use crate::clip::copy_to_clipboard;
 use crate::config::UserConfig;
@@ -31,6 +31,7 @@ pub enum TitleAction {
     None,
     Quit,
     Play(usize),
+    Join,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -207,6 +208,7 @@ pub struct Title {
     rename_from: Option<String>,
     rename_to: String,
     play_path: Option<PathBuf>,
+    join_identity: Option<String>,
     help_open: bool,
     help_commands: bool,
     keys_selected: usize,
@@ -269,6 +271,7 @@ impl Title {
             rename_from: None,
             rename_to: String::new(),
             play_path: None,
+            join_identity: None,
             help_open: false,
             help_commands: false,
             keys_selected: 0,
@@ -312,6 +315,10 @@ impl Title {
         self.play_path.take()
     }
 
+    pub fn take_join_identity(&mut self) -> Option<String> {
+        self.join_identity.take()
+    }
+
     pub fn tick(&mut self) {
         if !self.config.reduced_motion {
             self.tick = self.tick.saturating_add(1);
@@ -342,7 +349,7 @@ impl Title {
     }
 
     fn menu_items(&self) -> Vec<&'static str> {
-        let mut items = vec!["Continue", "New game"];
+        let mut items = vec!["Continue", "New game", "Join shard"];
         if self.season_visible() {
             items.push("Season");
         }
@@ -602,6 +609,7 @@ impl Title {
                         self.pick_default_name();
                         TitleAction::None
                     }
+                    "Join shard" => self.join_shard(),
                     "Season" => {
                         self.page = Page::Season;
                         self.selected = 0;
@@ -664,6 +672,19 @@ impl Title {
         match crate::support_ui::SupportUi::open(&path) {
             Ok(report) => self.support = Some(report),
             Err(error) => self.status = error,
+        }
+    }
+
+    fn join_shard(&mut self) -> TitleAction {
+        match crate::shard::Credentials::load(&self.dir) {
+            Some(creds) => {
+                self.join_identity = Some(creds.identity);
+                TitleAction::Join
+            }
+            None => {
+                self.status = "no host credentials".into();
+                TitleAction::None
+            }
         }
     }
 
@@ -3005,6 +3026,7 @@ mod tests {
         let text = render(&title, 80, 24);
         assert!(text.contains("Continue"), "{text}");
         assert!(text.contains("New game"), "{text}");
+        assert!(text.contains("Join shard"), "{text}");
         assert!(text.contains("Load game"), "{text}");
         assert!(text.contains("Settings"), "{text}");
         assert!(text.contains("Achievements"), "{text}");
@@ -3018,11 +3040,53 @@ mod tests {
     }
 
     #[test]
+    fn join_sits_beside_continue_and_new_and_does_not_open_the_save() {
+        let dir = unique_dir();
+        write_save(&dir, "live", &GameState::new(10));
+        let mut title = Title::new(dir.clone(), 100);
+        let items = title.menu_items();
+        let continue_at = items.iter().position(|item| *item == "Continue").unwrap();
+        let new_at = items.iter().position(|item| *item == "New game").unwrap();
+        let join_at = items.iter().position(|item| *item == "Join shard").unwrap();
+        assert_eq!(join_at, new_at + 1);
+        assert_eq!(new_at, continue_at + 1);
+        title.selected = join_at;
+        assert_eq!(title.handle_key(KeyCode::Enter), TitleAction::None);
+        assert!(
+            title.status.contains("no host credentials"),
+            "{}",
+            title.status
+        );
+        assert!(title.take_play_path().is_none());
+        crate::shard::Credentials {
+            identity: "a".into(),
+        }
+        .save(&dir)
+        .unwrap();
+        title.selected = join_at;
+        assert_eq!(title.handle_key(KeyCode::Enter), TitleAction::Join);
+        assert_eq!(title.take_join_identity().as_deref(), Some("a"));
+        assert!(title.take_play_path().is_none());
+        assert!(!save_is_locked(&dir.join("live.sqlite")));
+        let mut again = Title::new(dir.clone(), 100);
+        assert_eq!(again.handle_key(KeyCode::Enter), TitleAction::Play(0));
+        assert_eq!(
+            again.take_play_path().as_deref(),
+            Some(dir.join("live.sqlite").as_path())
+        );
+        assert!(again.take_join_identity().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn season_page_shows_the_current_window_seed_and_past_results() {
         let dir = unique_dir();
         let mut title = Title::new(dir.clone(), 1_800_000_000);
-        // No saves, so the menu starts on New game; one step reaches the page.
-        title.handle_key(KeyCode::Char('j'));
+        title.selected = title
+            .menu_items()
+            .iter()
+            .position(|item| *item == "Season")
+            .expect("Season");
         title.handle_key(KeyCode::Enter);
         let text = render(&title, 80, 24);
         assert!(text.contains("Closed markets"), "{text}");

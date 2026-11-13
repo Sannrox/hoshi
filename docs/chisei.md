@@ -189,7 +189,12 @@ which runs under the default `cargo test`. The Chisei connector that drives
 those calls is `hoshi-connector`: it claims `external_mutate` writeback, calls
 `ShardSession`, persists tenant saves plus bookkeeping and commons, and posts
 a signed `sekai.source-webhook-delivery/v1` batch of each tenant view. Clients
-never write the live save. Title-screen Join is a later TUI issue.
+never write the live save. Title-screen Join is a TUI client of that host:
+it loads credentials beside config, sends intents with per-session
+idempotency ids, and renders the tenant view. It does not open
+`save.sqlite`. Until a live Actions client is wired, an unreachable host
+is a disconnect, not yesterday's local empire. `tick --advance` is not
+offered.
 
 1. **Create.** `ShardSession::new` with the host clock, the bridge MAC key,
    and a `ShardConfig` whose `market` is the tenants' `[market]`. Pick a `ShardMap` once per shard; place outposts,

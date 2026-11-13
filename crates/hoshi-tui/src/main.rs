@@ -29,6 +29,7 @@ mod pair;
 mod portraits;
 mod push;
 mod serve;
+mod shard;
 mod terminal;
 mod title;
 mod ui;
@@ -41,6 +42,8 @@ mod web_ui;
 mod webpush;
 mod ws;
 
+use crate::keymap::Keymap;
+use crate::shard::{ShardAction, ShardPlay, UnreachableHost};
 use app::{Action, App};
 use hoshi_core::{
     BalanceConfig, Clock, GameState, Prestige, RivalCatalog, RivalSettings, SeasonCatalog,
@@ -836,7 +839,7 @@ fn title_then_play(
             Ok(true) => match event::read() {
                 Ok(Event::Key(k)) if k.kind == KeyEventKind::Press => {
                     match title.handle_key(k.code) {
-                        TitleAction::Quit => break Ok(None),
+                        TitleAction::Quit => break Ok(AfterTitle::Quit),
                         TitleAction::Play(_) => {
                             let path = title
                                 .take_play_path()
@@ -846,7 +849,13 @@ fn title_then_play(
                             } else {
                                 Some(title.new_game_spec())
                             };
-                            break Ok(Some((path, new_spec)));
+                            break Ok(AfterTitle::Play { path, new_spec });
+                        }
+                        TitleAction::Join => {
+                            break Ok(AfterTitle::Join {
+                                identity: title.take_join_identity().unwrap_or_default(),
+                                keys: title.config.keys.clone(),
+                            });
                         }
                         TitleAction::None => {}
                     }
@@ -870,8 +879,8 @@ fn title_then_play(
     };
     ratatui::restore();
     match result? {
-        None => Ok(()),
-        Some((path, new_spec)) => play_path(
+        AfterTitle::Quit => Ok(()),
+        AfterTitle::Play { path, new_spec } => play_path(
             &path,
             balance,
             clock,
@@ -879,7 +888,59 @@ fn title_then_play(
             portrait_view(&title.config, no_portraits),
             &title.config,
         ),
+        AfterTitle::Join { identity, keys } => play_shard(identity, keys),
     }
+}
+
+#[allow(clippy::large_enum_variant)]
+enum AfterTitle {
+    Quit,
+    Play {
+        path: PathBuf,
+        new_spec: Option<NewGameSpec>,
+    },
+    Join {
+        identity: String,
+        keys: Keymap,
+    },
+}
+
+fn play_shard(identity: String, keys: Keymap) -> Result<(), LaunchError> {
+    let mut play = ShardPlay::connect(UnreachableHost, identity, keys);
+    let mut terminal = ratatui::init();
+    let result = loop {
+        if let Err(e) = terminal.draw(|f| play.draw(f)) {
+            break Err(LaunchError {
+                message: e.to_string(),
+                exit: 1,
+            });
+        }
+        match event::poll(Duration::from_secs(1)) {
+            Ok(true) => match event::read() {
+                Ok(Event::Key(k)) if k.kind == KeyEventKind::Press => match play.handle_key(k.code)
+                {
+                    ShardAction::Quit => break Ok(()),
+                    ShardAction::None => {}
+                },
+                Ok(_) => {}
+                Err(e) => {
+                    break Err(LaunchError {
+                        message: e.to_string(),
+                        exit: 1,
+                    });
+                }
+            },
+            Ok(false) => {}
+            Err(e) => {
+                break Err(LaunchError {
+                    message: e.to_string(),
+                    exit: 1,
+                });
+            }
+        }
+    };
+    ratatui::restore();
+    result
 }
 
 fn should_open_bridge(user_enabled: bool) -> bool {
