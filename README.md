@@ -41,7 +41,7 @@ git clone https://github.com/Sannrox/hoshi && cd hoshi
 cargo run -p hoshi
 ```
 
-`hoshi` opens on a title screen (continue, new, load, settings). Prebuilt
+`hoshi` opens on a title screen (continue, new, join shard, load, settings). Prebuilt
 binaries, an Ubuntu install script and Homebrew are under
 [Install](#install).
 
