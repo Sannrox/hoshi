@@ -191,9 +191,17 @@ fn tempfile_dist() -> TempDir {
     TempDir(path)
 }
 
+/// Builds the .deb and checks its contents. Needs `dpkg-deb`: a local host
+/// without it (non-Debian Linux) skips, but CI (`CI` set) always runs it so a
+/// missing tool there still fails.
 #[cfg(target_os = "linux")]
 #[test]
 fn deb_includes_man_and_shell_completions() {
+    let has_dpkg_deb = Command::new("dpkg-deb").arg("--version").output().is_ok();
+    if !has_dpkg_deb && std::env::var_os("CI").is_none() {
+        eprintln!("skipping: dpkg-deb not installed");
+        return;
+    }
     let root = repo_root();
     let dist = tempfile_dist();
     let output = Command::new("bash")
