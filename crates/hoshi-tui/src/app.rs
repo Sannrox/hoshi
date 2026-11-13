@@ -5244,7 +5244,7 @@ mod tests {
             .iter()
             .find(|d| d.label == "construction ×")
             .expect("construction ×");
-        assert_eq!((row.from.as_str(), row.to.as_str()), ("1.0", "2.0"));
+        assert_eq!((row.from.as_str(), row.to.as_str()), ("1.0", "1.5"));
         let text = render_text(&app, 160, 48);
         assert!(text.contains("construction ×"), "{text}");
         assert!(text.contains("Shortens construction"), "{text}");

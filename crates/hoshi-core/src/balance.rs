@@ -505,7 +505,7 @@ pub struct BalanceConfig {
     pub buildings: BuildingCatalog,
     /// Maximum jobs waiting or in progress on one planet.
     pub max_build_queue: usize,
-    /// Build time is divided by `1 + robotics_level * this`.
+    /// Each robotics level multiplies construction speed by `1 + this`.
     pub robotics_speed_per_level: f64,
     pub techs: crate::TechTree,
     pub ships: crate::ShipCatalog,
@@ -593,6 +593,11 @@ impl BalanceConfig {
             + self
                 .deuterium_synthesizer
                 .energy_use(buildings.deuterium_synthesizer)
+    }
+
+    /// Construction speed at this robotics level: `(1 + k) ^ robotics`.
+    pub fn construction_speed(&self, robotics: u32) -> f64 {
+        (1.0 + self.robotics_speed_per_level).powi(robotics as i32)
     }
 }
 
@@ -2905,6 +2910,7 @@ mod tests {
         assert_eq!(cfg.crystal_mine.base_per_hour, 20.0);
         assert_eq!(cfg.buildings, BuildingCatalog::default());
         assert_eq!(cfg.max_build_queue, 5);
+        assert_eq!(cfg.robotics_speed_per_level, 0.5);
         assert_eq!(cfg.starting_resources.iron, 500.0);
         assert_eq!(cfg.starting_resources.rare_earths, 0.0);
         assert_eq!(cfg.starting_resources.water_ice, 0.0);
@@ -2935,6 +2941,15 @@ mod tests {
         assert_eq!(cfg.wonders[0].id, "dyson_ring");
         assert_eq!(cfg.wonders[0].prereq_techs[0].id, "energy");
         assert_eq!(cfg.wonders[0].prereq_techs[0].level, 8);
+    }
+
+    #[test]
+    fn construction_speed_is_exponential_in_robotics() {
+        let cfg = BalanceConfig::default();
+        assert_eq!(cfg.robotics_speed_per_level, 0.5);
+        assert_eq!(cfg.construction_speed(0), 1.0);
+        assert!((cfg.construction_speed(1) - 1.5).abs() < 1e-12);
+        assert!((cfg.construction_speed(2) - 2.25).abs() < 1e-12);
     }
 
     #[test]

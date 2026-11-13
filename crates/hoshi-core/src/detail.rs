@@ -271,17 +271,13 @@ impl GameState {
                     label: "construction ×".into(),
                     from: format!(
                         "{:.1}",
-                        construction_speed(
-                            projected_buildings.robotics_factory,
-                            self.config.robotics_speed_per_level,
-                        )
+                        self.config
+                            .construction_speed(projected_buildings.robotics_factory)
                     ),
                     to: format!(
                         "{:.1}",
-                        construction_speed(
-                            next_buildings.robotics_factory,
-                            self.config.robotics_speed_per_level,
-                        )
+                        self.config
+                            .construction_speed(next_buildings.robotics_factory)
                     ),
                 },
             );
@@ -819,10 +815,6 @@ impl GameState {
             ship: None,
         }
     }
-}
-
-fn construction_speed(robotics: u32, per_level: f64) -> f64 {
-    1.0 + f64::from(robotics) * per_level
 }
 
 fn apply_building_at(state: &mut GameState, planet: Coord, kind: BuildingKind) {
@@ -1819,7 +1811,7 @@ mod tests {
     #[test]
     fn robotics_detail_shows_construction_speed_now_and_next() {
         let state = GameState::with_config(0, quiet());
-        assert_eq!(state.config.robotics_speed_per_level, 1.0);
+        assert_eq!(state.config.robotics_speed_per_level, 0.5);
         let detail = state
             .describe(
                 DetailSubject::Building {
@@ -1838,12 +1830,12 @@ mod tests {
                 .purpose
         );
         let row = construction_delta(&state);
-        assert_eq!((row.from.as_str(), row.to.as_str()), ("1.0", "2.0"));
+        assert_eq!((row.from.as_str(), row.to.as_str()), ("1.0", "1.5"));
 
         let mut upgraded = state;
         upgraded.buildings.robotics_factory = 1;
         let row = construction_delta(&upgraded);
-        assert_eq!((row.from.as_str(), row.to.as_str()), ("2.0", "3.0"));
+        assert_eq!((row.from.as_str(), row.to.as_str()), ("1.5", "2.2"));
     }
 
     #[test]
