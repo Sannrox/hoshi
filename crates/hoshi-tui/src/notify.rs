@@ -373,6 +373,7 @@ mod tests {
             site_id: None,
             recycle: false,
             deploy: false,
+            station: false,
         });
         watch = Watch::from_state(&state);
         state.missions.clear();

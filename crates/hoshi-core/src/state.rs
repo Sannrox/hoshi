@@ -2758,6 +2758,7 @@ impl GameState {
             site_id: None,
             recycle: false,
             deploy: false,
+            station: false,
         });
         self.record_history(crate::HistoryDraft {
             at: now,
@@ -3147,6 +3148,26 @@ impl GameState {
         self.lift_and_fly(origin, dest, ships, cargo, speed_percent, 0, false)
     }
 
+    /// One-way send: like [`Self::launch_transport`], but Action parks the
+    /// ships at `dest` instead of returning them. Fuel is still `[flight]`.
+    /// Cargo may ride along.
+    pub fn launch_station(
+        &mut self,
+        origin: Coord,
+        dest: Coord,
+        ships: Fleet,
+        cargo: Resources,
+        speed_percent: u8,
+        now_unix: u64,
+    ) -> Result<u64, FleetError> {
+        self.launch_transport(origin, dest, ships, cargo, speed_percent, now_unix)?;
+        let Some(mission) = self.missions.last_mut() else {
+            return Err(FleetError::EmptyFleet);
+        };
+        mission.station = true;
+        Ok(mission.id)
+    }
+
     /// Fly cargo out of `dest`'s reach of a home raid: lift it from `origin`
     /// like a transport, hold at `dest` (owned or empty, never an outpost),
     /// and bring the same cargo back. Recall at any phase returns it.
@@ -3268,6 +3289,7 @@ impl GameState {
             site_id: None,
             recycle: false,
             deploy,
+            station: false,
         });
         self.record_history(crate::HistoryDraft {
             at: now,
@@ -4838,11 +4860,29 @@ impl GameState {
                                 format!("delivered {} to {dest}", format_cargo(accepted)),
                             );
                         }
-                        if cargo_has_mass(leftover) {
+                        if cargo_has_mass(leftover) && !self.missions[index].station {
                             self.note_stall(
                                 done_at,
                                 format!("stall: bounced cargo at {dest} (storage full)"),
                             );
+                        }
+                    }
+                    if self.missions[index].station {
+                        let dest = self.missions[index].dest;
+                        if dest == self.home || self.colonies.iter().any(|c| c.coord == dest) {
+                            let mission = self.missions.remove(index);
+                            self.add_fleet_at(mission.dest, mission.ships);
+                            if cargo_has_mass(mission.cargo) {
+                                self.credit_at(mission.origin, mission.cargo);
+                                self.note_stall(
+                                    done_at,
+                                    format!(
+                                        "stall: bounced cargo home (storage full at {})",
+                                        mission.dest
+                                    ),
+                                );
+                            }
+                            continue;
                         }
                     }
                     let ret = self.missions[index].outbound_secs;
@@ -13668,6 +13708,142 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         state.catch_up(outbound * 2);
         assert!(state.missions.is_empty());
         assert_eq!(state.fleet.get(ShipKind::SmallCargo), 1);
+    }
+
+    #[test]
+    fn station_parks_ships_at_dest_on_catch_up_and_stepped_ticks() {
+        let mut gap = GameState::with_config(0, logistics_config());
+        plant_colony(&mut gap, neighbor());
+        gap.fleet.add(ShipKind::Cruiser, 1);
+        gap.fleet.add(ShipKind::LightFighter, 2);
+        gap.resources.deuterium = 50.0;
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::Cruiser, 1);
+        ships.add(ShipKind::LightFighter, 2);
+        let (eta, fuel) = gap.flight_from(gap.home, neighbor(), ships, 100).unwrap();
+        let id = gap
+            .launch_station(gap.home, neighbor(), ships, Resources::ZERO, 100, 0)
+            .unwrap();
+        assert_eq!(gap.missions[0].id, id);
+        assert!(gap.missions[0].station);
+        assert!(gap.missions[0].transport);
+        close(gap.missions[0].fuel_paid, fuel);
+        close(gap.resources.deuterium, 50.0 - fuel);
+
+        let mut stepped = GameState::with_config(0, logistics_config());
+        plant_colony(&mut stepped, neighbor());
+        stepped.fleet.add(ShipKind::Cruiser, 1);
+        stepped.fleet.add(ShipKind::LightFighter, 2);
+        stepped.resources.deuterium = 50.0;
+        stepped
+            .launch_station(stepped.home, neighbor(), ships, Resources::ZERO, 100, 0)
+            .unwrap();
+        for t in 1..=eta {
+            stepped.catch_up(t);
+        }
+        gap.catch_up(eta);
+        assert!(gap.missions.is_empty());
+        assert!(stepped.missions.is_empty());
+        assert_eq!(gap.fleet.get(ShipKind::Cruiser), 0);
+        assert_eq!(gap.fleet.get(ShipKind::LightFighter), 0);
+        assert_eq!(gap.colonies[0].fleet.get(ShipKind::Cruiser), 1);
+        assert_eq!(gap.colonies[0].fleet.get(ShipKind::LightFighter), 2);
+        assert_eq!(
+            gap.colonies[0].fleet, stepped.colonies[0].fleet,
+            "catch-up and stepped ticks must park the same fleet"
+        );
+        close(gap.resources.deuterium, stepped.resources.deuterium);
+    }
+
+    #[test]
+    fn station_with_cargo_delivers_and_parks_ships() {
+        let mut state = GameState::with_config(0, logistics_config());
+        plant_colony(&mut state, neighbor());
+        state.fleet.add(ShipKind::SmallCargo, 1);
+        state.fleet.add(ShipKind::Cruiser, 1);
+        state.resources.iron = 10_000.0;
+        state.resources.deuterium = 50.0;
+        let cargo = Resources::from_parts(100.0, 0.0, 0.0);
+        let mut station_ships = Fleet::default();
+        station_ships.add(ShipKind::Cruiser, 1);
+        let (eta, fuel) = state
+            .flight_from(state.home, neighbor(), station_ships, 100)
+            .unwrap();
+        state
+            .launch_station(state.home, neighbor(), station_ships, cargo, 100, 0)
+            .unwrap();
+        close(state.missions[0].fuel_paid, fuel);
+        state.catch_up(eta);
+        close(state.colonies[0].resources.iron, 100_100.0);
+        assert!(state.missions.is_empty());
+        assert_eq!(state.colonies[0].fleet.get(ShipKind::Cruiser), 1);
+        assert_eq!(state.fleet.get(ShipKind::Cruiser), 0);
+        assert_eq!(state.fleet.get(ShipKind::SmallCargo), 1);
+    }
+
+    #[test]
+    fn station_overflow_cargo_credits_origin_and_parks_ships() {
+        let mut state = GameState::with_config(0, logistics_config());
+        plant_colony(&mut state, neighbor());
+        let cap = state.storage_cap_at(neighbor(), ResourceKind::Iron);
+        state.colonies[0].resources.iron = cap - 1.0;
+        state.fleet.add(ShipKind::Cruiser, 1);
+        state.resources.iron = 10_000.0;
+        state.resources.deuterium = 50.0;
+        let cargo = Resources::from_parts(100.0, 0.0, 0.0);
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::Cruiser, 1);
+        let (eta, _) = state
+            .flight_from(state.home, neighbor(), ships, 100)
+            .unwrap();
+        state
+            .launch_station(state.home, neighbor(), ships, cargo, 100, 0)
+            .unwrap();
+        let after_lift = state.resources.iron;
+        state.catch_up(eta);
+        close(state.colonies[0].resources.iron, cap);
+        assert!(
+            state.resources.iron > after_lift + 98.0,
+            "leftover cargo must credit origin: after_lift={after_lift} now={}",
+            state.resources.iron
+        );
+        assert!(
+            state
+                .logistics
+                .stalls
+                .iter()
+                .any(|s| s.contains("bounced cargo home")),
+            "{:?}",
+            state.logistics.stalls
+        );
+        assert!(state.missions.is_empty());
+        assert_eq!(state.colonies[0].fleet.get(ShipKind::Cruiser), 1);
+        assert_eq!(state.fleet.get(ShipKind::Cruiser), 0);
+    }
+
+    #[test]
+    fn station_returns_when_dest_is_lost_before_landing() {
+        let mut state = GameState::with_config(0, logistics_config());
+        plant_colony(&mut state, neighbor());
+        state.fleet.add(ShipKind::Cruiser, 1);
+        state.resources.deuterium = 50.0;
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::Cruiser, 1);
+        let (eta, _) = state
+            .flight_from(state.home, neighbor(), ships, 100)
+            .unwrap();
+        state
+            .launch_station(state.home, neighbor(), ships, Resources::ZERO, 100, 0)
+            .unwrap();
+        let outbound = state.missions[0].outbound_secs;
+        state.colonies.clear();
+        state.catch_up(eta);
+        assert_eq!(state.missions.len(), 1);
+        assert_eq!(state.missions[0].phase, MissionPhase::Return);
+        assert_eq!(state.fleet.get(ShipKind::Cruiser), 0);
+        state.catch_up(eta + outbound);
+        assert!(state.missions.is_empty());
+        assert_eq!(state.fleet.get(ShipKind::Cruiser), 1);
     }
 
     #[test]

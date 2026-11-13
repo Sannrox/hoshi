@@ -131,9 +131,10 @@ impl DispatchForm {
         }
     }
 
-    /// Selectable rows: every ship kind, plus the cargo rows on a transport.
+    /// Selectable rows: every ship kind, plus the cargo rows on a transport
+    /// or station send.
     fn rows(&self) -> usize {
-        let cargo = if self.mission == Mission::Transport {
+        let cargo = if self.mission.carries_cargo() {
             DISPATCH_CARGO.len()
         } else {
             0
@@ -171,6 +172,7 @@ const HEADER_MATERIALS: [ResourceKind; 6] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mission {
     Transport,
+    Station,
     Attack,
     Spy,
     Invade,
@@ -184,6 +186,7 @@ impl Mission {
     fn label(self) -> &'static str {
         match self {
             Self::Transport => "transport",
+            Self::Station => "station",
             Self::Attack => "attack",
             Self::Spy => "spy",
             Self::Invade => "invade",
@@ -192,6 +195,11 @@ impl Mission {
             Self::Recycle => "recycle",
             Self::Hold => "hold",
         }
+    }
+
+    /// Cargo amounts ride on a round-trip transport or a one-way station.
+    fn carries_cargo(self) -> bool {
+        matches!(self, Self::Transport | Self::Station)
     }
 }
 
@@ -3278,7 +3286,7 @@ impl App {
         } else if dest == origin {
             Vec::new()
         } else if self.state.owned_coords().contains(&dest) {
-            vec![Mission::Transport]
+            vec![Mission::Transport, Mission::Station]
         } else {
             vec![Mission::Colonize, Mission::Spy]
         };
@@ -3358,7 +3366,7 @@ impl App {
         if let Some(form) = self.dispatch.as_mut() {
             form.mission = missions[(at + 1) % missions.len()];
             form.mission_picked = true;
-            // Leaving transport hides the cargo rows.
+            // Leaving a cargo mission hides the cargo rows.
             form.selected = form.selected.min(form.rows() - 1);
         }
     }
@@ -3385,6 +3393,9 @@ impl App {
                 self.state
                     .launch_transport(origin, dest, ships, form.cargo, 100, now_unix)
             }
+            Mission::Station => self
+                .state
+                .launch_station(origin, dest, ships, form.cargo, 100, now_unix),
             Mission::Attack => self.state.launch_attack(origin, ships, dest, 100, now_unix),
             Mission::Spy => self.state.launch_spy(origin, ships, dest, 100, now_unix),
             Mission::Invade => self
@@ -9222,6 +9233,39 @@ mod tests {
         app.state
             .enqueue_build_on(dest, BuildingKind::SolarPlant, back)
             .unwrap();
+    }
+
+    #[test]
+    fn map_station_parks_a_cruiser_at_the_colony() {
+        let (mut app, dest) = app_with_new_colony();
+        app.state.fleet.add(ShipKind::Cruiser, 1);
+        app.handle_key(KeyCode::Enter, 1_000);
+        cycle_dispatch_to(&mut app, Mission::Station);
+        let form = app.dispatch.expect("dispatch stays open");
+        assert_eq!(form.mission, Mission::Station);
+        app.dispatch.as_mut().unwrap().selected = ShipKind::ALL
+            .iter()
+            .position(|k| *k == ShipKind::Cruiser)
+            .unwrap();
+        app.handle_key(KeyCode::Char('+'), 1_000);
+        let text = render_text(&app, 100, 48);
+        assert!(text.contains("station"), "{text}");
+        assert!(text.contains("ships park at dest"), "{text}");
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::Cruiser, 1);
+        let (eta, fuel) = app
+            .state
+            .flight_from(app.state.home, dest, ships, 100)
+            .unwrap();
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.dispatch.is_none(), "{}", app.status);
+        assert!(app.state.missions[0].station);
+        assert!((app.state.resources.deuterium - (2_000.0 - fuel)).abs() < 1e-6);
+        app.state.catch_up(1_000 + eta);
+        assert!(app.state.missions.is_empty());
+        assert_eq!(app.state.fleet.get(ShipKind::Cruiser), 0);
+        assert_eq!(app.state.fleet_at(dest).unwrap().get(ShipKind::Cruiser), 1);
+        assert_eq!(app.state.fleet.get(ShipKind::SmallCargo), 2);
     }
 
     #[test]
