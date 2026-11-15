@@ -29,7 +29,7 @@ Do not commit local state (`.state/`, `*.db` saves), logs, or tokens.
 Human documentation: [README.md](README.md). Architecture decisions:
 [docs/decisions/](docs/decisions/README.md). Design and balance follow
 [docs/realism.md](docs/realism.md) (physics and maths only; flavour stays
-fictional). `CLAUDE.md` only points here; this file is canonical.
+fictional). `CLAUDE.md` is a symlink to this file; this file is canonical.
 
 ## Dependencies and Ownership
 
