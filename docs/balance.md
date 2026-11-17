@@ -299,6 +299,12 @@ so each robotics level is ×1.5, matching metal-mine `time_growth`. Robotics 0 i
 time. A metal mine at the same level as robotics stays near that spec's `base_seconds`.
 Jobs already on the queue keep their stored duration until they restart.
 
+Research speed multiplies a home lab factor, `1 + research_lab_speed_per_level *
+(lab - 1)`, with the activity boost, prestige, laws and species. Bundled
+`research_lab_speed_per_level` (in `[queues]`) is 0.05, so lab 1 is raw time and
+lab 11 is ×1.5. Colony labs add research slots, not speed. A home lab that
+finishes or is dismantled rescales running research at that moment.
+
 ## Dismantling
 
 `[dismantle]` in `balance.toml` sets `time_share = 0.5`,

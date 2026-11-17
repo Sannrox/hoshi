@@ -282,6 +282,24 @@ impl GameState {
                 },
             );
         }
+        // Only the home lab speeds research; colony labs add slots.
+        if kind == BuildingKind::ResearchLab && planet == self.home {
+            deltas.insert(
+                0,
+                DeltaLine {
+                    label: "research ×".into(),
+                    from: format!(
+                        "{:.2}",
+                        self.config
+                            .lab_research_speed(projected_buildings.research_lab)
+                    ),
+                    to: format!(
+                        "{:.2}",
+                        self.config.lab_research_speed(next_buildings.research_lab)
+                    ),
+                },
+            );
+        }
         Some(Detail {
             name: kind.to_string(),
             description: spec.purpose.clone(),
@@ -1806,6 +1824,26 @@ mod tests {
             .into_iter()
             .find(|row| row.label == "construction ×")
             .expect("construction ×")
+    }
+
+    #[test]
+    fn home_lab_detail_shows_research_speed_now_and_next() {
+        let mut state = GameState::with_config(0, quiet());
+        state.buildings.research_lab = 1;
+        let row = state
+            .describe(
+                DetailSubject::Building {
+                    kind: BuildingKind::ResearchLab,
+                    planet: state.home,
+                },
+                None,
+            )
+            .unwrap()
+            .deltas
+            .into_iter()
+            .find(|row| row.label == "research ×")
+            .expect("research ×");
+        assert_eq!((row.from.as_str(), row.to.as_str()), ("1.00", "1.05"));
     }
 
     #[test]
