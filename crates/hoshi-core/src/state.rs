@@ -909,6 +909,9 @@ impl GameState {
             self.apply_maintenance_at(done_at);
             self.tick_staff(done_at);
             if home_build_at == Some(done_at) {
+                // The home lab level is a research speed term; a lab that
+                // finishes or is dismantled rescales running research.
+                let speed_before = self.research_speed();
                 let job = self.build_queue.remove(0);
                 if job.kind == crate::BuildJobKind::Dismantle {
                     self.complete_dismantle(self.home, job, done_at);
@@ -936,6 +939,7 @@ impl GameState {
                         self.note_daily(DailyAction::MineUpgrade, done_at);
                     }
                 }
+                self.rescale_research(done_at, speed_before, self.research_speed());
             }
             let colony_done: Vec<usize> = self
                 .colonies
@@ -8504,6 +8508,7 @@ impl GameState {
             .map(|run| 1.0 / run.research.max(0.05))
             .unwrap_or(1.0);
         activity.max(1.0)
+            * self.config.lab_research_speed(self.buildings.research_lab)
             * (1.0 + self.prestige.research_bonus(&self.config.prestige)).max(1.0)
             * (1.0
                 + self.laws.effect(
@@ -9032,6 +9037,7 @@ mod tests {
             buildings: crate::BuildingCatalog::default(),
             max_build_queue: 5,
             robotics_speed_per_level: 1.0,
+            research_lab_speed_per_level: 0.0,
             techs: TechTree::empty(),
             ships: crate::ShipCatalog::default(),
             max_ship_queue: 5,
@@ -10457,6 +10463,49 @@ modifiers = []
         let done = state.build_queue[0].completes_at.unwrap();
         state.catch_up(done);
         state.start_research("energy", done).unwrap();
+    }
+
+    #[test]
+    fn home_lab_levels_above_one_shorten_research() {
+        let mut cfg = research_config();
+        cfg.research_lab_speed_per_level = 0.5;
+        let spec = cfg.techs.get("energy").unwrap().clone();
+        let mut state = GameState::with_config(0, cfg);
+        assert_eq!(state.research_secs(&spec, 0), 1_800);
+        state.buildings.research_lab = 3;
+        assert_eq!(state.research_secs(&spec, 0), 900);
+    }
+
+    #[test]
+    fn a_finished_home_lab_rescales_running_research_the_same_in_one_gap_or_many() {
+        let fresh = || {
+            let mut cfg = research_config();
+            cfg.research_lab_speed_per_level = 1.0;
+            let mut state = GameState::with_config(0, cfg);
+            state.start_research("energy", 0).unwrap();
+            state.enqueue_build(BuildingKind::ResearchLab, 0).unwrap();
+            state
+        };
+        let lab_done = fresh().build_queue[0].completes_at.unwrap();
+        assert!(lab_done < 1_800, "lab {lab_done}");
+        let mut jump = fresh();
+        jump.catch_up(lab_done);
+        // Lab 2 doubles speed: the remaining time halves.
+        let remaining = (1_800 - lab_done).div_ceil(2);
+        assert_eq!(
+            jump.research.as_ref().unwrap().completes_at,
+            lab_done + remaining
+        );
+        let mut steps = fresh();
+        for at in (25..lab_done).step_by(25) {
+            steps.catch_up(at);
+        }
+        steps.catch_up(lab_done);
+        assert_eq!(jump.research, steps.research);
+        jump.catch_up(2_000);
+        steps.catch_up(2_000);
+        assert_eq!(jump.tech_level("energy"), 1);
+        assert_eq!(jump.tech_levels, steps.tech_levels);
     }
 
     #[test]

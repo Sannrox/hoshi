@@ -321,7 +321,7 @@ impl Default for BuildingCatalog {
                 300.0,
                 2.0,
                 vec![],
-                "Unlocks research and runs the research queue.",
+                "Unlocks research and runs the research queue. Each home lab level above 1 speeds research.",
             ),
             shipyard: spec(
                 400.0,
@@ -507,6 +507,8 @@ pub struct BalanceConfig {
     pub max_build_queue: usize,
     /// Each robotics level multiplies construction speed by `1 + this`.
     pub robotics_speed_per_level: f64,
+    /// Each home research lab level above 1 adds this to research speed.
+    pub research_lab_speed_per_level: f64,
     pub techs: crate::TechTree,
     pub ships: crate::ShipCatalog,
     /// Maximum shipyard batches waiting or in progress on one planet.
@@ -598,6 +600,12 @@ impl BalanceConfig {
     /// Construction speed at this robotics level: `(1 + k) ^ robotics`.
     pub fn construction_speed(&self, robotics: u32) -> f64 {
         (1.0 + self.robotics_speed_per_level).powi(robotics as i32)
+    }
+
+    /// Research speed factor at this home lab level: `1 + k * (lab - 1)`.
+    /// Level 0 and 1 leave research time unchanged.
+    pub fn lab_research_speed(&self, lab: u32) -> f64 {
+        1.0 + self.research_lab_speed_per_level * f64::from(lab.saturating_sub(1))
     }
 }
 
@@ -1570,6 +1578,13 @@ struct FileQueues {
     max_build_queue: usize,
     max_ship_queue: usize,
     robotics_speed_per_level: f64,
+    /// Absent in balance overrides written before lab speed existed.
+    #[serde(default = "default_research_lab_speed_per_level")]
+    research_lab_speed_per_level: f64,
+}
+
+fn default_research_lab_speed_per_level() -> f64 {
+    0.05
 }
 
 #[derive(Deserialize)]
@@ -1933,6 +1948,7 @@ impl File {
             dismantle: self.dismantle,
             max_build_queue: self.queues.max_build_queue,
             robotics_speed_per_level: self.queues.robotics_speed_per_level,
+            research_lab_speed_per_level: self.queues.research_lab_speed_per_level,
             techs: crate::TechTree::default(),
             ships: crate::ShipCatalog::default(),
             max_ship_queue: self.queues.max_ship_queue,
@@ -2489,6 +2505,10 @@ impl BalanceConfig {
         nonneg_finite(
             "queues.robotics_speed_per_level",
             self.robotics_speed_per_level,
+        )?;
+        nonneg_finite(
+            "queues.research_lab_speed_per_level",
+            self.research_lab_speed_per_level,
         )?;
         nonneg_finite("starting_resources.iron", self.starting_resources.iron)?;
         nonneg_finite(

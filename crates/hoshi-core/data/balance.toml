@@ -209,7 +209,7 @@ time_growth = 2.0
 prerequisites = []
 
 [buildings.research_lab]
-purpose = "Unlocks research and runs the research queue."
+purpose = "Unlocks research and runs the research queue. Each home lab level above 1 speeds research."
 frames = 200.0
 electronics = 400.0
 fuel = 200.0
@@ -253,6 +253,9 @@ max_build_queue = 5
 max_ship_queue = 5
 # Construction speed is (1 + this) ^ robotics. 0.5 matches metal-mine time_growth.
 robotics_speed_per_level = 0.5
+# Research speed is 1 + this * (home research lab level - 1). Linear and small:
+# tech durations double per level, so deep techs stay slow. Tune by playtest.
+research_lab_speed_per_level = 0.05
 
 [prestige]
 # Reset is allowed with a completed wonder, or when score reaches min_score.
