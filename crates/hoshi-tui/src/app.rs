@@ -160,7 +160,7 @@ const HEADER_MATERIALS: [ResourceKind; 6] = [
     ResourceKind::Helium3,
 ];
 
-/// Construction stockpiles a star map transport can carry between owned worlds.
+/// Construction stockpiles a star map transport or an Ops vehicle mission can carry.
 const DISPATCH_CARGO: [ResourceKind; 6] = HEADER_MATERIALS;
 
 /// What a star map dispatch does at its target: the same core actions as
@@ -8432,6 +8432,50 @@ mod tests {
         assert!(
             (flight_used - units).abs() > 1.0,
             "map send should debit [flight] fuel {flight_used}, not ops {units}"
+        );
+    }
+
+    #[test]
+    fn ops_vehicle_carries_water_ice_and_credits_it_on_landing() {
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 2,
+        };
+        let mut state = GameState::new(1_000);
+        state.fleet.add(ShipKind::SmallCargo, 1);
+        state.resources.deuterium = 5_000.0;
+        state.resources.water_ice = 100.0;
+        state.colonies.push(colony_at(dest));
+        let mut app = App::new(state);
+        app.open(Screen::Ops);
+        register_parked(&mut app, &[1]);
+        app.selected = 0;
+        app.handle_key(KeyCode::Enter, 1_000);
+        for _ in 0..3 {
+            app.handle_key(KeyCode::Down, 1_000);
+        }
+        let water_ice = DISPATCH_CARGO
+            .iter()
+            .position(|&kind| kind == ResourceKind::WaterIce)
+            .unwrap();
+        for _ in 0..water_ice {
+            app.handle_key(KeyCode::Right, 1_000);
+        }
+        app.handle_key(KeyCode::Char('+'), 1_000);
+        let form = render_text(&app, 160, 48);
+        assert!(form.contains(ResourceKind::WaterIce.label()), "{form}");
+        let before = app.state.resources.water_ice;
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert_eq!(app.state.planned.len(), 1, "{}", app.status);
+        let loaded = before - app.state.resources.water_ice;
+        assert!((loaded - 10.0).abs() < 1e-6, "loaded {loaded}");
+        let arrives = app.state.planned[0].arrives_at;
+        app.state.catch_up(arrives);
+        let colony = app.state.colonies.iter().find(|c| c.coord == dest).unwrap();
+        assert!(
+            (colony.resources.water_ice - 10.0).abs() < 1e-6,
+            "{colony:?}"
         );
     }
 

@@ -9,11 +9,6 @@ const TRANSFERS: [TransferKind; 3] = [
     TransferKind::HighEnergy,
     TransferKind::Assist,
 ];
-const CARGO: [ResourceKind; 3] = [
-    ResourceKind::Iron,
-    ResourceKind::Silicon,
-    ResourceKind::Deuterium,
-];
 const FIELDS: usize = 5;
 
 /// The Ops register panel: which ships parked at `planet` form the new
@@ -272,7 +267,7 @@ impl App {
                 }
                 1 => form.customer = step(form.customer, customers, by),
                 2 => form.transfer = step(form.transfer, TRANSFERS.len(), by),
-                3 => form.cargo = step(form.cargo, CARGO.len(), by),
+                3 => form.cargo = step(form.cargo, DISPATCH_CARGO.len(), by),
                 _ => form.amount = (form.amount + 10.0 * by as f64).clamp(0.0, 1_000_000.0),
             }
         }
@@ -285,7 +280,7 @@ impl App {
             .get(form.customer)
             .cloned()?;
         let mut cargo = Resources::ZERO;
-        cargo.set(CARGO[form.cargo], form.amount);
+        cargo.set(DISPATCH_CARGO[form.cargo], form.amount);
         Some(PlanRequest {
             vehicle_id: form.vehicle_id,
             dest: form.dest(),
@@ -355,7 +350,7 @@ impl App {
             ),
             (
                 "cargo",
-                CARGO[form.cargo].label().to_string(),
+                DISPATCH_CARGO[form.cargo].label().to_string(),
                 "payload on this hop",
             ),
             ("amount", format!("{:.0}", form.amount), "how much to load"),

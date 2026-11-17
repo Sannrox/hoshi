@@ -8,7 +8,7 @@ use crate::orbits::{
     rocket_delta_v, to_game_secs,
 };
 use crate::ships::{Fleet, ShipKind};
-use crate::state::{GameState, Resources};
+use crate::state::{GameState, ResourceKind, Resources};
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -833,25 +833,20 @@ impl GameState {
         self.add_fleet_at(planet, ships);
     }
 
+    /// Take `cost` (cargo plus fuel) from `planet`, every stockpile kind, or
+    /// refuse with what is missing.
     fn debit_at(&mut self, planet: Coord, cost: Resources) -> Result<(), PlanError> {
         let stock = self
             .resources_at_mut(planet)
             .map_err(|_| PlanError::UnknownPlanet)?;
-        if stock.iron + 1e-9 < cost.iron
-            || stock.silicon + 1e-9 < cost.silicon
-            || stock.deuterium + 1e-9 < cost.deuterium
-        {
+        if !stock.can_afford(cost) {
             return Err(PlanError::CannotAfford {
-                missing: Resources::from_parts(
-                    (cost.iron - stock.iron).max(0.0),
-                    (cost.silicon - stock.silicon).max(0.0),
-                    (cost.deuterium - stock.deuterium).max(0.0),
-                ),
+                missing: stock.missing(cost),
             });
         }
-        stock.iron = (stock.iron - cost.iron).max(0.0);
-        stock.silicon = (stock.silicon - cost.silicon).max(0.0);
-        stock.deuterium = (stock.deuterium - cost.deuterium).max(0.0);
+        for kind in ResourceKind::ALL {
+            stock.set(kind, (stock.get(kind) - cost.get(kind)).max(0.0));
+        }
         Ok(())
     }
 }
