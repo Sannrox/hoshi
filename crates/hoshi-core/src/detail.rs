@@ -352,9 +352,17 @@ impl GameState {
         } else {
             level.saturating_add(1)
         };
+        let mut description = spec.purpose.clone();
+        if spec.modifiers.is_empty()
+            && !complete
+            && let Some(line) = next_need_line(self, id, next)
+        {
+            description.push(' ');
+            description.push_str(&line);
+        }
         Some(Detail {
             name: spec.name.clone(),
-            description: spec.purpose.clone(),
+            description,
             level,
             costs: if complete {
                 Vec::new()
@@ -964,6 +972,64 @@ fn unlocks_from_tech(state: &GameState, id: &str) -> Vec<String> {
     out
 }
 
+/// Every `(level, name)` a tech, ship, wonder, building or automation tier
+/// requires of tech `id`.
+fn tech_needs(state: &GameState, id: &str) -> Vec<(u32, String)> {
+    let mut out = Vec::new();
+    let mut add = |prereqs: &[crate::TechPrereq], name: &str| {
+        for pre in prereqs.iter().filter(|pre| pre.id == id) {
+            out.push((pre.level, name.to_string()));
+        }
+    };
+    for spec in state.config.techs.iter() {
+        add(&spec.prereq_techs, &spec.name);
+    }
+    for kind in ShipKind::ALL {
+        add(
+            &state.config.ships.get(kind).prereq_techs,
+            &kind.to_string(),
+        );
+    }
+    for wonder in &state.config.wonders {
+        add(&wonder.prereq_techs, &wonder.name);
+    }
+    for kind in BuildingKind::ALL {
+        add(
+            &state.config.buildings.get(kind).tech_prerequisites,
+            &kind.to_string(),
+        );
+    }
+    for tier in &state.automation_catalog().tier {
+        if tier.research == id {
+            out.push((tier.research_level, tier.name.clone()));
+        }
+    }
+    out
+}
+
+/// For a tech whose levels have no modifier: what level `next` or the first
+/// later level unlocks, or that nothing needs it past the highest requirement.
+/// `None` when no data names the tech, so the panel claims nothing.
+fn next_need_line(state: &GameState, id: &str, next: u32) -> Option<String> {
+    let needs = tech_needs(state, id);
+    let highest = needs.iter().map(|(level, _)| *level).max()?;
+    let Some(at) = needs
+        .iter()
+        .map(|(level, _)| *level)
+        .filter(|level| *level >= next)
+        .min()
+    else {
+        return Some(format!("No further effect past level {highest}."));
+    };
+    let mut names: Vec<&str> = Vec::new();
+    for (_, name) in needs.iter().filter(|(level, _)| *level == at) {
+        if !names.contains(&name.as_str()) {
+            names.push(name);
+        }
+    }
+    Some(format!("Level {at} unlocks {}.", names.join(", ")))
+}
+
 fn unlocks_from_building(state: &GameState, kind: BuildingKind) -> Vec<String> {
     let mut out = Vec::new();
     for spec in state.config.techs.iter() {
@@ -993,6 +1059,48 @@ fn self_prereq(state: &GameState, building: BuildingKind, want: BuildingKind) ->
 mod tests {
     use super::*;
     use crate::BalanceConfig;
+
+    #[test]
+    fn effectless_tech_says_what_the_next_level_unlocks_or_that_it_stops() {
+        let table = [
+            ("laser", 10),
+            ("ion", 2),
+            ("hyperspace", 3),
+            ("fission", 3),
+            ("plasma_physics", 2),
+            ("fusion_dd", 3),
+            ("auto_routes", 1),
+            ("logistics_rules", 1),
+        ];
+        for (id, highest) in table {
+            let mut state = GameState::new(0);
+            let purpose = state.config.techs.get(id).unwrap().purpose.clone();
+            let fresh = state
+                .describe(DetailSubject::Tech(id.into()), None)
+                .unwrap()
+                .description;
+            let line = fresh.strip_prefix(&format!("{purpose} ")).unwrap_or("");
+            assert!(line.starts_with("Level "), "{id}: {fresh}");
+            assert!(line.contains(" unlocks "), "{id}: {fresh}");
+            state.tech_levels.insert(id.into(), highest);
+            let past = state
+                .describe(DetailSubject::Tech(id.into()), None)
+                .unwrap()
+                .description;
+            assert_eq!(
+                past,
+                format!("{purpose} No further effect past level {highest}."),
+                "{id}"
+            );
+        }
+        let state = GameState::new(0);
+        let weapons = state.config.techs.get("weapons").unwrap();
+        assert!(!weapons.modifiers.is_empty());
+        let detail = state
+            .describe(DetailSubject::Tech("weapons".into()), None)
+            .unwrap();
+        assert_eq!(detail.description, weapons.purpose);
+    }
 
     #[test]
     fn law_detail_previews_its_effect_at_the_default_parameter() {
