@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build GitHub Release notes from CHANGELOG.md and the save schema.
-# Usage: scripts/release-notes.sh vX.Y.Z
+# Usage: scripts/release/notes.sh vX.Y.Z
 # Optional: CHANGELOG_PATH overrides the changelog file (tests).
 
 set -euo pipefail
@@ -12,7 +12,7 @@ if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 fi
 
 VERSION="${TAG#v}"
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT}"
 
 SCHEMA="$(sed -n 's/^pub const SCHEMA_VERSION: u32 = \([0-9][0-9]*\);/\1/p' crates/hoshi-storage/src/save.rs | head -n1)"

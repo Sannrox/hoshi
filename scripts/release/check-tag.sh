@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Fail when a vX.Y.Z tag does not match [workspace.package].version.
-# Usage: scripts/check-release-tag.sh vX.Y.Z
+# Usage: scripts/release/check-tag.sh vX.Y.Z
 
 set -euo pipefail
 
@@ -10,7 +10,7 @@ if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   exit 2
 fi
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT}"
 
 export TAG

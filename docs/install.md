@@ -53,7 +53,7 @@ sudo apt install ./hoshi_X.Y.Z_amd64.deb
 
 Supported on Ubuntu 22.04 and newer. `sudo apt remove hoshi` uninstalls; the
 save in `~/.local/share/hoshi/` is kept. The release workflow builds the
-packages with `scripts/build-deb.sh` and installs the amd64 one as a smoke test.
+packages with `scripts/release/build-deb.sh` and installs the amd64 one as a smoke test.
 
 ## Nightly builds
 
