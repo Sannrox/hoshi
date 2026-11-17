@@ -233,6 +233,9 @@ impl GameState {
                 ),
             });
         }
+        if kind == BuildingKind::FusionPlant {
+            deltas.extend(fusion_preview(&projected, &next_state, planet));
+        }
         let mut requirements: Vec<RequirementLine> = spec
             .prerequisites
             .iter()
@@ -840,6 +843,63 @@ impl GameState {
             complete: false,
             ship: None,
         }
+    }
+}
+
+/// Fusion lines before building or upgrading: the cooling cap now and next
+/// and, when the next plant must heat its plasma, the start-up draw and how
+/// long start-up takes at today's spare supply. Reads the same rules the
+/// built plant runs on (`fusion_status_at`, `reactor_production_factor`).
+fn fusion_preview(projected: &GameState, next: &GameState, planet: Coord) -> Vec<DeltaLine> {
+    let mut trial = next.clone();
+    // Start-up waits on fuel; price the draw as if the first fill had landed.
+    if let Ok(stock) = trial.resources_at_mut(planet)
+        && stock.deuterium <= 1e-12
+    {
+        stock.deuterium = 1.0;
+    }
+    let Some(status) = trial.fusion_status_at(planet) else {
+        return Vec::new();
+    };
+    let cap_now = projected
+        .fusion_status_at(planet)
+        .map_or(0.0, |now| now.cooling_cap);
+    let mut out = vec![DeltaLine {
+        label: "fusion cooling cap".into(),
+        from: format!("{cap_now:.0}"),
+        to: format!("{:.0} of {:.0}", status.cooling_cap, status.rated),
+    }];
+    if status.plant.burning() || status.startup_draw <= 0.0 {
+        return out;
+    }
+    let cfg = &trial.config.fusion_plant;
+    let hours = cfg.startup_secs as f64 / 3600.0;
+    let factor = trial
+        .reactor_production_factor(planet, hours)
+        .clamp(0.0, 1.0);
+    out.push(DeltaLine {
+        label: "start-up draw".into(),
+        from: "0".into(),
+        to: format!("{:.0}", status.startup_draw),
+    });
+    out.push(DeltaLine {
+        label: "start-up time".into(),
+        from: "-".into(),
+        to: if factor <= 1e-9 {
+            "waits for supply".into()
+        } else {
+            hours_minutes(cfg.startup_secs as f64 / factor)
+        },
+    });
+    out
+}
+
+fn hours_minutes(secs: f64) -> String {
+    let minutes = (secs / 60.0).ceil() as u64;
+    match (minutes / 60, minutes % 60) {
+        (0, m) => format!("{m}m"),
+        (h, 0) => format!("{h}h"),
+        (h, m) => format!("{h}h {m}m"),
     }
 }
 
@@ -1507,6 +1567,99 @@ mod tests {
             detail.afford,
             Some(AffordEta::Now | AffordEta::In(_))
         ));
+    }
+
+    /// The issue's power-short, heat-capped home: mines past the heat sink,
+    /// solar 14, no reactor, fusion D-D researched, plenty of fuel.
+    fn heat_capped_home() -> GameState {
+        let mut state = GameState::with_config(0, quiet());
+        state.buildings.metal_mine = 10;
+        state.buildings.crystal_mine = 8;
+        state.buildings.deuterium_synthesizer = 8;
+        state.buildings.research_lab = 6;
+        state.buildings.solar_plant = 14;
+        state.tech_levels.insert("fusion_dd".into(), 1);
+        state.resources.deuterium = 5_000.0;
+        state
+    }
+
+    /// A home with only solar 600, radiators and fuel, as the fusion start-up
+    /// test in `fusion.rs` sets up, before the plant exists.
+    fn isolated_fusion_home() -> GameState {
+        let mut config = BalanceConfig {
+            chains: crate::ChainConfig::default(),
+            ..quiet()
+        };
+        config.orbits.inner_au = 1.0;
+        config.orbits.au_per_slot = 0.0;
+        config.waste.radiator_base_energy = 0.0;
+        config.solar_plant.base_energy = 600.0;
+        let mut state = GameState::with_seed(0, config, 9);
+        state.deterministic = true;
+        state.buildings = crate::Buildings {
+            solar_plant: 1,
+            radiator: 20,
+            ..Default::default()
+        };
+        state.maintenance.next_at = u64::MAX;
+        state.resources = Resources::ZERO;
+        state.resources.deuterium = 100.0;
+        state
+    }
+
+    fn fusion_row(detail: &Detail, label: &str) -> String {
+        detail
+            .deltas
+            .iter()
+            .find(|row| row.label == label)
+            .unwrap_or_else(|| panic!("{label}: {:?}", detail.deltas))
+            .to
+            .clone()
+    }
+
+    #[test]
+    fn unbuilt_fusion_plant_previews_startup_and_cooling_cap() {
+        let state = heat_capped_home();
+        let detail = state
+            .describe(
+                DetailSubject::Building {
+                    kind: BuildingKind::FusionPlant,
+                    planet: state.home,
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(fusion_row(&detail, "start-up draw"), "1200");
+        assert_eq!(fusion_row(&detail, "fusion cooling cap"), "0 of 400");
+        let stretch = fusion_row(&detail, "start-up time");
+        assert_ne!(stretch, "30m", "a short supply must stretch start-up");
+
+        let mut built = state;
+        built.buildings.fusion_plant = 1;
+        let status = built.fusion_status_at(built.home).unwrap();
+        assert_eq!(format!("{:.0}", status.startup_draw), "1200");
+        assert_eq!(status.cooling_cap, 0.0);
+    }
+
+    #[test]
+    fn previewed_startup_time_matches_the_built_plant() {
+        let mut state = isolated_fusion_home();
+        let detail = state
+            .describe(
+                DetailSubject::Building {
+                    kind: BuildingKind::FusionPlant,
+                    planet: state.home,
+                },
+                None,
+            )
+            .unwrap();
+        // Supply 600 against a 1,200 draw: half speed, twice the 30m start-up.
+        assert_eq!(fusion_row(&detail, "start-up time"), "1h");
+        state.buildings.fusion_plant = 1;
+        state.catch_up(3_599);
+        assert!(!state.fusion_status_at(state.home).unwrap().plant.burning());
+        state.catch_up(3_600);
+        assert!(state.fusion_status_at(state.home).unwrap().plant.burning());
     }
 
     #[test]
