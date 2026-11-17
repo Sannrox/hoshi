@@ -62,7 +62,7 @@ def sha256(path: Path) -> str:
 
 def main() -> int:
     if len(sys.argv) != 3:
-        print("usage: homebrew-formula.py vX.Y.Z DIST_DIR", file=sys.stderr)
+        print("usage: homebrew_formula.py vX.Y.Z DIST_DIR", file=sys.stderr)
         return 2
     tag, dist_arg = sys.argv[1], sys.argv[2]
     if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Package a built hoshi binary as a Debian/Ubuntu .deb.
-# Usage: scripts/build-deb.sh vX.Y.Z[~nightly.STAMP.gSHA] amd64|arm64 BINARY OUT_DIR
+# Usage: scripts/release/build-deb.sh vX.Y.Z[~nightly.STAMP.gSHA] amd64|arm64 BINARY OUT_DIR
 # Runs on the build host; the libc6 floor is the host's glibc version.
 # "~" sorts a nightly before the X.Y.Z release in dpkg version order.
 
@@ -18,7 +18,7 @@ if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(~nightly\.[0-9]+\.g[0-9a-f]+)?$ ]] 
   exit 2
 fi
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 VERSION="${TAG#v}"
 GLIBC="$(getconf GNU_LIBC_VERSION | awk '{print $2}')"
 mkdir -p "${OUT}"

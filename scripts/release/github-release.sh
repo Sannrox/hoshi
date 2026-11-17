@@ -2,7 +2,7 @@
 # Retry a release publication without replacing already published signed assets.
 set -euo pipefail
 if [ "$#" -ne 4 ]; then
-  echo 'usage: publish-release.sh TAG TITLE NOTES stable|nightly' >&2
+  echo 'usage: github-release.sh TAG TITLE NOTES stable|nightly' >&2
   exit 2
 fi
 tag="$1"

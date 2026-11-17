@@ -1,4 +1,4 @@
-//! Release-note and Homebrew formula helpers used by `.github/workflows/release.yml`.
+//! Release scripts under `scripts/release/` used by `.github/workflows/release.yml`.
 
 use std::fs;
 use std::path::PathBuf;
@@ -16,11 +16,11 @@ fn release_tag_must_match_workspace_version() {
     let root = repo_root();
     let version = env!("CARGO_PKG_VERSION");
     let ok = Command::new("bash")
-        .arg(root.join("scripts/check-release-tag.sh"))
+        .arg(root.join("scripts/release/check-tag.sh"))
         .arg(format!("v{version}"))
         .current_dir(&root)
         .output()
-        .expect("check-release-tag.sh");
+        .expect("check-tag.sh");
     assert!(
         ok.status.success(),
         "stderr {}",
@@ -29,11 +29,11 @@ fn release_tag_must_match_workspace_version() {
     let stdout = String::from_utf8_lossy(&ok.stdout);
     assert_eq!(stdout.trim(), version);
     let bad = Command::new("bash")
-        .arg(root.join("scripts/check-release-tag.sh"))
+        .arg(root.join("scripts/release/check-tag.sh"))
         .arg("v9.9.9")
         .current_dir(&root)
         .output()
-        .expect("check-release-tag.sh mismatch");
+        .expect("check-tag.sh mismatch");
     assert!(!bad.status.success());
     let stderr = String::from_utf8_lossy(&bad.stderr);
     assert!(stderr.contains("v9.9.9"), "{stderr}");
@@ -47,11 +47,11 @@ fn release_tag_must_match_workspace_version() {
 fn release_notes_include_changelog_and_save_schema() {
     let root = repo_root();
     let output = Command::new("bash")
-        .arg(root.join("scripts/release-notes.sh"))
+        .arg(root.join("scripts/release/notes.sh"))
         .arg("v0.1.0")
         .current_dir(&root)
         .output()
-        .expect("release-notes.sh");
+        .expect("notes.sh");
     assert!(
         output.status.success(),
         "stderr {}",
@@ -78,12 +78,12 @@ fn release_notes_select_bracketed_version_heading() {
     )
     .unwrap();
     let output = Command::new("bash")
-        .arg(root.join("scripts/release-notes.sh"))
+        .arg(root.join("scripts/release/notes.sh"))
         .arg("v0.1.0")
         .env("CHANGELOG_PATH", &changelog)
         .current_dir(&root)
         .output()
-        .expect("release-notes.sh versioned heading");
+        .expect("notes.sh versioned heading");
     assert!(
         output.status.success(),
         "stderr {}",
@@ -108,13 +108,13 @@ fn homebrew_formula_hashes_raw_binaries() {
     ] {
         fs::write(dist.path().join(name), name.as_bytes()).unwrap();
     }
-    let output = Command::new("bash")
-        .arg(root.join("scripts/homebrew-formula.sh"))
+    let output = Command::new("python3")
+        .arg(root.join("scripts/release/homebrew_formula.py"))
         .arg("v0.1.0")
         .arg(dist.path())
         .current_dir(&root)
         .output()
-        .expect("homebrew-formula.sh");
+        .expect("homebrew_formula.py");
     assert!(
         output.status.success(),
         "stderr {}",
@@ -148,7 +148,7 @@ fn build_deb_rejects_versions_outside_release_and_nightly() {
         "v0.1.0~nightly.1.XYZ",
     ] {
         let output = Command::new("bash")
-            .arg(root.join("scripts/build-deb.sh"))
+            .arg(root.join("scripts/release/build-deb.sh"))
             .arg(version)
             .arg("amd64")
             .arg(&bin)
@@ -205,7 +205,7 @@ fn deb_includes_man_and_shell_completions() {
     let root = repo_root();
     let dist = tempfile_dist();
     let output = Command::new("bash")
-        .arg(root.join("scripts/build-deb.sh"))
+        .arg(root.join("scripts/release/build-deb.sh"))
         .args(["v0.1.0", "amd64", env!("CARGO_BIN_EXE_hoshi")])
         .arg(dist.path())
         .output()

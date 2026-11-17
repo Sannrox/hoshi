@@ -47,5 +47,5 @@ jobs:
             exit 1
           fi
           gh variable set HOSHI_RELEASE_PUBLIC_KEY --body "${public}"
-          printf 'Compiled release public key: `%s`\n' "${public}" >> "${GITHUB_STEP_SUMMARY}"
+          echo "Compiled release public key: \`${public}\`" >> "${GITHUB_STEP_SUMMARY}"
           echo "Remove RELEASE_KEY_ADMIN_TOKEN after provisioning." >> "${GITHUB_STEP_SUMMARY}"

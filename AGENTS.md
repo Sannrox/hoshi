@@ -57,12 +57,20 @@ cargo build --locked --workspace --all-targets
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
 bash scripts/validate-workflow-skills.sh
+bash scripts/check-workflows.sh
+python3 -m unittest discover -s tests -t .
 ```
 
 - `cargo fmt --all` formats before review.
 - `cargo clippy ... -D warnings` is required for ship-level local gates.
 - `scripts/validate-workflow-skills.sh` checks the shared Skill stubs and the
   contract headings of this file against agent-kit `main`.
+- `scripts/check-workflows.sh` lints `.github/workflows/` with pinned,
+  checksum-verified actionlint and zizmor. Findings that need a design
+  decision are suppressed in `.github/zizmor.yml`, one reason each.
+- Workflows orchestrate; release logic lives in `scripts/release/`. The
+  Python `unittest` suite under `tests/release/` tests those scripts, one
+  file per script.
 
 There is no Makefile yet. When one is added, its targets become the source of
 truth for these commands and this section must point to them.
@@ -135,7 +143,8 @@ Rows beyond `## Testing Guidelines`:
 | portrait assets | `bash scripts/check-portrait-assets.sh` |
 | story drafts | `bash scripts/check-drafts-unshipped.sh` |
 | docs, templates, Skills | `bash scripts/validate-workflow-skills.sh` |
-| release metadata | `python3 scripts/test-release-metadata.py` |
+| release scripts | `python3 -m unittest discover -s tests -t .` |
+| workflows | `bash scripts/check-workflows.sh` |
 | dependency pins | `Cargo.lock` diff reviewed; the pinned tag exists upstream |
 
 ### Release audit
@@ -266,7 +275,7 @@ implementation Pull Requests plus claim branches without one. Assigned or
 planned work with neither is not a running lane.
 
 Parallel lanes must not collide. Collision surfaces in this repository are
-the game state schema and save format, the tick/offline-progression model, the bridge event format, and balance config. Lanes that would
+the game state schema and save format, the tick/offline-progression model, the bridge event format, balance config, and the release path (`.github/workflows/`, `.github/zizmor.yml`, `scripts/release/`, `tests/release/`). Lanes that would
 both change one of these surfaces run in sequence, not in parallel.
 
 A lane publishes its first Verified commit to the claim branch with
@@ -310,6 +319,10 @@ Add focused tests for production, build and research timers, offline catch-up
 randomness, save migrations, and bridge event parsing. Prefer deterministic
 tests with a fake clock and fixed RNG seeds. Tests that need GitHub access are
 ignored by default. Offline `cargo test` must stay green.
+
+Release scripts are tested with standard-library `unittest` under
+`tests/release/` (a fake `gh` on `PATH`, temporary directories named with the
+process id), never by grepping workflow text.
 
 ## Commit & Pull Request Guidelines
 

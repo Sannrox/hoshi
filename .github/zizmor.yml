@@ -1,0 +1,6 @@
+# Findings that need a design decision, not a mechanical fix. One reason each.
+rules:
+  cache-poisoning:
+    ignore:
+      # Tag builds restore the shared Rust cache; dropping or isolating it is a release-speed decision (follow-up).
+      - release.yml:74
