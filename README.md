@@ -166,8 +166,8 @@ the bridge:
 
 Keys: `1`-`6` (open a hub, press again for its next tab), `tab` / `shift+tab`
 (next or previous screen), `esc` (back to the bridge), `j`/`k` (select),
-`enter` (build or research), `x` (cancel), `q` (quit and save), `?` (help for
-this screen). Remap them with `keys.<action>` lines in `config.toml` or from
+`enter` (build or research), `x` (cancel), `q` (quit and save), `m` (save and
+return to the title screen, from the bridge), `?` (help for this screen). Remap them with `keys.<action>` lines in `config.toml` or from
 title Settings → keybindings; a conflict keeps the current keys.
 
 Enter queues a build, a ship, research, or a wonder contribution; in the

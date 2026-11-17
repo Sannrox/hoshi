@@ -32,6 +32,8 @@ pub enum Binding {
     Advisor,
     Cockpit,
     Detail,
+    /// Leave the running game for the title screen.
+    Title,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,6 +124,7 @@ impl Binding {
         Binding::CheatConsole,
         Binding::Dismantle,
         Binding::RenameWorld,
+        Binding::Title,
     ];
 
     pub fn config_key(self) -> &'static str {
@@ -154,6 +157,7 @@ impl Binding {
             Binding::Advisor => "advisor",
             Binding::Cockpit => "cockpit",
             Binding::Detail => "detail",
+            Binding::Title => "title",
         }
     }
 
@@ -194,6 +198,7 @@ impl Binding {
             Binding::Advisor => vec![KeyCode::Char('i')],
             Binding::Cockpit => vec![KeyCode::Char('c')],
             Binding::Detail => vec![KeyCode::Char('d')],
+            Binding::Title => vec![KeyCode::Char('m')],
         }
     }
 }
@@ -513,6 +518,7 @@ impl HelpContext {
             HelpContext::Cockpit => &[
                 Binding::Help,
                 Binding::Quit,
+                Binding::Title,
                 Binding::NextScreen,
                 Binding::Cockpit,
                 Binding::Toggle,
@@ -674,6 +680,7 @@ impl HelpContext {
             Binding::Dismantle => "dismantle one level",
             Binding::RenameWorld => "rename this world",
             Binding::Detail => "toggle detail panel",
+            Binding::Title => "save and return to the title screen",
         }
     }
 }

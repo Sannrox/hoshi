@@ -222,6 +222,8 @@ pub enum Action {
     ReportBug,
     None,
     Quit,
+    /// Save, close the game and show the title screen.
+    Title,
 }
 
 pub struct App {
@@ -1277,6 +1279,7 @@ impl App {
         let len = crate::cockpit::select_len(&self.state, &self.cockpit);
         match self.keymap.lookup(ctx, code) {
             Some(Binding::Quit) => return Action::Quit,
+            Some(Binding::Title) => return Action::Title,
             Some(Binding::NextScreen) => self.cycle_screen(true),
             Some(Binding::Toggle) => self.cockpit.cycle_layout(),
             // The bridge alert describes the latest raid, so `r` opens that one.
@@ -2093,6 +2096,9 @@ impl App {
             hints.push(("esc".into(), "bridge".into()));
         }
         hints.push((k.primary(Binding::Help), "help".into()));
+        if self.screen == Screen::Cockpit {
+            hints.push((k.primary(Binding::Title), "title".into()));
+        }
         hints.push((k.primary(Binding::Quit), "quit".into()));
         hints
     }
@@ -7311,6 +7317,15 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(format!("{}-wal", path.display()));
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    #[test]
+    fn title_key_leaves_from_the_bridge_only() {
+        let mut app = App::with_keymap(GameState::new(50), Keymap::default());
+        assert_eq!(app.screen, Screen::Cockpit);
+        assert_eq!(app.handle_key(KeyCode::Char('m'), 50), Action::Title);
+        app.open(Screen::Planet);
+        assert_ne!(app.handle_key(KeyCode::Char('m'), 50), Action::Title);
     }
 
     #[test]

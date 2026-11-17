@@ -725,42 +725,36 @@ fn run() -> Result<(), LaunchError> {
                 message: e.to_string(),
                 exit: cli::EXIT_INTERNAL,
             })?;
-    if flag.is_some() || env.is_some() {
-        let path = resolve_save_path(flag.as_deref(), env.as_deref());
-        let mut cfg = config::UserConfig::load(&config_dir_for_save(&path));
-        if commentary_flag {
-            cfg.commentary = true;
-        }
-        if advisor_flag {
-            cfg.ai_advisor = true;
-        }
-        return play_path(
-            &path,
-            balance,
-            &clock,
-            None,
-            portrait_view(&cfg, no_portraits),
-            &cfg,
-        );
-    }
     let dir = default_save_dir();
-    if continue_flag {
-        let path = resolve_continue(&dir, clock.now_unix())?;
-        let mut cfg = config::UserConfig::load(&dir);
+    // A save path or `--continue` skips the title; leaving that game for the
+    // title opens the default save directory's title screen.
+    let direct = if flag.is_some() || env.is_some() {
+        let path = resolve_save_path(flag.as_deref(), env.as_deref());
+        Some((config_dir_for_save(&path), path))
+    } else if continue_flag {
+        Some((dir.clone(), resolve_continue(&dir, clock.now_unix())?))
+    } else {
+        None
+    };
+    if let Some((cfg_dir, path)) = direct {
+        let mut cfg = config::UserConfig::load(&cfg_dir);
         if commentary_flag {
             cfg.commentary = true;
         }
         if advisor_flag {
             cfg.ai_advisor = true;
         }
-        return play_path(
+        let end = play_path(
             &path,
-            balance,
+            balance.clone(),
             &clock,
             None,
             portrait_view(&cfg, no_portraits),
             &cfg,
-        );
+        )?;
+        if end == SessionEnd::Quit {
+            return Ok(());
+        }
     }
     title_then_play(
         dir,
@@ -800,6 +794,9 @@ fn resolve_continue(dir: &Path, now_unix: u64) -> Result<PathBuf, LaunchError> {
     }
 }
 
+/// Shows the title screen and plays what it picks, until the player quits.
+/// A game left with the title binding has saved and dropped its lock by the
+/// time `play_path` returns, so the next title lists it as ready.
 fn title_then_play(
     dir: PathBuf,
     balance: BalanceConfig,
@@ -808,6 +805,43 @@ fn title_then_play(
     commentary_flag: bool,
     advisor_flag: bool,
 ) -> Result<(), LaunchError> {
+    loop {
+        let (after, config) = show_title(
+            dir.clone(),
+            balance.clone(),
+            clock,
+            commentary_flag,
+            advisor_flag,
+        )?;
+        match after {
+            AfterTitle::Quit => return Ok(()),
+            AfterTitle::Play { path, new_spec } => {
+                let end = play_path(
+                    &path,
+                    balance.clone(),
+                    clock,
+                    new_spec,
+                    portrait_view(&config, no_portraits),
+                    &config,
+                )?;
+                if end == SessionEnd::Quit {
+                    return Ok(());
+                }
+            }
+            AfterTitle::Join { identity, keys } => return play_shard(identity, keys),
+        }
+    }
+}
+
+/// Runs the title screen once, re-reading the save list, and returns the
+/// player's pick with the settings the title holds.
+fn show_title(
+    dir: PathBuf,
+    balance: BalanceConfig,
+    clock: &SystemClock,
+    commentary_flag: bool,
+    advisor_flag: bool,
+) -> Result<(AfterTitle, config::UserConfig), LaunchError> {
     let mut title = Title::new(dir, clock.now_unix());
     if commentary_flag {
         title.config.commentary = true;
@@ -815,7 +849,7 @@ fn title_then_play(
     if advisor_flag {
         title.config.ai_advisor = true;
     }
-    title.set_balance(balance.clone());
+    title.set_balance(balance);
     title.updates = Some(update_ui::UpdateUi::start(
         title.update_dir(),
         &title.config,
@@ -878,18 +912,14 @@ fn title_then_play(
         }
     };
     ratatui::restore();
-    match result? {
-        AfterTitle::Quit => Ok(()),
-        AfterTitle::Play { path, new_spec } => play_path(
-            &path,
-            balance,
-            clock,
-            new_spec,
-            portrait_view(&title.config, no_portraits),
-            &title.config,
-        ),
-        AfterTitle::Join { identity, keys } => play_shard(identity, keys),
-    }
+    Ok((result?, title.config))
+}
+
+/// How a played save ended: quit the process or go back to the title.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionEnd {
+    Quit,
+    Title,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -967,7 +997,7 @@ fn play_path(
     new_spec: Option<NewGameSpec>,
     portraits: PortraitView,
     user: &config::UserConfig,
-) -> Result<(), LaunchError> {
+) -> Result<SessionEnd, LaunchError> {
     let now = clock.now_unix();
     if new_spec.is_none() && path.exists() && BackendKind::from_path(path) == BackendKind::Sqlite {
         match inspect_save(path) {
@@ -1177,7 +1207,8 @@ fn play_path(
             Ok(true) => match event::read() {
                 Ok(Event::Key(k)) if k.kind == KeyEventKind::Press => {
                     match app.handle_key(k.code, clock.now_unix()) {
-                        Action::Quit => break Ok(()),
+                        Action::Quit => break Ok(SessionEnd::Quit),
+                        Action::Title => break Ok(SessionEnd::Title),
                         Action::SupportReport => app.open_support(path),
                         Action::ReportBug => app.open_bug(path),
                         Action::None => {}
@@ -1206,8 +1237,7 @@ fn play_path(
     ratatui::restore();
     app.state.finish_pending_tactical();
     store.save(&app.state)?;
-    result?;
-    Ok(())
+    Ok(result?)
 }
 
 #[cfg(feature = "bridge")]
