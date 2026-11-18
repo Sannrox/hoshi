@@ -296,9 +296,9 @@ impl App {
         } else if self.keymap.matches(Binding::SelectPrev, code) {
             form.field = (form.field + FIELDS - 1) % FIELDS;
         } else if self.keymap.matches(Binding::Increase, code) {
-            form.amount = (form.amount + 10.0).min(1_000_000.0);
+            form.amount = step_cargo(form.amount, true).min(MAX_TRADE_AMOUNT);
         } else if self.keymap.matches(Binding::Decrease, code) {
-            form.amount = (form.amount - 10.0).max(0.0);
+            form.amount = step_cargo(form.amount, false).max(0.0);
         } else if by != 0 {
             match form.field {
                 0 => {
@@ -308,7 +308,7 @@ impl App {
                 1 => form.customer = step(form.customer, customers, by),
                 2 => form.transfer = step(form.transfer, TRANSFERS.len(), by),
                 3 => form.cargo = step(form.cargo, DISPATCH_CARGO.len(), by),
-                _ => form.amount = (form.amount + 10.0 * by as f64).clamp(0.0, 1_000_000.0),
+                _ => form.amount = step_cargo(form.amount, by > 0).clamp(0.0, MAX_TRADE_AMOUNT),
             }
         }
         Action::None

@@ -100,6 +100,16 @@ fn trade_step(amount: f64) -> f64 {
         .powf(amount.max(MIN_TRADE_AMOUNT).log10().floor())
         .max(MIN_TRADE_AMOUNT)
 }
+
+/// One `+`/`-` press on a cargo amount: up by [`trade_step`], down along the
+/// same breakpoints, so 100 steps down to 90 and 10 to 0. Callers clamp.
+fn step_cargo(amount: f64, up: bool) -> f64 {
+    if up {
+        amount + trade_step(amount)
+    } else {
+        amount - trade_step(amount - 1.0)
+    }
+}
 const MAP_SYSTEM_MAX: u16 = 81;
 const MAP_SLOT_COUNT: u16 = 16;
 
@@ -3225,12 +3235,8 @@ impl App {
                 .resources_at(form.origin)
                 .map_or(0.0, |stock| stock.get(kind).floor().max(0.0));
             let cur = form.cargo.get(kind);
-            let next = if delta > 0 {
-                cur + trade_step(cur)
-            } else {
-                cur - trade_step(cur - 1.0)
-            };
-            form.cargo.set(kind, next.clamp(0.0, have));
+            form.cargo
+                .set(kind, step_cargo(cur, delta > 0).clamp(0.0, have));
             return;
         }
         let kind = ShipKind::ALL[form.selected];
@@ -8431,6 +8437,39 @@ mod tests {
         app.handle_key(KeyCode::Enter, 1_000);
         assert!(app.mission_form.is_none(), "{}", app.status);
         assert_eq!(app.state.planned.len(), 1, "{}", app.status);
+    }
+
+    #[test]
+    fn mission_cargo_amount_steps_like_the_star_map() {
+        let mut state = GameState::new(1_000);
+        state.fleet.add(ShipKind::SmallCargo, 1);
+        let mut app = App::new(state);
+        app.open(Screen::Ops);
+        register_parked(&mut app, &[1]);
+        app.map_position = 2;
+        app.selected = 0;
+        app.handle_key(KeyCode::Enter, 1_000);
+        let amount = |app: &App| {
+            let text = render_text(app, 120, 40);
+            text.lines()
+                .find(|line| line.contains("how much to load"))
+                .map(str::to_owned)
+                .unwrap_or_else(|| panic!("{text}"))
+        };
+        // 0 → 10, nine tens to 100, nine hundreds to 1000, nine thousands
+        // to 10000, four ten-thousands to 50000.
+        for _ in 0..32 {
+            app.handle_key(KeyCode::Char('+'), 1_000);
+        }
+        assert!(amount(&app).contains("50000"), "{}", amount(&app));
+        for _ in 0..32 {
+            app.handle_key(KeyCode::Char('-'), 1_000);
+        }
+        assert!(
+            amount(&app).split_whitespace().any(|w| w == "0"),
+            "{}",
+            amount(&app)
+        );
     }
 
     fn colony_at(coord: Coord) -> Colony {
