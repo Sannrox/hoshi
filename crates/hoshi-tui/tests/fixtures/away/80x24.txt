@@ -21,4 +21,4 @@
   TIER 2
     Deep-core mining            400   200     —   3m 00s   NEED RESEARCH LAB 1
                                                                     ⏎ research
-      h/l  branch   j/k  select   enter  research      0000-0000-0000-00 gen 1
+      d  detail   h/l  branch   j/k  select            0000-0000-0000-00 gen 1
