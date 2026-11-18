@@ -160,11 +160,19 @@ pub fn inspector(
             .max()
             .unwrap_or(0)
             .max(6);
+        // Value columns widen for text values such as `unlocked`.
+        let v = detail
+            .deltas
+            .iter()
+            .flat_map(|d| [d.from.chars().count(), d.to.chars().count()])
+            .max()
+            .unwrap_or(0)
+            .max(6);
         out.push(Line::styled(
             if detail.complete {
-                format!("{:<w$} {:>6}", "EFFECT", "NOW")
+                format!("{:<w$} {:>v$}", "EFFECT", "NOW")
             } else {
-                format!("{:<w$} {:>6} {:>6} {:>6}", "EFFECT", "NOW", "NEXT", "Δ")
+                format!("{:<w$} {:>v$} {:>v$} {:>6}", "EFFECT", "NOW", "NEXT", "Δ")
             },
             t.label(),
         ));
@@ -173,7 +181,7 @@ pub fn inspector(
             if detail.complete {
                 let mut line = Line::from(vec![
                     Span::styled(format!("{:<w$} ", d.label), t.muted()),
-                    Span::styled(format!("{:>6}", d.from), t.text()),
+                    Span::styled(format!("{:>v$}", d.from), t.text()),
                 ]);
                 if i % 2 == 0 {
                     line = line.style(t.surface(crate::ui::Surface::Stripe));
@@ -181,22 +189,33 @@ pub fn inspector(
                 out.push(line);
                 continue;
             }
-            let change = match (d.from.parse::<f64>(), d.to.parse::<f64>()) {
+            // Percent effects (`+5%`) diff as percent points and keep the sign.
+            let unit = if d.from.ends_with('%') && d.to.ends_with('%') {
+                "%"
+            } else {
+                ""
+            };
+            let number = |s: &str| s.strip_suffix(unit).unwrap_or(s).parse::<f64>();
+            let change = match (number(&d.from), number(&d.to)) {
                 (Ok(a), Ok(b)) if (b - a).abs() > f64::EPSILON => {
                     let diff = b - a;
                     let text = if diff.fract().abs() < 1e-9 {
-                        format!("{diff:+.0}")
+                        format!("{diff:+.0}{unit}")
                     } else {
-                        format!("{diff:+.1}")
+                        format!("{diff:+.1}{unit}")
                     };
                     Span::styled(format!("{text:>6}"), t.intent(Intent::Success))
+                }
+                // A text value that changes (locked → unlocked) is new.
+                _ if d.from != d.to => {
+                    Span::styled(format!("{:>6}", "new"), t.intent(Intent::Success))
                 }
                 _ => Span::styled(format!("{:>6}", "—"), t.faint()),
             };
             let mut line = Line::from(vec![
                 Span::styled(format!("{:<w$} ", d.label), t.muted()),
-                Span::styled(format!("{:>6} ", d.from), t.text()),
-                Span::styled(format!("{:>6} ", d.to), t.strong()),
+                Span::styled(format!("{:>v$} ", d.from), t.text()),
+                Span::styled(format!("{:>v$} ", d.to), t.strong()),
                 change,
             ]);
             if i % 2 == 0 {

@@ -50,6 +50,28 @@ impl ModifierKind {
             ModifierKind::PollutionSink => "pollution sink",
         }
     }
+
+    /// Player-facing value of `value` (`per_level * level`) in the unit the
+    /// effect has in play: whole slots or levels, an unlock, or a percent
+    /// bonus on the stat it multiplies.
+    pub fn format_value(self, value: f64) -> String {
+        match self {
+            ModifierKind::FleetSlots
+            | ModifierKind::ExpeditionSlots
+            | ModifierKind::ColonySlots
+            | ModifierKind::Espionage => format!("{:+}", value.floor() as i64),
+            ModifierKind::Logistics if value >= 1.0 => "unlocked".into(),
+            ModifierKind::Logistics => "locked".into(),
+            _ => {
+                let percent = value * 100.0;
+                if (percent - percent.round()).abs() < 1e-9 {
+                    format!("{percent:+.0}%")
+                } else {
+                    format!("{percent:+.1}%")
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
