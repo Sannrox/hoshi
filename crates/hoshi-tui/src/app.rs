@@ -10702,6 +10702,29 @@ mod tests {
             .unwrap_or_else(|| panic!("{text}"));
         let cells: Vec<_> = row.split_whitespace().collect();
         assert!(cells.ends_with(&["locked", "unlocked", "new"]), "{row}");
+        // A drive reads its exhaust velocity in m/s, not the per-level fraction.
+        app.tree_branch = TechBranch::Military;
+        app.state.tech_levels.insert("energy".into(), 1);
+        app.selected = app
+            .overview_techs()
+            .iter()
+            .position(|spec| spec.id == "impulse_drive")
+            .unwrap();
+        let ve = app.state.config.orbits.impulse_ve;
+        let (now, next) = (format!("{ve:.0}"), format!("{:.0}", ve * 1.05));
+        let step = format!("{:+.0}", ve * 0.05);
+        for (width, height) in [(80, 24), (40, 24)] {
+            let text = render_text(&app, width, height);
+            let row = text
+                .lines()
+                .find(|line| line.contains("exhaust m/s"))
+                .unwrap_or_else(|| panic!("{width}x{height}:\n{text}"));
+            let cells: Vec<_> = row.split_whitespace().collect();
+            assert!(
+                cells.ends_with(&[now.as_str(), next.as_str(), step.as_str()]),
+                "{width}x{height}: {row}"
+            );
+        }
     }
 
     #[test]

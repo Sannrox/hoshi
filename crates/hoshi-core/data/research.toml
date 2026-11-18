@@ -71,7 +71,7 @@ modifiers = []
 [[tech]]
 id = "combustion_drive"
 name = "Combustion Drive"
-purpose = "Speeds ships that use this drive."
+purpose = "Speeds ships that use this drive and raises its exhaust velocity, so missions burn less fuel."
 branch = "military"
 tier = 2
 iron = 400.0
@@ -82,12 +82,15 @@ base_seconds = 240.0
 time_growth = 2.0
 prereq_buildings = [{ building = "research_lab", level = 1 }]
 prereq_techs = [{ id = "energy", level = 1 }]
-modifiers = [{ kind = "drive_speed", per_level = 0.1 }]
+modifiers = [
+    { kind = "drive_speed", per_level = 0.1 },
+    { kind = "exhaust_velocity", per_level = 0.05 },
+]
 
 [[tech]]
 id = "impulse_drive"
 name = "Impulse Drive"
-purpose = "Speeds ships that use this drive."
+purpose = "Speeds ships that use this drive and raises its exhaust velocity, so missions burn less fuel."
 branch = "military"
 tier = 2
 iron = 2000.0
@@ -98,12 +101,15 @@ base_seconds = 480.0
 time_growth = 2.0
 prereq_buildings = [{ building = "research_lab", level = 2 }]
 prereq_techs = [{ id = "energy", level = 1 }]
-modifiers = [{ kind = "drive_speed", per_level = 0.2 }]
+modifiers = [
+    { kind = "drive_speed", per_level = 0.2 },
+    { kind = "exhaust_velocity", per_level = 0.05 },
+]
 
 [[tech]]
 id = "hyperspace_drive"
 name = "Hyperspace Drive"
-purpose = "Speeds ships that use this drive."
+purpose = "Speeds ships that use this drive and raises its exhaust velocity, so missions burn less fuel."
 branch = "military"
 tier = 5
 iron = 10000.0
@@ -114,7 +120,10 @@ base_seconds = 720.0
 time_growth = 2.0
 prereq_buildings = [{ building = "research_lab", level = 7 }]
 prereq_techs = [{ id = "hyperspace", level = 3 }]
-modifiers = [{ kind = "drive_speed", per_level = 0.3 }]
+modifiers = [
+    { kind = "drive_speed", per_level = 0.3 },
+    { kind = "exhaust_velocity", per_level = 0.05 },
+]
 
 [[tech]]
 id = "espionage"

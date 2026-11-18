@@ -210,6 +210,7 @@ silent extra departure; they extend this list.
 | High-energy is a Hohmann scale factor, not a Lambert solver | One extra burn multiplier; still two burns and a coast. Windows use the shortened coast with the same 180° lead. |
 | Gravity assist is a delta-v discount when a body sits between the two radii | No patched-conic flyby; geometry is radius-only. |
 | Combined vehicle uses the lowest exhaust velocity among its ships | One stack, one rocket equation. |
+| Drive research raises exhaust velocity linearly per level, capped at the next drive's base value | Better engines get more velocity from the same propellant; the cap keeps each drive below the next one. |
 | Gravity-well burns are scaled below LEO so chemical ships can leave | Full well escape would demand unplayable mass ratios on the idle clock. |
 | Hull points map to kilograms through `kg_per_hull` | Keeps a combustion cargo inside a mid-game deuterium stockpile for a 1–1.5 AU hop. |
 | A hop between systems costs escape plus capture delta-v, with no interstellar cruise burn | Each star gets its own gravity well, so a farther system never costs less fuel. Every other system costs the same; time still grows with distance. |

@@ -3,6 +3,7 @@
 use crate::buildings::BuildingKind;
 use crate::defences::DefenceKind;
 use crate::fleets::Coord;
+use crate::research::ModifierKind;
 use crate::ships::{Fleet, ShipKind};
 use crate::state::{GameState, ResourceKind, Resources};
 
@@ -379,10 +380,30 @@ impl GameState {
             deltas: spec
                 .modifiers
                 .iter()
-                .map(|m| DeltaLine {
-                    label: m.kind.label().to_string(),
-                    from: m.kind.format_value(m.per_level * f64::from(level)),
-                    to: m.kind.format_value(m.per_level * f64::from(next)),
+                .map(|m| match m.kind {
+                    // Exhaust velocity reads as the drive's own m/s, after the cap.
+                    ModifierKind::ExhaustVelocity => {
+                        let now = self.drive_ve_at(id, level);
+                        let capped = self
+                            .config
+                            .orbits
+                            .ve_cap_for_drive(id)
+                            .is_some_and(|cap| now >= cap);
+                        DeltaLine {
+                            label: if capped {
+                                format!("{} (cap)", m.kind.label())
+                            } else {
+                                m.kind.label().to_string()
+                            },
+                            from: format!("{now:.0}"),
+                            to: format!("{:.0}", self.drive_ve_at(id, next)),
+                        }
+                    }
+                    _ => DeltaLine {
+                        label: m.kind.label().to_string(),
+                        from: m.kind.format_value(m.per_level * f64::from(level)),
+                        to: m.kind.format_value(m.per_level * f64::from(next)),
+                    },
                 })
                 .collect(),
             requirements,
@@ -1182,15 +1203,50 @@ mod tests {
             let detail = state
                 .describe(DetailSubject::Tech(tech.id.clone()), None)
                 .unwrap();
-            for value in detail.deltas.iter().flat_map(|d| [&d.from, &d.to]) {
-                let unit = value.ends_with('%')
-                    || matches!(value.as_str(), "locked" | "unlocked")
-                    || value
-                        .parse::<i64>()
-                        .is_ok_and(|_| value.starts_with(['+', '-']));
-                assert!(unit, "{}: {value}", tech.id);
+            for d in &detail.deltas {
+                if d.label.starts_with("exhaust m/s") {
+                    assert!(d.from.parse::<u32>().is_ok(), "{}: {}", tech.id, d.from);
+                    continue;
+                }
+                for value in [&d.from, &d.to] {
+                    let unit = value.ends_with('%')
+                        || matches!(value.as_str(), "locked" | "unlocked")
+                        || value
+                            .parse::<i64>()
+                            .is_ok_and(|_| value.starts_with(['+', '-']));
+                    assert!(unit, "{}: {value}", tech.id);
+                }
             }
         }
+    }
+
+    #[test]
+    fn drive_tech_reads_exhaust_velocity_up_to_its_cap() {
+        let mut state = GameState::new(0);
+        let line = |state: &GameState| {
+            let detail = state
+                .describe(DetailSubject::Tech("impulse_drive".into()), None)
+                .unwrap();
+            let d = detail
+                .deltas
+                .iter()
+                .find(|d| d.label.starts_with("exhaust m/s"))
+                .unwrap()
+                .clone();
+            (d.label, d.from, d.to)
+        };
+        let row = |label: &str, from: &str, to: &str| (label.into(), from.into(), to.into());
+        let ve = state.config.orbits.impulse_ve;
+        state.tech_levels.insert("impulse_drive".into(), 1);
+        let (now, next) = (ve * 1.05, ve * 1.10);
+        assert_eq!(
+            line(&state),
+            row("exhaust m/s", &format!("{now:.0}"), &format!("{next:.0}"))
+        );
+        // Past the next drive's base the value holds and the label says so.
+        state.tech_levels.insert("impulse_drive".into(), 1_000);
+        let cap = format!("{:.0}", state.config.orbits.hyperspace_ve);
+        assert_eq!(line(&state), row("exhaust m/s (cap)", &cap, &cap));
     }
 
     #[test]
