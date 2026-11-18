@@ -1,0 +1,6 @@
+[env]
+# Build the bundled SQLite without memory-status tracking. With it on, every
+# allocation by any connection takes one process-wide lock, so parallel tests
+# that open saves spend most of their time in the kernel. Nothing in hoshi
+# reads SQLite's memory statistics. An existing LIBSQLITE3_FLAGS wins.
+LIBSQLITE3_FLAGS = "-DSQLITE_DEFAULT_MEMSTATUS=0"
