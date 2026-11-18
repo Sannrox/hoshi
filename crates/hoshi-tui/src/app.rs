@@ -1519,10 +1519,25 @@ impl App {
         ])
         .areas(area);
         let hub = Hub::of(self.screen);
-        let crumbs: Vec<String> = vec![hub.title().into(), hubs::label(self.screen).into()];
-        // " ◆ HOSHI  │  " then crumbs joined by " / ".
-        let left = 13 + crumbs.iter().map(|c| c.chars().count() + 3).sum::<usize>() - 3;
-        let right = self.navbar_right(usize::from(area.width).saturating_sub(left));
+        let full: Vec<String> = vec![hub.title().into(), hubs::label(self.screen).into()];
+        // On a narrow row the crumbs give way, screen name last, until the
+        // raid chip fits, with its target inside the warning window. When nothing makes room,
+        // the full crumbs stay with whatever right side still fits beside them.
+        let layouts: Vec<_> = [full.clone(), full[1..].to_vec(), Vec::new()]
+            .into_iter()
+            .map(|crumbs| {
+                // " ◆ HOSHI  │  " then crumbs joined by " / ".
+                let joined = crumbs.iter().map(|c| c.chars().count() + 3).sum::<usize>();
+                let left = 13 + joined.saturating_sub(3);
+                let right = self.navbar_right(usize::from(area.width).saturating_sub(left));
+                (crumbs, right)
+            })
+            .collect();
+        let pick = layouts
+            .iter()
+            .position(|(_, (_, raid_shown))| *raid_shown)
+            .unwrap_or(0);
+        let (crumbs, (right, _)) = layouts.into_iter().nth(pick).unwrap_or_default();
         frame.render_widget(
             Navbar {
                 theme: t,
@@ -1853,47 +1868,81 @@ impl App {
         ))
     }
 
-    /// Right side of the navbar within `room` columns. The world label is
-    /// cut to fit so a long name never pushes the raid timer off the bar.
-    fn navbar_right(&self, room: usize) -> Vec<Span<'static>> {
+    /// Right side of the navbar, fitted to `room` columns. The navbar drops
+    /// the whole right side when it overflows, so pieces are added in order of
+    /// importance and each only if it still fits: the raid chip first, then
+    /// the run tags while room stays for the selected world's coordinate,
+    /// then the world label cut to fit. The flag is false when a raid is
+    /// scheduled but its chip did not fit, or did not fit with its target.
+    fn navbar_right(&self, room: usize) -> (Vec<Span<'static>>, bool) {
         let t = &self.theme;
+        // One gap to the crumbs and the navbar's trailing space.
+        let room = room.saturating_sub(2);
         let mut spans = Vec::new();
+        let mut used = 0;
+        let mut raid_shown = true;
+        // `reserve` keeps columns free for a piece placed later.
+        let mut add = |spans: &mut Vec<Span<'static>>, span: Span<'static>, reserve: usize| {
+            let fits = used + span.width() + 2 + reserve <= room;
+            if fits {
+                used += span.width() + 2;
+                spans.push(span);
+                spans.push(Span::raw("  "));
+            }
+            fits
+        };
         // The next raid shows as soon as it is scheduled; inside the warning
-        // window it turns into a ticking countdown.
+        // window it turns into a ticking countdown and names its target, as
+        // the bridge alert and `hoshi state` do, so a raid on a colony does
+        // not read as a warning about home. The name gets a third of the
+        // room, then the bare coordinate, then only the timer.
         if let Some(secs) = self.state.next_raid_in_secs() {
-            let (text, intent) = match self.state.raid_countdown_secs() {
+            let countdown = self.state.raid_countdown_secs();
+            let (text, intent) = match countdown {
                 Some(_) => (ui::spans::countdown(secs), Intent::Danger),
                 None => (ui::spans::duration(secs), Intent::Warning),
             };
-            spans.push(ui::spans::tag(t, &format!("RAID {text}"), intent, false));
-            spans.push(Span::raw("  "));
+            let target = countdown
+                .and_then(|_| self.state.upcoming_raid())
+                .map(|raid| raid.target);
+            let named = target.map(|at| {
+                let name = hoshi_core::fit_label(self.state.world_name(at), at, room / 3);
+                format!("RAID {text} → {name}")
+            });
+            let bare = target.map(|at| format!("RAID {text} → {at}"));
+            let shown = [named, bare, Some(format!("RAID {text}"))]
+                .into_iter()
+                .flatten()
+                .position(|chip| add(&mut spans, ui::spans::tag(t, &chip, intent, false), 0));
+            raid_shown = shown.is_some_and(|form| target.is_none() || form < 2);
         }
+        let world = (self.screen != Screen::Overview).then(|| self.selected_coord());
+        let reserve = world.map_or(EMPIRE.chars().count(), |coord| coord.to_string().len());
         if self.state.is_modified() {
-            spans.push(ui::spans::tag(t, "MODIFIED", Intent::Warning, false));
-            spans.push(Span::raw("  "));
+            let tag = ui::spans::tag(t, "MODIFIED", Intent::Warning, false);
+            add(&mut spans, tag, reserve);
         }
         if let Some(name) = &self.save_name {
-            spans.push(Span::styled(name.clone(), t.muted()));
-            spans.push(Span::raw("  "));
+            add(&mut spans, Span::styled(name.clone(), t.muted()), reserve);
         }
         if let Some(run) = self.state.species.as_ref() {
-            spans.push(Span::styled(run.name.clone(), t.muted()));
-            spans.push(Span::raw("  "));
+            add(
+                &mut spans,
+                Span::styled(run.name.clone(), t.muted()),
+                reserve,
+            );
         }
-        // One gap to the crumbs and the navbar's trailing space.
-        let used: usize = spans.iter().map(Span::width).sum::<usize>() + 2;
-        if self.screen == Screen::Overview {
-            spans.push(Span::styled(EMPIRE, t.text()));
-            return spans;
-        }
-        let coord = self.selected_coord();
-        let label = hoshi_core::fit_label(
-            self.state.world_name(coord),
-            coord,
-            room.saturating_sub(used),
+        let left = room.saturating_sub(used);
+        let label = world.map_or_else(
+            || EMPIRE.to_string(),
+            |coord| hoshi_core::fit_label(self.state.world_name(coord), coord, left),
         );
-        spans.push(Span::styled(label, t.text()));
-        spans
+        if label.chars().count() <= left {
+            spans.push(Span::styled(label, t.text()));
+        } else if spans.last().is_some_and(|span| span.content == "  ") {
+            spans.pop();
+        }
+        (spans, raid_shown)
     }
 
     /// Header cells for the selected planet: materials (quoted, fuel, extras),
@@ -6337,7 +6386,11 @@ mod tests {
         assert!(text.contains(&format!("▌  {first}")), "{text}");
         // Research is empire-wide: no planet in the top bar or subtitle.
         assert!(text.contains("Empire · research energy → lv1"), "{text}");
-        assert!(!text.contains("1:1:1"), "{text}");
+        // The raid chip may name its target; nothing else names a planet.
+        let header = text.lines().next().unwrap_or_default();
+        assert!(header.trim_end().ends_with("Empire"), "{header}");
+        let below = text.lines().skip(1).collect::<Vec<_>>().join("\n");
+        assert!(!below.contains("1:1:1"), "{text}");
         assert!(!row("BRIDGE ›").contains("planet"), "{text}");
         // A queued tech is marked on its own branch tab.
         app.tree_branch = TechBranch::Military;
@@ -9453,6 +9506,51 @@ mod tests {
             assert!(bar.contains("RAID"), "{width}: {bar}");
             assert!(bar.contains(&colony.to_string()), "{width}: {bar}");
         }
+    }
+
+    #[test]
+    fn the_raid_chip_names_the_world_the_raid_will_hit() {
+        let (mut app, colony) = app_with_named_worlds();
+        app.state.config.raid.enabled = true;
+        app.state.next_raid_target = Some(colony);
+        app.open(Screen::Planet);
+        // Before the warning window the chip is only a timer, as in `hoshi state`.
+        app.state.next_raid_at = Some(app.state.last_tick_unix + 7 * 3_600);
+        let bar = render_text(&app, 80, 24)
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        assert!(bar.contains("RAID 7h 00m "), "{bar}");
+        assert!(!bar.contains('→'), "{bar}");
+        // On a narrow row the crumbs give way to the timer.
+        let bar = render_text(&app, 40, 12)
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        assert!(bar.contains("RAID 7h 00m"), "{bar}");
+        // Inside it the chip names the colony; home is selected, so the
+        // crumb shows home and only the chip carries the colony.
+        app.state.next_raid_at = Some(app.state.last_tick_unix + 1_800);
+        let bar = render_text(&app, 80, 24)
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        assert!(bar.contains("RAID 30:00 → "), "{bar}");
+        assert!(bar.contains(&format!("({colony})")), "{bar}");
+        assert!(
+            bar.trim_end().ends_with(&format!("({})", app.state.home)),
+            "{bar}"
+        );
+        let bar = render_text(&app, 40, 12)
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        assert!(bar.contains("RAID 30:00"), "{bar}");
+        assert!(bar.contains(&colony.to_string()), "{bar}");
     }
 
     #[test]
