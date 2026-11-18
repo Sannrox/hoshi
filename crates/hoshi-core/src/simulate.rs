@@ -105,10 +105,15 @@ fn energy_recovery_matrix(config: &BalanceConfig) -> Vec<EnergyRecoveryRow> {
                 .into_iter()
                 .map(move |slot| energy_recovery(config.clone(), planet, slot))
         });
-    let ice_floor = PlanetType::Ice
-        .slot_range()
-        .map(|slot| energy_recovery(config.clone(), PlanetType::Ice, slot));
-    representative.chain(ice_floor).collect()
+    // Every ice and gas-giant slot must power a level-1 synthesizer from solar.
+    let floor = [PlanetType::Ice, PlanetType::GasGiant]
+        .into_iter()
+        .flat_map(|planet| {
+            planet
+                .slot_range()
+                .map(move |slot| energy_recovery(config.clone(), planet, slot))
+        });
+    representative.chain(floor).collect()
 }
 
 pub fn energy_recovery(
@@ -124,8 +129,8 @@ pub fn energy_recovery(
         system: 1,
         position: slot,
     };
-    let ice_floor = planet == PlanetType::Ice && PlanetType::Ice.slot_range().contains(&slot);
-    let size = if ice_floor {
+    let floor = planet != PlanetType::Rocky && planet.slot_range().contains(&slot);
+    let size = if floor {
         crate::planet_profile(state.galaxy_seed, coord, state.generator_version).1
     } else {
         match planet {
@@ -135,13 +140,13 @@ pub fn energy_recovery(
         }
     };
     let mut buildings = state.config.starting_buildings;
-    if ice_floor {
-        // Ice floor is deuterium under the cap, not the home mine package.
+    if floor {
+        // The floor is deuterium under the cap, not the home mine package.
         buildings.metal_mine = 0;
         buildings.crystal_mine = 0;
     }
-    // Ice floor: cargo can pay construction; mines are not the contract.
-    let resources = if ice_floor {
+    // The floor: cargo can pay construction; mines are not the contract.
+    let resources = if floor {
         crate::Resources::from_parts(1e8, 1e8, 1e8)
     } else {
         state.config.starting_resources
@@ -150,7 +155,7 @@ pub fn energy_recovery(
         state.home_kind = planet;
         state.home_size = size;
         state.buildings = buildings;
-        if ice_floor {
+        if floor {
             state.resources = resources;
         }
     } else {
@@ -290,7 +295,7 @@ impl SimReport {
             .first()
             .and_then(|row| row.elapsed_secs)
             .is_some_and(|secs| secs <= self.pacing.energy_recovery_secs)
-            && self.ice_energy_floor_ok()
+            && self.energy_floor_ok()
             && self.first_upgrade_ok()
             && self.mine_goal_ok()
             && self.bridge_ok()
@@ -301,18 +306,22 @@ impl SimReport {
             && self.raided_shipyard_ok()
     }
 
-    fn ice_energy_floor_ok(&self) -> bool {
-        let rows: Vec<_> = self
-            .energy_recovery
+    /// Ice and gas-giant slots each reach a level-1 synthesizer at full power
+    /// with solar under the cap.
+    fn energy_floor_ok(&self) -> bool {
+        [PlanetType::Ice, PlanetType::GasGiant]
             .iter()
-            .filter(|row| {
-                row.planet == PlanetType::Ice && PlanetType::Ice.slot_range().contains(&row.slot)
+            .all(|&planet| {
+                let rows: Vec<_> = self
+                    .energy_recovery
+                    .iter()
+                    .filter(|row| row.planet == planet && planet.slot_range().contains(&row.slot))
+                    .collect();
+                !rows.is_empty()
+                    && rows
+                        .iter()
+                        .all(|row| row.elapsed_secs.is_some() && !row.cap_binds)
             })
-            .collect();
-        !rows.is_empty()
-            && rows
-                .iter()
-                .all(|row| row.elapsed_secs.is_some() && !row.cap_binds)
     }
 
     pub fn frontier_ok(&self) -> bool {
@@ -773,7 +782,7 @@ mod energy_tests {
         for row in &rows {
             println!("{row:?}");
         }
-        assert_eq!(rows.len(), 13);
+        assert_eq!(rows.len(), 17);
         assert!(
             rows[0]
                 .elapsed_secs
@@ -785,8 +794,9 @@ mod energy_tests {
             assert!(!row.cap_binds, "{row:?}");
             assert!(row.elapsed_secs.is_some(), "{row:?}");
         }
+        // Ice and gas-giant slots power a level-1 synthesizer from solar alone.
         for row in rows.iter().filter(|row| {
-            row.planet == PlanetType::Ice && PlanetType::Ice.slot_range().contains(&row.slot)
+            row.planet != PlanetType::Rocky && row.planet.slot_range().contains(&row.slot)
         }) {
             assert!(row.elapsed_secs.is_some(), "{row:?}");
             assert!(!row.cap_binds, "{row:?}");

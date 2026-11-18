@@ -505,6 +505,8 @@ water_ice = 0.0
 helium_3 = 0.50
 deuterium = 0.0
 energy = 0.0
+# Gas giants spawn small; their floating collectors get a solar cap of at least 14.
+solar_cap_min = 14
 
 [espionage]
 # score = probes * probe_weight + (own_espionage - target_level) * level_weight

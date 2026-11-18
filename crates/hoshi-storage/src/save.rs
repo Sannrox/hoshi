@@ -10421,6 +10421,22 @@ mod tests {
     }
 
     #[test]
+    fn a_saved_gas_giant_colony_loads_with_the_type_solar_cap() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        save_state(&mut conn, &sample_state()).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        let colony = loaded
+            .colonies
+            .iter()
+            .find(|c| c.kind == hoshi_core::PlanetType::GasGiant)
+            .unwrap();
+        // The cap is derived on load, not stored: size alone would give 8 or 9.
+        let by_size = loaded.config.solar_plant.max_level(colony.size);
+        assert!(by_size < 14, "{by_size}");
+        assert_eq!(loaded.max_solar_level(colony.coord), Some(14));
+    }
+
+    #[test]
     fn a_save_inside_the_pirate_arc_loads_unchanged_and_keeps_its_next_offer() {
         let mut cfg = BalanceConfig::default();
         cfg.raid.enabled = false;

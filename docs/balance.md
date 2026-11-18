@@ -325,8 +325,11 @@ unchanged. Larger farms therefore retain the same resource cost per unit of
 rated power.
 
 `[solar_plant] max_level_base = 8` and `max_level_per_size = 0.05` give a cap of
-`8 + floor(size / 20)`. The generated ranges are rocky 14–17, ice 12–14, and gas
-8–9. Existing levels above the cap remain intact; new upgrades, including queued
+`8 + floor(size / 20)`. The generated ranges are rocky 14–17 and ice 12–14. A
+planet type's `solar_cap_min` raises its cap to at least that level; it is 0 for
+rocky and ice and 14 for gas giants, whose size alone would give 8–9. The cap is
+derived from size and type on load, so existing colonies need no migration.
+Existing levels above the cap remain intact; new upgrades, including queued
 upgrades, cannot raise them. The inspector, build refusal and advisor explain
 when the next power source must be a reactor.
 
@@ -340,8 +343,11 @@ unfueled fission reactor does not draw fabrication energy, so building one from
 local deposits cannot make the planet poorer than leaving it off. Ice stays a
 deuterium specialist: further mines need imported `reactor_fuel` or an idled
 mine. The advisor does not tell the player to add fission on that unfueled ice
-world. `energy_recovery`
-includes ice at slots 9–12; those rows must recover with the synthesizer.
+world. Gas giants (slots 13–16) follow the same floor: at a cap of 14 their solar
+powers deuterium synthesizer 1 at full rate, needing levels 12, 13, 13 and 14
+from slot 13 out, and the advisor sends them to an idled mine rather than
+fission. `energy_recovery` includes ice at slots 9–12 and gas giants at slots
+13–16; those rows must recover with the synthesizer.
 Rocky home still meets `energy_recovery_secs`. First-reactor hours are unchanged:
 ice and solar knobs did not move rocky home.
 

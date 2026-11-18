@@ -43,7 +43,8 @@ impl PlanetType {
     }
 }
 
-/// Production multipliers added through [`crate::GameState::modifier_for`].
+/// Per-type production multipliers, added through
+/// [`crate::GameState::modifier_for`], and the type's solar cap floor.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlanetTypeBonus {
     pub iron: f64,
@@ -53,6 +54,9 @@ pub struct PlanetTypeBonus {
     pub helium_3: f64,
     pub deuterium: f64,
     pub energy: f64,
+    /// Lowest solar plant cap on this type, whatever its size; 0 keeps the
+    /// size formula. See [`crate::GameState::max_solar_level`].
+    pub solar_cap_min: u32,
 }
 
 impl PlanetTypeBonus {
@@ -64,6 +68,7 @@ impl PlanetTypeBonus {
         helium_3: 0.0,
         deuterium: 0.0,
         energy: 0.0,
+        solar_cap_min: 0,
     };
 
     pub(crate) fn chain_deposit_factor(&self, good: &str) -> f64 {
@@ -104,6 +109,7 @@ impl Default for PlanetTypeCatalog {
                 helium_3: 0.0,
                 deuterium: 0.0,
                 energy: 0.0,
+                solar_cap_min: 0,
             },
             ice: PlanetTypeBonus {
                 iron: 0.0,
@@ -113,6 +119,7 @@ impl Default for PlanetTypeCatalog {
                 helium_3: 0.0,
                 deuterium: 0.25,
                 energy: 0.0,
+                solar_cap_min: 0,
             },
             gas_giant: PlanetTypeBonus {
                 iron: 0.0,
@@ -122,6 +129,7 @@ impl Default for PlanetTypeCatalog {
                 helium_3: 0.50,
                 deuterium: 0.0,
                 energy: 0.0,
+                solar_cap_min: 14,
             },
         }
     }
