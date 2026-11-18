@@ -383,6 +383,44 @@ impl GameState {
         output_factor(asset, self.last_tick_unix)
     }
 
+    /// `buildings` with every building that is offline at the last tick set to
+    /// level 0: one with an open work order, or inside its offline window.
+    /// The same rule as [`Self::building_health`] returning 0. Offline windows
+    /// open and close on maintenance events, which already split catch-up, so
+    /// a production segment sees one answer throughout.
+    pub(crate) fn without_offline(
+        &self,
+        coord: Coord,
+        mut buildings: crate::Buildings,
+    ) -> crate::Buildings {
+        for asset in &self.maintenance.assets {
+            if asset.kind != AssetKind::Building || asset.coord != coord {
+                continue;
+            }
+            let Some(kind) = asset
+                .key
+                .rsplit(':')
+                .next()
+                .and_then(BuildingKind::from_key)
+            else {
+                continue;
+            };
+            let ordered = self
+                .maintenance
+                .orders
+                .iter()
+                .any(|o| o.asset_id == asset.id);
+            if ordered
+                || asset
+                    .offline_until
+                    .is_some_and(|until| until > self.last_tick_unix)
+            {
+                buildings.set(kind, 0);
+            }
+        }
+        buildings
+    }
+
     /// When an offline building comes back: the later of its repair order's
     /// end and its offline time, if either is still ahead of the last tick.
     /// The Buildings list reads this to show the time left.
@@ -1187,6 +1225,54 @@ mod tests {
                 .complete_work_order(too_soon, Actor::Player, due_ends)
                 .is_ok()
         );
+    }
+
+    /// An offline mine's draw leaves the world's consumption for exactly its
+    /// work order, and one long catch-up across its return equals small steps.
+    #[test]
+    fn offline_building_draws_no_energy_for_its_window() {
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.enabled = false;
+        cfg.market.enabled = false;
+        let mut state = GameState::with_config(1_000, cfg);
+        state.resources.iron = 1_000.0;
+        state.resources.silicon = 1_000.0;
+        state.sync_maintenance_assets(1_000);
+        let home = state.home;
+        let full = state.energy_consumed_at(home);
+        let mine = state
+            .maintenance
+            .assets
+            .iter()
+            .find(|a| a.key.ends_with(":metal_mine"))
+            .unwrap()
+            .id;
+        state
+            .schedule_maintenance(mine, PlanKind::Time, Actor::Player, 1_000)
+            .unwrap();
+        let ends = state.maintenance.orders[0].ends_at;
+        assert!(state.energy_consumed_at(home) < full - 1e-9);
+
+        let end = ends + 3_600;
+        let mut long = state.clone();
+        long.catch_up(end);
+        let mut stepped = state.clone();
+        for at in (1_000..end).step_by(97) {
+            stepped.catch_up(at);
+            let draw = stepped.energy_consumed_at(home);
+            if at < ends {
+                assert!(draw < full - 1e-9, "at {at}: {draw} vs {full}");
+            }
+        }
+        stepped.catch_up(end);
+        assert!((long.energy_consumed_at(home) - full).abs() < 1e-9);
+        for kind in crate::ResourceKind::ALL {
+            let (a, b) = (long.resources.get(kind), stepped.resources.get(kind));
+            assert!(
+                (a - b).abs() <= 1e-6 * a.abs().max(1.0),
+                "{kind:?}: {a} vs {b}"
+            );
+        }
     }
 
     #[test]
