@@ -56,6 +56,7 @@
       "description": "Home planet defence counts and dome/station levels."
     },
     "missions": { "type": "array" },
+    "routes": { "type": "array", "description": "Repeating transports (fleet route): id, origin, dest, interval_secs, next_at and cargo." },
     "spy_reports": {
       "type": "array",
       "description": "Arrived spy reports with source, observed_at, age_secs and confidence. Each outpost also carries its latest arrived report. Pending reports are omitted."

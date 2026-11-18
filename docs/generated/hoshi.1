@@ -487,6 +487,21 @@ hoshi fleet deploy home 1:1:9 3600 iron=2000 large_cargo:2
 .fi
 .PP
 Environment: HOSHI_SAVE, HOSHI_BALANCE
+.SS fleet route
+Repeat a transport between owned worlds every INTERVAL_SECS until unrouted. A launch that cannot leave (no fuel, no ships) skips and is logged.
+.PP
+Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair\-play restrictions.
+.PP
+.nf
+hoshi fleet route FROM TO INTERVAL_SECS RESOURCE=AMOUNT... SHIP:COUNT...
+.fi
+.PP
+Example:
+.nf
+hoshi fleet route 1:1:10 home 21600 water_ice=500 small_cargo:1
+.fi
+.PP
+Environment: HOSHI_SAVE, HOSHI_BALANCE
 .SS fleet send
 Dispatch ships on a mission.
 .PP
@@ -499,6 +514,21 @@ hoshi fleet send FROM TO MISSION SHIP:COUNT...
 Example:
 .nf
 hoshi fleet send home 1:1:2 expedition small_cargo:1
+.fi
+.PP
+Environment: HOSHI_SAVE, HOSHI_BALANCE
+.SS fleet unroute
+Stop a repeating transport. Flights already out finish.
+.PP
+Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair\-play restrictions.
+.PP
+.nf
+hoshi fleet unroute ID
+.fi
+.PP
+Example:
+.nf
+hoshi fleet unroute 1
 .fi
 .PP
 Environment: HOSHI_SAVE, HOSHI_BALANCE

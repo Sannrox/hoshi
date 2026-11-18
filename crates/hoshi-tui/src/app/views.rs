@@ -1420,7 +1420,7 @@ impl App {
         let below = if form.mission == Mission::Invade {
             8
         } else if form.mission.carries_cargo() {
-            DISPATCH_CARGO.len()
+            DISPATCH_CARGO.len() + 2
         } else {
             3
         };
@@ -1603,6 +1603,44 @@ impl App {
                     },
                 ),
             ]));
+        }
+        if form.repeats() {
+            let on = form.repeat_row();
+            if on {
+                selected_line = lines.len();
+            }
+            let every = match form.repeat_secs() {
+                Some(secs) => format!("every {}", duration(secs)),
+                None => "once".to_string(),
+            };
+            let mut spans = vec![
+                Span::styled(if on { "▌" } else { " " }, t.intent(Intent::Primary)),
+                Span::styled(
+                    format!("{:<w$} ", "repeat"),
+                    if on { t.strong() } else { t.text() },
+                ),
+            ];
+            if on {
+                spans.push(keycap(t, "-"));
+                spans.push(Span::styled(format!(" {every} "), t.strong()));
+                spans.push(keycap(t, "+"));
+            } else {
+                spans.push(Span::styled(
+                    format!("   {every}"),
+                    if form.repeat_secs().is_some() {
+                        t.text()
+                    } else {
+                        t.faint()
+                    },
+                ));
+            }
+            lines.push(Line::from(spans));
+            if form.repeat_secs().is_some() {
+                lines.push(Line::styled(
+                    " relaunches until canceled in Fleet / Ops; skips when short",
+                    t.muted(),
+                ));
+            }
         }
         lines.push(Line::default());
         if form.ships.is_empty() {
@@ -2274,8 +2312,12 @@ impl App {
             ("vehicles", schedule.vehicles.len().to_string()),
             ("missions", schedule.missions.len().to_string()),
             ("alerts", schedule.alerts.len().to_string()),
+            ("routes", self.state.routes.len().to_string()),
         ])];
-        if schedule.vehicles.is_empty() && schedule.missions.is_empty() {
+        if schedule.vehicles.is_empty()
+            && schedule.missions.is_empty()
+            && self.state.routes.is_empty()
+        {
             let mut head = head;
             head.push(Line::default());
             head.extend(callout_lines(
@@ -2343,7 +2385,36 @@ impl App {
                 self.chip(kind, Intent::Danger, false),
             ]);
         }
+        groups.push((rows.len(), "routes".into()));
+        for route in &self.state.routes {
+            let state = match self.route_last_skip(route.id) {
+                Some(reason) => {
+                    Line::styled(format!("last skip: {reason}"), t.intent(Intent::Danger))
+                }
+                None => Line::styled(
+                    format!("next {}", duration(route.next_at.saturating_sub(now))),
+                    t.text(),
+                ),
+            };
+            rows.push(vec![
+                Line::styled(format!("route {}", route.id), t.text()),
+                Line::styled(
+                    format!(
+                        "{} → {}  every {}  {}",
+                        route.origin,
+                        route.dest,
+                        duration(route.interval_secs),
+                        route.cargo.brief()
+                    ),
+                    t.muted(),
+                ),
+                state,
+            ]);
+        }
+        // An empty group shares its index with the next; keep the later label.
+        groups.reverse();
         groups.dedup_by_key(|(at, _)| *at);
+        groups.reverse();
         groups.retain(|(at, _)| *at < rows.len());
         ListView {
             head,
