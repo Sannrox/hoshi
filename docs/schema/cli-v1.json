@@ -185,7 +185,7 @@
     },
     "planned": {
       "type": "array",
-      "description": "In-flight PlanMission rows with transfer, customer, delta-v and arrival."
+      "description": "In-flight PlanMission rows with transfer, customer, delta-v, `fuel_deuterium` (deuterium debited at the origin) and arrival."
     },
     "windows": {
       "type": "array",
