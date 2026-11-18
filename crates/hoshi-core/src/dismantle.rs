@@ -333,8 +333,10 @@ impl GameState {
     }
 
     pub fn energy_consumed_at(&self, coord: Coord) -> f64 {
+        // An offline building produces nothing and draws nothing.
         let draw = self
             .operational_buildings_at(coord)
+            .map(|buildings| self.without_offline(coord, buildings))
             .map(|buildings| {
                 let mut draw = self.config.energy_draw(&buildings);
                 // Skip rated fabrication draw when there is nothing to enrich or burn.
