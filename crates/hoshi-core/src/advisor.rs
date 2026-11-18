@@ -105,7 +105,15 @@ fn push_energy(state: &GameState, out: &mut Vec<Advice>) {
         }
         let cap = state.max_solar_level(coord).unwrap_or(0);
         if buildings.solar_plant >= cap {
-            let next = if kind == crate::PlanetType::Ice && !state.fission_has_feedstock_at(coord) {
+            // Fission needs uranium in stock or a deposit to mine; ice worlds
+            // keep their #530 hint while unfuelled.
+            let no_uranium = state
+                .deposits_at(coord)
+                .get("uranium_ore")
+                .is_none_or(|&richness| richness <= 0.0);
+            let next = if !state.fission_has_feedstock_at(coord)
+                && (kind == crate::PlanetType::Ice || no_uranium)
+            {
                 "idle a mine"
             } else {
                 "add fission or fusion for more power"
@@ -516,8 +524,8 @@ mod tests {
     }
 
     #[test]
-    fn unfueled_ice_at_solar_cap_does_not_recommend_fission() {
-        for position in 9..=12_u16 {
+    fn unfueled_ice_or_gas_giant_at_solar_cap_does_not_recommend_fission() {
+        for position in 9..=16_u16 {
             let mut state = GameState::new(0);
             state.config.raid.enabled = false;
             let coord = crate::Coord {
@@ -527,7 +535,7 @@ mod tests {
             };
             let (kind, size) =
                 crate::planet_profile(state.galaxy_seed, coord, state.generator_version);
-            assert_eq!(kind, crate::PlanetType::Ice);
+            assert_ne!(kind, crate::PlanetType::Rocky);
             state.colonies.push(crate::Colony {
                 coord,
                 kind,
