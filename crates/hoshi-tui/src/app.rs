@@ -2174,6 +2174,15 @@ impl App {
     fn status_hints(&self, width: u16) -> Vec<(String, String)> {
         let k = &self.keymap;
         let mut hints = self.context_hints();
+        // Below the dock width the detail only opens as an overlay, so its
+        // key leads the hints and survives when the bar cuts the rest.
+        if width < DOCK_MIN_WIDTH {
+            let detail = (k.primary(Binding::Detail), "detail".to_string());
+            if let Some(at) = hints.iter().position(|hint| *hint == detail) {
+                let hint = hints.remove(at);
+                hints.insert(0, hint);
+            }
+        }
         hints.push(("1-6".to_string(), "hubs".to_string()));
         if width >= 100 && self.screen != Screen::Cockpit {
             hints.push((k.primary(Binding::NextScreen), "tabs".into()));
@@ -2248,7 +2257,13 @@ impl App {
         buttons
     }
 
+    /// The galaxy seed on the status bar's right. It wins over the key
+    /// hints, so on a narrow bar it gives way and the hints keep the row;
+    /// the copy-seed key still reaches it.
     fn seed_line(&self, width: u16) -> Line<'static> {
+        if width < 60 {
+            return Line::default();
+        }
         let t = &self.theme;
         let code = Span::styled(encode_galaxy_seed(self.state.galaxy_seed), t.muted());
         let gen_label = format!(" gen {} ", self.state.generator_version);
@@ -11127,6 +11142,29 @@ mod tests {
         app.handle_key(KeyCode::Char('d'), 1_000);
         let closed = render_text(&app, 80, 24);
         assert!(!closed.contains("energy draw"), "{closed}");
+    }
+
+    #[test]
+    fn research_footer_shows_the_detail_key_where_the_panel_is_not_docked() {
+        let mut app = detail_app();
+        app.screen = Screen::Overview;
+        let footer = |app: &App, cols, rows| {
+            let text = render_text(app, cols, rows);
+            text.lines().last().unwrap_or_default().to_owned()
+        };
+        for (cols, rows) in [(80, 24), (40, 12)] {
+            let bar = footer(&app, cols, rows);
+            assert!(bar.contains("d  detail"), "{cols}x{rows}: {bar}");
+        }
+        // Docked at wide sizes: the screen's own keys keep the lead.
+        let wide = footer(&app, 160, 48);
+        let lead = |hint: &str| wide.find(hint).unwrap_or(usize::MAX);
+        assert!(lead("h/l  branch") < lead("d  detail"), "{wide}");
+        // At 80 columns the key opens the overlay.
+        render_text(&app, 80, 24);
+        app.handle_key(KeyCode::Char('d'), 1_000);
+        let text = render_text(&app, 80, 24);
+        assert!(text.contains("Detail"), "{text}");
     }
 
     #[test]
