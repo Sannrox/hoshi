@@ -264,7 +264,7 @@ impl GameState {
         if kind == BuildingKind::SolarPlant {
             let cap = self.max_solar_level(planet)?;
             requirements.push(RequirementLine {
-                text: format!("solar cap {cap}; add fission or fusion for more power"),
+                text: format!("solar cap {cap}; {}", self.power_after_solar(planet).hint()),
                 met: level < cap,
             });
         }
