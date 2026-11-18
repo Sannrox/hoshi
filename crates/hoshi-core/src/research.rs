@@ -27,6 +27,9 @@ pub enum ModifierKind {
     EnergyOutput,
     HeatSink,
     PollutionSink,
+    /// Raises the exhaust velocity of ships on the tech's own drive; see
+    /// `GameState::drive_ve`.
+    ExhaustVelocity,
 }
 
 impl ModifierKind {
@@ -48,6 +51,7 @@ impl ModifierKind {
             ModifierKind::EnergyOutput => "energy output",
             ModifierKind::HeatSink => "heat sink",
             ModifierKind::PollutionSink => "pollution sink",
+            ModifierKind::ExhaustVelocity => "exhaust m/s",
         }
     }
 

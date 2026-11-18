@@ -61,6 +61,17 @@ impl OrbitConfig {
         }
     }
 
+    /// Exhaust velocity that research on `drive` cannot pass: the next
+    /// drive's base value, so the drive ladder stays ordered. Hyperspace has
+    /// no cap.
+    pub fn ve_cap_for_drive(&self, drive: &str) -> Option<f64> {
+        match drive {
+            "impulse_drive" => Some(self.hyperspace_ve),
+            "hyperspace_drive" => None,
+            _ => Some(self.impulse_ve),
+        }
+    }
+
     pub fn well_dv(&self, kind: crate::PlanetType) -> f64 {
         match kind {
             crate::PlanetType::Rocky => self.well_rocky,

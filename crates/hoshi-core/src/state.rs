@@ -4059,6 +4059,33 @@ impl GameState {
             .collect()
     }
 
+    /// Exhaust velocity in m/s of ships on `drive` (a drive tech id) at the
+    /// current tech level. Mission fuel plans use it.
+    pub fn drive_ve(&self, drive: &str) -> f64 {
+        self.drive_ve_at(drive, self.tech_level(drive))
+    }
+
+    /// Exhaust velocity of `drive` at tech `level`: the base value raised by
+    /// that tech's own `exhaust_velocity` modifiers, capped by
+    /// [`crate::orbits::OrbitConfig::ve_cap_for_drive`].
+    pub fn drive_ve_at(&self, drive: &str, level: u32) -> f64 {
+        let orbits = &self.config.orbits;
+        let bonus = self
+            .config
+            .techs
+            .get(drive)
+            .map(|tech| {
+                tech.modifiers
+                    .iter()
+                    .filter(|m| m.kind == ModifierKind::ExhaustVelocity)
+                    .map(|m| m.per_level * f64::from(level))
+                    .sum::<f64>()
+            })
+            .unwrap_or(0.0);
+        let ve = orbits.ve_for_drive(drive) * (1.0 + bonus);
+        orbits.ve_cap_for_drive(drive).map_or(ve, |cap| ve.min(cap))
+    }
+
     /// Config stats scaled by weapons, shields, armour, and the ship's drive.
     pub fn ship_stats(&self, kind: ShipKind) -> crate::ShipStats {
         let spec = self.config.ships.get(kind);

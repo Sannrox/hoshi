@@ -780,7 +780,7 @@ impl GameState {
                 continue;
             }
             let drive = self.config.ships.get(kind).drive.as_str();
-            ve = ve.min(self.config.orbits.ve_for_drive(drive));
+            ve = ve.min(self.drive_ve(drive));
         }
         if ve.is_finite() {
             ve
@@ -1216,6 +1216,43 @@ mod tests {
         assert!(empty <= base_storage, "{empty} > {base_storage}");
         let loaded = plan(&state, neighbour_system, 5_000.0).fuel_mass;
         assert!(loaded > empty, "{loaded} <= {empty}");
+    }
+
+    #[test]
+    fn drive_research_cuts_mission_fuel_up_to_the_next_drive() {
+        let mut state = ready(1_000);
+        state.fleet.add(ShipKind::SmallCargo, 1);
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::SmallCargo, 1);
+        let vid = state.register_vehicle(Coord::HOME, ships, 1_000).unwrap();
+        let drive = state.config.ships.get(ShipKind::SmallCargo).drive.clone();
+        let fuel = |state: &GameState| {
+            let mut cargo = Resources::ZERO;
+            cargo.iron = 5_000.0;
+            state
+                .propose_mission(
+                    &PlanRequest {
+                        vehicle_id: vid,
+                        dest: neighbor(),
+                        transfer: TransferKind::Hohmann,
+                        customer: Customer::Colony,
+                        payload: Payload { cargo },
+                        window_index: Some(0),
+                    },
+                    1_000,
+                )
+                .unwrap()
+                .fuel_mass
+        };
+        let base_ve = state.drive_ve(&drive);
+        let base_fuel = fuel(&state);
+        state.tech_levels.insert(drive.clone(), 4);
+        assert!(state.drive_ve(&drive) > base_ve);
+        assert!(fuel(&state) < base_fuel, "{} >= {base_fuel}", fuel(&state));
+        // Research never lifts a drive past the next drive's base value.
+        state.tech_levels.insert(drive.clone(), 10_000);
+        let cap = state.config.orbits.ve_cap_for_drive(&drive).unwrap();
+        assert_eq!(state.drive_ve(&drive), cap);
     }
 
     #[test]
