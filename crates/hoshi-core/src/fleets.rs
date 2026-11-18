@@ -225,6 +225,14 @@ pub enum FleetError {
     UnknownMission {
         id: u64,
     },
+    /// No repeating transport with this id.
+    UnknownRoute {
+        id: u64,
+    },
+    /// A route relaunches every `interval_secs`; zero would never advance.
+    ZeroRouteInterval,
+    /// A route with nothing to carry would only fly empty hulls.
+    EmptyRouteCargo,
     AlreadyReturning,
     NeedColonyShip,
     /// A visible rival colony already holds `dest`.
@@ -251,6 +259,8 @@ pub enum FleetError {
     },
     UnknownPlanet,
     NotOwned,
+    /// A route's origin must be home or a colony.
+    OriginNotOwned,
     UnknownOutpost,
     /// Deploy holds at an owned or empty coord, never a pirate outpost.
     DeployToOutpost,
@@ -326,6 +336,9 @@ impl fmt::Display for FleetError {
                 write!(f, "no free fleet slots ({used}/{cap})")
             }
             FleetError::UnknownMission { id } => write!(f, "no mission {id}"),
+            FleetError::UnknownRoute { id } => write!(f, "no route {id}"),
+            FleetError::ZeroRouteInterval => write!(f, "route interval must be at least 1s"),
+            FleetError::EmptyRouteCargo => write!(f, "route needs cargo to carry"),
             FleetError::AlreadyReturning => write!(f, "mission is already returning"),
             FleetError::NeedColonyShip => write!(f, "colony mission needs a colony ship"),
             FleetError::RivalClaim { dest, rival_id } => {
@@ -343,13 +356,19 @@ impl fmt::Display for FleetError {
             FleetError::InvalidCargo => {
                 write!(f, "cargo amounts must be finite and non-negative")
             }
-            FleetError::InsufficientCargo { missing } => write!(
-                f,
-                "not enough cargo (missing iron {:.0}, silicon {:.0}, deuterium {:.0})",
-                missing.iron, missing.silicon, missing.deuterium
-            ),
+            FleetError::InsufficientCargo { missing } => {
+                // Name only the short kinds: water ice and helium-3 ride too.
+                let short = crate::state::ResourceKind::ALL
+                    .iter()
+                    .filter(|&&kind| missing.get(kind) > 0.0)
+                    .map(|&kind| format!("{} {:.0}", kind.label(), missing.get(kind).ceil()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(f, "not enough cargo (missing {short})")
+            }
             FleetError::UnknownPlanet => write!(f, "unknown planet"),
             FleetError::NotOwned => write!(f, "destination is not an owned planet"),
+            FleetError::OriginNotOwned => write!(f, "origin is not an owned planet"),
             FleetError::UnknownOutpost => write!(f, "no pirate outpost at destination"),
             FleetError::DeployToOutpost => {
                 write!(f, "deploy holds at an owned or empty coord, not an outpost")

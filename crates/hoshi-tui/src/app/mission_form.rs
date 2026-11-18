@@ -175,6 +175,46 @@ impl App {
         self.selected = self.selected.min(self.list_len().saturating_sub(1));
     }
 
+    /// Ops rows list vehicles, planned missions, alerts, then routes. The
+    /// route under the cursor, if any.
+    fn ops_selected_route(&self) -> Option<u64> {
+        let before = self.state.vehicles.len()
+            + self.state.planned.len()
+            + self
+                .state
+                .mission_schedule(self.state.last_tick_unix)
+                .alerts
+                .len();
+        let index = self.selected.checked_sub(before)?;
+        self.state.routes.get(index).map(|route| route.id)
+    }
+
+    /// Cancel on an Ops route row stops that repeating transport, the same
+    /// core action as `hoshi fleet unroute`. Flights already out finish.
+    pub(super) fn cancel_ops_route(&mut self) -> bool {
+        let Some(id) = self.ops_selected_route() else {
+            return false;
+        };
+        self.status = match self.state.cancel_route(id) {
+            Ok(()) => format!("canceled route {id}"),
+            Err(error) => error.to_string(),
+        };
+        self.selected = self.selected.min(self.list_len().saturating_sub(1));
+        true
+    }
+
+    /// The reason route `id` last skipped a launch, from the logistics log.
+    pub(super) fn route_last_skip(&self, id: u64) -> Option<String> {
+        let prefix = format!("route {id}: skipped (");
+        self.state
+            .logistics
+            .stalls
+            .iter()
+            .rev()
+            .find_map(|line| line.strip_prefix(&prefix))
+            .map(|rest| rest.strip_suffix(')').unwrap_or(rest).to_string())
+    }
+
     /// Enter on an Ops vehicle row opens the plan form for it.
     pub(super) fn open_mission_form(&mut self) {
         let Some(vehicle) = self.state.vehicles.get(self.selected) else {

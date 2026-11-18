@@ -103,9 +103,13 @@ fn trade_step(amount: f64) -> f64 {
 const MAP_SYSTEM_MAX: u16 = 81;
 const MAP_SLOT_COUNT: u16 = 16;
 
+/// Repeat choices on a transport, in hours. 0 sends once; anything else
+/// schedules a route that relaunches on that interval until canceled.
+const REPEAT_HOURS: [u64; 8] = [0, 1, 2, 4, 6, 12, 24, 48];
+
 /// Star map dispatch form. `selected` walks the ship rows, then (for a
-/// transport) the [`DISPATCH_CARGO`] rows. Ships, fuel and `cargo` come
-/// from `origin`, the planet selected when the form opened.
+/// transport) the [`DISPATCH_CARGO`] rows and the repeat row. Ships, fuel
+/// and `cargo` come from `origin`, the planet selected when the form opened.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct DispatchForm {
     origin: Coord,
@@ -116,6 +120,8 @@ struct DispatchForm {
     mission: Mission,
     /// The player cycled the mission; ship changes no longer pick it.
     mission_picked: bool,
+    /// Index into [`REPEAT_HOURS`]; only a transport repeats.
+    repeat: usize,
 }
 
 impl DispatchForm {
@@ -128,18 +134,35 @@ impl DispatchForm {
             selected: 0,
             mission,
             mission_picked: false,
+            repeat: 0,
         }
     }
 
     /// Selectable rows: every ship kind, plus the cargo rows on a transport
-    /// or station send.
+    /// or station send, plus the repeat row on a transport.
     fn rows(&self) -> usize {
         let cargo = if self.mission.carries_cargo() {
             DISPATCH_CARGO.len()
         } else {
             0
         };
-        ShipKind::ALL.len() + cargo
+        ShipKind::ALL.len() + cargo + usize::from(self.repeats())
+    }
+
+    /// Only a transport between owned worlds can repeat (a core route).
+    fn repeats(&self) -> bool {
+        self.mission == Mission::Transport
+    }
+
+    /// The cursor sits on the repeat row.
+    fn repeat_row(&self) -> bool {
+        self.repeats() && self.selected == ShipKind::ALL.len() + DISPATCH_CARGO.len()
+    }
+
+    /// The chosen repeat interval, or `None` to send once.
+    fn repeat_secs(&self) -> Option<u64> {
+        let hours = REPEAT_HOURS[self.repeat];
+        (self.repeats() && hours > 0).then_some(hours * 3_600)
     }
 
     /// The cargo kind under the cursor, when it sits on a cargo row.
@@ -3191,6 +3214,11 @@ impl App {
         let Some(form) = self.dispatch.as_mut() else {
             return;
         };
+        if form.repeat_row() {
+            form.repeat =
+                (form.repeat as i32 + delta).clamp(0, REPEAT_HOURS.len() as i32 - 1) as usize;
+            return;
+        }
         if let Some(kind) = form.cargo_row() {
             let have = self
                 .state
@@ -3390,6 +3418,22 @@ impl App {
             Mission::Transport => {
                 if form.cargo.total() <= 0.0 {
                     self.status = "transport needs cargo: pick amounts with +/-".into();
+                    return;
+                }
+                if let Some(every) = form.repeat_secs() {
+                    match self
+                        .state
+                        .schedule_route(origin, dest, ships, form.cargo, every, now_unix)
+                    {
+                        Ok(id) => {
+                            self.status = format!(
+                                "route {id} to {dest} every {}",
+                                crate::ui::spans::duration(every)
+                            );
+                            self.dispatch = None;
+                        }
+                        Err(e) => self.status = e.to_string(),
+                    }
                     return;
                 }
                 self.state
@@ -3634,7 +3678,11 @@ impl App {
                 self.history_pane = HistoryPane::List;
             }
             Screen::Staff => self.revoke_selected_leader(now_unix),
-            Screen::Ops => self.dissolve_ops_vehicle(now_unix),
+            Screen::Ops => {
+                if !self.cancel_ops_route() {
+                    self.dissolve_ops_vehicle(now_unix);
+                }
+            }
             Screen::Achievements
             | Screen::Daily
             | Screen::Goals
@@ -3684,6 +3732,7 @@ impl App {
                         .mission_schedule(self.state.last_tick_unix)
                         .alerts
                         .len()
+                    + self.state.routes.len()
             }
             Screen::Map => 0,
             Screen::Cockpit => crate::cockpit::select_len(&self.state, &self.cockpit),
@@ -3902,7 +3951,7 @@ impl App {
                     k.primary(Binding::Decrease)
                 ),
                 Screen::Ops => format!(
-                    "{select}  {confirm} plan  {} register  {cancel} dissolve",
+                    "{select}  {confirm} plan  {} register  {cancel} dissolve or stop route",
                     k.primary(Binding::Increase)
                 ),
                 Screen::Map => format!(
@@ -9591,6 +9640,81 @@ mod tests {
             app.state.fleet_at(ice).unwrap().get(ShipKind::SmallCargo),
             1
         );
+    }
+
+    #[test]
+    fn repeat_transport_schedules_a_route_ops_shows_skips_and_cancels_it() {
+        let mut state = GameState::new(1_000);
+        state.config.raid.enabled = false;
+        state.config.story = hoshi_core::StoryCatalog::empty();
+        state.next_raid_at = None;
+        let home = state.home;
+        let ice = (9..=12)
+            .map(|position| Coord {
+                galaxy: 1,
+                system: home.system,
+                position,
+            })
+            .find(|c| state.site_at(*c).is_none() && state.outpost(*c).is_none())
+            .expect("an empty ice slot");
+        let mut fleet = Fleet::default();
+        fleet.add(ShipKind::SmallCargo, 1);
+        let mut stock = Resources::from_parts(0.0, 0.0, 2_000.0);
+        stock.water_ice = 1_000.0;
+        let mut colony = colony_at(ice);
+        colony.kind = PlanetType::Ice;
+        colony.resources = stock;
+        colony.fleet = fleet;
+        state.colonies.push(colony);
+        let mut app = App::new(state);
+        app.planet_index = 1;
+        app.open(Screen::Map);
+        (app.map_galaxy, app.map_system, app.map_position) =
+            (home.galaxy, home.system, home.position);
+        app.handle_key(KeyCode::Enter, 1_000);
+        app.dispatch.as_mut().unwrap().selected = ShipKind::ALL
+            .iter()
+            .position(|k| *k == ShipKind::SmallCargo)
+            .unwrap();
+        app.handle_key(KeyCode::Char('+'), 1_000);
+        load_cargo(&mut app, ResourceKind::WaterIce, 100.0);
+        app.dispatch.as_mut().unwrap().selected = ShipKind::ALL.len() + DISPATCH_CARGO.len();
+        app.handle_key(KeyCode::Char('+'), 1_000);
+        let form = render_text(&app, 100, 60);
+        assert!(form.contains("every 1h 00m"), "{form}");
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.dispatch.is_none(), "{}", app.status);
+        assert_eq!(app.state.routes.len(), 1, "{}", app.status);
+        let route = app.state.routes[0].clone();
+        assert_eq!((route.origin, route.dest), (ice, home));
+        assert_eq!(route.interval_secs, 3_600);
+
+        // The first launch leaves now; later ones follow the interval while away.
+        let start = app.state.last_tick_unix;
+        app.state.catch_up(start + 4 * 3_600);
+        let left = app.state.resources_at(ice).unwrap().water_ice;
+        assert!(left <= 800.0, "at least two hauls left the colony: {left}");
+
+        app.open(Screen::Ops);
+        let ops = render_text(&app, 140, 40);
+        assert!(ops.contains(&format!("route {}", route.id)), "{ops}");
+        assert!(ops.contains("every 1h 00m"), "{ops}");
+
+        // No fuel: the next launch skips and Ops says why.
+        app.state.colonies[0].resources.deuterium = 0.0;
+        app.state.catch_up(app.state.routes[0].next_at + 1);
+        let ops = render_text(&app, 140, 40);
+        assert!(ops.contains("last skip: not enough deuterium"), "{ops}");
+        let header = |name: &str| {
+            ops.lines()
+                .any(|line| line.trim_end().ends_with(&format!("  {name}")))
+        };
+        assert!(header("ROUTES") && !header("VEHICLES"), "{ops}");
+
+        app.selected = 0;
+        app.handle_key(KeyCode::Char('x'), app.state.last_tick_unix);
+        assert!(app.state.routes.is_empty(), "{}", app.status);
+        assert_eq!(app.status, format!("canceled route {}", route.id));
     }
 
     #[test]

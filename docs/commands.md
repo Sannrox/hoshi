@@ -519,6 +519,22 @@ Environment: HOSHI_SAVE, HOSHI_BALANCE
 
 Area: cli.
 
+## fleet route
+
+Repeat a transport between owned worlds every INTERVAL_SECS until unrouted. A launch that cannot leave (no fuel, no ships) skips and is logged.
+
+```text
+hoshi fleet route FROM TO INTERVAL_SECS RESOURCE=AMOUNT... SHIP:COUNT...
+```
+
+Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair-play restrictions.
+
+Example: `hoshi fleet route 1:1:10 home 21600 water_ice=500 small_cargo:1`
+
+Environment: HOSHI_SAVE, HOSHI_BALANCE
+
+Area: cli.
+
 ## fleet send
 
 Dispatch ships on a mission.
@@ -530,6 +546,22 @@ hoshi fleet send FROM TO MISSION SHIP:COUNT...
 Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair-play restrictions.
 
 Example: `hoshi fleet send home 1:1:2 expedition small_cargo:1`
+
+Environment: HOSHI_SAVE, HOSHI_BALANCE
+
+Area: cli.
+
+## fleet unroute
+
+Stop a repeating transport. Flights already out finish.
+
+```text
+hoshi fleet unroute ID
+```
+
+Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair-play restrictions.
+
+Example: `hoshi fleet unroute 1`
 
 Environment: HOSHI_SAVE, HOSHI_BALANCE
 

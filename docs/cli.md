@@ -57,6 +57,8 @@ hoshi --save PATH research <tech>
 hoshi --save PATH cancel <queue-item>
 hoshi --save PATH fleet send <from> <to> <mission> <ships...>
 hoshi --save PATH fleet deploy <from> <to> <hold_secs> <resource=amount...> <ships...>
+hoshi --save PATH fleet route <from> <to> <interval_secs> <resource=amount...> <ships...>
+hoshi --save PATH fleet unroute <id>
 hoshi --save PATH tick --advance <dur>
 hoshi --save PATH scenario create
 hoshi --save PATH scenario queue build <planet> <building>
@@ -137,6 +139,8 @@ on `build`, `research`, and `cancel` are invalid (`state` may take `--as`). Dura
 or `30s` / `3m` / `1h` / `1d`.
 
 `fleet deploy` lifts cargo from `from` like a transport, holds at `to` (an owned or empty coord, never a pirate outpost) for `hold_secs` (1 up to `flight.deploy_max_hold_secs`, one week bundled), and brings the same cargo back. A home raid only reaches stock still on the pad. Recall at any phase returns ships and cargo. Each mission in `state` carries `deploy` and its `cargo`.
+
+`fleet route` schedules a repeating transport between two owned worlds: the first launch leaves on the next tick, then one every `interval_secs`, also while the game is closed. Fuel is star-map `[flight]` fuel. A launch that cannot leave (no fuel, ships still out, not enough cargo) skips and is logged as a stall. `state` lists `routes` (`id`, `origin`, `dest`, `interval_secs`, `next_at`, `cargo`). `fleet unroute <id>` stops one; flights already out finish. In the TUI, a transport's repeat row on the dispatch form does the same, and Fleet / Ops lists routes with their last skip and stops one with cancel.
 
 `state` includes a `signals` array: scanned signals whose light has arrived, each with `id`, `coord`, `deadline`, `status` (`open`, `fought` or `expired`) and the holding `mission_id`. A signal still in flight as light stays hidden.
 

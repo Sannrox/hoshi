@@ -122,6 +122,17 @@ crate::help::catalog_commands! {
         cargo: Vec<String>,
         ships: Fleet,
     },
+    #[help("fleet route", "Repeat a transport between owned worlds every INTERVAL_SECS until unrouted. A launch that cannot leave (no fuel, no ships) skips and is logged.", "fleet route FROM TO INTERVAL_SECS RESOURCE=AMOUNT... SHIP:COUNT...", "fleet route 1:1:10 home 21600 water_ice=500 small_cargo:1")]
+    FleetRoute {
+        from: Coord,
+        to: Coord,
+        interval_secs: u64,
+        /// `resource=amount` specs, parsed when applied like other amounts.
+        cargo: Vec<String>,
+        ships: Fleet,
+    },
+    #[help("fleet unroute", "Stop a repeating transport. Flights already out finish.", "fleet unroute ID", "fleet unroute 1")]
+    FleetUnroute { id: u64 },
     #[help("tick", "Advance a deterministic harness save.", "tick --advance DURATION", "tick --advance 60")]
     Tick {
         advance: u64,
@@ -1237,6 +1248,25 @@ fn apply(
                 .launch_deploy(*from, *to, *ships, cargo, *hold_secs, 100, now)
                 .map_err(|e| CliError::Refused(e.to_string()))?;
             Ok(ok_state(state, "deployed"))
+        }
+        Command::FleetRoute {
+            from,
+            to,
+            interval_secs,
+            cargo,
+            ships,
+        } => {
+            let cargo = parse_cargo(cargo)?;
+            let id = state
+                .schedule_route(*from, *to, *ships, cargo, *interval_secs, now)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, &format!("route {id} scheduled")))
+        }
+        Command::FleetUnroute { id } => {
+            state
+                .cancel_route(*id)
+                .map_err(|e| CliError::Refused(e.to_string()))?;
+            Ok(ok_state(state, "unrouted"))
         }
         Command::FleetSend {
             from,
@@ -2978,6 +3008,20 @@ fn state_value_for(
         }),
         None => Value::Null,
     };
+    value["routes"] = json!(
+        state
+            .routes
+            .iter()
+            .map(|r| json!({
+                "id": r.id,
+                "origin": r.origin.to_string(),
+                "dest": r.dest.to_string(),
+                "interval_secs": r.interval_secs,
+                "next_at": r.next_at,
+                "cargo": resources_json(r.cargo),
+            }))
+            .collect::<Vec<_>>()
+    );
     value["last_raid"] = last_raid.unwrap_or(Value::Null);
     value
 }
@@ -3507,10 +3551,39 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
                 ships: parse_ships(&ships)?,
             })
         }
+        "fleet" if args.get(1).map(String::as_str) == Some("route") => {
+            const USAGE: &str =
+                "fleet route <from> <to> <interval_secs> <resource=amount...> <ships...>";
+            let from = parse_coord(nth(args, 2, USAGE)?)?;
+            let to = parse_coord(nth(args, 3, USAGE)?)?;
+            let interval_secs: u64 = nth(args, 4, USAGE)?
+                .parse()
+                .ok()
+                .filter(|&secs| secs > 0)
+                .ok_or_else(|| CliError::Invalid(format!("invalid interval in {USAGE}")))?;
+            let (cargo, ships): (Vec<_>, Vec<_>) =
+                args[5..].iter().cloned().partition(|a| a.contains('='));
+            parse_cargo(&cargo)?;
+            Ok(Command::FleetRoute {
+                from,
+                to,
+                interval_secs,
+                cargo,
+                ships: parse_ships(&ships)?,
+            })
+        }
+        "fleet" if args.get(1).map(String::as_str) == Some("unroute") => {
+            const USAGE: &str = "fleet unroute <id>";
+            let id: u64 = nth(args, 2, USAGE)?
+                .parse()
+                .map_err(|_| CliError::Invalid(format!("invalid id in {USAGE}")))?;
+            expect_end(args, 3)?;
+            Ok(Command::FleetUnroute { id })
+        }
         "fleet" => {
             if nth(args, 1, "fleet send ...")? != "send" {
                 return Err(CliError::Invalid(
-                    "expected fleet send or fleet deploy".into(),
+                    "expected fleet send, deploy, route or unroute".into(),
                 ));
             }
             let from = parse_coord(nth(args, 2, "fleet send <from> <to> <mission> <ships...>")?)?;
@@ -5382,7 +5455,7 @@ fn parse_cargo(args: &[String]) -> Result<hoshi_core::Resources, CliError> {
 fn parse_ships(args: &[String]) -> Result<Fleet, CliError> {
     let mut fleet = Fleet::default();
     if args.is_empty() {
-        return Err(CliError::Invalid("fleet send needs ships".into()));
+        return Err(CliError::Invalid("needs ships as SHIP:COUNT".into()));
     }
     for spec in args {
         let (kind, count) = spec
@@ -6192,6 +6265,61 @@ mod tests {
                 "large_cargo:1",
             ],
         );
+        assert_ne!(exit, EXIT_OK, "{bad}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fleet_route_repeats_until_unrouted() {
+        let dir = unique_save("route").with_extension("d");
+        std::fs::create_dir_all(&dir).unwrap();
+        let save = dir.join("save.sqlite");
+        let mut state = GameState::new(0);
+        state.deterministic = true;
+        state.resources = hoshi_core::Resources::from_parts(5_000.0, 5_000.0, 10_000.0);
+        state.fleet.add(ShipKind::LargeCargo, 1);
+        let colony = hoshi_core::Coord {
+            galaxy: 1,
+            system: 1,
+            position: 2,
+        };
+        state.colonies.push(hoshi_core::Colony {
+            coord: colony,
+            kind: hoshi_core::PlanetType::Rocky,
+            size: 100,
+            resources: hoshi_core::Resources::ZERO,
+            buildings: hoshi_core::Buildings::default(),
+            fleet: Fleet::default(),
+            defences: hoshi_core::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: std::collections::BTreeMap::new(),
+        });
+        let mut conn = open_save(&save).unwrap();
+        save_state(&mut conn, &state).unwrap();
+        drop(conn);
+        let (value, exit) = run_on(
+            &save,
+            &[
+                "fleet",
+                "route",
+                "home",
+                "1:1:2",
+                "3600",
+                "iron=100",
+                "large_cargo:1",
+            ],
+        );
+        assert_eq!(exit, EXIT_OK, "{value}");
+        let route = &value["routes"][0];
+        assert_eq!(route["interval_secs"], 3600);
+        assert_eq!(route["cargo"]["iron"], 100.0);
+        let id = route["id"].as_u64().unwrap().to_string();
+        let (gone, exit) = run_on(&save, &["fleet", "unroute", &id]);
+        assert_eq!(exit, EXIT_OK, "{gone}");
+        assert_eq!(gone["routes"].as_array().unwrap().len(), 0);
+        let (bad, exit) = run_on(&save, &["fleet", "unroute", &id]);
         assert_ne!(exit, EXIT_OK, "{bad}");
         let _ = std::fs::remove_dir_all(&dir);
     }

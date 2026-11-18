@@ -3321,22 +3321,26 @@ impl GameState {
     ) -> Result<u64, FleetError> {
         self.catch_up(now_unix);
         if interval_secs == 0 {
-            return Err(FleetError::HoldOutOfRange {
-                got: 0,
-                min: 1,
-                max: u64::MAX,
-            });
+            return Err(FleetError::ZeroRouteInterval);
         }
         if origin == dest {
             return Err(FleetError::SameLocation);
         }
-        if !self.occupied(origin) || !self.occupied(dest) {
+        // Only home and colonies hold stock; a pirate outpost or rival world
+        // would only ever log skips.
+        if !self.owns_world(origin) {
+            return Err(FleetError::OriginNotOwned);
+        }
+        if !self.owns_world(dest) {
             return Err(FleetError::NotOwned);
         }
         if ships.is_empty() {
             return Err(FleetError::EmptyFleet);
         }
         Self::check_cargo(cargo)?;
+        if Self::cargo_mass(cargo) <= 0.0 {
+            return Err(FleetError::EmptyRouteCargo);
+        }
         let cap = self.cargo_capacity(ships);
         let need = Self::cargo_mass(cargo);
         if need > cap + 1e-9 {
@@ -3362,7 +3366,7 @@ impl GameState {
             .routes
             .iter()
             .position(|r| r.id == id)
-            .ok_or(FleetError::UnknownMission { id })?;
+            .ok_or(FleetError::UnknownRoute { id })?;
         self.routes.remove(idx);
         Ok(())
     }
@@ -13940,7 +13944,7 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
     }
 
     #[test]
-    fn negative_or_non_finite_cargo_is_rejected() {
+    fn transports_and_routes_refuse_invalid_input() {
         let mut state = GameState::with_config(0, logistics_config());
         plant_colony(&mut state, neighbor());
         state.fleet.add(ShipKind::SmallCargo, 2);
@@ -13973,7 +13977,46 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
             ),
             Err(FleetError::EmptyFleet)
         );
+        assert_eq!(
+            state.schedule_route(
+                state.home,
+                neighbor(),
+                cargo_fleet(),
+                Resources::ZERO,
+                10,
+                0
+            ),
+            Err(FleetError::EmptyRouteCargo)
+        );
+        // A pirate outpost counts as occupied but holds no stock to receive.
+        let outpost = Coord {
+            position: 3,
+            ..neighbor()
+        };
+        state.outposts.push(crate::outposts::Outpost {
+            coord: outpost,
+            kind: PlanetType::Rocky,
+            size: 100,
+            defences: Fleet::default(),
+            garrison: 0,
+            rare: None,
+            last_rebuild_at: 0,
+            homeworld: false,
+        });
+        let iron = Resources::from_parts(10.0, 0.0, 0.0);
+        assert_eq!(
+            state.schedule_route(state.home, outpost, cargo_fleet(), iron, 10, 0),
+            Err(FleetError::NotOwned)
+        );
+        assert_eq!(
+            state.schedule_route(outpost, state.home, cargo_fleet(), iron, 10, 0),
+            Err(FleetError::OriginNotOwned)
+        );
         assert!(state.routes.is_empty());
+        assert_eq!(
+            state.cancel_route(0),
+            Err(FleetError::UnknownRoute { id: 0 })
+        );
     }
 
     #[test]
