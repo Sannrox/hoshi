@@ -8364,6 +8364,22 @@ impl GameState {
         self.energy_factor_for(self.energy_produced())
     }
 
+    /// Share of full output that work on owned planet `coord` runs at when
+    /// its energy demand exceeds supply: home uses [`Self::energy_factor`],
+    /// a colony its own supply over demand. 1.0 when not short or unknown.
+    pub fn energy_throttle_at(&self, coord: Coord) -> f64 {
+        if coord == self.home {
+            return self.energy_factor().min(1.0);
+        }
+        match (
+            self.operational_buildings_at(coord),
+            self.planet_kind(coord),
+        ) {
+            (Some(buildings), Some(kind)) => self.site_energy_factor(coord, buildings, kind),
+            _ => 1.0,
+        }
+    }
+
     pub(crate) fn energy_factor_for(&self, produced: f64) -> f64 {
         let consumed = self.energy_consumed();
         let base = if consumed <= 0.0 {

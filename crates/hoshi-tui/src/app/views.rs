@@ -1124,10 +1124,18 @@ impl App {
                 "ENERGY",
                 format!("{:.0}/{:.0}", report.energy_supply, report.energy_demand),
                 intent_if(energy_short),
-                format!(
-                    "{:.0}% drawn",
-                    ratio(report.energy_demand, report.energy_supply) * 100.0
-                ),
+                // Short power throttles work rather than stopping it; say how much.
+                if energy_short {
+                    format!(
+                        "work at {:.0}%",
+                        self.state.energy_throttle_at(self.selected_coord()) * 100.0
+                    )
+                } else {
+                    format!(
+                        "{:.0}% drawn",
+                        ratio(report.energy_demand, report.energy_supply) * 100.0
+                    )
+                },
             ),
             metric(
                 t,
