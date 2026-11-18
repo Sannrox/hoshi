@@ -4323,6 +4323,11 @@ impl App {
 
     fn building_block_reason(&self, kind: BuildingKind) -> Option<String> {
         let coord = self.selected_coord();
+        if kind == BuildingKind::SolarPlant
+            && let Some(cap) = self.state.solar_cap_reached(coord)
+        {
+            return Some(format!("cap {cap}"));
+        }
         for &(req, required) in &self.state.config.buildings.get(kind).prerequisites {
             let actual = self.state.available_building_level_at(coord, req);
             if actual < required {
@@ -10722,6 +10727,42 @@ mod tests {
             let cells: Vec<_> = row.split_whitespace().collect();
             assert!(
                 cells.ends_with(&[now.as_str(), next.as_str(), step.as_str()]),
+                "{width}x{height}: {row}"
+            );
+        }
+    }
+
+    #[test]
+    fn solar_plant_at_its_cap_reads_cap_not_ready_in_the_building_list() {
+        let mut state = GameState::new(1_000);
+        state.resources.iron = 1e12;
+        state.resources.silicon = 1e12;
+        state.resources.deuterium = 1e12;
+        let cap = state.max_solar_level(state.home).unwrap();
+        let mut app = App::new(state);
+        app.screen = Screen::Planet;
+        app.selected = BuildingKind::ALL
+            .iter()
+            .position(|&kind| kind == BuildingKind::SolarPlant)
+            .unwrap();
+        let solar_row = |app: &App, width, height| {
+            let text = render_text(app, width, height);
+            text.lines()
+                .find(|line| line.contains("Solar plant"))
+                .unwrap_or_else(|| panic!("{width}x{height}:\n{text}"))
+                .to_string()
+        };
+        // Below 80 columns the status column is cut off, so only wider
+        // sizes carry the chip.
+        for (width, height) in [(80, 24), (120, 40)] {
+            app.state.buildings.solar_plant = cap - 1;
+            let row = solar_row(&app, width, height);
+            assert!(row.contains("READY"), "{width}x{height}: {row}");
+            app.state.buildings.solar_plant = cap;
+            let row = solar_row(&app, width, height);
+            assert!(!row.contains("READY"), "{width}x{height}: {row}");
+            assert!(
+                row.contains(&format!("CAP {cap}")),
                 "{width}x{height}: {row}"
             );
         }
