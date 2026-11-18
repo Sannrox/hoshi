@@ -162,6 +162,31 @@ Rows beyond `## Testing Guidelines`:
   `CHANGELOG.md` only in the version-bump Pull Request. Agents never push
   `v*` tags.
 
+### TUI proof
+
+Facts the `tui-e2e` skill reads.
+
+- Test command: `cargo test --locked -p hoshi-tui`.
+- Headless backend: ratatui `TestBackend` in the `#[cfg(test)]` modules under
+  `crates/hoshi-tui/src/`. In `app.rs`, build `App::new(GameState::new(now))`,
+  render with `render_text(&app, cols, rows)`, and send keys with
+  `handle_key(code, now)`; time is always passed in. There is no snapshot
+  tool: a full-screen expected render is a text file under
+  `crates/hoshi-tui/tests/fixtures/<screen>/<cols>x<rows>.txt`, loaded with
+  `include_str!` and edited by hand after reading the new render.
+- Sizes: 80x24 standard, 40x12 narrow. The terminal floor is 20x8
+  (`terminal.rs`), and portraits need 50 columns (`portraits.rs`).
+- Pseudo-terminal pattern:
+  `diagnostics::tests::panic_restores_real_terminal_before_printing_the_hint`
+  re-runs its own test binary under a `python3` `pty` script with a bounded
+  wait and checks the terminal settings are restored. Reuse that pattern
+  before adding a pseudo-terminal dependency.
+- Binary tests: a unique temp `XDG_DATA_HOME` named with the process id and
+  `HOSHI_SAVE` removed (see `crates/hoshi-tui/tests/title_continue.rs`).
+- Durable session: the save. Stage 6 applies to save, lock and catch-up
+  changes; a crash must not corrupt the save.
+- Live target: none.
+
 ## Agent delivery closeout (required)
 
 `cargo test` / Clippy / green CI are **not** a substitute for structured code
