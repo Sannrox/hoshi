@@ -433,19 +433,37 @@ fn push_idle_queues(state: &GameState, out: &mut Vec<Advice>) {
     }
 }
 
+/// The empire's worst bottleneck. An energy limit names the world it stalls
+/// and gives that world's next step: solar below its cap, else what
+/// `power_after_solar` offers, as the per-world energy advice does.
 fn push_chain_limit(state: &GameState, out: &mut Vec<Advice>) {
     let report = state.production_report();
-    if matches!(report.limited_by, crate::LimitingFactor::None) {
+    let limit = &report.limited_by;
+    if matches!(limit, crate::LimitingFactor::None) {
         return;
     }
-    out.push(Advice {
-        id: "limit",
-        text: format!(
+    let energy_world = report
+        .worst_step()
+        .filter(|_| matches!(limit, crate::LimitingFactor::Energy))
+        .map(|step| step.planet);
+    let text = match energy_world {
+        Some(coord) => {
+            let solar = state.buildings_at(coord).map_or(0, |b| b.solar_plant);
+            let capped = state.max_solar_level(coord).is_some_and(|cap| solar >= cap);
+            let next = if capped {
+                state.power_after_solar(coord).hint()
+            } else {
+                "upgrade solar or cut energy draw"
+            };
+            format!("production is limited by energy at {coord}: {next}")
+        }
+        None => format!(
             "production is limited by {}: {}",
-            report.limited_by.as_key(),
-            report.limited_by.suggestion()
+            limit.as_key(),
+            limit.suggestion()
         ),
-    });
+    };
+    out.push(Advice { id: "limit", text });
 }
 
 #[cfg(test)]
@@ -494,6 +512,38 @@ mod tests {
         let before = state.clone();
         let _ = advise(&state, None);
         assert_eq!(state, before);
+    }
+
+    #[test]
+    fn energy_limit_names_its_world_and_skips_capped_solar() {
+        let limit = |state: &GameState| {
+            let advice = advise(state, None);
+            let limit = advice.iter().find(|a| a.id == "limit");
+            limit.map(|a| a.text.clone()).unwrap_or_default()
+        };
+        let mut state = close_state();
+        state.buildings.solar_plant = 1;
+        state.buildings.metal_mine = 30;
+        assert_eq!(
+            state.production_report().limited_by,
+            crate::LimitingFactor::Energy
+        );
+        let below = limit(&state);
+        assert!(below.contains(&state.home.to_string()), "{below}");
+        assert!(below.contains("upgrade solar"), "{below}");
+        state.buildings.solar_plant = state.max_solar_level(state.home).unwrap();
+        state.buildings.metal_mine = 40;
+        assert_eq!(
+            state.production_report().limited_by,
+            crate::LimitingFactor::Energy
+        );
+        let capped = limit(&state);
+        assert!(capped.contains(&state.home.to_string()), "{capped}");
+        assert!(!capped.contains("solar"), "{capped}");
+        assert!(
+            capped.ends_with(state.power_after_solar(state.home).hint()),
+            "{capped}"
+        );
     }
 
     #[test]
