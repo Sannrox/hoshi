@@ -212,6 +212,7 @@ silent extra departure; they extend this list.
 | Combined vehicle uses the lowest exhaust velocity among its ships | One stack, one rocket equation. |
 | Gravity-well burns are scaled below LEO so chemical ships can leave | Full well escape would demand unplayable mass ratios on the idle clock. |
 | Hull points map to kilograms through `kg_per_hull` | Keeps a combustion cargo inside a mid-game deuterium stockpile for a 1–1.5 AU hop. |
+| A hop between systems costs escape plus capture delta-v, with no interstellar cruise burn | Each star gets its own gravity well, so a farther system never costs less fuel. Every other system costs the same; time still grows with distance. |
 | Propellant mass is paid from deuterium; it does not fill cargo volume | Tanks are part of the vehicle; cargo is payload. |
 | Inter-system and galaxy hops sit on summed AU radii around the same star | Keeps one μ and one Hohmann formula; ordering of hop size stays. |
 | Frontier galaxy uses the same `[flight].galaxy_unit` distance as a one-galaxy hop | Inter-galaxy flights stay on the existing clock; richer worlds are a generation overlay, not a second physics table. |

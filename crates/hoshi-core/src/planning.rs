@@ -4,8 +4,8 @@
 
 use crate::fleets::Coord;
 use crate::orbits::{
-    fuel_mass_for_dv, heliocentric_radius_m, hohmann_transfer, launch_window_times, mean_motion,
-    rocket_delta_v, to_game_secs,
+    fuel_mass_for_dv, heliocentric_radius_m, hohmann_transfer, interstellar_delta_v,
+    launch_window_times, mean_motion, orbital_radius_m, rocket_delta_v, to_game_secs,
 };
 use crate::ships::{Fleet, ShipKind};
 use crate::state::{GameState, ResourceKind, Resources};
@@ -691,7 +691,17 @@ impl GameState {
         let cfg = &self.config.orbits;
         let r1 = heliocentric_radius_m(origin, cfg);
         let r2 = heliocentric_radius_m(dest, cfg);
-        let burn = hohmann_transfer(r1, r2, cfg.mu_star);
+        let mut burn = hohmann_transfer(r1, r2, cfg.mu_star);
+        // Another system has its own star: the heliocentric Hohmann keeps
+        // the coast time, but delta-v is escape plus capture, so fuel never
+        // falls as the destination gets farther away.
+        if (origin.galaxy, origin.system) != (dest.galaxy, dest.system) {
+            burn.delta_v = interstellar_delta_v(
+                orbital_radius_m(origin, cfg),
+                orbital_radius_m(dest, cfg),
+                cfg.mu_star,
+            );
+        }
         if transfer == TransferKind::Assist && !self.assist_body_between(origin, dest, r1, r2) {
             return Err(PlanError::NoAssistBody);
         }
@@ -1150,6 +1160,62 @@ mod tests {
         let r1 = heliocentric_radius_m(Coord::HOME, cfg);
         let r2 = heliocentric_radius_m(dest, cfg);
         let Hohmann { .. } = hohmann_transfer(r1, r2, cfg.mu_star);
+    }
+
+    #[test]
+    fn vehicle_fuel_between_systems_never_falls_with_distance() {
+        let mut state = ready(1_000);
+        state.fleet.add(ShipKind::LargeCargo, 1);
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::LargeCargo, 1);
+        let vid = state.register_vehicle(Coord::HOME, ships, 1_000).unwrap();
+        let at = |galaxy, system, position| Coord {
+            galaxy,
+            system,
+            position,
+        };
+        let plan = |state: &GameState, dest: Coord, iron: f64| {
+            let mut cargo = Resources::ZERO;
+            cargo.iron = iron;
+            state
+                .propose_mission(
+                    &PlanRequest {
+                        vehicle_id: vid,
+                        dest,
+                        transfer: TransferKind::Hohmann,
+                        customer: Customer::Colony,
+                        payload: Payload { cargo },
+                        window_index: Some(0),
+                    },
+                    1_000,
+                )
+                .unwrap()
+        };
+        // Farther each step: home system, then systems 2 and 9, then galaxy 2.
+        // Gravity wells depend on each planet's type, so compare the
+        // transfer delta-v without them.
+        let transfer_dv: Vec<f64> = [
+            at(1, 1, 2),
+            at(1, 1, 16),
+            at(1, 2, 1),
+            at(1, 9, 1),
+            at(2, 1, 1),
+        ]
+        .into_iter()
+        .map(|dest| {
+            plan(&state, dest, 0.0).delta_v - state.well_cost(Coord::HOME) - state.well_cost(dest)
+        })
+        .collect();
+        assert!(
+            transfer_dv.windows(2).all(|w| w[1] >= w[0] - 1e-6),
+            "{transfer_dv:?}"
+        );
+        let neighbour_system = at(1, 2, 1);
+        let empty = plan(&state, neighbour_system, 0.0).fuel_mass;
+        let base_storage = state.config.deuterium_storage.capacity(0);
+        assert!(empty <= base_storage, "{empty} > {base_storage}");
+        let loaded = plan(&state, neighbour_system, 5_000.0).fuel_mass;
+        assert!(loaded > empty, "{loaded} <= {empty}");
     }
 
     #[test]

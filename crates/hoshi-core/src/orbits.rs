@@ -261,7 +261,7 @@ fn default_combustion() -> f64 {
     3_100.0
 }
 fn default_impulse() -> f64 {
-    8_000.0
+    20_000.0
 }
 fn default_hyperspace() -> f64 {
     30_000.0
@@ -335,6 +335,16 @@ pub fn hohmann_transfer(r1: f64, r2: f64, mu: f64) -> Hohmann {
         coast_secs: PI * (a.powi(3) / mu).sqrt(),
         semi_major: a,
     }
+}
+
+/// Both stars' share of a hop between systems: escape from the origin
+/// star's orbit plus capture into the destination star's orbit, each
+/// `(sqrt(2) - 1) * v_circ` at the slot's radius from its own star
+/// ([`orbital_radius_m`]). Interstellar coast costs no delta-v, so every
+/// other system and galaxy costs the same, never less than leaving home.
+pub fn interstellar_delta_v(origin_r: f64, dest_r: f64, mu: f64) -> f64 {
+    let escape = |r: f64| (std::f64::consts::SQRT_2 - 1.0) * (mu / r).sqrt();
+    escape(origin_r) + escape(dest_r)
 }
 
 /// `delta-v = ve * ln(m0 / mf)`.
