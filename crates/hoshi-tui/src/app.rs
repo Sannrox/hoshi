@@ -10667,6 +10667,44 @@ mod tests {
     }
 
     #[test]
+    fn research_detail_reads_effects_in_their_unit() {
+        let mut app = detail_app();
+        app.screen = Screen::Overview;
+        app.selected = app
+            .overview_techs()
+            .iter()
+            .position(|spec| spec.id == "energy")
+            .unwrap();
+        app.detail_overlay = true;
+        // 40x12 cuts the overlay before EFFECT (no scrolling), so the narrow
+        // width is proven at full height.
+        for (width, height) in [(80, 24), (40, 24)] {
+            let text = render_text(&app, width, height);
+            let row = text
+                .lines()
+                .find(|line| line.trim_start().starts_with("heat sink"))
+                .unwrap_or_else(|| panic!("{width}x{height}:\n{text}"));
+            let cells: Vec<_> = row.split_whitespace().collect();
+            assert!(cells.ends_with(&["+0%", "+5%", "+5%"]), "{row}");
+        }
+        let narrow = render_text(&app, 40, 12);
+        assert!(!narrow.contains("0.05"), "{narrow}");
+        // An unlock is text: its change reads `new`, not a dash.
+        app.selected = app
+            .overview_techs()
+            .iter()
+            .position(|spec| spec.id == "logistics")
+            .unwrap();
+        let text = render_text(&app, 80, 24);
+        let row = text
+            .lines()
+            .find(|line| line.trim_start().starts_with("logistics"))
+            .unwrap_or_else(|| panic!("{text}"));
+        let cells: Vec<_> = row.split_whitespace().collect();
+        assert!(cells.ends_with(&["locked", "unlocked", "new"]), "{row}");
+    }
+
+    #[test]
     fn detail_panel_docks_on_wide_list_screens() {
         let mut app = detail_app();
         app.screen = Screen::Planet;

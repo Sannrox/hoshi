@@ -381,8 +381,8 @@ impl GameState {
                 .iter()
                 .map(|m| DeltaLine {
                     label: m.kind.label().to_string(),
-                    from: format!("{:.2}", m.per_level * f64::from(level)),
-                    to: format!("{:.2}", m.per_level * f64::from(next)),
+                    from: m.kind.format_value(m.per_level * f64::from(level)),
+                    to: m.kind.format_value(m.per_level * f64::from(next)),
                 })
                 .collect(),
             requirements,
@@ -1163,6 +1163,37 @@ mod tests {
     }
 
     #[test]
+    fn tech_effects_read_as_percent_count_or_unlock() {
+        let mut state = GameState::new(0);
+        state.tech_levels.insert("impulse_drive".into(), 1);
+        let effect = |state: &GameState, id: &str| {
+            let detail = state
+                .describe(DetailSubject::Tech(id.into()), None)
+                .unwrap();
+            let line = &detail.deltas[0];
+            (line.from.clone(), line.to.clone())
+        };
+        let pair = |from: &str, to: &str| (from.to_string(), to.to_string());
+        assert_eq!(effect(&state, "impulse_drive"), pair("+20%", "+40%"));
+        assert_eq!(effect(&state, "computer"), pair("+0", "+1"));
+        assert_eq!(effect(&state, "logistics"), pair("locked", "unlocked"));
+        // No bundled effect falls back to a bare fraction like `0.20`.
+        for tech in state.config.techs.iter() {
+            let detail = state
+                .describe(DetailSubject::Tech(tech.id.clone()), None)
+                .unwrap();
+            for value in detail.deltas.iter().flat_map(|d| [&d.from, &d.to]) {
+                let unit = value.ends_with('%')
+                    || matches!(value.as_str(), "locked" | "unlocked")
+                    || value
+                        .parse::<i64>()
+                        .is_ok_and(|_| value.starts_with(['+', '-']));
+                assert!(unit, "{}: {value}", tech.id);
+            }
+        }
+    }
+
+    #[test]
     fn law_detail_previews_its_effect_at_the_default_parameter() {
         let state = GameState::new(0);
         let research = state.describe(DetailSubject::Law("research_priority".into()), None);
@@ -1440,7 +1471,7 @@ mod tests {
         );
         assert_eq!(
             (fresh.deltas[0].from.as_str(), fresh.deltas[0].to.as_str()),
-            ("0.00", "0.08")
+            ("+0%", "+8%")
         );
         state.tech_levels.insert("deep_core".into(), 1);
         let done = state
@@ -1451,7 +1482,7 @@ mod tests {
         assert_eq!((done.duration_secs, done.afford), (None, None));
         assert_eq!(
             (done.deltas[0].from.as_str(), done.deltas[0].to.as_str()),
-            ("0.08", "0.08")
+            ("+8%", "+8%")
         );
         let energy = state
             .describe(DetailSubject::Tech("energy".into()), None)
