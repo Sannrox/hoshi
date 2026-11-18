@@ -105,19 +105,7 @@ fn push_energy(state: &GameState, out: &mut Vec<Advice>) {
         }
         let cap = state.max_solar_level(coord).unwrap_or(0);
         if buildings.solar_plant >= cap {
-            // Fission needs uranium in stock or a deposit to mine; ice worlds
-            // keep their #530 hint while unfuelled.
-            let no_uranium = state
-                .deposits_at(coord)
-                .get("uranium_ore")
-                .is_none_or(|&richness| richness <= 0.0);
-            let next = if !state.fission_has_feedstock_at(coord)
-                && (kind == crate::PlanetType::Ice || no_uranium)
-            {
-                "idle a mine"
-            } else {
-                "add fission or fusion for more power"
-            };
+            let next = state.power_after_solar(coord).hint();
             out.push(Advice {
                 id: "energy",
                 text: format!(

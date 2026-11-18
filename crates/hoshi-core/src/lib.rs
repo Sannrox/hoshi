@@ -90,7 +90,7 @@ pub use blueprint::{
     APPLY_ORDER, Blueprint, BlueprintApply, BlueprintCatalog, BlueprintError, BlueprintMismatch,
     BlueprintPreview, BlueprintStep, blueprint_dir,
 };
-pub use buildings::{BuildError, BuildJob, BuildJobKind, BuildingKind, Buildings};
+pub use buildings::{BuildError, BuildJob, BuildJobKind, BuildingKind, Buildings, PowerAfterSolar};
 pub use chains::{ChainConfig, GoodKind, GoodSpec, Recipe, component_kind};
 pub use cheats::{CheatAudit, CheatError, CheatState};
 pub use classification::{

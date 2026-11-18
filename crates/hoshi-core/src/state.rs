@@ -1628,7 +1628,10 @@ impl GameState {
                 .max_solar_level(coord)
                 .ok_or(BuildError::UnknownPlanet)?;
             if from_level >= cap {
-                return Err(BuildError::SolarCap { cap });
+                return Err(BuildError::SolarCap {
+                    cap,
+                    next: self.power_after_solar(coord),
+                });
             }
         }
         let cost = self.config.buildings.get(kind).cost(from_level);
@@ -3685,6 +3688,22 @@ impl GameState {
                 .iter()
                 .find(|c| c.coord == coord)
                 .map(|c| c.kind)
+        }
+    }
+
+    /// What a world adds for power once solar is at its cap. Fission needs
+    /// uranium in stock or a deposit to mine; an unfuelled ice world keeps the
+    /// idle-a-mine hint (#530) even though it has a small deposit.
+    pub fn power_after_solar(&self, coord: Coord) -> crate::PowerAfterSolar {
+        let no_uranium = self
+            .deposits_at(coord)
+            .get("uranium_ore")
+            .is_none_or(|&richness| richness <= 0.0);
+        let ice = self.planet_kind(coord) == Some(PlanetType::Ice);
+        if !self.fission_has_feedstock_at(coord) && (ice || no_uranium) {
+            crate::PowerAfterSolar::IdleMine
+        } else {
+            crate::PowerAfterSolar::Reactor
         }
     }
 
@@ -14402,6 +14421,74 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
             let by_size = state.config.solar_plant.max_level(size);
             assert_eq!(state.max_solar_level(coord), Some(by_size), "{kind:?}");
         }
+    }
+
+    /// The cap refusal and the solar plant's detail name the same next step,
+    /// and never fission on a world with no uranium and no feedstock.
+    #[test]
+    fn solar_cap_suggests_idling_a_mine_where_fission_cannot_be_fuelled() {
+        let mut state = GameState::new(0);
+        let coord = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 14,
+        };
+        state.colonies.push(crate::Colony {
+            coord,
+            kind: PlanetType::GasGiant,
+            size: 15,
+            resources: Resources::ZERO,
+            buildings: Buildings::default(),
+            fleet: Fleet::default(),
+            defences: crate::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: BTreeMap::new(),
+        });
+        let cap = state.max_solar_level(coord).unwrap();
+        state.colonies[0].buildings.solar_plant = cap;
+        let home = state.home;
+        state.buildings.solar_plant = state.max_solar_level(home).unwrap();
+
+        let refusal = |state: &mut GameState, at: Coord| {
+            state
+                .enqueue_build_on(at, BuildingKind::SolarPlant, 0)
+                .unwrap_err()
+                .to_string()
+        };
+        let cap_line = |state: &GameState, at: Coord| {
+            let detail = state
+                .describe(
+                    crate::DetailSubject::Building {
+                        kind: BuildingKind::SolarPlant,
+                        planet: at,
+                    },
+                    None,
+                )
+                .unwrap();
+            let line = detail
+                .requirements
+                .into_iter()
+                .find(|line| line.text.starts_with("solar cap"))
+                .unwrap();
+            assert!(!line.met);
+            line.text
+        };
+
+        let giant = refusal(&mut state, coord);
+        assert!(
+            giant.contains("idle a mine") && !giant.contains("fission"),
+            "{giant}"
+        );
+        let giant = cap_line(&state, coord);
+        assert!(
+            giant.contains("idle a mine") && !giant.contains("fission"),
+            "{giant}"
+        );
+
+        assert!(refusal(&mut state, home).contains("add fission or fusion"));
+        assert!(cap_line(&state, home).contains("add fission or fusion"));
     }
 
     #[test]

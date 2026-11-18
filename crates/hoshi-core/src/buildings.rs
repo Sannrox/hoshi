@@ -197,11 +197,31 @@ pub struct BuildJob {
     pub completes_at: Option<u64>,
 }
 
+/// The next power step for a world whose solar is at its cap. Shared by the
+/// build refusal, the solar plant detail and the advisor so they agree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PowerAfterSolar {
+    /// Fission can be fuelled here: uranium in stock or a deposit to mine.
+    Reactor,
+    /// Fission cannot be fuelled here (no uranium, or unfuelled ice).
+    IdleMine,
+}
+
+impl PowerAfterSolar {
+    pub fn hint(self) -> &'static str {
+        match self {
+            PowerAfterSolar::Reactor => "add fission or fusion for more power",
+            PowerAfterSolar::IdleMine => "idle a mine",
+        }
+    }
+}
+
 /// Why a build command was refused.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BuildError {
     SolarCap {
         cap: u32,
+        next: PowerAfterSolar,
     },
     QueueFull {
         cap: usize,
@@ -238,10 +258,9 @@ pub enum BuildError {
 impl fmt::Display for BuildError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            BuildError::SolarCap { cap } => write!(
-                f,
-                "solar is at this planet's cap of {cap}; add fission or fusion for more power"
-            ),
+            BuildError::SolarCap { cap, next } => {
+                write!(f, "solar is at this planet's cap of {cap}; {}", next.hint())
+            }
             BuildError::QueueFull { cap } => {
                 write!(f, "build queue is full ({cap}/{cap})")
             }

@@ -1116,7 +1116,10 @@ mod energy_tests {
         state.enqueue_build(BuildingKind::SolarPlant, 0).unwrap();
         assert_eq!(
             state.enqueue_build(BuildingKind::SolarPlant, 0),
-            Err(BuildError::SolarCap { cap })
+            Err(BuildError::SolarCap {
+                cap,
+                next: crate::PowerAfterSolar::Reactor
+            })
         );
     }
 }
