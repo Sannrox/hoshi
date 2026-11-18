@@ -363,7 +363,7 @@ crate::help::catalog_commands! {
         to: Coord,
         transfer: TransferKind,
     },
-    #[help("mission plan", "Plan a vehicle delivery through a transfer window. Destination is where the vehicle flies. Customer is who receives the cargo. Transfer is Hohmann (cheap slow transfer), high energy (more fuel and less coast), or assist (discount when a body sits between the two radii). Cargo and amount are the payload. Fuel is rocket-equation deuterium this plan will debit, not map [flight].", "mission plan TO --vehicle ID [--transfer KIND] [--customer ID] [--iron N] [--silicon N] [--deuterium N] [--window N]", "mission plan 1:1:2 --vehicle 1 --iron 10")]
+    #[help("mission plan", "Plan a vehicle delivery through a transfer window. Destination is where the vehicle flies. Customer is who receives the cargo. Transfer is Hohmann (cheap slow transfer), high energy (more fuel and less coast), or assist (discount when a body sits between the two radii). Cargo and amount are the payload. Fuel is rocket-equation deuterium, not map [flight], debited from the origin when the plan is booked, even for a later window; each planned mission reports it as `fuel_deuterium`.", "mission plan TO --vehicle ID [--transfer KIND] [--customer ID] [--iron N] [--silicon N] [--deuterium N] [--window N]", "mission plan 1:1:2 --vehicle 1 --iron 10")]
     MissionPlan {
         to: Coord,
         vehicle: u64,
@@ -374,7 +374,7 @@ crate::help::catalog_commands! {
         deuterium: String,
         window: Option<usize>,
     },
-    #[help("mission schedule", "Show planned departures and arrivals.", "mission schedule", "mission schedule")]
+    #[help("mission schedule", "Show planned departures and arrivals, with each mission's delta-v and the deuterium it debited (`fuel_deuterium`).", "mission schedule", "mission schedule")]
     MissionSchedule,
     #[help("market region", "Inspect a regional market and contracts.", "market [region [COORD]]", "market region")]
     MarketRegion {
@@ -1828,6 +1828,7 @@ fn apply(
                     "customer": m.customer.as_key(),
                     "arrives_at": m.arrives_at,
                     "delta_v": m.delta_v,
+                    "fuel_deuterium": m.fuel_mass / state.config.orbits.kg_per_cargo,
                 })).collect::<Vec<_>>(),
                 "alerts": schedule.alerts.iter().map(|a| json!({
                     "kind": match a.kind {
@@ -2765,6 +2766,25 @@ fn state_value_for(
             })
         })
         .collect();
+    let planned: Vec<Value> = state
+        .visible_plans(actor)
+        .into_iter()
+        .map(|m| {
+            json!({
+                "id": m.id,
+                "vehicle_id": m.vehicle_id,
+                "origin": m.route.origin.to_string(),
+                "dest": m.route.dest.to_string(),
+                "transfer": m.transfer.as_key(),
+                "customer": m.customer.as_key(),
+                "arrives_at": m.arrives_at,
+                "delta_v": m.delta_v,
+                // Deuterium debited at the origin, as the TUI planner shows it.
+                "fuel_deuterium": m.fuel_mass / state.config.orbits.kg_per_cargo,
+                "marking": marking_value(state, ClassifiedKind::Plan, &m.id.to_string()),
+            })
+        })
+        .collect();
     let waste = state.waste_home();
     let decision =
         hoshi_core::expiring_decision(state, focus).map(|decision| decision_value(&decision));
@@ -2893,17 +2913,7 @@ fn state_value_for(
             "coord": v.coord.to_string(),
             "free_at": v.free_at,
         })).collect::<Vec<_>>(),
-        "planned": state.visible_plans(actor).into_iter().map(|m| json!({
-            "id": m.id,
-            "vehicle_id": m.vehicle_id,
-            "origin": m.route.origin.to_string(),
-            "dest": m.route.dest.to_string(),
-            "transfer": m.transfer.as_key(),
-            "customer": m.customer.as_key(),
-            "arrives_at": m.arrives_at,
-            "delta_v": m.delta_v,
-            "marking": marking_value(state, ClassifiedKind::Plan, &m.id.to_string()),
-        })).collect::<Vec<_>>(),
+        "planned": planned,
     });
     value["decision"] = decision.unwrap_or(Value::Null);
     // Unseen signals stay hidden until light-time passes; the seed never leaves core.
@@ -6442,6 +6452,63 @@ mod tests {
                     .contains("window"),
             "{plan}"
         );
+        let _ = std::fs::remove_file(&save);
+    }
+
+    #[test]
+    fn mission_plan_reports_the_deuterium_it_debits() {
+        let save = unique_save("mission-fuel");
+        let mut conn = open_save(&save).unwrap();
+        let mut seeded = GameState::with_seed(0, BalanceConfig::default(), 1);
+        seeded.config.raid.enabled = false;
+        seeded.fleet.add(ShipKind::SmallCargo, 2);
+        seeded.resources.deuterium = 50_000.0;
+        let dest = hoshi_core::Coord {
+            galaxy: 1,
+            system: 1,
+            position: 8,
+        };
+        seeded.colonies.push(hoshi_core::Colony {
+            coord: dest,
+            kind: hoshi_core::PlanetType::Rocky,
+            size: 100,
+            resources: hoshi_core::Resources::ZERO,
+            buildings: hoshi_core::Buildings::default(),
+            fleet: hoshi_core::Fleet::default(),
+            defences: hoshi_core::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: std::collections::BTreeMap::new(),
+        });
+        save_state(&mut conn, &seeded).unwrap();
+        drop(conn);
+        let (reg, exit) = run_on(&save, &["vehicle", "register", "home", "small_cargo:1"]);
+        assert_eq!(exit, EXIT_OK, "{reg}");
+        let id = reg["vehicles"][0]["id"].as_u64().unwrap().to_string();
+        let before = reg["resources"]["deuterium"].as_f64().unwrap();
+        let argv = [
+            "mission",
+            "plan",
+            "1:1:8",
+            "--vehicle",
+            &id,
+            "--window",
+            "0",
+        ];
+        let (plan, exit) = run_on(&save, &argv);
+        assert_eq!(exit, EXIT_OK, "{plan}");
+        let fuel = plan["planned"][0]["fuel_deuterium"].as_f64().unwrap();
+        let debited = before - plan["resources"]["deuterium"].as_f64().unwrap();
+        assert!(fuel > 0.0, "{plan}");
+        // Production between the two runs is far below a whole unit.
+        assert!(
+            (fuel - debited).abs() < 1.0,
+            "fuel {fuel} debited {debited}"
+        );
+        let (sched, exit) = run_on(&save, &["mission", "schedule"]);
+        assert_eq!(exit, EXIT_OK, "{sched}");
+        assert_eq!(sched["missions"][0]["fuel_deuterium"].as_f64(), Some(fuel));
         let _ = std::fs::remove_file(&save);
     }
 

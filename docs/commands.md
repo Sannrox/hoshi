@@ -1081,7 +1081,7 @@ Area: cli.
 
 ## mission plan
 
-Plan a vehicle delivery through a transfer window. Destination is where the vehicle flies. Customer is who receives the cargo. Transfer is Hohmann (cheap slow transfer), high energy (more fuel and less coast), or assist (discount when a body sits between the two radii). Cargo and amount are the payload. Fuel is rocket-equation deuterium this plan will debit, not map [flight].
+Plan a vehicle delivery through a transfer window. Destination is where the vehicle flies. Customer is who receives the cargo. Transfer is Hohmann (cheap slow transfer), high energy (more fuel and less coast), or assist (discount when a body sits between the two radii). Cargo and amount are the payload. Fuel is rocket-equation deuterium, not map [flight], debited from the origin when the plan is booked, even for a later window; each planned mission reports it as `fuel_deuterium`.
 
 ```text
 hoshi mission plan TO --vehicle ID [--transfer KIND] [--customer ID] [--iron N] [--silicon N] [--deuterium N] [--window N]
@@ -1097,7 +1097,7 @@ Area: cli.
 
 ## mission schedule
 
-Show planned departures and arrivals.
+Show planned departures and arrivals, with each mission's delta-v and the deuterium it debited (`fuel_deuterium`).
 
 ```text
 hoshi mission schedule
