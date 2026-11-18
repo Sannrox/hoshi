@@ -4323,6 +4323,11 @@ impl App {
 
     fn building_block_reason(&self, kind: BuildingKind) -> Option<String> {
         let coord = self.selected_coord();
+        // Offline first: the building produces nothing until it is back.
+        if let Some(until) = self.state.building_offline_until(coord, kind) {
+            let left = until.saturating_sub(self.state.last_tick_unix);
+            return Some(format!("offline {}", ui::spans::duration(left)));
+        }
         if kind == BuildingKind::SolarPlant
             && let Some(cap) = self.state.solar_cap_reached(coord)
         {
@@ -7758,6 +7763,44 @@ mod tests {
         assert!(text.contains("ONLINE"), "{text}");
         app.handle_key(KeyCode::Enter, 1_000);
         assert!(app.status.contains("work order"), "{}", app.status);
+    }
+
+    #[test]
+    fn offline_building_reads_offline_with_time_left_in_the_building_list() {
+        let mut state = GameState::new(1_000);
+        state.resources.iron = 1e12;
+        state.resources.silicon = 1e12;
+        state.resources.deuterium = 1e12;
+        state.sync_maintenance_assets(1_000);
+        let home = state.home;
+        let mine = state
+            .maintenance
+            .assets
+            .iter_mut()
+            .find(|asset| asset.coord == home && asset.key.ends_with(":metal_mine"))
+            .expect("home mine");
+        mine.offline_until = Some(1_000 + 3 * 3_600 + 59 * 60);
+        let mut app = App::new(state);
+        app.screen = Screen::Planet;
+        app.selected = BuildingKind::ALL
+            .iter()
+            .position(|&kind| kind == BuildingKind::MetalMine)
+            .unwrap();
+        let mine_row = |app: &App| {
+            let text = render_text(app, 80, 24);
+            text.lines()
+                .find(|line| line.contains("Metal mine") || line.contains("Iron mine"))
+                .unwrap_or_else(|| panic!("{text}"))
+                .to_string()
+        };
+        let row = mine_row(&app);
+        assert!(row.contains("OFFLINE 3H 59M"), "{row}");
+        assert!(!row.contains("READY"), "{row}");
+
+        app.state.last_tick_unix = 1_000 + 4 * 3_600;
+        let row = mine_row(&app);
+        assert!(!row.contains("OFFLINE"), "{row}");
+        assert!(row.contains("READY"), "{row}");
     }
 
     #[test]

@@ -383,6 +383,23 @@ impl GameState {
         output_factor(asset, self.last_tick_unix)
     }
 
+    /// When an offline building comes back: the later of its repair order's
+    /// end and its offline time, if either is still ahead of the last tick.
+    /// The Buildings list reads this to show the time left.
+    pub fn building_offline_until(&self, coord: Coord, kind: BuildingKind) -> Option<u64> {
+        let key = format!("building:{}:{}", coord, kind.as_key());
+        let asset = self.maintenance.assets.iter().find(|a| a.key == key)?;
+        let order = self
+            .maintenance
+            .orders
+            .iter()
+            .filter(|order| order.asset_id == asset.id)
+            .map(|order| order.ends_at.max(self.last_tick_unix + 1))
+            .max();
+        let until = order.max(asset.offline_until)?;
+        (until > self.last_tick_unix).then_some(until)
+    }
+
     pub fn schedule_maintenance(
         &mut self,
         asset_id: u64,
