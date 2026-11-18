@@ -1546,7 +1546,7 @@ fn planet_detail(state: &GameState, coord: Coord, height: usize, t: &Theme) -> V
     } else if let Some(colony) = state.colonies.iter().find(|c| c.coord == coord) {
         lines.push(Line::from(format!(
             "colony {}  queue {}  parked {}",
-            colony.kind.as_key(),
+            state.display_name(colony.kind.as_key()),
             colony.build_queue.len(),
             colony.fleet.total()
         )));

@@ -1712,14 +1712,18 @@ impl App {
         hoshi_core::fit_label(self.state.world_name(coord), coord, room)
     }
 
+    /// The planet type in player words ("gas giant"), as the star map shows
+    /// it; the key ("gas_giant") stays for saves and JSON.
+    fn planet_kind_words(&self, coord: Coord) -> String {
+        self.state
+            .planet_kind(coord)
+            .map_or_else(|| "unknown".into(), |k| self.state.display_name(k.as_key()))
+    }
+
     fn window_subtitle_full(&self, hub: Hub, coord: Coord, place: &str) -> String {
         match hub {
             Hub::Colony => {
-                let kind = self
-                    .state
-                    .planet_kind(coord)
-                    .map(|k| k.as_key())
-                    .unwrap_or("unknown");
+                let kind = self.planet_kind_words(coord);
                 let queue = self.state.queue_at(coord).map_or(0, <[_]>::len);
                 let cap = self.state.build_queue_cap();
                 format!("{place} · {kind} · queue {queue}/{cap}")
@@ -4179,11 +4183,7 @@ impl App {
         let coord = self.selected_coord();
         let queue = self.state.queue_at(coord).unwrap_or(&[]);
         let mut rows: Vec<Line<'static>> = Vec::new();
-        let kind = self
-            .state
-            .planet_kind(coord)
-            .map(|k| k.as_key())
-            .unwrap_or("unknown");
+        let kind = self.planet_kind_words(coord);
         let size = self.state.planet_size(coord).unwrap_or(0);
         rows.push(Line::from(format!(
             "Planet {}  {kind}  size {size}  Queue {}/{}",
@@ -9330,6 +9330,40 @@ mod tests {
             .expect("energy row");
         assert!(energy.contains(&want), "{energy} want {want}");
         assert!(!energy.contains("solar flux 0%"), "{energy}");
+    }
+
+    #[test]
+    fn colony_header_names_the_planet_type_in_words() {
+        let mut state = GameState::new(1_000);
+        let coord = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 14,
+        };
+        state.colonies.push(Colony {
+            coord,
+            kind: PlanetType::GasGiant,
+            size: 33,
+            resources: Resources::ZERO,
+            buildings: Buildings::default(),
+            fleet: Fleet::default(),
+            defences: hoshi_core::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: std::collections::BTreeMap::new(),
+        });
+        let mut app = App::new(state);
+        app.open(Screen::Planet);
+        app.planet_index = 1;
+        assert_eq!(app.selected_coord(), coord);
+        let text = render_text(&app, 80, 24);
+        assert!(text.contains("1:1:14 · gas giant · queue"), "{text}");
+        assert!(text.contains("Planet 1:1:14  gas giant  size 33"), "{text}");
+        assert!(!text.contains("gas_giant"), "{text}");
+        // 40x12 has no room for the type; it still never shows the key.
+        let text = render_text(&app, 40, 12);
+        assert!(!text.contains("gas_giant"), "{text}");
     }
 
     /// Home with stock and two small cargo ships, plus an empty new colony
