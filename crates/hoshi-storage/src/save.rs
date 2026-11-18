@@ -10226,6 +10226,21 @@ mod tests {
         ))
     }
 
+    /// `.cargo/config.toml` builds SQLite without memory-status tracking;
+    /// with it, parallel tests serialize on one allocator lock.
+    #[test]
+    fn bundled_sqlite_skips_memory_status_tracking() {
+        let conn = Connection::open_in_memory().unwrap();
+        let used: bool = conn
+            .query_row(
+                "SELECT sqlite_compileoption_used('DEFAULT_MEMSTATUS=0')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(used, "LIBSQLITE3_FLAGS lost SQLITE_DEFAULT_MEMSTATUS=0");
+    }
+
     #[test]
     fn update_backup_snapshots_a_live_wal_without_migrating() {
         let source = unique_path("update-backup-source");
