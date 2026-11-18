@@ -1870,6 +1870,8 @@ struct FileBonus {
     helium_3: f64,
     deuterium: f64,
     energy: f64,
+    #[serde(default)]
+    solar_cap_min: u32,
 }
 
 impl File {
@@ -2359,6 +2361,7 @@ impl FileBonus {
             helium_3: self.helium_3,
             deuterium: self.deuterium,
             energy: self.energy,
+            solar_cap_min: self.solar_cap_min,
         }
     }
 }

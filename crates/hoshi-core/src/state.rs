@@ -3688,9 +3688,14 @@ impl GameState {
         }
     }
 
+    /// Solar plant cap at an owned planet: the size formula, raised to the
+    /// planet type's `solar_cap_min`.
     pub fn max_solar_level(&self, coord: Coord) -> Option<u32> {
-        self.planet_size(coord)
-            .map(|size| self.config.solar_plant.max_level(size))
+        let by_size = self.config.solar_plant.max_level(self.planet_size(coord)?);
+        let floor = self
+            .planet_kind(coord)
+            .map_or(0, |kind| self.config.planet_types.get(kind).solar_cap_min);
+        Some(by_size.max(floor))
     }
 
     pub fn planet_size(&self, coord: Coord) -> Option<u8> {
@@ -14362,6 +14367,41 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         assert_eq!(state.expedition_astro(), 0);
         state.completed_wonders.push("test_ring".into());
         assert_eq!(state.expedition_astro(), 2);
+    }
+
+    #[test]
+    fn gas_giant_solar_cap_has_a_floor_and_other_types_keep_the_size_formula() {
+        let mut state = GameState::new(0);
+        let coord = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 14,
+        };
+        state.colonies.push(crate::Colony {
+            coord,
+            kind: PlanetType::GasGiant,
+            size: 15,
+            resources: Resources::ZERO,
+            buildings: Buildings::default(),
+            fleet: Fleet::default(),
+            defences: crate::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: BTreeMap::new(),
+        });
+        let floor = state.config.planet_types.gas_giant.solar_cap_min;
+        assert_eq!(floor, 14);
+        for size in 15..=34 {
+            state.colonies[0].size = size;
+            assert_eq!(state.max_solar_level(coord), Some(floor), "size {size}");
+        }
+        for (kind, size) in [(PlanetType::Ice, 80), (PlanetType::Rocky, 199)] {
+            state.colonies[0].kind = kind;
+            state.colonies[0].size = size;
+            let by_size = state.config.solar_plant.max_level(size);
+            assert_eq!(state.max_solar_level(coord), Some(by_size), "{kind:?}");
+        }
     }
 
     #[test]
