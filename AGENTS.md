@@ -91,6 +91,8 @@ The workflow Skills (`advance-issue-frontier`, `assess-change-impact`,
 are canonical in [Sannrox/agent-kit](https://github.com/Sannrox/agent-kit).
 The opt-in `ci-audit` skill reports what each CI job costs and catches and
 gates every new job.
+The opt-in `tui-e2e` skill proves terminal UI changes: screen-state
+snapshots, a per-state key map, pseudo-terminal tests, and screen rules.
 There is no pin: this repository always uses the latest `main`.
 `.agents/skills/<name>/` holds only a generated stub that points to the shared
 skill; read the installed skill under `~/.agents/agent-kit/` (or
