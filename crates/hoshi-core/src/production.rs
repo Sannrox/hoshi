@@ -360,7 +360,7 @@ impl GameState {
                 .max(0.0)
     }
 
-    fn site_energy_factor(
+    pub(crate) fn site_energy_factor(
         &self,
         coord: Coord,
         buildings: crate::Buildings,

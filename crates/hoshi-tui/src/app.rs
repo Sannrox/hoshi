@@ -10121,6 +10121,44 @@ mod tests {
     }
 
     #[test]
+    fn production_energy_shows_the_throttle_on_a_short_colony() {
+        let mut state = GameState::new(100);
+        let coord = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 8,
+        };
+        state.colonies.push(hoshi_core::Colony {
+            coord,
+            kind: hoshi_core::PlanetType::Rocky,
+            size: 160,
+            resources: Resources::ZERO,
+            buildings: hoshi_core::Buildings {
+                metal_mine: 8,
+                crystal_mine: 8,
+                solar_plant: 3,
+                ..hoshi_core::Buildings::default()
+            },
+            fleet: Fleet::default(),
+            defences: hoshi_core::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: std::collections::BTreeMap::new(),
+        });
+        let mut app = App::new(state);
+        app.planet_index = 1;
+        app.open(Screen::Production);
+        let report = app.state.production_report_at(coord);
+        let share = report.energy_supply / report.energy_demand;
+        assert!(share > 0.0 && share < 1.0, "{share}");
+        let text = render_text(&app, 160, 40);
+        let throttle = format!("work at {:.0}%", share * 100.0);
+        assert!(text.contains(&throttle), "{throttle} in {text}");
+        assert!(!text.contains("% drawn"), "{text}");
+    }
+
+    #[test]
     fn energy_metric_exposes_colony_deficits() {
         let mut state = GameState::new(100);
         state.colonies.push(hoshi_core::Colony {
