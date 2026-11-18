@@ -1623,16 +1623,13 @@ impl GameState {
                 .ok_or(BuildError::UnknownPlanet)?
         };
         let from_level = projected_on(&buildings, &queue, kind, queue.len());
-        if kind == BuildingKind::SolarPlant {
-            let cap = self
-                .max_solar_level(coord)
-                .ok_or(BuildError::UnknownPlanet)?;
-            if from_level >= cap {
-                return Err(BuildError::SolarCap {
-                    cap,
-                    next: self.power_after_solar(coord),
-                });
-            }
+        if kind == BuildingKind::SolarPlant
+            && let Some(cap) = self.solar_cap_reached(coord)
+        {
+            return Err(BuildError::SolarCap {
+                cap,
+                next: self.power_after_solar(coord),
+            });
         }
         let cost = self.config.buildings.get(kind).cost(from_level);
         let spend = cost.iron + cost.silicon + cost.deuterium;
@@ -3715,6 +3712,17 @@ impl GameState {
             .planet_kind(coord)
             .map_or(0, |kind| self.config.planet_types.get(kind).solar_cap_min);
         Some(by_size.max(floor))
+    }
+
+    /// The solar cap when the next queued solar level would pass it, else
+    /// `None`. The build refusal, the detail panel and the building list read
+    /// this one rule.
+    pub fn solar_cap_reached(&self, coord: Coord) -> Option<u32> {
+        let buildings = self.buildings_at(coord)?;
+        let queue = self.queue_at(coord).unwrap_or(&[]);
+        let level = projected_on(buildings, queue, BuildingKind::SolarPlant, queue.len());
+        let cap = self.max_solar_level(coord)?;
+        (level >= cap).then_some(cap)
     }
 
     pub fn planet_size(&self, coord: Coord) -> Option<u8> {

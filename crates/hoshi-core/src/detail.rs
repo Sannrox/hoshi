@@ -265,7 +265,7 @@ impl GameState {
             let cap = self.max_solar_level(planet)?;
             requirements.push(RequirementLine {
                 text: format!("solar cap {cap}; {}", self.power_after_solar(planet).hint()),
-                met: level < cap,
+                met: self.solar_cap_reached(planet).is_none(),
             });
         }
         if kind == BuildingKind::RoboticsFactory {
