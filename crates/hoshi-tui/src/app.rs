@@ -6068,6 +6068,34 @@ mod tests {
     }
 
     #[test]
+    fn shipyard_shows_fleet_and_defence_power_when_the_header_shows_ice() {
+        let mut state = GameState::new(1_000);
+        state.resources.water_ice = 10.0;
+        state.fleet.add(ShipKind::LightFighter, 3);
+        state.defences.add(DefenceKind::LightCannon, 2);
+        let fleet = 3.0 * state.ship_stats(ShipKind::LightFighter).attack;
+        let def = 2.0 * state.config.defences.get(DefenceKind::LightCannon).attack;
+        assert!(fleet > 0.0 && def > 0.0);
+        let mut app = App::new(state);
+        app.open(Screen::Shipyard);
+        for (w, h) in [(80, 24), (40, 24)] {
+            let text = render_text(&app, w, h);
+            // The header label row has no fleet cell on this world.
+            let labels = text.lines().nth(1).unwrap_or_default();
+            assert!(!labels.to_lowercase().contains("fleet"), "{w}x{h}: {text}");
+            let line = text
+                .lines()
+                .find(|line| line.contains("QUEUE"))
+                .unwrap_or_else(|| panic!("{w}x{h}: {text}"));
+            assert!(
+                line.contains(&format!("FLEET {fleet:.0}")),
+                "{w}x{h}: {line}"
+            );
+            assert!(line.contains(&format!("DEF {def:.0}")), "{w}x{h}: {line}");
+        }
+    }
+
+    #[test]
     fn header_shows_water_ice_once_it_has_stock() {
         let mut state = GameState::new(1_000);
         state.resources.water_ice = 10.0;

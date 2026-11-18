@@ -426,10 +426,16 @@ impl App {
         let queue = self.state.ship_queue_at(coord).unwrap_or(&[]);
         let fleet = self.state.fleet_at(coord).unwrap_or_default();
         let defences = self.state.defences_at(coord).unwrap_or_default();
-        let mut head = vec![self.props(&[(
-            "queue",
-            format!("{}/{}", queue.len(), self.state.config.max_ship_queue),
-        )])];
+        // Fleet and defence power sit here too: the header drops its FLEET
+        // cell on worlds that show water ice and helium-3.
+        let mut head = vec![self.props(&[
+            (
+                "queue",
+                format!("{}/{}", queue.len(), self.state.config.max_ship_queue),
+            ),
+            ("fleet", compact(parked_attack(&self.state, coord))),
+            ("def", compact(parked_defence(&self.state, coord))),
+        ])];
         if let Some((cost, secs)) = self.shipyard_batch(self.ship_batch) {
             head.push(Line::from(vec![
                 Span::styled("batch ", t.label()),
