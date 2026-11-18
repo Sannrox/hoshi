@@ -14,6 +14,9 @@ hoshi --cheats cheat grant iron 1000
 hoshi --seed 1 cheat skip 60
 ```
 
+`hoshi --cheats cheat list` prints these codes with their arguments and
+changes nothing; an unknown code's refusal points to it.
+
 | Code | Effect |
 | --- | --- |
 | `grant RESOURCE AMOUNT` | Add a positive finite amount to home stock. Resource names match `state`. |

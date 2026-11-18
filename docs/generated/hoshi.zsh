@@ -18,6 +18,7 @@
     'arena') candidates='board run --offline --update-check --help --version --save --balance --seed --continue --no-portraits --commentary --advisor --json --arena --self-play --demo --bind --config' ;;
     'automation') candidates='add dry-run remove toggle --offline --update-check --help --version --save --balance --seed --continue --no-portraits --commentary --advisor --json --arena --self-play --demo --bind --config' ;;
     'blueprint') candidates='apply capture export import list show --offline --update-check --help --version --save --balance --seed --continue --no-portraits --commentary --advisor --json --arena --self-play --demo --bind --config' ;;
+    'cheat') candidates='list --offline --update-check --help --version --save --balance --seed --continue --no-portraits --commentary --advisor --json --arena --self-play --demo --bind --config' ;;
     'demo') candidates='governance --offline --update-check --help --version --save --balance --seed --continue --no-portraits --commentary --advisor --json --arena --self-play --demo --bind --config' ;;
     'finance') candidates='approve set --offline --update-check --help --version --save --balance --seed --continue --no-portraits --commentary --advisor --json --arena --self-play --demo --bind --config' ;;
     'flagship') candidates='anchor relocate --offline --update-check --help --version --save --balance --seed --continue --no-portraits --commentary --advisor --json --arena --self-play --demo --bind --config' ;;
@@ -29,6 +30,7 @@
     'help automation') candidates='add dry-run remove toggle --offline --update-check --help --version --save --balance --seed --continue --no-portraits --commentary --advisor --json --arena --self-play --demo --bind --config' ;;
     'help automation add') candidates='transfer --offline --update-check --help --version --save --balance --seed --continue --no-portraits --commentary --advisor --json --arena --self-play --demo --bind --config' ;;
     'help blueprint') candidates='apply capture export import list show --offline --update-check --help --version --save --balance --seed --continue --no-portraits --commentary --advisor --json --arena --self-play --demo --bind --config' ;;
+    'help cheat') candidates='list --offline --update-check --help --version --save --balance --seed --continue --no-portraits --commentary --advisor --json --arena --self-play --demo --bind --config' ;;
     'help demo') candidates='governance --offline --update-check --help --version --save --balance --seed --continue --no-portraits --commentary --advisor --json --arena --self-play --demo --bind --config' ;;
     'help finance') candidates='approve set --offline --update-check --help --version --save --balance --seed --continue --no-portraits --commentary --advisor --json --arena --self-play --demo --bind --config' ;;
     'help flagship') candidates='anchor relocate --offline --update-check --help --version --save --balance --seed --continue --no-portraits --commentary --advisor --json --arena --self-play --demo --bind --config' ;;

@@ -329,7 +329,7 @@ Area: install.
 
 ## cheat
 
-Run a local cheat; permanently marks the save modified.
+Run a local cheat; permanently marks the save modified. `cheat list` shows the codes.
 
 ```text
 hoshi cheat CODE [ARGS]
@@ -338,6 +338,22 @@ hoshi cheat CODE [ARGS]
 Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair-play restrictions.
 
 Example: `hoshi --cheats cheat grant iron 100`
+
+Environment: HOSHI_SAVE, HOSHI_BALANCE
+
+Area: cli.
+
+## cheat list
+
+List the cheat codes with their arguments; needs cheats enabled and changes nothing.
+
+```text
+hoshi cheat list
+```
+
+Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair-play restrictions.
+
+Example: `hoshi --cheats cheat list`
 
 Environment: HOSHI_SAVE, HOSHI_BALANCE
 
