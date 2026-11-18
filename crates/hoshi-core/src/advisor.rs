@@ -420,7 +420,7 @@ fn push_idle_queues(state: &GameState, out: &mut Vec<Advice>) {
         out.push(Advice {
             id: "build",
             text: format!(
-                "the build queue is idle; start a {} upgrade",
+                "the build queue is idle; start an {} upgrade",
                 BuildingKind::MetalMine
             ),
         });
@@ -503,6 +503,20 @@ mod tests {
             advise(&state, None).iter().any(
                 |advice| advice.id == "energy" && advice.text.contains("add fission or fusion")
             )
+        );
+    }
+
+    #[test]
+    fn idle_build_queue_advice_reads_an_iron_mine() {
+        let state = close_state();
+        let advice = advise(&state, None);
+        let build = advice
+            .iter()
+            .find(|a| a.id == "build")
+            .map(|a| a.text.as_str());
+        assert_eq!(
+            build,
+            Some("the build queue is idle; start an iron mine upgrade")
         );
     }
 
