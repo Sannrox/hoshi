@@ -20,6 +20,7 @@ pub enum BuildingKind {
     Shipyard,
     Radiator,
     Scrubber,
+    SpaceElevator,
 }
 
 impl BuildingKind {
@@ -39,6 +40,7 @@ impl BuildingKind {
             BuildingKind::Shipyard => "shipyard",
             BuildingKind::Radiator => "radiator",
             BuildingKind::Scrubber => "scrubber",
+            BuildingKind::SpaceElevator => "space_elevator",
         }
     }
 
@@ -58,11 +60,12 @@ impl BuildingKind {
             "shipyard" => BuildingKind::Shipyard,
             "radiator" => BuildingKind::Radiator,
             "scrubber" => BuildingKind::Scrubber,
+            "space_elevator" => BuildingKind::SpaceElevator,
             _ => return None,
         })
     }
 
-    pub const ALL: [BuildingKind; 14] = [
+    pub const ALL: [BuildingKind; 15] = [
         BuildingKind::MetalMine,
         BuildingKind::CrystalMine,
         BuildingKind::DeuteriumSynthesizer,
@@ -77,6 +80,7 @@ impl BuildingKind {
         BuildingKind::Shipyard,
         BuildingKind::Radiator,
         BuildingKind::Scrubber,
+        BuildingKind::SpaceElevator,
     ];
 }
 
@@ -97,6 +101,7 @@ impl fmt::Display for BuildingKind {
             BuildingKind::Shipyard => "shipyard",
             BuildingKind::Radiator => "radiator",
             BuildingKind::Scrubber => "scrubber",
+            BuildingKind::SpaceElevator => "space elevator",
         })
     }
 }
@@ -118,6 +123,7 @@ pub struct Buildings {
     pub shipyard: u32,
     pub radiator: u32,
     pub scrubber: u32,
+    pub space_elevator: u32,
 }
 
 impl Buildings {
@@ -137,6 +143,7 @@ impl Buildings {
             BuildingKind::Shipyard => self.shipyard,
             BuildingKind::Radiator => self.radiator,
             BuildingKind::Scrubber => self.scrubber,
+            BuildingKind::SpaceElevator => self.space_elevator,
         }
     }
 
@@ -156,6 +163,7 @@ impl Buildings {
             BuildingKind::Shipyard => self.shipyard = level,
             BuildingKind::Radiator => self.radiator = level,
             BuildingKind::Scrubber => self.scrubber = level,
+            BuildingKind::SpaceElevator => self.space_elevator = level,
         }
     }
 
@@ -240,6 +248,24 @@ pub enum BuildError {
         required: u32,
         actual: u32,
     },
+    /// A defence the building needs on the same world, such as the Orbital
+    /// station a space elevator climbs to.
+    MissingDefence {
+        defence: crate::DefenceKind,
+        required: u32,
+        actual: u32,
+    },
+    /// The building cannot stand on this planet type (an elevator needs a
+    /// solid surface to anchor to).
+    WrongPlanetType {
+        building: BuildingKind,
+        kind: crate::PlanetType,
+    },
+    /// The building is already at its highest useful level.
+    MaxLevel {
+        building: BuildingKind,
+        cap: u32,
+    },
     EmptySlot {
         index: usize,
         len: usize,
@@ -290,6 +316,23 @@ impl fmt::Display for BuildError {
                 "requires {} level {required} (have {actual})",
                 id.replace('_', " ")
             ),
+            BuildError::MissingDefence {
+                defence,
+                required,
+                actual,
+            } => write!(
+                f,
+                "requires {required} {} on this world (have {actual})",
+                defence.as_key().replace('_', " ")
+            ),
+            BuildError::WrongPlanetType { building, kind } => write!(
+                f,
+                "a {building} cannot be built on a {} world",
+                kind.as_key().replace('_', " ")
+            ),
+            BuildError::MaxLevel { building, cap } => {
+                write!(f, "{building} is already at its top level {cap}")
+            }
             BuildError::EmptySlot { index, len } => {
                 write!(f, "no build job at index {index} (queue length {len})")
             }

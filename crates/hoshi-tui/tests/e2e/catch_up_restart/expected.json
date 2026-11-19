@@ -20,7 +20,8 @@
     "robotics_factory": 0,
     "scrubber": 0,
     "shipyard": 0,
-    "solar_plant": 1
+    "solar_plant": 1,
+    "space_elevator": 0
   },
   "cheat_audit": [
     {
@@ -406,7 +407,7 @@
     "enabled": false
   },
   "routes": [],
-  "save_schema": 71,
+  "save_schema": 72,
   "schema_version": 2,
   "season": null,
   "signals": [],

@@ -732,7 +732,16 @@ impl GameState {
         })
     }
 
+    /// Delta-v to climb out of (or descend into) `coord`'s surface well. A
+    /// built space elevator lifts ships up its tether instead, so the well
+    /// costs nothing there.
     fn well_cost(&self, coord: Coord) -> f64 {
+        if self
+            .buildings_at(coord)
+            .is_some_and(|buildings| buildings.space_elevator > 0)
+        {
+            return 0.0;
+        }
         let kind = self.planet_kind(coord).unwrap_or_else(|| {
             crate::planet_profile(self.galaxy_seed, coord, self.generator_version).0
         });
@@ -913,6 +922,86 @@ mod tests {
             goods: std::collections::BTreeMap::new(),
         });
         let _ = now;
+    }
+
+    #[test]
+    fn a_space_elevator_lifts_its_world_out_of_the_surface_well() {
+        let mut state = ready(1_000);
+        colonize_neighbor(&mut state, 1_000);
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::SmallCargo, 1);
+        let id = state.register_vehicle(Coord::HOME, ships, 1_000).unwrap();
+        let request = PlanRequest {
+            vehicle_id: id,
+            dest: neighbor(),
+            transfer: TransferKind::Hohmann,
+            customer: Customer::Colony,
+            payload: Payload {
+                cargo: Resources::ZERO,
+            },
+            window_index: None,
+        };
+        let before = state.propose_mission(&request, 1_000).unwrap();
+        state.buildings.space_elevator = 1;
+        let origin = state.propose_mission(&request, 1_000).unwrap();
+        let home_well = state.config.orbits.well_dv(state.home_kind);
+        assert!((before.delta_v - origin.delta_v - home_well).abs() < 1e-6);
+        assert!(origin.fuel_mass < before.fuel_mass);
+        state.colonies[0].buildings.space_elevator = 1;
+        let both = state.propose_mission(&request, 1_000).unwrap();
+        let dest_well = state.config.orbits.well_dv(crate::PlanetType::Rocky);
+        assert!((origin.delta_v - both.delta_v - dest_well).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_space_elevator_needs_an_orbital_station_and_a_solid_surface() {
+        let mut state = ready(1_000);
+        state.buildings.shipyard = 4;
+        let drawn = state.energy_consumed();
+        assert!(matches!(
+            state.enqueue_build(crate::BuildingKind::SpaceElevator, 1_000),
+            Err(crate::BuildError::MissingDefence {
+                defence: crate::DefenceKind::OrbitalStation,
+                required: 1,
+                actual: 0,
+            })
+        ));
+        state.defences.add(crate::DefenceKind::OrbitalStation, 1);
+        state
+            .enqueue_build(crate::BuildingKind::SpaceElevator, 1_000)
+            .unwrap();
+        assert!(matches!(
+            state.enqueue_build(crate::BuildingKind::SpaceElevator, 1_000),
+            Err(crate::BuildError::MaxLevel { cap: 1, .. })
+        ));
+        state.buildings.space_elevator = 1;
+        state.build_queue.clear();
+        let built = state
+            .describe(
+                crate::DetailSubject::Building {
+                    kind: crate::BuildingKind::SpaceElevator,
+                    planet: Coord::HOME,
+                },
+                None,
+            )
+            .unwrap();
+        assert!(built.complete, "a built elevator has no next level");
+        let draw = state.energy_consumed() - drawn;
+        assert!((draw - state.config.orbits.elevator_energy).abs() < 1e-9);
+
+        colonize_neighbor(&mut state, 1_000);
+        let giant = &mut state.colonies[0];
+        giant.kind = crate::PlanetType::GasGiant;
+        giant.buildings.shipyard = 4;
+        giant.defences.add(crate::DefenceKind::OrbitalStation, 1);
+        giant.resources = state.resources;
+        let err = state
+            .enqueue_build_on(neighbor(), crate::BuildingKind::SpaceElevator, 1_000)
+            .unwrap_err();
+        assert!(
+            matches!(err, crate::BuildError::WrongPlanetType { .. }),
+            "{err}"
+        );
     }
 
     #[test]

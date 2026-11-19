@@ -4408,6 +4408,16 @@ impl App {
                 return Some(format!("need {} {}", prerequisite.id, prerequisite.level));
             }
         }
+        match self.state.site_rule_error(coord, kind) {
+            Some(hoshi_core::BuildError::MissingDefence { defence, .. }) => {
+                return Some(format!("need {}", defence.as_key().replace('_', " ")));
+            }
+            Some(hoshi_core::BuildError::WrongPlanetType { .. }) => {
+                return Some("no surface".into());
+            }
+            Some(hoshi_core::BuildError::MaxLevel { .. }) => return Some("built".into()),
+            _ => {}
+        }
         let cost = self.state.build_cost_on(coord, kind);
         let resources = self
             .state

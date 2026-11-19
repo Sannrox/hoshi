@@ -261,6 +261,34 @@ impl GameState {
                     }),
             )
             .collect();
+        let grid = self.defences_at(planet).unwrap_or_default();
+        requirements.extend(
+            spec.defence_prerequisites
+                .iter()
+                .map(|&(defence, required)| {
+                    let actual = grid.get(defence);
+                    RequirementLine {
+                        text: format!(
+                            "{} {required} on this world (have {actual})",
+                            self.config.defences.get(defence).name
+                        ),
+                        met: actual >= required,
+                    }
+                }),
+        );
+        if !spec.planet_types.is_empty() {
+            let allowed: Vec<String> = spec
+                .planet_types
+                .iter()
+                .map(|kind| self.display_name(kind.as_key()))
+                .collect();
+            requirements.push(RequirementLine {
+                text: format!("{} world", allowed.join(" or ")),
+                met: self
+                    .planet_kind(planet)
+                    .is_some_and(|kind| spec.planet_types.contains(&kind)),
+            });
+        }
         if kind == BuildingKind::SolarPlant {
             let cap = self.max_solar_level(planet)?;
             requirements.push(RequirementLine {
@@ -317,7 +345,7 @@ impl GameState {
             requirements,
             unlocks: unlocks_from_building(self, kind),
             exclusive_warning: None,
-            complete: false,
+            complete: spec.max_level.is_some_and(|cap| level >= cap),
             ship: None,
         })
     }

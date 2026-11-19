@@ -1549,6 +1549,9 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             "station",
             "ALTER TABLE missions ADD COLUMN station INTEGER NOT NULL DEFAULT 0 CHECK (station IN (0, 1))",
         )
+    elif version == 72:
+        # The space elevator is a `buildings` row; the schema is unchanged.
+        pass
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"
