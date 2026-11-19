@@ -10314,7 +10314,7 @@ mod tests {
         let mut state = GameState::new(1_700_000_000);
         state.resources.iron = 10_000.0;
         state.resources.silicon = 10_000.0;
-        state.resources.deuterium = 10_000.0;
+        state.resources.deuterium = 1e10;
         state.buildings.metal_mine = 3;
         state.buildings.research_lab = 1;
         state.tech_levels.insert("energy".into(), 2);
@@ -10942,7 +10942,7 @@ label = "Leave it"
         };
         state.debris.insert(dest, 5_000.0);
         state.fleet.add(ShipKind::Recycler, 1);
-        state.resources.deuterium = 10_000.0;
+        state.resources.deuterium = 1e10;
         let mut ships = Fleet::default();
         ships.add(ShipKind::Recycler, 1);
         state
@@ -11130,7 +11130,7 @@ label = "Leave it"
         let mut state = GameState::new(100);
         state.sites.clear();
         state.fleet.add(ShipKind::LightFighter, 4);
-        state.resources.deuterium = 10_000.0;
+        state.resources.deuterium = 1e10;
         state.config.expedition.min_hold_secs = 10;
         state.config.expedition.max_hold_secs = 10_000;
         let mut ships = Fleet::default();
@@ -13476,7 +13476,7 @@ label = "Leave it"
         cfg.deuterium_storage.base = 1_000_000.0;
         let mut state = GameState::with_config(now, cfg);
         state.fleet.add(ShipKind::LightFighter, 10);
-        state.resources.deuterium = 10_000.0;
+        state.resources.deuterium = 1e10;
         state
     }
 

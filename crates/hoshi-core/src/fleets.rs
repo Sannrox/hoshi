@@ -1,5 +1,6 @@
 //! Fleet coordinates, flight time, fuel and in-flight missions.
 
+use crate::Resources;
 use crate::ships::{Fleet, ShipKind};
 use std::fmt;
 
@@ -57,8 +58,6 @@ pub struct FlightConfig {
     pub overhead_secs: f64,
     /// Seconds at 100% speed per `sqrt(distance / speed)`; see [`flight_secs`].
     pub secs_per_root: f64,
-    /// Fuel is `sum(count * fuel) * distance / fuel_distance * speed_percent/100`.
-    pub fuel_distance: f64,
     pub base_fleet_slots: u32,
     /// Longest hold a deploy may ask for; keeps phase deadlines storable.
     pub deploy_max_hold_secs: u64,
@@ -75,7 +74,6 @@ impl Default for FlightConfig {
             min_distance: 5.0,
             overhead_secs: 10.0,
             secs_per_root: 1_100.0,
-            fuel_distance: 35_000.0,
             base_fleet_slots: 1,
             deploy_max_hold_secs: 7 * 86_400,
         }
@@ -113,8 +111,52 @@ pub fn flight_secs(
         .max(1.0) as u64
 }
 
-pub fn fuel_cost(units_fuel: f64, distance: f64, speed_percent: u8, cfg: &FlightConfig) -> f64 {
-    units_fuel * distance / cfg.fuel_distance * (f64::from(speed_percent) / 100.0)
+/// Cargo a star-map send carries on each leg, which sets its
+/// rocket-equation fuel. A round trip pays its return leg at launch too.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Haul {
+    pub out: Resources,
+    /// `None` for a one-way send: the ships stay at the destination.
+    pub back: Option<Resources>,
+}
+
+impl Haul {
+    /// Ships fly out and back with empty holds: attacks, spies, expeditions.
+    pub fn empty_round_trip() -> Self {
+        Self::round_trip(Resources::ZERO, Resources::ZERO)
+    }
+
+    pub fn round_trip(out: Resources, back: Resources) -> Self {
+        Self {
+            out,
+            back: Some(back),
+        }
+    }
+
+    pub fn one_way(out: Resources) -> Self {
+        Self { out, back: None }
+    }
+
+    /// A transport delivers `cargo` and flies home empty.
+    pub fn transport(cargo: Resources) -> Self {
+        Self::round_trip(cargo, Resources::ZERO)
+    }
+
+    /// A station send parks its ships, cargo and all, at the destination.
+    pub fn station(cargo: Resources) -> Self {
+        Self::one_way(cargo)
+    }
+
+    /// A deploy brings the same cargo back after its hold.
+    pub fn deploy(cargo: Resources) -> Self {
+        Self::round_trip(cargo, cargo)
+    }
+
+    /// A colony ship becomes the colony. A failed settlement's flight home
+    /// is not charged.
+    pub fn colony() -> Self {
+        Self::one_way(Resources::ZERO)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -427,7 +469,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn flight_time_and_fuel_match_fixed_examples() {
+    fn flight_times_match_fixed_examples() {
         let cfg = FlightConfig::default();
         let home = Coord::HOME;
         let at = |galaxy, system, position| Coord {
@@ -439,8 +481,6 @@ mod tests {
         assert!((neighbor - 1_005.0).abs() < 1e-9);
         // 10 + 1100 * sqrt(1005 / 12500), rounded up.
         assert_eq!(flight_secs(neighbor, 12_500.0, 100, &cfg), 322);
-        let fuel = fuel_cost(20.0, neighbor, 100, &cfg);
-        assert!((fuel - 20.0 * 1_005.0 / 35_000.0).abs() < 1e-12);
 
         let other_sys = distance(home, at(1, 2, 1), &cfg);
         assert!((other_sys - 2_795.0).abs() < 1e-9);
@@ -451,8 +491,6 @@ mod tests {
         let other_gal = distance(home, at(2, 1, 1), &cfg);
         assert!((other_gal - 20_000.0).abs() < 1e-9);
         assert_eq!(flight_secs(other_gal, 10_000.0, 100, &cfg), 1_566);
-        let fuel_gal = fuel_cost(75.0, other_gal, 100, &cfg);
-        assert!((fuel_gal - 75.0 * 20_000.0 / 35_000.0).abs() < 1e-12);
     }
 
     #[test]

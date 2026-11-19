@@ -77,9 +77,9 @@ pub struct RequirementLine {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShipTravel {
     pub speed: f64,
-    /// Deuterium one ship burns per `fuel_distance` at full speed.
-    pub fuel_per_unit: f64,
-    pub fuel_distance: f64,
+    /// Exhaust velocity of the ship's drive in m/s; launch fuel follows
+    /// the rocket equation on it.
+    pub exhaust_velocity: f64,
     pub cargo: f64,
     pub outbound_secs: Option<u64>,
     pub fuel_cost: Option<f64>,
@@ -492,8 +492,7 @@ impl GameState {
             complete: false,
             ship: Some(ShipTravel {
                 speed: stats.speed,
-                fuel_per_unit: stats.fuel,
-                fuel_distance: self.config.flight.fuel_distance,
+                exhaust_velocity: self.drive_ve(&spec.drive),
                 cargo: stats.cargo,
                 outbound_secs: travel.map(|(s, _)| s),
                 fuel_cost: travel.map(|(_, f)| f),
@@ -1319,7 +1318,7 @@ mod tests {
     fn star_map_detail_lists_deposits_after_a_survey() {
         let mut state = GameState::new(0);
         state.config.survey = crate::SurveyConfig::default();
-        state.resources.deuterium = 10_000.0;
+        state.resources.deuterium = 1e12;
         state.fleet.add(crate::ShipKind::EspionageProbe, 1);
         let dest = (2u16..=16)
             .flat_map(|system| {

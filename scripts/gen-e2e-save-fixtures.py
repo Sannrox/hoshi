@@ -1632,7 +1632,9 @@ def write_expedition(path: Path) -> None:
         path,
         metal=500,
         crystal=500,
-        deuterium=10000,
+        # Five fighters to the outer expedition slot and back burn about
+        # 4.3 million D of rocket-equation fuel at full speed.
+        deuterium=6000000,
         buildings=(
             ("metal_mine", 1),
             ("crystal_mine", 1),

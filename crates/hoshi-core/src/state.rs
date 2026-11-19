@@ -17,7 +17,7 @@ use crate::expedition::{
     ExpeditionResult, ExpeditionSite, place_expedition_sites, roll_expedition, scaled_weights,
 };
 use crate::fleets::{
-    Coord, FleetError, Mission, MissionPhase, TradeRoute, distance, flight_secs, fuel_cost,
+    Coord, FleetError, Haul, Mission, MissionPhase, TradeRoute, distance, flight_secs,
 };
 use crate::intel::{
     intel_confidence, light_delay_secs, light_range_au, noisy_fleet, noisy_resources, sensor_error,
@@ -2678,12 +2678,27 @@ impl GameState {
         self.flight_from(self.home, dest, ships, speed_percent)
     }
 
-    /// Outbound flight time and fuel for `ships` flying `origin` to `dest`.
+    /// Outbound flight time and fuel for `ships` flying `origin` to `dest`
+    /// and back with empty holds.
     pub fn flight_from(
         &self,
         origin: Coord,
         dest: Coord,
         ships: Fleet,
+        speed_percent: u8,
+    ) -> Result<(u64, f64), FleetError> {
+        self.flight_hauling(origin, dest, ships, Haul::empty_round_trip(), speed_percent)
+    }
+
+    /// Outbound flight time and launch fuel for `ships` carrying `haul`.
+    /// Time follows the `[flight]` clock; fuel is the rocket equation (see
+    /// `send_fuel`).
+    pub fn flight_hauling(
+        &self,
+        origin: Coord,
+        dest: Coord,
+        ships: Fleet,
+        haul: Haul,
         speed_percent: u8,
     ) -> Result<(u64, f64), FleetError> {
         if ships.is_empty() {
@@ -2697,20 +2712,14 @@ impl GameState {
         }
         self.check_frontier_flight(origin, dest)?;
         let dist = distance(origin, dest, &self.config.flight);
-        let mut slowest = f64::MAX;
-        let mut units_fuel = 0.0;
-        for kind in ShipKind::ALL {
-            let n = ships.get(kind);
-            if n == 0 {
-                continue;
-            }
-            let stats = self.ship_stats(kind);
-            slowest = slowest.min(stats.speed);
-            units_fuel += f64::from(n) * stats.fuel;
-        }
+        let slowest = ShipKind::ALL
+            .iter()
+            .filter(|&&kind| ships.get(kind) > 0)
+            .map(|&kind| self.ship_stats(kind).speed)
+            .fold(f64::MAX, f64::min);
         Ok((
             flight_secs(dist, slowest, speed_percent, &self.config.flight),
-            fuel_cost(units_fuel, dist, speed_percent, &self.config.flight),
+            self.send_fuel(origin, dest, ships, haul, speed_percent),
         ))
     }
 
@@ -3181,6 +3190,23 @@ impl GameState {
         speed_percent: u8,
         now_unix: u64,
     ) -> Result<u64, FleetError> {
+        let haul = Haul::transport(cargo);
+        self.transport_hauling(origin, dest, ships, cargo, haul, speed_percent, now_unix)
+    }
+
+    /// Transport checks shared by a returning transport and a one-way
+    /// station send; `haul` prices the fuel for whichever it is.
+    #[allow(clippy::too_many_arguments)]
+    fn transport_hauling(
+        &mut self,
+        origin: Coord,
+        dest: Coord,
+        ships: Fleet,
+        cargo: Resources,
+        haul: Haul,
+        speed_percent: u8,
+        now_unix: u64,
+    ) -> Result<u64, FleetError> {
         self.catch_up(now_unix);
         if origin == dest {
             return Err(FleetError::SameLocation);
@@ -3200,7 +3226,7 @@ impl GameState {
         if cargo_has_mass(cargo) && !self.dest_has_room_for(dest, cargo) {
             return Err(FleetError::DestFull);
         }
-        self.lift_and_fly(origin, dest, ships, cargo, speed_percent, 0, false)
+        self.lift_and_fly(origin, dest, ships, cargo, haul, speed_percent, 0, false)
     }
 
     /// One-way send: like [`Self::launch_transport`], but Action parks the
@@ -3215,7 +3241,8 @@ impl GameState {
         speed_percent: u8,
         now_unix: u64,
     ) -> Result<u64, FleetError> {
-        self.launch_transport(origin, dest, ships, cargo, speed_percent, now_unix)?;
+        let haul = Haul::station(cargo);
+        self.transport_hauling(origin, dest, ships, cargo, haul, speed_percent, now_unix)?;
         let Some(mission) = self.missions.last_mut() else {
             return Err(FleetError::EmptyFleet);
         };
@@ -3261,7 +3288,17 @@ impl GameState {
         if need > cap + 1e-9 {
             return Err(FleetError::CargoExceedsCapacity { need, cap });
         }
-        self.lift_and_fly(origin, dest, ships, cargo, speed_percent, hold_secs, true)
+        let haul = Haul::deploy(cargo);
+        self.lift_and_fly(
+            origin,
+            dest,
+            ships,
+            cargo,
+            haul,
+            speed_percent,
+            hold_secs,
+            true,
+        )
     }
 
     /// Shared tail of transport and deploy: price the flight, check cargo,
@@ -3273,11 +3310,13 @@ impl GameState {
         dest: Coord,
         ships: Fleet,
         cargo: Resources,
+        haul: Haul,
         speed_percent: u8,
         hold_secs: u64,
         deploy: bool,
     ) -> Result<u64, FleetError> {
-        let (outbound_secs, fuel) = self.flight_from(origin, dest, ships, speed_percent)?;
+        let (outbound_secs, fuel) =
+            self.flight_hauling(origin, dest, ships, haul, speed_percent)?;
         let needed = cargo.with_fuel(fuel);
         let cargo_missing = {
             let res = self.resources_at_mut(origin)?;
@@ -3472,7 +3511,9 @@ impl GameState {
         }
         let mut ships = Fleet::default();
         ships.add(ShipKind::ColonyShip, 1);
-        self.launch_fleet(origin, ships, dest, speed_percent, 0, now_unix)?;
+        let (outbound_secs, fuel) =
+            self.flight_hauling(origin, dest, ships, Haul::colony(), speed_percent)?;
+        self.launch_with_flight(origin, ships, dest, speed_percent, 0, outbound_secs, fuel)?;
         let Some(mission) = self.missions.last_mut() else {
             return Err(FleetError::EmptyFleet);
         };
@@ -4195,7 +4236,6 @@ impl GameState {
             cargo: spec.cargo,
             speed: spec.speed
                 * (1.0 + drive_bonus + self.wonder_modifier(ModifierKind::DriveSpeed)),
-            fuel: spec.fuel,
         }
     }
 
@@ -6540,7 +6580,6 @@ impl GameState {
             hull: 0.0,
             cargo: 0.0,
             speed: 0.0,
-            fuel: 0.0,
         }; crate::SHIP_KINDS];
         for kind in ShipKind::ALL {
             out[kind.index()] = self.ship_stats(kind);
@@ -9108,6 +9147,7 @@ mod tests {
     /// Config with round numbers so catch-up tests read the spec fields, not defaults.
     fn test_config() -> BalanceConfig {
         BalanceConfig {
+            retired_keys: Vec::new(),
             metal_mine: crate::ProducerSpec {
                 base_per_hour: 100.0,
                 growth: 2.0,
@@ -11044,7 +11084,6 @@ modifiers = []
         close(scaled.hull, spec.hull * 1.3);
         close(scaled.speed, spec.speed * 1.4);
         close(scaled.cargo, spec.cargo);
-        close(scaled.fuel, spec.fuel);
     }
 
     #[test]
@@ -11276,7 +11315,7 @@ modifiers = []
     fn flying_state(now: u64) -> GameState {
         let mut state = GameState::new(now);
         state.fleet.add(ShipKind::LightFighter, 4);
-        state.resources.deuterium = 10_000.0;
+        state.resources.deuterium = 1e12;
         state
     }
 
@@ -12363,7 +12402,7 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
 
     fn colony_ready(now: u64) -> GameState {
         let mut state = GameState::with_config(now, colony_config());
-        state.resources.deuterium = 10_000.0;
+        state.resources.deuterium = 1_000_000.0;
         state.fleet.add(ShipKind::ColonyShip, 1);
         state
     }
@@ -12750,10 +12789,11 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
         cfg.raid = crate::RaidConfig::inactive();
         cfg.metal_storage.base = 1_000_000.0;
         cfg.crystal_storage.base = 1_000_000.0;
-        cfg.deuterium_storage.base = 1_000_000.0;
+        // Room for the rocket-equation fuel these flights burn.
+        cfg.deuterium_storage.base = 1e13;
         let mut state = GameState::with_config(now, cfg);
         state.fleet.add(ShipKind::LightFighter, 10);
-        state.resources.deuterium = 10_000.0;
+        state.resources.deuterium = 1e12;
         state
     }
 
@@ -12882,6 +12922,7 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
             .unwrap();
         plant_colony(&mut state, colony);
         state.colonies[0].resources.iron = 0.0;
+        state.colonies[0].resources.deuterium = 1e7;
         state.colonies[0].fleet = ships;
         state
             .launch_expedition_site(colony, site_id, ships, 10, 100, 0)
@@ -13175,7 +13216,7 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
         state.buildings.metal_mine = 0;
         state.buildings.crystal_mine = 0;
         state.buildings.deuterium_synthesizer = 0;
-        state.resources = Resources::from_parts(10_000.0, 6_000.0, 10_000.0);
+        state.resources = Resources::from_parts(10_000.0, 6_000.0, 1_000_000.0);
         state.fleet.add(ShipKind::LargeCargo, 2);
         let dest = Coord {
             galaxy: 1,
@@ -13338,7 +13379,7 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
         let mut state = GameState::with_seed(0, cfg, seed);
         state.buildings.deuterium_synthesizer = 0;
         state.fleet.add(ShipKind::LightFighter, 10);
-        state.resources.deuterium = 10_000.0;
+        state.resources.deuterium = 1e9;
         state
     }
 
@@ -13797,7 +13838,7 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         cfg.raid.min_ships = 10;
         cfg.crystal_storage.base = 2_000.0;
         cfg.buildings.metal_mine = cheap_spec(1_800.0);
-        cfg.starting_resources = Resources::from_parts(20_000.0, 2_000.0, 500.0);
+        cfg.starting_resources = Resources::from_parts(20_000.0, 2_000.0, 50_000.0);
         let mut state = GameState::with_config(0, cfg);
         plant_colony(&mut state, neighbor());
         state.fleet.add(ShipKind::SmallCargo, 2);
@@ -13877,7 +13918,7 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         let mut state = GameState::with_config(0, logistics_config());
         state.resources.iron = 10_000.0;
         state.resources.silicon = 0.0;
-        state.resources.deuterium = 50.0;
+        state.resources.deuterium = 50_000.0;
         plant_colony(&mut state, neighbor());
         state.fleet.add(ShipKind::SmallCargo, 1);
         let over = Resources::from_parts(5_001.0, 0.0, 0.0);
@@ -13892,7 +13933,7 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
             other => panic!("{other:?}"),
         }
         assert_eq!(state.fleet.get(ShipKind::SmallCargo), 1);
-        close(state.resources.deuterium, 50.0);
+        close(state.resources.deuterium, 50_000.0);
 
         state.resources.iron = 50.0;
         let short_metal = Resources::from_parts(200.0, 0.0, 0.0);
@@ -13910,7 +13951,7 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         close(state.resources.iron, 9_900.0);
         let fuel = state.missions[0].fuel_paid;
         assert!(fuel > 0.0);
-        close(state.resources.deuterium, 50.0 - fuel);
+        close(state.resources.deuterium, 50_000.0 - fuel);
         let outbound = state.missions[0].outbound_secs;
         state.catch_up(outbound);
         close(state.colonies[0].resources.iron, 100_100.0);
@@ -13927,11 +13968,19 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         plant_colony(&mut gap, neighbor());
         gap.fleet.add(ShipKind::Cruiser, 1);
         gap.fleet.add(ShipKind::LightFighter, 2);
-        gap.resources.deuterium = 50.0;
+        gap.resources.deuterium = 1_000_000.0;
         let mut ships = Fleet::default();
         ships.add(ShipKind::Cruiser, 1);
         ships.add(ShipKind::LightFighter, 2);
-        let (eta, fuel) = gap.flight_from(gap.home, neighbor(), ships, 100).unwrap();
+        let (eta, fuel) = gap
+            .flight_hauling(
+                gap.home,
+                neighbor(),
+                ships,
+                Haul::station(Resources::ZERO),
+                100,
+            )
+            .unwrap();
         let id = gap
             .launch_station(gap.home, neighbor(), ships, Resources::ZERO, 100, 0)
             .unwrap();
@@ -13939,13 +13988,13 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         assert!(gap.missions[0].station);
         assert!(gap.missions[0].transport);
         close(gap.missions[0].fuel_paid, fuel);
-        close(gap.resources.deuterium, 50.0 - fuel);
+        close(gap.resources.deuterium, 1_000_000.0 - fuel);
 
         let mut stepped = GameState::with_config(0, logistics_config());
         plant_colony(&mut stepped, neighbor());
         stepped.fleet.add(ShipKind::Cruiser, 1);
         stepped.fleet.add(ShipKind::LightFighter, 2);
-        stepped.resources.deuterium = 50.0;
+        stepped.resources.deuterium = 1_000_000.0;
         stepped
             .launch_station(stepped.home, neighbor(), ships, Resources::ZERO, 100, 0)
             .unwrap();
@@ -13973,12 +14022,18 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         state.fleet.add(ShipKind::SmallCargo, 1);
         state.fleet.add(ShipKind::Cruiser, 1);
         state.resources.iron = 10_000.0;
-        state.resources.deuterium = 50.0;
+        state.resources.deuterium = 1e12;
         let cargo = Resources::from_parts(100.0, 0.0, 0.0);
         let mut station_ships = Fleet::default();
         station_ships.add(ShipKind::Cruiser, 1);
         let (eta, fuel) = state
-            .flight_from(state.home, neighbor(), station_ships, 100)
+            .flight_hauling(
+                state.home,
+                neighbor(),
+                station_ships,
+                Haul::station(cargo),
+                100,
+            )
             .unwrap();
         state
             .launch_station(state.home, neighbor(), station_ships, cargo, 100, 0)
@@ -14000,7 +14055,7 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         state.colonies[0].resources.iron = cap - 1.0;
         state.fleet.add(ShipKind::Cruiser, 1);
         state.resources.iron = 10_000.0;
-        state.resources.deuterium = 50.0;
+        state.resources.deuterium = 1e12;
         let cargo = Resources::from_parts(100.0, 0.0, 0.0);
         let mut ships = Fleet::default();
         ships.add(ShipKind::Cruiser, 1);
@@ -14037,7 +14092,7 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         let mut state = GameState::with_config(0, logistics_config());
         plant_colony(&mut state, neighbor());
         state.fleet.add(ShipKind::Cruiser, 1);
-        state.resources.deuterium = 50.0;
+        state.resources.deuterium = 1e12;
         let mut ships = Fleet::default();
         ships.add(ShipKind::Cruiser, 1);
         let (eta, _) = state
@@ -14063,7 +14118,7 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         plant_colony(&mut state, neighbor());
         state.fleet.add(ShipKind::SmallCargo, 1);
         state.resources.iron = 10_000.0;
-        state.resources.deuterium = 50.0;
+        state.resources.deuterium = 1_000_000.0;
         let cargo = Resources::from_parts(100.0, 0.0, 0.0);
         let id = state
             .launch_transport(state.home, neighbor(), cargo_fleet(), cargo, 100, 0)
@@ -14075,7 +14130,7 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         assert!(state.missions.is_empty());
         assert_eq!(state.fleet.get(ShipKind::SmallCargo), 1);
         close(state.resources.iron, 10_000.0 + metal_rate / 3600.0);
-        close(state.resources.deuterium, 50.0 - fuel);
+        close(state.resources.deuterium, 1_000_000.0 - fuel);
         close(state.colonies[0].resources.iron, 100_000.0);
     }
 
@@ -14161,7 +14216,7 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         plant_colony(&mut state, neighbor());
         state.fleet.add(ShipKind::SmallCargo, 1);
         state.resources.iron = 10_000.0;
-        state.resources.deuterium = 50.0;
+        state.resources.deuterium = 1e12;
         let cargo = Resources::from_parts(100.0, 0.0, 0.0);
         let id = state
             .schedule_route(state.home, neighbor(), cargo_fleet(), cargo, 10, 0)
@@ -14242,7 +14297,7 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         state.colonies[0].resources.iron = cap - 1.0;
         state.fleet.add(ShipKind::SmallCargo, 1);
         state.resources.iron = 10_000.0;
-        state.resources.deuterium = 50.0;
+        state.resources.deuterium = 1e12;
         let cargo = Resources::from_parts(100.0, 0.0, 0.0);
         state
             .launch_transport(state.home, neighbor(), cargo_fleet(), cargo, 100, 0)
@@ -14675,7 +14730,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         )
         .expect("espionage tech");
         let mut low = GameState::with_config(0, cfg.clone());
-        low.resources.deuterium = 10_000.0;
+        low.resources.deuterium = 1e12;
         let dest = low.outposts[0].coord;
         low.fleet.add(ShipKind::EspionageProbe, 1);
         low.launch_spy(low.home, probes(1), dest, 100, 0).unwrap();
@@ -14690,7 +14745,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         assert!(aged.age_secs(low.last_tick_unix) > 0);
 
         let mut high = GameState::with_config(0, cfg);
-        high.resources.deuterium = 10_000.0;
+        high.resources.deuterium = 1e12;
         high.tech_levels.insert("espionage".into(), 4);
         let dest = high.outposts[0].coord;
         let garrison = high.outposts[0].garrison;
@@ -14722,7 +14777,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         cfg.espionage.detect_base = 0.0;
         cfg.espionage.detect_per_probe = 0.0;
         let mut state = GameState::with_config(0, cfg);
-        state.resources.deuterium = 10_000.0;
+        state.resources.deuterium = 1e12;
         let dest = state.outposts[0].coord;
         state.fleet.add(ShipKind::EspionageProbe, 1);
         state
@@ -14763,7 +14818,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         cfg.espionage.detect_per_probe = 0.0;
         cfg.espionage.detect_per_level = 0.0;
         let mut state = GameState::with_config(0, cfg);
-        state.resources.deuterium = 10_000.0;
+        state.resources.deuterium = 1e12;
         let dest = state.outposts[0].coord;
         state.fleet.add(ShipKind::EspionageProbe, 1);
         state
@@ -14788,8 +14843,8 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         let cfg = outpost_config();
         let mut a = GameState::with_seed(0, cfg.clone(), 99);
         let mut b = GameState::with_seed(0, cfg, 99);
-        a.resources.deuterium = 10_000.0;
-        b.resources.deuterium = 10_000.0;
+        a.resources.deuterium = 1e12;
+        b.resources.deuterium = 1e12;
         let dest = a.outposts[0].coord;
         a.fleet.add(ShipKind::EspionageProbe, 6);
         b.fleet.add(ShipKind::EspionageProbe, 6);
@@ -14818,7 +14873,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         cfg.espionage.detect_base = 0.0;
         cfg.espionage.detect_per_probe = 0.0;
         let mut state = GameState::with_config(0, cfg);
-        state.resources.deuterium = 10_000.0;
+        state.resources.deuterium = 1e12;
         let dest = state.outposts[0].coord;
         let delay = crate::light_delay_secs(state.home, dest, &state.config.orbits);
         assert!(delay > 0);
@@ -14964,7 +15019,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         )
         .expect("espionage tech");
         let mut state = GameState::with_config(0, cfg);
-        state.resources.deuterium = 10_000.0;
+        state.resources.deuterium = 1e12;
         state.tech_levels.insert("espionage".into(), 4);
         let dest = state.outposts[0].coord;
         let truth = state.outposts[0].garrison;
@@ -15017,7 +15072,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
     #[test]
     fn survey_probes_reveal_system_deposits_matching_a_colony() {
         let mut state = GameState::with_config(0, outpost_config());
-        state.resources.deuterium = 10_000.0;
+        state.resources.deuterium = 1e12;
         state.fleet.add(ShipKind::EspionageProbe, 1);
         let dest = empty_survey_dest(&state);
         assert!(state.deposits_known_at(dest).is_none());
@@ -15066,7 +15121,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
     #[test]
     fn a_far_survey_costs_more_fuel_and_arrives_later_than_a_near_one() {
         let mut near = GameState::with_config(0, outpost_config());
-        near.resources.deuterium = 10_000.0;
+        near.resources.deuterium = 1e12;
         near.fleet.add(ShipKind::EspionageProbe, 1);
         let mut far = near.clone();
         far.fleet.add(ShipKind::EspionageProbe, 1);
@@ -15104,7 +15159,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
     #[test]
     fn a_survey_survives_replay_and_does_not_double_apply() {
         let mut state = GameState::with_config(0, outpost_config());
-        state.resources.deuterium = 10_000.0;
+        state.resources.deuterium = 1e12;
         state.fleet.add(ShipKind::EspionageProbe, 1);
         let dest = empty_survey_dest(&state);
         state
@@ -15152,7 +15207,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         cfg.survey.weights.partial = 1;
         cfg.survey.loss_per_distance = 0.0001;
         let mut a = GameState::with_config(0, cfg.clone());
-        a.resources.deuterium = 10_000.0;
+        a.resources.deuterium = 1e12;
         a.fleet.add(ShipKind::EspionageProbe, 2);
         let dest = empty_survey_dest(&a);
         let mut b = a.clone();
@@ -15224,7 +15279,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         let mut cfg = outpost_config();
         cfg.survey.loss_per_distance = 0.0002;
         let mut state = GameState::with_config(0, cfg.clone());
-        state.resources.deuterium = 10_000.0;
+        state.resources.deuterium = 1e12;
         state.fleet.add(ShipKind::EspionageProbe, 2);
         let dest = empty_survey_dest(&state);
         state
@@ -15255,7 +15310,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
     #[test]
     fn a_survey_in_flight_does_not_use_an_expedition_slot() {
         let mut state = GameState::with_config(0, outpost_config());
-        state.resources.deuterium = 10_000.0;
+        state.resources.deuterium = 1e12;
         state.fleet.add(ShipKind::EspionageProbe, 1);
         state.fleet.add(ShipKind::LightFighter, 2);
         let dest = empty_survey_dest(&state);
@@ -15289,7 +15344,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         let mut cfg = outpost_config();
         cfg.survey.loss_per_distance = 1.0;
         let mut state = GameState::with_config(0, cfg);
-        state.resources.deuterium = 10_000.0;
+        state.resources.deuterium = 1e12;
         state.fleet.add(ShipKind::EspionageProbe, 2);
         let dest = empty_survey_dest(&state);
         state
@@ -15316,7 +15371,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         let mut cfg = outpost_config();
         cfg.survey.loss_per_distance = 1.0;
         let mut state = GameState::with_config(0, cfg);
-        state.resources.deuterium = 10_000.0;
+        state.resources.deuterium = 1e12;
         state.fleet.add(ShipKind::EspionageProbe, 2);
         state.fleet.add(ShipKind::LightFighter, 1);
         let dest = empty_survey_dest(&state);
@@ -15339,7 +15394,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         cfg.survey.weights.partial = 1;
         cfg.survey.partial_slots = 4;
         let mut state = GameState::with_config(0, cfg);
-        state.resources.deuterium = 10_000.0;
+        state.resources.deuterium = 1e12;
         state.fleet.add(ShipKind::EspionageProbe, 2);
         let dest = empty_survey_dest(&state);
         state
@@ -15391,7 +15446,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         cfg.survey.weights.find = 1;
         cfg.survey.find_debris = 500.0;
         let mut state = GameState::with_config(0, cfg);
-        state.resources.deuterium = 10_000.0;
+        state.resources.deuterium = 1e12;
         state.fleet.add(ShipKind::EspionageProbe, 1);
         let dest = empty_survey_dest(&state);
         state
@@ -15417,7 +15472,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         cfg.survey.weights.find = 1;
         cfg.survey.find_debris = 200.0;
         let mut state = GameState::with_config(0, cfg);
-        state.resources.deuterium = 10_000.0;
+        state.resources.deuterium = 1e12;
         state.fleet.add(ShipKind::EspionageProbe, 1);
         let dest = empty_survey_dest(&state);
         state
@@ -15479,8 +15534,8 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         cfg.outposts.variance = 0.2;
         let mut a = GameState::with_seed(0, cfg.clone(), 42);
         let mut b = GameState::with_seed(0, cfg, 42);
-        a.resources.deuterium = 10_000.0;
-        b.resources.deuterium = 10_000.0;
+        a.resources.deuterium = 1e12;
+        b.resources.deuterium = 1e12;
         a.tech_levels.insert("colonization".into(), 1);
         b.tech_levels.insert("colonization".into(), 1);
         let dest = a.outposts[0].coord;
@@ -15518,7 +15573,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
     #[test]
     fn god_mode_preserves_transports_after_a_failed_ground_invasion() {
         let mut state = GameState::with_config(0, outpost_config());
-        state.resources.deuterium = 10_000.0;
+        state.resources.deuterium = 1e12;
         state.tech_levels.insert("colonization".into(), 1);
         let dest = state.outposts[0].coord;
         state.outposts[0].defences = Fleet::default();
@@ -15545,7 +15600,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
     #[test]
     fn conquered_outpost_counts_against_the_colony_cap() {
         let mut state = GameState::with_config(0, outpost_config());
-        state.resources.deuterium = 10_000.0;
+        state.resources.deuterium = 1e12;
         let dest = state.outposts[0].coord;
         state.outposts[0].defences = Fleet::default();
         state.fleet.add(ShipKind::TroopTransport, 2);
@@ -15576,7 +15631,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
     #[test]
     fn rare_bonus_comes_from_config() {
         let mut state = GameState::with_config(0, outpost_config());
-        state.resources.deuterium = 10_000.0;
+        state.resources.deuterium = 1e12;
         state.tech_levels.insert("colonization".into(), 1);
         let dest = state.outposts[0].coord;
         state.outposts[0].defences = Fleet::default();
@@ -15618,7 +15673,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
     #[test]
     fn outpost_strength_scales_with_player_progress_and_early_outposts_are_winnable() {
         let mut state = GameState::with_config(0, outpost_config());
-        state.resources.deuterium = 10_000.0;
+        state.resources.deuterium = 1e12;
         state.tech_levels.insert("colonization".into(), 1);
         let dest = state.outposts[0].coord;
         let start_ships = state
@@ -15664,6 +15719,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
             .find(|&c| c != state.home && c != dest && state.outpost(c).is_none())
             .unwrap();
         plant_colony(&mut state, colony);
+        state.colonies[0].resources.deuterium = 3e9;
         state.colonies[0].fleet.add(ShipKind::LightFighter, 8);
         state.fleet.add(ShipKind::LightFighter, 3);
         let home_stock = state.resources;
@@ -15677,7 +15733,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
         assert_eq!(state.missions[0].origin, colony);
         assert_eq!(state.missions[0].outbound_secs, outbound);
         assert!(state.colonies[0].fleet.is_empty());
-        assert!((state.colonies[0].resources.deuterium - (colony_deut - fuel)).abs() < 1e-9);
+        close(state.colonies[0].resources.deuterium, colony_deut - fuel);
         assert_eq!(state.fleet, fighters(3));
         assert_eq!(state.resources, home_stock);
 
@@ -16667,7 +16723,7 @@ label = "Skip"
         cfg.diplomacy = crate::DiplomacyConfig::default();
         cfg.diplomacy.tick_secs = 10_000;
         let mut state = GameState::with_config(0, cfg);
-        state.resources.deuterium = 10_000.0;
+        state.resources.deuterium = 1e12;
         state.tech_levels.insert("colonization".into(), 1);
         let dest = state.outposts[0].coord;
         state.outposts[0].defences = Fleet::default();

@@ -247,8 +247,6 @@ silent exceptions. Do not "fix" them in an unrelated PR.
 
 - `[flight]` lengths and `ships.toml` `speed` values are unitless points
   (`speed = 5000`–`12500`), not metres per second or a documented scale.
-- Fuel is a flat `fuel_distance` band plus a per-ship constant, not
-  `delta-v * mass`.
 - Combat `attack` / `shield` / `hull` are points. They do not yet cite
   joules, kilograms or radiator load.
 - Empty `[chains]` recipes still allow the legacy mine-to-stockpile path

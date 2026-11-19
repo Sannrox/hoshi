@@ -18,6 +18,19 @@ use std::time::Duration;
 
 pub const SCHEMA_VERSION: u32 = 2;
 pub const EXIT_OK: i32 = 0;
+/// Load a balance override and warn on stderr about keys the rules no
+/// longer read, so an old file still loads. Every override path uses this.
+pub fn load_balance_file(path: &Path) -> Result<BalanceConfig, hoshi_core::BalanceError> {
+    let config = BalanceConfig::load_file(path)?;
+    for key in &config.retired_keys {
+        eprintln!(
+            "warning: {}: `{key}` is retired and ignored",
+            path.display()
+        );
+    }
+    Ok(config)
+}
+
 pub const EXIT_INVALID: i32 = 2;
 pub const EXIT_REFUSED: i32 = 3;
 pub const EXIT_LOCKED: i32 = 4;
@@ -646,8 +659,9 @@ fn apply_unlocked_inner(
 fn run_unlocked_inner(save: &Path, rest: &[String]) -> Result<Value, CliError> {
     let command = serve_command(rest)?;
     let config = match std::env::var_os("HOSHI_BALANCE") {
-        Some(path) => BalanceConfig::load_file(Path::new(&path))
-            .map_err(|e| CliError::Invalid(e.to_string()))?,
+        Some(path) => {
+            load_balance_file(Path::new(&path)).map_err(|e| CliError::Invalid(e.to_string()))?
+        }
         None => BalanceConfig::default(),
     };
     let mut store = open_storage(save).map_err(|e| CliError::Internal(e.to_string()))?;
@@ -718,12 +732,11 @@ fn run_cli_with_lock(args: &[String], take_lock: bool) -> Result<Value, CliError
         None
     };
     let config = match opts.balance.as_deref() {
-        Some(path) => {
-            BalanceConfig::load_file(path).map_err(|e| CliError::Invalid(e.to_string()))?
-        }
+        Some(path) => load_balance_file(path).map_err(|e| CliError::Invalid(e.to_string()))?,
         None => match std::env::var_os("HOSHI_BALANCE") {
-            Some(path) => BalanceConfig::load_file(Path::new(&path))
-                .map_err(|e| CliError::Invalid(e.to_string()))?,
+            Some(path) => {
+                load_balance_file(Path::new(&path)).map_err(|e| CliError::Invalid(e.to_string()))?
+            }
             None => BalanceConfig::default(),
         },
     };
@@ -4264,12 +4277,11 @@ fn run_self_play_command(opts: CliOpts) -> Result<Value, CliError> {
         ));
     }
     let config = match opts.balance.as_deref() {
-        Some(path) => {
-            BalanceConfig::load_file(path).map_err(|e| CliError::Invalid(e.to_string()))?
-        }
+        Some(path) => load_balance_file(path).map_err(|e| CliError::Invalid(e.to_string()))?,
         None => match std::env::var_os("HOSHI_BALANCE") {
-            Some(path) => BalanceConfig::load_file(Path::new(&path))
-                .map_err(|e| CliError::Invalid(e.to_string()))?,
+            Some(path) => {
+                load_balance_file(Path::new(&path)).map_err(|e| CliError::Invalid(e.to_string()))?
+            }
             None => BalanceConfig::default(),
         },
     };

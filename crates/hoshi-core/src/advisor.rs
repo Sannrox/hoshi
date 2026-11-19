@@ -763,7 +763,7 @@ mod tests {
         assert!(advice[0].text.contains("shipyard"), "{}", advice[0].text);
         assert!(advice.iter().any(|a| a.id == "energy"), "energy stays");
         state.fleet.add(ShipKind::LightFighter, 5);
-        state.resources.deuterium = 1e9;
+        state.resources.deuterium = 1e11;
         let text = |state: &GameState| advise(state, Some(VictoryPath::Conquest))[0].text.clone();
         let near = text(&state);
         assert!(near.contains("nearest pirate outpost"), "{near}");

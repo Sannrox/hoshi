@@ -1138,7 +1138,7 @@ impl GameState {
         let n = cargo_ships(self, cargo);
         ships.add(ShipKind::SmallCargo, n);
         let (secs, fuel) = self
-            .flight_from(origin, dest, ships, 100)
+            .flight_hauling(origin, dest, ships, crate::Haul::one_way(cargo), 100)
             .map_err(|_| MarketError::CannotFly)?;
         let have_fuel = self.trader_stock(TraderId::Player, origin).deuterium;
         if have_fuel + 1e-9 < fuel {
@@ -1737,7 +1737,7 @@ impl GameState {
         }
         let mut ships = Fleet::default();
         ships.add(ShipKind::SmallCargo, cargo_ships(self, cargo));
-        self.flight_from(origin, dest, ships, 100)
+        self.flight_hauling(origin, dest, ships, crate::Haul::one_way(cargo), 100)
             .map(|(_, fuel)| fuel)
             .unwrap_or(0.0)
     }
@@ -2196,6 +2196,7 @@ mod tests {
     #[test]
     fn shipment_takes_transit_time_and_fuel() {
         let mut state = ready(1_000);
+        state.resources.deuterium = 1e7;
         let hub = state.config.market.hub();
         let metal = state.resources.iron;
         let deut = state.resources.deuterium;

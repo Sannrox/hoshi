@@ -3817,7 +3817,7 @@ mod tests {
 
     fn spy_empires() -> BTreeMap<String, GameState> {
         let mut a = test_state(SPY_START);
-        a.resources.deuterium = 10_000.0;
+        a.resources.deuterium = 1e12;
         a.fleet.add(ShipKind::EspionageProbe, 4);
         a.config.espionage.error_base = 0.3;
         two_empires(a, tenant_b(SPY_START))
@@ -4018,11 +4018,11 @@ mod tests {
         let find = 800.0;
         let stock = 100.0;
         let mut a = test_state(start);
-        a.resources.deuterium = 100_000.0;
+        a.resources.deuterium = 1e12;
         a.fleet.add(ShipKind::Recycler, 1);
         let mut b = test_state(start);
         b.home = B_HOME;
-        b.resources.deuterium = 100_000.0;
+        b.resources.deuterium = 1e12;
         b.fleet.add(ShipKind::EspionageProbe, 1);
         b.config.survey.weights.find = 1;
         b.config.survey.find_debris = find;
@@ -4094,7 +4094,7 @@ mod tests {
         let mut b = test_state(1_000);
         b.home = B_HOME;
         for state in [&mut a, &mut b] {
-            state.resources.deuterium = 100_000.0;
+            state.resources.deuterium = 1e12;
             state.fleet = ships;
             state.tech_levels.insert("colonization".into(), 1);
         }
@@ -4188,7 +4188,17 @@ mod tests {
     fn raid_empires(atk_battleships: u32, def_fighters: u32) -> BTreeMap<String, GameState> {
         let mut a = armed(RAID_START, 0);
         a.fleet.add(ShipKind::Battleship, atk_battleships);
-        a.resources.deuterium = 5_000.0;
+        // The raid's fuel plus the old 5,000 left over, so plunder still
+        // lands under the storage cap.
+        let fuel = a
+            .flight_from(
+                a.home,
+                B_HOME,
+                raid_cmd(atk_battleships, B_HOME, "").ships,
+                100,
+            )
+            .map_or(0.0, |(_, fuel)| fuel);
+        a.resources.deuterium = fuel + 5_000.0;
         let mut b = armed(RAID_START, def_fighters);
         b.home = B_HOME;
         b.config.moons.form_chance_per_debris = 0.0;

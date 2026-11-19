@@ -691,17 +691,7 @@ impl GameState {
         let cfg = &self.config.orbits;
         let r1 = heliocentric_radius_m(origin, cfg);
         let r2 = heliocentric_radius_m(dest, cfg);
-        let mut burn = hohmann_transfer(r1, r2, cfg.mu_star);
-        // Another system has its own star: the heliocentric Hohmann keeps
-        // the coast time, but delta-v is escape plus capture, so fuel never
-        // falls as the destination gets farther away.
-        if (origin.galaxy, origin.system) != (dest.galaxy, dest.system) {
-            burn.delta_v = interstellar_delta_v(
-                orbital_radius_m(origin, cfg),
-                orbital_radius_m(dest, cfg),
-                cfg.mu_star,
-            );
-        }
+        let burn = self.base_burn(origin, dest);
         if transfer == TransferKind::Assist && !self.assist_body_between(origin, dest, r1, r2) {
             return Err(PlanError::NoAssistBody);
         }
@@ -730,6 +720,55 @@ impl GameState {
             coast_secs,
             windows,
         })
+    }
+
+    /// Hohmann burn between the two orbits, before surface wells. Another
+    /// system has its own star: the heliocentric Hohmann keeps the coast
+    /// time, but delta-v is escape plus capture, so fuel never falls as the
+    /// destination gets farther away.
+    fn base_burn(&self, origin: Coord, dest: Coord) -> crate::orbits::Hohmann {
+        let cfg = &self.config.orbits;
+        let mut burn = hohmann_transfer(
+            heliocentric_radius_m(origin, cfg),
+            heliocentric_radius_m(dest, cfg),
+            cfg.mu_star,
+        );
+        if (origin.galaxy, origin.system) != (dest.galaxy, dest.system) {
+            burn.delta_v = interstellar_delta_v(
+                orbital_radius_m(origin, cfg),
+                orbital_radius_m(dest, cfg),
+                cfg.mu_star,
+            );
+        }
+        burn
+    }
+
+    /// Deuterium a star-map send of `ships` from `origin` to `dest` burns at
+    /// launch: the rocket equation on the same delta-v, dry mass and
+    /// exhaust velocity a vehicle mission uses. `speed_percent` scales the
+    /// transfer burn from Hohmann (10%) to the high-energy burn (100%); the
+    /// wells cost the same at any speed. A round trip pays its return leg
+    /// now as well, at the mass it carries back.
+    pub(crate) fn send_fuel(
+        &self,
+        origin: Coord,
+        dest: Coord,
+        ships: Fleet,
+        haul: crate::Haul,
+        speed_percent: u8,
+    ) -> f64 {
+        let cfg = &self.config.orbits;
+        let share = f64::from(speed_percent.clamp(10, 100) - 10) / 90.0;
+        let factor = 1.0 + (cfg.high_energy_dv - 1.0) * share;
+        let delta_v = self.base_burn(origin, dest).delta_v * factor
+            + self.well_cost(origin)
+            + self.well_cost(dest);
+        let ve = self.fleet_ve(ships);
+        let dry = self.fleet_dry_kg(ships);
+        let leg = |cargo: crate::Resources| {
+            fuel_mass_for_dv(ve, dry + cargo.total() * cfg.kg_per_cargo, delta_v) / cfg.kg_per_cargo
+        };
+        leg(haul.out) + haul.back.map_or(0.0, leg)
     }
 
     /// Delta-v to climb out of (or descend into) `coord`'s surface well. A
@@ -782,10 +821,12 @@ impl GameState {
             .sum()
     }
 
-    fn vehicle_ve(&self, vehicle: &Vehicle) -> f64 {
+    /// Lowest exhaust velocity among `ships`' drives: the slowest drive
+    /// sets the whole stack's propellant.
+    fn fleet_ve(&self, ships: Fleet) -> f64 {
         let mut ve = f64::MAX;
         for kind in ShipKind::ALL {
-            if vehicle.ships.get(kind) == 0 {
+            if ships.get(kind) == 0 {
                 continue;
             }
             let drive = self.config.ships.get(kind).drive.as_str();
@@ -818,7 +859,7 @@ impl GameState {
     ) -> Result<(f64, f64), PlanError> {
         let cfg = &self.config.orbits;
         let dry = self.fleet_dry_kg(vehicle.ships) + payload.mass_kg(cfg.kg_per_cargo);
-        let ve = self.vehicle_ve(vehicle);
+        let ve = self.fleet_ve(vehicle.ships);
         let fuel = fuel_mass_for_dv(ve, dry, need_dv);
         let available = rocket_delta_v(ve, dry + fuel, dry);
         Ok((fuel, available))
@@ -873,6 +914,7 @@ impl GameState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Haul;
     use crate::balance::BalanceConfig;
     use crate::orbits::Hohmann;
     use crate::orbits::{heliocentric_radius_m, hohmann_transfer};
@@ -922,6 +964,88 @@ mod tests {
             goods: std::collections::BTreeMap::new(),
         });
         let _ = now;
+    }
+
+    #[test]
+    fn a_star_map_send_pays_the_fuel_a_vehicle_plan_shows() {
+        let mut state = ready(1_000);
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::SmallCargo, 1);
+        let cargo = Resources::from_parts(5_000.0, 0.0, 0.0);
+        let id = state.register_vehicle(Coord::HOME, ships, 1_000).unwrap();
+        let kg = state.config.orbits.kg_per_cargo;
+        for (speed, transfer) in [(10, TransferKind::Hohmann), (100, TransferKind::HighEnergy)] {
+            let request = PlanRequest {
+                vehicle_id: id,
+                dest: neighbor(),
+                transfer,
+                customer: Customer::Colony,
+                payload: Payload { cargo },
+                window_index: None,
+            };
+            let plan = state.propose_mission(&request, 1_000).unwrap();
+            let one_way = state
+                .flight_hauling(Coord::HOME, neighbor(), ships, Haul::one_way(cargo), speed)
+                .unwrap()
+                .1;
+            assert!((one_way - plan.fuel_mass / kg).abs() < 1e-6, "{speed}%");
+        }
+        // A transport also pays its empty flight home at launch.
+        let one_way = |haul| {
+            state
+                .flight_hauling(Coord::HOME, neighbor(), ships, haul, 10)
+                .unwrap()
+                .1
+        };
+        let back = one_way(Haul::one_way(Resources::ZERO));
+        let round = one_way(Haul::round_trip(cargo, Resources::ZERO));
+        assert!((round - one_way(Haul::one_way(cargo)) - back).abs() < 1e-6);
+    }
+
+    /// The accepted playability targets on the bundled config, at the
+    /// cheapest (Hohmann) send speed. See `docs/balance.md`.
+    #[test]
+    fn bundled_fuel_meets_the_playability_targets() {
+        let mut state = GameState::with_seed(1_000, BalanceConfig::default(), 1);
+        state.tech_levels.insert("combustion_drive".into(), 2);
+        state.tech_levels.insert("impulse_drive".into(), 1);
+        let hop = Coord {
+            position: Coord::HOME.position + 1,
+            ..Coord::HOME
+        };
+        let next_system = Coord {
+            system: Coord::HOME.system + 1,
+            ..Coord::HOME
+        };
+        let one = |kind| {
+            let mut fleet = Fleet::default();
+            fleet.add(kind, 1);
+            fleet
+        };
+        let fuel = |state: &GameState, kind, dest, cargo| {
+            state
+                .flight_hauling(Coord::HOME, dest, one(kind), Haul::one_way(cargo), 10)
+                .unwrap()
+                .1
+        };
+        let full = Resources::from_parts(state.ship_stats(ShipKind::SmallCargo).cargo, 0.0, 0.0);
+        // T2: a full Small Cargo hop fits base deuterium storage.
+        assert!(fuel(&state, ShipKind::SmallCargo, hop, full) <= 10_000.0);
+        // T3: a Colony Ship reaches the next system on one storage upgrade.
+        assert!(fuel(&state, ShipKind::ColonyShip, next_system, Resources::ZERO) <= 20_000.0);
+        // T4: an Espionage Probe can reach the next system.
+        assert!(
+            fuel(
+                &state,
+                ShipKind::EspionageProbe,
+                next_system,
+                Resources::ZERO
+            ) <= 1_000.0
+        );
+        // T1: from a world with an elevator, an empty hop costs at most 48 h
+        // of level-8 synthesizer income (33.2 D/h).
+        state.buildings.space_elevator = 1;
+        assert!(fuel(&state, ShipKind::SmallCargo, hop, Resources::ZERO) <= 48.0 * 33.2);
     }
 
     #[test]

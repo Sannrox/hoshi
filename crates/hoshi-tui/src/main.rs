@@ -621,7 +621,7 @@ fn run_simulate(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
 fn load_balance(path: Option<&Path>) -> Result<BalanceConfig, Box<dyn std::error::Error>> {
     match path {
-        Some(path) => Ok(BalanceConfig::load_file(path)?),
+        Some(path) => Ok(crate::cli::load_balance_file(path)?),
         None => Ok(BalanceConfig::default()),
     }
 }

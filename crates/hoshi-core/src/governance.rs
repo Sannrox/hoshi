@@ -600,12 +600,18 @@ mod tests {
             dest,
             speed_percent: 100,
         };
+        // Uncapped spend so the invasion gate, not the fuel, decides.
+        let uncapped = GovernanceConfig {
+            spend_cap_per_turn: f64::MAX,
+            spend_cap_per_day: f64::MAX,
+            ..GovernanceConfig::default()
+        };
         let err = check_move(
             &state,
             &intent,
             &[],
             &GovernanceLedger::default(),
-            &GovernanceConfig::default(),
+            &uncapped,
             InvasionApproval::AutoDeny,
             1_000,
         )
@@ -618,7 +624,7 @@ mod tests {
             &intent,
             &[],
             &GovernanceLedger::default(),
-            &GovernanceConfig::default(),
+            &uncapped,
             InvasionApproval::Granted,
             1_000,
         )
