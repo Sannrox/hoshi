@@ -232,11 +232,13 @@ fn to_markdown(seed: u64, scenarios: &[Scenario], summary: &Summary) -> String {
 #[cfg(feature = "chisei")]
 fn scenario_betrayal(seed: u64, work: &Path) -> Result<Scenario, String> {
     let mut ungoverned = setup_empire(seed);
+    // An in-system ally: a raid on another star costs more deuterium than
+    // the demo empire could ever stock.
     let ally = free_coord(
         &ungoverned,
         Coord {
             galaxy: 1,
-            system: 2,
+            system: 1,
             position: 4,
         },
     );
@@ -266,8 +268,8 @@ fn scenario_betrayal(seed: u64, work: &Path) -> Result<Scenario, String> {
     gov.store.upsert_planet("hidden", hidden);
     gov.store.set_alliance(HOME_TENANT, "ally", true);
     gov.store.save(&gov.state).map_err(|e| e.to_string())?;
-    gov.cfg.spend_cap_per_turn = 10_000.0;
-    gov.cfg.spend_cap_per_day = 10_000.0;
+    gov.cfg.spend_cap_per_turn = 1_000_000.0;
+    gov.cfg.spend_cap_per_day = 1_000_000.0;
     gov.cfg.token_budget_per_turn = 512;
     gov.state.fleet.add(ShipKind::LightFighter, 2);
     let allies = gov.store.allied_planets(HOME_TENANT);
@@ -350,8 +352,8 @@ fn scenario_invasion(seed: u64, work: &Path) -> Result<Scenario, String> {
     let path = work.join("invasion.chisei");
     let mut gov = Governed::open(&path, seed)?;
     prime_invasion(&mut gov.state);
-    gov.cfg.spend_cap_per_turn = 10_000.0;
-    gov.cfg.spend_cap_per_day = 10_000.0;
+    gov.cfg.spend_cap_per_turn = 1_000_000.0;
+    gov.cfg.spend_cap_per_day = 1_000_000.0;
     gov.cfg.token_budget_per_turn = 512;
     let allies = gov.store.allied_planets(HOME_TENANT);
     let result = gov.consider(&intent, &allies, InvasionApproval::AutoDeny, now);
@@ -384,20 +386,26 @@ fn setup_empire(seed: u64) -> GameState {
     let mut state = GameState::with_seed(0, cfg, seed);
     state.resources.iron = 80_000.0;
     state.resources.silicon = 40_000.0;
-    state.resources.deuterium = 10_000.0;
+    state.resources.deuterium = 1_000_000.0;
     state.tech_levels.insert("colonization".into(), 1);
     state
 }
 
+/// Puts an undefended outpost first in the outpost list, inside the home
+/// system: a seeded outpost around another star costs more invasion fuel
+/// than the demo empire stocks.
 #[cfg(feature = "chisei")]
 fn prime_invasion(state: &mut GameState) {
-    if state.outposts.is_empty() {
-        state.outposts.push(hoshi_core::Outpost {
-            coord: Coord {
-                galaxy: 1,
-                system: 1,
-                position: 8,
-            },
+    let coord = Coord {
+        galaxy: 1,
+        system: 1,
+        position: 8,
+    };
+    state.outposts.retain(|o| o.coord != coord);
+    state.outposts.insert(
+        0,
+        hoshi_core::Outpost {
+            coord,
             kind: hoshi_core::PlanetType::Rocky,
             size: 8,
             defences: Fleet::default(),
@@ -405,10 +413,8 @@ fn prime_invasion(state: &mut GameState) {
             rare: None,
             last_rebuild_at: 0,
             homeworld: false,
-        });
-    } else {
-        state.outposts[0].defences = Fleet::default();
-    }
+        },
+    );
     state.fleet.add(ShipKind::TroopTransport, 2);
 }
 
