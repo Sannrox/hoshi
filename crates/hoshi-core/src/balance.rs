@@ -525,6 +525,9 @@ impl std::error::Error for BalanceError {}
 /// hard-code production or cap numbers.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BalanceConfig {
+    /// Keys the file set that the rules no longer read, such as
+    /// `flight.fuel_distance`. They load and are ignored; the caller warns.
+    pub retired_keys: Vec<String>,
     pub dismantle: crate::DismantleConfig,
     pub metal_mine: ProducerSpec,
     pub crystal_mine: ProducerSpec,
@@ -1889,7 +1892,9 @@ struct FileFlight {
     overhead_secs: f64,
     #[serde(default = "default_secs_per_root")]
     secs_per_root: f64,
-    fuel_distance: f64,
+    /// Retired: fuel is the rocket equation now. Read only to warn.
+    #[serde(default)]
+    fuel_distance: Option<f64>,
     base_fleet_slots: u32,
     #[serde(default = "default_deploy_max_hold_secs")]
     deploy_max_hold_secs: u64,
@@ -1944,7 +1949,14 @@ impl File {
         self.fusion_plant
             .validate()
             .map_err(BalanceError::Invalid)?;
+        let retired_keys = self
+            .flight
+            .fuel_distance
+            .map(|_| "flight.fuel_distance".to_string())
+            .into_iter()
+            .collect();
         let mut config = BalanceConfig {
+            retired_keys,
             metal_mine: self.metal_mine.into_spec(),
             crystal_mine: self.crystal_mine.into_spec(),
             deuterium_synthesizer: self.deuterium_synthesizer.into_spec(),
@@ -2023,7 +2035,6 @@ impl File {
                 min_distance: self.flight.min_distance,
                 overhead_secs: self.flight.overhead_secs,
                 secs_per_root: self.flight.secs_per_root,
-                fuel_distance: self.flight.fuel_distance,
                 base_fleet_slots: self.flight.base_fleet_slots,
                 // Capped so launch + hold always fits a stored timestamp.
                 deploy_max_hold_secs: self.flight.deploy_max_hold_secs.min(365 * 86_400),

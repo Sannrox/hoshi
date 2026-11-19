@@ -1064,7 +1064,7 @@ mod tests {
         state.tech_levels.insert("combustion_drive".into(), 1);
         state.resources.iron = 100_000.0;
         state.resources.silicon = 100_000.0;
-        state.resources.deuterium = 100_000.0;
+        state.resources.deuterium = 1e12;
         state.fleet.add(ShipKind::LightFighter, 4);
         let s = &mut state;
 
@@ -1198,7 +1198,7 @@ mod tests {
         scout.add(ShipKind::SmallCargo, 1);
         state.fleet = scout;
         state.colonies[0].fleet = scout;
-        state.resources.deuterium = 10_000.0;
+        state.resources.deuterium = 1e12;
         let launch = |origin| Intent::Launch {
             origin,
             ships: scout,

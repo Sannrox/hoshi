@@ -831,7 +831,7 @@ impl Server {
 
 fn serve_balance() -> Result<BalanceConfig, ServeError> {
     match std::env::var_os("HOSHI_BALANCE") {
-        Some(path) => BalanceConfig::load_file(Path::new(&path)).map_err(|err| ServeError {
+        Some(path) => crate::cli::load_balance_file(Path::new(&path)).map_err(|err| ServeError {
             message: err.to_string(),
             exit: crate::cli::EXIT_INVALID,
         }),

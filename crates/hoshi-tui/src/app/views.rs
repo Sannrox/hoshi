@@ -1668,7 +1668,9 @@ impl App {
             let flight = if form.mission == Mission::Recycle {
                 self.state.recycle_flight(origin, form.ships, dest, 100)
             } else {
-                self.state.flight_from(origin, dest, form.ships, 100)
+                let haul = form.mission.haul(form.cargo);
+                self.state
+                    .flight_hauling(origin, dest, form.ships, haul, 100)
             };
             match flight {
                 Ok((eta, fuel)) => {

@@ -620,7 +620,6 @@ pub fn stats_from_catalog(catalog: &crate::ShipCatalog) -> [ShipStats; SHIP_KIND
         hull: 0.0,
         cargo: 0.0,
         speed: 0.0,
-        fuel: 0.0,
     }; SHIP_KINDS];
     for kind in ShipKind::ALL {
         let spec = catalog.get(kind);
@@ -630,7 +629,6 @@ pub fn stats_from_catalog(catalog: &crate::ShipCatalog) -> [ShipStats; SHIP_KIND
             hull: spec.hull,
             cargo: spec.cargo,
             speed: spec.speed,
-            fuel: spec.fuel,
         };
     }
     out

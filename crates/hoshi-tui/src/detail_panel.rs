@@ -265,12 +265,8 @@ pub fn inspector(
                 Line::from(format!("{:.0}", ship.speed)),
             ),
             (
-                "fuel".to_string(),
-                Line::from(format!(
-                    "{:.1} D/ship per {}",
-                    ship.fuel_per_unit,
-                    compact(ship.fuel_distance)
-                )),
+                "exhaust".to_string(),
+                Line::from(format!("{:.0} m/s", ship.exhaust_velocity)),
             ),
             (
                 "cargo".to_string(),

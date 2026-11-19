@@ -124,7 +124,6 @@ pub struct ShipSpec {
     pub hull: f64,
     pub cargo: f64,
     pub speed: f64,
-    pub fuel: f64,
     pub shipyard: u32,
     pub drive: String,
     pub prereq_techs: Vec<TechPrereq>,
@@ -150,7 +149,6 @@ pub struct ShipStats {
     pub hull: f64,
     pub cargo: f64,
     pub speed: f64,
-    pub fuel: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -198,7 +196,6 @@ impl ShipCatalog {
                     hull: raw.hull,
                     cargo: raw.cargo,
                     speed: raw.speed,
-                    fuel: raw.fuel,
                     shipyard: raw.shipyard,
                     drive: raw.drive,
                     prereq_techs: raw
@@ -428,7 +425,6 @@ struct RawShip {
     hull: f64,
     cargo: f64,
     speed: f64,
-    fuel: f64,
     shipyard: u32,
     drive: String,
     #[serde(default)]
