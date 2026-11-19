@@ -121,14 +121,14 @@ crate::help::catalog_commands! {
     Cancel {
         item: CancelItem,
     },
-    #[help("fleet send", "Dispatch ships on a mission.", "fleet send FROM TO MISSION SHIP:COUNT...", "fleet send home 1:1:2 expedition small_cargo:1")]
+    #[help("fleet send", "Dispatch ships on a mission. The reply reports the deuterium the launch debited as `fuel_deuterium`; each mission in `state` carries the same key.", "fleet send FROM TO MISSION SHIP:COUNT...", "fleet send home 1:1:2 expedition small_cargo:1")]
     FleetSend {
         from: Coord,
         to: Coord,
         mission: MissionKind,
         ships: Fleet,
     },
-    #[help("fleet deploy", "Hold cargo away from a home raid, then bring it back.", "fleet deploy FROM TO HOLD_SECS RESOURCE=AMOUNT... SHIP:COUNT...", "fleet deploy home 1:1:9 3600 iron=2000 large_cargo:2")]
+    #[help("fleet deploy", "Hold cargo away from a home raid, then bring it back. The reply reports the deuterium the launch debited as `fuel_deuterium`.", "fleet deploy FROM TO HOLD_SECS RESOURCE=AMOUNT... SHIP:COUNT...", "fleet deploy home 1:1:9 3600 iron=2000 large_cargo:2")]
     FleetDeploy {
         from: Coord,
         to: Coord,
@@ -1287,10 +1287,11 @@ fn apply(
             ships,
         } => {
             let cargo = parse_cargo(cargo)?;
+            let before = mission_ids(state);
             state
                 .launch_deploy(*from, *to, *ships, cargo, *hold_secs, 100, now)
                 .map_err(|e| CliError::Refused(e.to_string()))?;
-            Ok(ok_state(state, "deployed"))
+            Ok(ok_launched(state, &before, "deployed"))
         }
         Command::FleetRoute {
             from,
@@ -1317,6 +1318,7 @@ fn apply(
             mission,
             ships,
         } => {
+            let before = mission_ids(state);
             match mission {
                 MissionKind::Attack => {
                     let _ = state
@@ -1367,7 +1369,7 @@ fn apply(
                         .map_err(|e| CliError::Refused(e.to_string()))?;
                 }
             }
-            Ok(ok_state(state, "fleet launched"))
+            Ok(ok_launched(state, &before, "fleet launched"))
         }
         Command::Tick { advance } => {
             if !state.deterministic {
@@ -2617,6 +2619,26 @@ fn ok_state(state: &GameState, message: &str) -> Value {
     ok_state_as(state, message, Actor::Player)
 }
 
+/// Ids of the missions in flight, taken before a launch so `ok_launched` can
+/// tell which missions the command added.
+fn mission_ids(state: &GameState) -> Vec<u64> {
+    state.missions.iter().map(|m| m.id).collect()
+}
+
+/// `ok_state` plus `fuel_deuterium`: the fuel the missions launched since
+/// `before` paid, under the key planned missions use.
+fn ok_launched(state: &GameState, before: &[u64], message: &str) -> Value {
+    let fuel: f64 = state
+        .missions
+        .iter()
+        .filter(|m| !before.contains(&m.id))
+        .map(|m| m.fuel_paid)
+        .sum();
+    let mut value = ok_state(state, message);
+    value["fuel_deuterium"] = json!(fuel);
+    value
+}
+
 fn ok_state_as(state: &GameState, message: &str, actor: Actor) -> Value {
     let mut value = state_value(state, actor);
     value["message"] = json!(message);
@@ -2918,6 +2940,7 @@ fn state_value_for(
             "deploy": m.deploy,
             "station": m.station,
             "cargo": resources_json(m.cargo),
+            "fuel_deuterium": m.fuel_paid,
         })).collect::<Vec<_>>(),
         "planets": planets,
         "outposts": state.outposts.iter().map(|o| json!({
@@ -6338,7 +6361,7 @@ mod tests {
     }
 
     #[test]
-    fn fleet_deploy_lifts_cargo_and_state_shows_it() {
+    fn fleet_deploy_lifts_cargo_and_reports_the_fuel_it_paid() {
         let dir = unique_save("deploy").with_extension("d");
         std::fs::create_dir_all(&dir).unwrap();
         let save = dir.join("save.sqlite");
@@ -6368,6 +6391,20 @@ mod tests {
         assert_eq!(mission["cargo"]["iron"], 1000.0);
         assert_eq!(mission["cargo"]["silicon"], 250.0);
         assert_eq!(value["resources"]["iron"], 4000.0);
+        // The reply and the mission both name the fuel the stock lost.
+        let fuel = value["fuel_deuterium"].as_f64().unwrap();
+        assert!(fuel > 0.0, "{value}");
+        assert_eq!(
+            value["resources"]["deuterium"].as_f64(),
+            Some(10_000.0 - fuel)
+        );
+        assert_eq!(mission["fuel_deuterium"].as_f64(), Some(fuel));
+        let (reloaded, exit) = run_on(&save, &["state"]);
+        assert_eq!(exit, EXIT_OK, "{reloaded}");
+        assert_eq!(
+            reloaded["missions"][0]["fuel_deuterium"].as_f64(),
+            Some(fuel)
+        );
         let (bad, exit) = run_on(
             &save,
             &[
