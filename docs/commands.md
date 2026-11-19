@@ -521,7 +521,7 @@ Area: cli.
 
 ## fleet deploy
 
-Hold cargo away from a home raid, then bring it back.
+Hold cargo away from a home raid, then bring it back. The reply reports the deuterium the launch debited as `fuel_deuterium`.
 
 ```text
 hoshi fleet deploy FROM TO HOLD_SECS RESOURCE=AMOUNT... SHIP:COUNT...
@@ -553,7 +553,7 @@ Area: cli.
 
 ## fleet send
 
-Dispatch ships on a mission.
+Dispatch ships on a mission. The reply reports the deuterium the launch debited as `fuel_deuterium`; each mission in `state` carries the same key.
 
 ```text
 hoshi fleet send FROM TO MISSION SHIP:COUNT...

@@ -488,7 +488,7 @@ hoshi flagship relocate 1:1:2
 .PP
 Environment: HOSHI_SAVE, HOSHI_BALANCE
 .SS fleet deploy
-Hold cargo away from a home raid, then bring it back.
+Hold cargo away from a home raid, then bring it back. The reply reports the deuterium the launch debited as `fuel_deuterium`.
 .PP
 Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair\-play restrictions.
 .PP
@@ -518,7 +518,7 @@ hoshi fleet route 1:1:10 home 21600 water_ice=500 small_cargo:1
 .PP
 Environment: HOSHI_SAVE, HOSHI_BALANCE
 .SS fleet send
-Dispatch ships on a mission.
+Dispatch ships on a mission. The reply reports the deuterium the launch debited as `fuel_deuterium`; each mission in `state` carries the same key.
 .PP
 Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair\-play restrictions.
 .PP
