@@ -1028,12 +1028,12 @@ hoshi market ship home 1:1:2 \-\-iron 10
 .PP
 Environment: HOSHI_SAVE, HOSHI_BALANCE
 .SS mission plan
-Plan a vehicle delivery through a transfer window. Destination is where the vehicle flies. Customer is who receives the cargo. Transfer is Hohmann (cheap slow transfer), high energy (more fuel and less coast), or assist (discount when a body sits between the two radii). Cargo and amount are the payload. Fuel is rocket\-equation deuterium, not map [flight], debited from the origin when the plan is booked, even for a later window; each planned mission reports it as `fuel_deuterium`.
+Plan a vehicle delivery through a transfer window. Destination is where the vehicle flies. Customer is who receives the cargo. Transfer is Hohmann (cheap slow transfer), high energy (more fuel and less coast), or assist (discount when a body sits between the two radii). Cargo and amount are the payload. Fuel is rocket\-equation deuterium, not map [flight], debited from the origin when the plan is booked, even for a later window; each planned mission reports it as `fuel_deuterium`. With \-\-dry\-run the plan is checked and shown (delta\-v, window, `fuel_deuterium`) but not booked: no resources, vehicle or save change.
 .PP
 Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair\-play restrictions.
 .PP
 .nf
-hoshi mission plan TO \-\-vehicle ID [\-\-transfer KIND] [\-\-customer ID] [\-\-iron N] [\-\-silicon N] [\-\-deuterium N] [\-\-window N]
+hoshi mission plan TO \-\-vehicle ID [\-\-transfer KIND] [\-\-customer ID] [\-\-iron N] [\-\-silicon N] [\-\-deuterium N] [\-\-window N] [\-\-dry\-run]
 .fi
 .PP
 Example:

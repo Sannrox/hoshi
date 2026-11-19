@@ -365,7 +365,7 @@ crate::help::catalog_commands! {
         to: Coord,
         transfer: TransferKind,
     },
-    #[help("mission plan", "Plan a vehicle delivery through a transfer window. Destination is where the vehicle flies. Customer is who receives the cargo. Transfer is Hohmann (cheap slow transfer), high energy (more fuel and less coast), or assist (discount when a body sits between the two radii). Cargo and amount are the payload. Fuel is rocket-equation deuterium, not map [flight], debited from the origin when the plan is booked, even for a later window; each planned mission reports it as `fuel_deuterium`.", "mission plan TO --vehicle ID [--transfer KIND] [--customer ID] [--iron N] [--silicon N] [--deuterium N] [--window N]", "mission plan 1:1:2 --vehicle 1 --iron 10")]
+    #[help("mission plan", "Plan a vehicle delivery through a transfer window. Destination is where the vehicle flies. Customer is who receives the cargo. Transfer is Hohmann (cheap slow transfer), high energy (more fuel and less coast), or assist (discount when a body sits between the two radii). Cargo and amount are the payload. Fuel is rocket-equation deuterium, not map [flight], debited from the origin when the plan is booked, even for a later window; each planned mission reports it as `fuel_deuterium`. With --dry-run the plan is checked and shown (delta-v, window, `fuel_deuterium`) but not booked: no resources, vehicle or save change.", "mission plan TO --vehicle ID [--transfer KIND] [--customer ID] [--iron N] [--silicon N] [--deuterium N] [--window N] [--dry-run]", "mission plan 1:1:2 --vehicle 1 --iron 10")]
     MissionPlan {
         to: Coord,
         vehicle: u64,
@@ -375,6 +375,8 @@ crate::help::catalog_commands! {
         silicon: String,
         deuterium: String,
         window: Option<usize>,
+        /// Check and show the plan without booking it or writing the save.
+        dry_run: bool,
     },
     #[help("mission schedule", "Show planned departures and arrivals, with each mission's delta-v and the deuterium it debited (`fuel_deuterium`).", "mission schedule", "mission schedule")]
     MissionSchedule,
@@ -867,6 +869,7 @@ fn command_writes_save(command: &Command) -> bool {
     !matches!(
         command,
         Command::CheatList
+            | Command::MissionPlan { dry_run: true, .. }
             | Command::ScenarioCreate
             | Command::ScenarioQueueBuild { .. }
             | Command::ScenarioAdvance { .. }
@@ -1806,6 +1809,7 @@ fn apply(
             silicon,
             deuterium,
             window,
+            dry_run,
         } => {
             let payload = Payload {
                 cargo: hoshi_core::Resources::from_parts(
@@ -1814,20 +1818,47 @@ fn apply(
                     parse_amount(deuterium)?,
                 ),
             };
-            state
-                .plan_mission(
-                    PlanRequest {
-                        vehicle_id: *vehicle,
-                        dest: *to,
-                        transfer: *transfer,
-                        customer: customer.clone(),
-                        payload,
-                        window_index: *window,
-                    },
-                    now,
-                )
+            let request = PlanRequest {
+                vehicle_id: *vehicle,
+                dest: *to,
+                transfer: *transfer,
+                customer: customer.clone(),
+                payload,
+                window_index: *window,
+            };
+            if !*dry_run {
+                state
+                    .plan_mission(request, now)
+                    .map_err(|e| CliError::Refused(e.to_string()))?;
+                return Ok(ok_state(state, "planned mission"));
+            }
+            // Same catch-up and checks as booking, so a preview refuses
+            // exactly what the booking would; the plan is never applied.
+            state.catch_up(now);
+            let at = state.last_tick_unix;
+            let plan = state
+                .propose_mission(&request, at)
+                .and_then(|plan| state.check_mission(&plan, at).map(|()| plan))
                 .map_err(|e| CliError::Refused(e.to_string()))?;
-            Ok(ok_state(state, "planned mission"))
+            Ok(json!({
+                "schema_version": SCHEMA_VERSION,
+                "ok": true,
+                "message": "mission preview",
+                "booked": false,
+                "vehicle_id": plan.vehicle_id,
+                "origin": plan.route.origin.to_string(),
+                "dest": plan.route.dest.to_string(),
+                "transfer": plan.transfer.as_key(),
+                "customer": plan.customer.as_key(),
+                "window": {
+                    "opens_at": plan.window.opens_at,
+                    "closes_at": plan.window.closes_at,
+                },
+                "delta_v": plan.delta_v,
+                "available_dv": plan.available_dv,
+                "coast_secs": plan.coast_secs,
+                "fuel_deuterium": plan.fuel_mass / state.config.orbits.kg_per_cargo,
+            }))
         }
         Command::MissionSchedule => {
             if !state.deterministic {
@@ -4839,6 +4870,7 @@ fn parse_mission_command(args: &[String]) -> Result<Command, CliError> {
             let mut silicon = "0".to_string();
             let mut deuterium = "0".to_string();
             let mut window = None;
+            let mut dry_run = false;
             let mut i = 3;
             while i < args.len() {
                 let a = args[i].as_str();
@@ -4881,6 +4913,11 @@ fn parse_mission_command(args: &[String]) -> Result<Command, CliError> {
                     i += 2;
                     continue;
                 }
+                if a == "--dry-run" {
+                    dry_run = true;
+                    i += 1;
+                    continue;
+                }
                 if a == "--window" {
                     let raw = nth(args, i + 1, "mission plan --window <n>")?;
                     window = Some(
@@ -4902,6 +4939,7 @@ fn parse_mission_command(args: &[String]) -> Result<Command, CliError> {
                 silicon,
                 deuterium,
                 window,
+                dry_run,
             })
         }
         Some("schedule") => {
@@ -6564,6 +6602,62 @@ mod tests {
         let (sched, exit) = run_on(&save, &["mission", "schedule"]);
         assert_eq!(exit, EXIT_OK, "{sched}");
         assert_eq!(sched["missions"][0]["fuel_deuterium"].as_f64(), Some(fuel));
+        let _ = std::fs::remove_file(&save);
+    }
+
+    #[test]
+    fn mission_plan_dry_run_previews_without_booking() {
+        let save = unique_save("mission-dry-run");
+        let mut conn = open_save(&save).unwrap();
+        let mut seeded = GameState::with_seed(0, BalanceConfig::default(), 1);
+        seeded.deterministic = true;
+        seeded.config.raid.enabled = false;
+        seeded.fleet.add(ShipKind::SmallCargo, 2);
+        seeded.resources.deuterium = 50_000.0;
+        let dest = hoshi_core::Coord {
+            galaxy: 1,
+            system: 1,
+            position: 8,
+        };
+        seeded.colonies.push(hoshi_core::Colony {
+            coord: dest,
+            kind: hoshi_core::PlanetType::Rocky,
+            size: 100,
+            resources: hoshi_core::Resources::ZERO,
+            buildings: hoshi_core::Buildings::default(),
+            fleet: hoshi_core::Fleet::default(),
+            defences: hoshi_core::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: std::collections::BTreeMap::new(),
+        });
+        save_state(&mut conn, &seeded).unwrap();
+        drop(conn);
+        let (reg, exit) = run_on(&save, &["vehicle", "register", "home", "small_cargo:1"]);
+        assert_eq!(exit, EXIT_OK, "{reg}");
+        let id = reg["vehicles"][0]["id"].as_u64().unwrap().to_string();
+        let plan = [
+            "mission",
+            "plan",
+            "1:1:8",
+            "--vehicle",
+            &id,
+            "--window",
+            "0",
+        ];
+        let (before, _) = run_on(&save, &["state"]);
+        let (preview, exit) = run_on(&save, &[&plan[..], &["--dry-run"]].concat());
+        assert_eq!(exit, EXIT_OK, "{preview}");
+        assert_eq!(preview["booked"], false, "{preview}");
+        // Resources, vehicles and plans read back exactly as before.
+        let (after, _) = run_on(&save, &["state"]);
+        assert_eq!(after, before);
+        let (booked, exit) = run_on(&save, &plan);
+        assert_eq!(exit, EXIT_OK, "{booked}");
+        let planned = &booked["planned"][0];
+        assert_eq!(preview["fuel_deuterium"], planned["fuel_deuterium"]);
+        assert_eq!(preview["delta_v"], planned["delta_v"], "{planned}");
         let _ = std::fs::remove_file(&save);
     }
 
