@@ -92,7 +92,7 @@ pub use blueprint::{
 };
 pub use buildings::{BuildError, BuildJob, BuildJobKind, BuildingKind, Buildings, PowerAfterSolar};
 pub use chains::{ChainConfig, GoodKind, GoodSpec, Recipe, component_kind};
-pub use cheats::{CheatAudit, CheatError, CheatState};
+pub use cheats::{CHEAT_CODES, CheatAudit, CheatCode, CheatError, CheatState};
 pub use classification::{
     COMPARTMENT_FLEET, COMPARTMENT_INTEL, COMPARTMENT_PLANET, COMPARTMENT_POLICY, Classification,
     ClassificationBoard, ClassificationError, ClassifiedKind, ClassifiedRef, Clearance,

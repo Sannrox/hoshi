@@ -43,8 +43,10 @@ enum AutomationActionSpec {
 }
 
 crate::help::catalog_commands! {
-    #[help("cheat", "Run a local cheat; permanently marks the save modified.", "cheat CODE [ARGS]", "--cheats cheat grant iron 100")]
+    #[help("cheat", "Run a local cheat; permanently marks the save modified. `cheat list` shows the codes.", "cheat CODE [ARGS]", "--cheats cheat grant iron 100")]
     Cheat { code: String },
+    #[help("cheat list", "List the cheat codes with their arguments; needs cheats enabled and changes nothing.", "cheat list", "--cheats cheat list")]
+    CheatList,
     #[help("bug", "Preview a redacted bug report and prefilled issue page.", "bug [--title TEXT] [--happened TEXT] [--expected TEXT] [--steps TEXT] [--offline] [--print-url] [--yes]", "bug --title Failure --happened Stopped --expected Continue --offline --yes")]
     Bug,
     #[help("state", "Read player-visible state.", "state [--as ACTOR]", "state")]
@@ -605,6 +607,7 @@ fn serve_command(rest: &[String]) -> Result<Command, CliError> {
     if matches!(
         command,
         Command::Cheat { .. }
+            | Command::CheatList
             | Command::Bug
             | Command::Report { .. }
             | Command::Feedback { .. }
@@ -863,7 +866,8 @@ fn governed(state: &mut GameState, intent: Intent, now: u64) -> Result<(), CliEr
 fn command_writes_save(command: &Command) -> bool {
     !matches!(
         command,
-        Command::ScenarioCreate
+        Command::CheatList
+            | Command::ScenarioCreate
             | Command::ScenarioQueueBuild { .. }
             | Command::ScenarioAdvance { .. }
             | Command::ScenarioCompare
@@ -1039,8 +1043,31 @@ fn apply(
                     actor: Actor::Player,
                 },
                 now,
-            )?;
+            )
+            .map_err(|e| match e {
+                CliError::Refused(m) if m == hoshi_core::CheatError::Invalid.to_string() => {
+                    CliError::Refused(format!("{m}; `cheat list` shows the codes"))
+                }
+                e => e,
+            })?;
             Ok(ok_state(state, "cheat applied; save permanently modified"))
+        }
+        Command::CheatList => {
+            if !state.cheats_enabled() {
+                return Err(CliError::Refused(
+                    hoshi_core::CheatError::Disabled.to_string(),
+                ));
+            }
+            Ok(json!({
+                "schema_version": SCHEMA_VERSION,
+                "ok": true,
+                "message": "cheat codes",
+                "codes": hoshi_core::CHEAT_CODES.iter().map(|code| json!({
+                    "usage": code.usage,
+                    "example": code.example,
+                    "effect": code.effect,
+                })).collect::<Vec<_>>(),
+            }))
         }
         Command::Bug => Err(CliError::Invalid("use hoshi bug directly".into())),
         Command::State { actor } => {
@@ -3439,6 +3466,7 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
         return Err(CliError::Invalid("missing command".into()));
     };
     match name {
+        "cheat" if args[1..] == ["list"] => Ok(Command::CheatList),
         "cheat" => Ok(Command::Cheat {
             code: args[1..].join(" "),
         }),
@@ -5721,6 +5749,33 @@ mod tests {
             }
             std::fs::remove_dir_all(directory).unwrap();
         }
+    }
+
+    #[test]
+    fn cheat_list_shows_the_codes_and_an_invalid_code_points_to_it() {
+        let save = unique_save("cheat-list");
+        let (off, exit) = run_on(&save, &["cheat", "list"]);
+        assert_eq!(exit, EXIT_REFUSED, "{off}");
+        assert!(off.to_string().contains("cheats are disabled"), "{off}");
+        let (list, exit) = run_on(&save, &["--cheats", "cheat", "list"]);
+        assert_eq!(exit, EXIT_OK, "{list}");
+        let usages: Vec<_> = list["codes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|code| code["usage"].as_str())
+            .collect();
+        assert!(usages.contains(&"grant RESOURCE AMOUNT"), "{list}");
+        assert!(usages.contains(&"skip SECONDS"), "{list}");
+        let (bad, exit) = run_on(&save, &["--cheats", "cheat", "nope"]);
+        assert_eq!(exit, EXIT_REFUSED, "{bad}");
+        assert!(bad.to_string().contains("`cheat list`"), "{bad}");
+        // Listing and a refused code leave the save unmodified.
+        let conn = open_save(&save).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert!(!loaded.is_modified());
+        drop(conn);
+        let _ = std::fs::remove_file(&save);
     }
 
     #[test]

@@ -45,6 +45,49 @@ impl std::fmt::Display for CheatError {
 
 impl std::error::Error for CheatError {}
 
+/// One cheat code for players: its arguments, a working example, and what it does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CheatCode {
+    pub usage: &'static str,
+    pub example: &'static str,
+    pub effect: &'static str,
+}
+
+/// Every code `apply_cheat` accepts, for `cheat list` and docs. A test keeps
+/// each example parsing, so this stays in step with `Command::parse`.
+pub const CHEAT_CODES: [CheatCode; 6] = [
+    CheatCode {
+        usage: "grant RESOURCE AMOUNT",
+        example: "grant iron 1000",
+        effect: "add a positive amount to home stock",
+    },
+    CheatCode {
+        usage: "finish-build",
+        example: "finish-build",
+        effect: "complete the current building job on each owned planet",
+    },
+    CheatCode {
+        usage: "finish-research",
+        example: "finish-research",
+        effect: "complete the current research job",
+    },
+    CheatCode {
+        usage: "reveal",
+        example: "reveal",
+        effect: "reveal all frontier sectors",
+    },
+    CheatCode {
+        usage: "god on|off",
+        example: "god on",
+        effect: "protect player fleets and planets from damage",
+    },
+    CheatCode {
+        usage: "skip SECONDS",
+        example: "skip 3600",
+        effect: "advance the simulation, up to one year",
+    },
+];
+
 enum Command {
     Grant(crate::ResourceKind, f64),
     FinishBuild,
@@ -205,6 +248,19 @@ impl crate::GameState {
 #[cfg(test)]
 mod tests {
     use crate::{Actor, BalanceConfig, GameState};
+
+    #[test]
+    fn every_listed_cheat_example_parses() {
+        for code in super::CHEAT_CODES {
+            assert!(
+                super::Command::parse(code.example).is_ok(),
+                "{}",
+                code.example
+            );
+        }
+        assert!(super::Command::parse("god off").is_ok());
+        assert!(super::Command::parse("list").is_err());
+    }
 
     fn run(state: &mut GameState, code: &str) -> Result<(), crate::IntentError> {
         let at = state.last_tick_unix;
