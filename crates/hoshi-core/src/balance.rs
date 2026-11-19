@@ -105,6 +105,12 @@ pub struct BuildingSpec {
     pub time_growth: f64,
     pub prerequisites: Vec<(BuildingKind, u32)>,
     pub tech_prerequisites: Vec<TechPrereq>,
+    /// Defences needed on the same world, with the count each needs.
+    pub defence_prerequisites: Vec<(crate::DefenceKind, u32)>,
+    /// Planet types the building may stand on. Empty allows every type.
+    pub planet_types: Vec<crate::PlanetType>,
+    /// Highest level the building can reach. `None` is unbounded.
+    pub max_level: Option<u32>,
     /// One-sentence player-facing use, shown in the inspector.
     pub purpose: String,
 }
@@ -144,6 +150,9 @@ fn spec(
         time_growth,
         prerequisites,
         tech_prerequisites: Vec::new(),
+        defence_prerequisites: Vec::new(),
+        planet_types: Vec::new(),
+        max_level: None,
         purpose: purpose.into(),
     }
 }
@@ -174,6 +183,7 @@ pub struct BuildingCatalog {
     pub shipyard: BuildingSpec,
     pub radiator: BuildingSpec,
     pub scrubber: BuildingSpec,
+    pub space_elevator: BuildingSpec,
 }
 
 impl BuildingCatalog {
@@ -193,6 +203,7 @@ impl BuildingCatalog {
             BuildingKind::Shipyard => &self.shipyard,
             BuildingKind::Radiator => &self.radiator,
             BuildingKind::Scrubber => &self.scrubber,
+            BuildingKind::SpaceElevator => &self.space_elevator,
         }
     }
 }
@@ -353,8 +364,30 @@ impl Default for BuildingCatalog {
                 vec![],
                 "Dumps industrial pollution so work stays at full speed and raids stay smaller.",
             ),
+            space_elevator: space_elevator_spec(),
         }
     }
+}
+
+/// A tether from the surface up to the world's Orbital station. Ships that
+/// launch from or land at its world skip the surface well.
+fn space_elevator_spec() -> BuildingSpec {
+    let mut elevator = spec(
+        8000.0,
+        6000.0,
+        1000.0,
+        1.0,
+        3600.0,
+        1.0,
+        vec![(BuildingKind::Shipyard, 4)],
+        "Tether from the surface to the Orbital station; launches and landings here skip the surface climb.",
+    );
+    elevator
+        .defence_prerequisites
+        .push((crate::DefenceKind::OrbitalStation, 1));
+    elevator.planet_types = vec![crate::PlanetType::Rocky, crate::PlanetType::Ice];
+    elevator.max_level = Some(1);
+    elevator
 }
 
 /// Pirate raid schedule and combat knobs. Frequency and strength live here.
@@ -558,6 +591,7 @@ impl BalanceConfig {
                 .deuterium_synthesizer
                 .energy_use(buildings.deuterium_synthesizer)
             + self.waste.mitigation_energy(buildings)
+            + self.orbits.elevator_energy * f64::from(buildings.space_elevator.min(1))
             + self
                 .chains
                 .recipes
@@ -1547,6 +1581,8 @@ struct FileBuildings {
     shipyard: FileBuilding,
     radiator: FileBuilding,
     scrubber: FileBuilding,
+    #[serde(default)]
+    space_elevator: Option<FileBuilding>,
 }
 
 #[derive(Deserialize)]
@@ -1565,12 +1601,24 @@ struct FileBuilding {
     prerequisites: Vec<FilePrereq>,
     #[serde(default)]
     tech_prerequisites: Vec<FileTechPrereq>,
+    #[serde(default)]
+    defence_prerequisites: Vec<FileDefencePrereq>,
+    #[serde(default)]
+    planet_types: Vec<String>,
+    #[serde(default)]
+    max_level: Option<u32>,
 }
 
 #[derive(Deserialize)]
 struct FilePrereq {
     building: String,
     level: u32,
+}
+
+#[derive(Deserialize)]
+struct FileDefencePrereq {
+    defence: String,
+    count: u32,
 }
 
 #[derive(Deserialize)]
@@ -1633,6 +1681,8 @@ struct FileStartingBuildings {
     radiator: u32,
     #[serde(default)]
     scrubber: u32,
+    #[serde(default)]
+    space_elevator: u32,
 }
 
 #[derive(Deserialize)]
@@ -1946,6 +1996,12 @@ impl File {
                 shipyard: self.buildings.shipyard.into_spec("shipyard")?,
                 radiator: self.buildings.radiator.into_spec("radiator")?,
                 scrubber: self.buildings.scrubber.into_spec("scrubber")?,
+                space_elevator: self
+                    .buildings
+                    .space_elevator
+                    .map(|row| row.into_spec("space_elevator"))
+                    .transpose()?
+                    .unwrap_or_else(space_elevator_spec),
             },
             dismantle: self.dismantle,
             max_build_queue: self.queues.max_build_queue,
@@ -2074,6 +2130,7 @@ impl File {
                 shipyard: self.starting_buildings.shipyard,
                 radiator: self.starting_buildings.radiator,
                 scrubber: self.starting_buildings.scrubber,
+                space_elevator: self.starting_buildings.space_elevator,
             },
             pacing: PacingTargets {
                 energy_recovery_secs: self.pacing.energy_recovery_secs,
@@ -2292,6 +2349,25 @@ impl FileBuilding {
             })?;
             prerequisites.push((building, pre.level));
         }
+        let defence_prerequisites = self
+            .defence_prerequisites
+            .into_iter()
+            .map(|pre| {
+                crate::DefenceKind::from_key(&pre.defence)
+                    .map(|defence| (defence, pre.count))
+                    .ok_or_else(|| {
+                        BalanceError::Invalid(format!("unknown defence {}", pre.defence))
+                    })
+            })
+            .collect::<Result<_, _>>()?;
+        let planet_types = self
+            .planet_types
+            .iter()
+            .map(|key| {
+                crate::PlanetType::from_key(key)
+                    .ok_or_else(|| BalanceError::Invalid(format!("unknown planet type {key}")))
+            })
+            .collect::<Result<_, _>>()?;
         Ok(BuildingSpec {
             metal_base: self.metal_base,
             crystal_base: self.crystal_base,
@@ -2308,6 +2384,9 @@ impl FileBuilding {
                     level: p.level,
                 })
                 .collect(),
+            defence_prerequisites,
+            planet_types,
+            max_level: self.max_level,
             purpose: nonempty_purpose("building", id, self.purpose)
                 .map_err(BalanceError::Invalid)?,
         })

@@ -248,6 +248,21 @@ base_seconds = 180.0
 time_growth = 1.6
 prerequisites = []
 
+# Tether from the surface up to the world's Orbital station. Launches and
+# landings at its world skip the surface well; it draws orbits.elevator_energy.
+[buildings.space_elevator]
+purpose = "Tether from the surface to the Orbital station; launches and landings here skip the surface climb."
+frames = 8000.0
+electronics = 6000.0
+fuel = 1000.0
+cost_growth = 1.0
+base_seconds = 3600.0
+time_growth = 1.0
+prerequisites = [{ building = "shipyard", level = 4 }]
+defence_prerequisites = [{ defence = "orbital_station", count = 1 }]
+planet_types = ["rocky", "ice"]
+max_level = 1
+
 [queues]
 max_build_queue = 5
 max_ship_queue = 5
@@ -477,6 +492,8 @@ high_energy_dv = 1.65
 high_energy_time = 0.55
 assist_dv = 0.82
 turnaround_secs = 120
+# Power a space elevator draws while it stands.
+elevator_energy = 15.0
 
 [planet_types.rocky]
 iron = 0.10

@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 71;
+pub const SCHEMA_VERSION: u32 = 72;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -3975,6 +3975,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     if found < 71 {
         migrate_v71(conn)?;
     }
+    // v72: the space elevator building. Its level is a `buildings` row, so
+    // older saves need no data change; the bump makes older binaries refuse
+    // a save that carries the new row instead of reading it as corrupt.
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
 }

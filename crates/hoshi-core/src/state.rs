@@ -1645,6 +1645,7 @@ impl GameState {
                 });
             }
         }
+        self.check_site_rules(coord, kind, from_level)?;
         let cap = self.build_queue_cap();
         let resources = if coord == self.home {
             self.resources
@@ -1730,6 +1731,46 @@ impl GameState {
             job.credits = amount;
         }
         self.history_queue_build(coord, kind, now);
+        Ok(())
+    }
+
+    /// Rules that depend on the world itself: allowed planet types, the
+    /// building's top level, and defences it needs on the same world.
+    fn check_site_rules(
+        &self,
+        coord: Coord,
+        kind: BuildingKind,
+        from_level: u32,
+    ) -> Result<(), BuildError> {
+        let spec = self.config.buildings.get(kind);
+        if let Some(planet) = self.planet_kind(coord)
+            && !spec.planet_types.is_empty()
+            && !spec.planet_types.contains(&planet)
+        {
+            return Err(BuildError::WrongPlanetType {
+                building: kind,
+                kind: planet,
+            });
+        }
+        if let Some(cap) = spec.max_level
+            && from_level >= cap
+        {
+            return Err(BuildError::MaxLevel {
+                building: kind,
+                cap,
+            });
+        }
+        let grid = self.defences_at(coord).unwrap_or_default();
+        for &(defence, required) in &spec.defence_prerequisites {
+            let actual = grid.get(defence);
+            if actual < required {
+                return Err(BuildError::MissingDefence {
+                    defence,
+                    required,
+                    actual,
+                });
+            }
+        }
         Ok(())
     }
 
@@ -3010,6 +3051,16 @@ impl GameState {
                 .find(|c| c.coord == coord)
                 .map(|c| c.build_queue.as_slice())
         }
+    }
+
+    /// Why `coord` refuses the next level of `kind` on site grounds (planet
+    /// type, top level, defences on the world), or `None`. Views use it to
+    /// show the same lock the build would hit.
+    pub fn site_rule_error(&self, coord: Coord, kind: BuildingKind) -> Option<BuildError> {
+        let buildings = self.buildings_at(coord)?;
+        let queue = self.queue_at(coord)?;
+        let from_level = projected_on(buildings, queue, kind, queue.len());
+        self.check_site_rules(coord, kind, from_level).err()
     }
 
     pub fn build_cost_on(&self, coord: Coord, kind: BuildingKind) -> Resources {
@@ -9112,6 +9163,7 @@ mod tests {
                 scrubber: 0,
                 fission_reactor: 0,
                 fusion_plant: 0,
+                space_elevator: 0,
             },
             buildings: crate::BuildingCatalog::default(),
             max_build_queue: 5,
@@ -10073,6 +10125,9 @@ mod tests {
             time_growth: 1.0,
             prerequisites: vec![],
             tech_prerequisites: vec![],
+            defence_prerequisites: vec![],
+            planet_types: vec![],
+            max_level: None,
             purpose: String::new(),
         }
     }
@@ -10095,6 +10150,9 @@ mod tests {
             time_growth: 1.0,
             prerequisites: vec![(BuildingKind::RoboticsFactory, 1)],
             tech_prerequisites: vec![],
+            defence_prerequisites: vec![],
+            planet_types: vec![],
+            max_level: None,
             purpose: String::new(),
         };
         cfg.buildings.metal_storage = crate::BuildingSpec {
@@ -10106,6 +10164,9 @@ mod tests {
             time_growth: 1.0,
             prerequisites: vec![],
             tech_prerequisites: vec![],
+            defence_prerequisites: vec![],
+            planet_types: vec![],
+            max_level: None,
             purpose: String::new(),
         };
         cfg.max_build_queue = 5;
@@ -15808,6 +15869,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
                     scrubber: 0,
                     fission_reactor: 0,
                     fusion_plant: 0,
+                    space_elevator: 0,
                 },
                 fleet: Fleet::default(),
                 defences: crate::DefenceGrid::default(),
