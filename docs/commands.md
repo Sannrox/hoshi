@@ -1161,15 +1161,15 @@ Area: cli.
 
 ## moon jump
 
-Move ships between ready jump gates.
+Move ships and optional cargo between ready jump gates.
 
 ```text
-hoshi moon jump FROM TO SHIP:COUNT...
+hoshi moon jump FROM TO RESOURCE=AMOUNT... SHIP:COUNT...
 ```
 
 Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair-play restrictions.
 
-Example: `hoshi moon jump home 1:1:2 small_cargo:1`
+Example: `hoshi moon jump home 1:1:2 water_ice=500 small_cargo:1`
 
 Environment: HOSHI_SAVE, HOSHI_BALANCE
 
