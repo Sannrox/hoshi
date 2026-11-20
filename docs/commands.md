@@ -1161,7 +1161,7 @@ Area: cli.
 
 ## moon jump
 
-Move ships and optional cargo between ready jump gates.
+Move ships and optional cargo between ready jump gates on moons or stations.
 
 ```text
 hoshi moon jump FROM TO RESOURCE=AMOUNT... SHIP:COUNT...

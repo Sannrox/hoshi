@@ -1559,6 +1559,14 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
             "fuel_water_ice",
             "ALTER TABLE missions ADD COLUMN fuel_water_ice REAL NOT NULL DEFAULT 0",
         )
+    elif version == 74:
+        if table_exists(conn, "routes"):
+            add_column(
+                conn,
+                "routes",
+                "return_payer",
+                "ALTER TABLE routes ADD COLUMN return_payer TEXT NOT NULL DEFAULT 'origin'",
+            )
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"

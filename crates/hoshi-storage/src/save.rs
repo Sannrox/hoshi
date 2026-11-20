@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 74;
+pub const SCHEMA_VERSION: u32 = 75;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -3991,6 +3991,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     if found < 74 {
         migrate_v74(conn)?;
     }
+    if found < 75 {
+        migrate_v75(conn)?;
+    }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
 }
@@ -5275,6 +5278,23 @@ fn migrate_v74(conn: &Connection) -> Result<(), SaveError> {
     Ok(())
 }
 
+/// v75: per-world station jump-gate cooldown. The building level is a
+/// `buildings` row; a missing table is every station gate ready, so older
+/// saves load unchanged. Each step is idempotent, so a crash mid-way
+/// finishes on reopen. Previous versions fail closed on this schema.
+fn migrate_v75(conn: &Connection) -> Result<(), SaveError> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS station_gates (
+            galaxy INTEGER NOT NULL,
+            system INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            jump_ready_at INTEGER NOT NULL,
+            PRIMARY KEY (galaxy, system, position)
+        );",
+    )?;
+    Ok(())
+}
+
 /// v71: one-way station missions. Older missions were round-trips, so the
 /// column defaults to 0; an older binary refuses a v71 save instead of
 /// returning stationed ships to origin.
@@ -6342,6 +6362,18 @@ fn insert_moons(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<(),
             ],
         )?;
     }
+    for (coord, ready_at) in &state.station_gate_ready {
+        tx.execute(
+            "INSERT INTO station_gates (galaxy, system, position, jump_ready_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                coord.galaxy as i64,
+                coord.system as i64,
+                coord.position as i64,
+                *ready_at as i64,
+            ],
+        )?;
+    }
     for (coord, amount) in &state.debris {
         tx.execute(
             "INSERT INTO debris (galaxy, system, position, amount) VALUES (?1, ?2, ?3, ?4)",
@@ -6358,6 +6390,7 @@ fn insert_moons(tx: &rusqlite::Transaction<'_>, state: &GameState) -> Result<(),
 
 fn load_moons(conn: &Connection, state: &mut GameState) -> Result<(), SaveError> {
     state.moons.clear();
+    state.station_gate_ready.clear();
     state.debris.clear();
     if table_exists(conn, "moons") {
         let mut stmt = conn.prepare(
@@ -6386,6 +6419,31 @@ fn load_moons(conn: &Connection, state: &mut GameState) -> Result<(), SaveError>
                 jump_gate: u32_field(jump_gate, "moon jump gate")?,
                 jump_ready_at: unix_ts(jump_ready_at)?,
             });
+        }
+    }
+    if table_exists(conn, "station_gates") {
+        let mut stmt = conn.prepare(
+            "SELECT galaxy, system, position, jump_ready_at
+             FROM station_gates ORDER BY galaxy, system, position",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?;
+        for row in rows {
+            let (g, s, p, jump_ready_at) = row?;
+            state.station_gate_ready.insert(
+                Coord {
+                    galaxy: u16_coord(g)?,
+                    system: u16_coord(s)?,
+                    position: u16_coord(p)?,
+                },
+                unix_ts(jump_ready_at)?,
+            );
         }
     }
     if table_exists(conn, "debris") {
@@ -11524,6 +11582,36 @@ label = "Leave it"
         migrate(&conn).unwrap();
         let old = load_state(&conn, BalanceConfig::default()).unwrap();
         assert_eq!(old.routes[0].return_payer, hoshi_core::ReturnPayer::Origin);
+        let version: u32 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migrate_v75_keeps_station_gate_cooldown_and_loads_old_saves_ready() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let mut state = sample_state();
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 4,
+        };
+        state.buildings.jump_gate = 1;
+        state.station_gate_ready.insert(Coord::HOME, 90);
+        state.station_gate_ready.insert(dest, 120);
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(loaded.station_gate_ready.get(&Coord::HOME), Some(&90));
+        assert_eq!(loaded.station_gate_ready.get(&dest), Some(&120));
+        conn.execute_batch(
+            "DROP TABLE station_gates;
+             PRAGMA user_version = 74;",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        let old = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert!(old.station_gate_ready.is_empty());
         let version: u32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();

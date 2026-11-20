@@ -184,6 +184,7 @@ pub struct BuildingCatalog {
     pub radiator: BuildingSpec,
     pub scrubber: BuildingSpec,
     pub space_elevator: BuildingSpec,
+    pub jump_gate: BuildingSpec,
 }
 
 impl BuildingCatalog {
@@ -204,6 +205,7 @@ impl BuildingCatalog {
             BuildingKind::Radiator => &self.radiator,
             BuildingKind::Scrubber => &self.scrubber,
             BuildingKind::SpaceElevator => &self.space_elevator,
+            BuildingKind::JumpGate => &self.jump_gate,
         }
     }
 }
@@ -365,6 +367,7 @@ impl Default for BuildingCatalog {
                 "Dumps industrial pollution so work stays at full speed and raids stay smaller.",
             ),
             space_elevator: space_elevator_spec(),
+            jump_gate: jump_gate_spec(),
         }
     }
 }
@@ -388,6 +391,29 @@ fn space_elevator_spec() -> BuildingSpec {
     elevator.planet_types = vec![crate::PlanetType::Rocky, crate::PlanetType::Ice];
     elevator.max_level = Some(1);
     elevator
+}
+
+/// An orbital jump gate on a world's station. Ships jump instantly to any
+/// other gate, moon or station, under the same cooldown as a moon gate.
+fn jump_gate_spec() -> BuildingSpec {
+    let mut gate = spec(
+        24_000.0,
+        18_000.0,
+        4_000.0,
+        1.0,
+        7_200.0,
+        1.0,
+        vec![(BuildingKind::Shipyard, 4)],
+        "Orbital jump gate; links instantly to any other gate on a moon or station.",
+    );
+    gate.defence_prerequisites
+        .push((crate::DefenceKind::OrbitalStation, 1));
+    gate.tech_prerequisites.push(TechPrereq {
+        id: "hyperspace".into(),
+        level: 5,
+    });
+    gate.max_level = Some(1);
+    gate
 }
 
 /// Pirate raid schedule and combat knobs. Frequency and strength live here.
@@ -595,6 +621,7 @@ impl BalanceConfig {
                 .energy_use(buildings.deuterium_synthesizer)
             + self.waste.mitigation_energy(buildings)
             + self.orbits.elevator_energy * f64::from(buildings.space_elevator.min(1))
+            + self.orbits.gate_energy * f64::from(buildings.jump_gate.min(1))
             + self
                 .chains
                 .recipes
@@ -1586,6 +1613,8 @@ struct FileBuildings {
     scrubber: FileBuilding,
     #[serde(default)]
     space_elevator: Option<FileBuilding>,
+    #[serde(default)]
+    jump_gate: Option<FileBuilding>,
 }
 
 #[derive(Deserialize)]
@@ -1686,6 +1715,8 @@ struct FileStartingBuildings {
     scrubber: u32,
     #[serde(default)]
     space_elevator: u32,
+    #[serde(default)]
+    jump_gate: u32,
 }
 
 #[derive(Deserialize)]
@@ -2014,6 +2045,12 @@ impl File {
                     .map(|row| row.into_spec("space_elevator"))
                     .transpose()?
                     .unwrap_or_else(space_elevator_spec),
+                jump_gate: self
+                    .buildings
+                    .jump_gate
+                    .map(|row| row.into_spec("jump_gate"))
+                    .transpose()?
+                    .unwrap_or_else(jump_gate_spec),
             },
             dismantle: self.dismantle,
             max_build_queue: self.queues.max_build_queue,
@@ -2142,6 +2179,7 @@ impl File {
                 radiator: self.starting_buildings.radiator,
                 scrubber: self.starting_buildings.scrubber,
                 space_elevator: self.starting_buildings.space_elevator,
+                jump_gate: self.starting_buildings.jump_gate,
             },
             pacing: PacingTargets {
                 energy_recovery_secs: self.pacing.energy_recovery_secs,

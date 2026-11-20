@@ -1405,6 +1405,52 @@ mod tests {
     }
 
     #[test]
+    fn a_station_jump_gate_needs_an_orbital_station_and_hyperspace() {
+        let mut state = ready(1_000);
+        state.buildings.shipyard = 4;
+        let drawn = state.energy_consumed();
+        assert!(matches!(
+            state.enqueue_build(crate::BuildingKind::JumpGate, 1_000),
+            Err(crate::BuildError::MissingTechnology {
+                ref id,
+                required: 5,
+                actual: 0,
+            }) if id == "hyperspace"
+        ));
+        state.tech_levels.insert("hyperspace".into(), 5);
+        assert!(matches!(
+            state.enqueue_build(crate::BuildingKind::JumpGate, 1_000),
+            Err(crate::BuildError::MissingDefence {
+                defence: crate::DefenceKind::OrbitalStation,
+                required: 1,
+                actual: 0,
+            })
+        ));
+        state.defences.add(crate::DefenceKind::OrbitalStation, 1);
+        state
+            .enqueue_build(crate::BuildingKind::JumpGate, 1_000)
+            .unwrap();
+        assert!(matches!(
+            state.enqueue_build(crate::BuildingKind::JumpGate, 1_000),
+            Err(crate::BuildError::MaxLevel { cap: 1, .. })
+        ));
+        state.buildings.jump_gate = 1;
+        state.build_queue.clear();
+        let draw = state.energy_consumed() - drawn;
+        assert!((draw - state.config.orbits.gate_energy).abs() < 1e-9);
+
+        colonize_neighbor(&mut state, 1_000);
+        let giant = &mut state.colonies[0];
+        giant.kind = crate::PlanetType::GasGiant;
+        giant.buildings.shipyard = 4;
+        giant.defences.add(crate::DefenceKind::OrbitalStation, 1);
+        giant.resources = state.resources;
+        state
+            .enqueue_build_on(neighbor(), crate::BuildingKind::JumpGate, 1_000)
+            .unwrap();
+    }
+
+    #[test]
     fn hohmann_beats_high_energy_on_fuel_high_energy_is_faster() {
         let state = ready(1_000);
         let origin = Coord::HOME;

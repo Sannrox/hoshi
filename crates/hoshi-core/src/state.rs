@@ -434,6 +434,8 @@ pub struct GameState {
     pub combat_logs: Vec<crate::CombatLog>,
     pub daily: DailyBoard,
     pub moons: Vec<crate::Moon>,
+    /// When a station jump gate at this world is next ready. Missing is ready.
+    pub station_gate_ready: BTreeMap<Coord, u64>,
     pub debris: BTreeMap<Coord, f64>,
     pub tutorial: crate::TutorialBoard,
     pub fleet_tactics: crate::FleetTactics,
@@ -575,6 +577,7 @@ impl GameState {
             combat_logs: Vec::new(),
             daily: DailyBoard::default(),
             moons: Vec::new(),
+            station_gate_ready: BTreeMap::new(),
             debris: BTreeMap::new(),
             tutorial: crate::TutorialBoard::default(),
             fleet_tactics: crate::FleetTactics {
@@ -9363,6 +9366,7 @@ mod tests {
                 fission_reactor: 0,
                 fusion_plant: 0,
                 space_elevator: 0,
+                jump_gate: 0,
             },
             buildings: crate::BuildingCatalog::default(),
             max_build_queue: 5,
@@ -16309,6 +16313,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
                     fission_reactor: 0,
                     fusion_plant: 0,
                     space_elevator: 0,
+                    jump_gate: 0,
                 },
                 fleet: Fleet::default(),
                 defences: crate::DefenceGrid::default(),

@@ -13,6 +13,7 @@
     "deuterium_synthesizer": 0,
     "fission_reactor": 0,
     "fusion_plant": 0,
+    "jump_gate": 0,
     "metal_mine": 2,
     "metal_storage": 0,
     "radiator": 0,
@@ -408,7 +409,7 @@
     "enabled": false
   },
   "routes": [],
-  "save_schema": 74,
+  "save_schema": 75,
   "schema_version": 2,
   "season": null,
   "signals": [],
