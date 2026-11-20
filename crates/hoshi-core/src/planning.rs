@@ -756,6 +756,7 @@ impl GameState {
     /// high-energy burn (100%); the wells cost the same at any speed. A
     /// round trip pays its return leg now as well, at the mass it carries
     /// back.
+    #[cfg(test)]
     pub(crate) fn send_fuel(
         &self,
         origin: Coord,
@@ -764,6 +765,20 @@ impl GameState {
         haul: crate::Haul,
         speed_percent: u8,
     ) -> f64 {
+        let (out, back) = self.send_fuel_legs(origin, dest, ships, haul, speed_percent);
+        out + back
+    }
+
+    /// Outbound and return reaction mass for [`Self::send_fuel`], so a
+    /// launch can bill each leg to a different owned stockpile.
+    pub(crate) fn send_fuel_legs(
+        &self,
+        origin: Coord,
+        dest: Coord,
+        ships: Fleet,
+        haul: crate::Haul,
+        speed_percent: u8,
+    ) -> (f64, f64) {
         let cfg = &self.config.orbits;
         let share = f64::from(speed_percent.clamp(10, 100) - 10) / 90.0;
         let factor = 1.0 + (cfg.high_energy_dv - 1.0) * share;
@@ -775,7 +790,7 @@ impl GameState {
         let leg = |cargo: crate::Resources| {
             fuel_mass_for_dv(ve, dry + cargo.total() * cfg.kg_per_cargo, delta_v) / cfg.kg_per_cargo
         };
-        leg(haul.out) + haul.back.map_or(0.0, leg)
+        (leg(haul.out), haul.back.map_or(0.0, leg))
     }
 
     /// Highest deuterium share among drives in `ships`. A mixed stack still
@@ -808,17 +823,20 @@ impl GameState {
         self.launch_fuel_from_units(ships, fuel_mass_kg / self.config.orbits.kg_per_cargo)
     }
 
-    pub(crate) fn launch_fuel(
+    /// Outbound and return launch bills for `haul`. A one-way send has a
+    /// zero return bill.
+    pub fn launch_fuel_legs(
         &self,
         origin: Coord,
         dest: Coord,
         ships: Fleet,
         haul: crate::Haul,
         speed_percent: u8,
-    ) -> LaunchFuel {
-        self.launch_fuel_from_units(
-            ships,
-            self.send_fuel(origin, dest, ships, haul, speed_percent),
+    ) -> (LaunchFuel, LaunchFuel) {
+        let (out, back) = self.send_fuel_legs(origin, dest, ships, haul, speed_percent);
+        (
+            self.launch_fuel_from_units(ships, out),
+            self.launch_fuel_from_units(ships, back),
         )
     }
 

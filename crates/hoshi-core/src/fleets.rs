@@ -181,6 +181,14 @@ impl LaunchFuel {
         self.water_ice + self.deuterium
     }
 
+    /// Sum of two launch bills: outbound plus return, or origin plus dest.
+    pub fn plus(self, other: Self) -> Self {
+        Self {
+            water_ice: self.water_ice + other.water_ice,
+            deuterium: self.deuterium + other.deuterium,
+        }
+    }
+
     /// The first stockpile that cannot cover this launch, with how much is
     /// missing and the amount that stockpile must hold.
     pub fn shortfall(self, stock: Resources) -> Option<(ResourceKind, f64, f64)> {
@@ -279,6 +287,37 @@ pub struct Mission {
     pub station: bool,
 }
 
+/// Who pays the return leg of a round-trip send. Outbound is always the origin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReturnPayer {
+    #[default]
+    Origin,
+    Destination,
+}
+
+impl ReturnPayer {
+    pub fn as_key(self) -> &'static str {
+        match self {
+            Self::Origin => "origin",
+            Self::Destination => "destination",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Some(match key {
+            "origin" => Self::Origin,
+            "destination" => Self::Destination,
+            _ => return None,
+        })
+    }
+}
+
+impl fmt::Display for ReturnPayer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_key())
+    }
+}
+
 /// A repeating transport between two owned planets.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TradeRoute {
@@ -290,6 +329,8 @@ pub struct TradeRoute {
     pub speed_percent: u8,
     pub interval_secs: u64,
     pub next_at: u64,
+    /// Who is billed for the empty return at each launch.
+    pub return_payer: ReturnPayer,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -329,6 +370,8 @@ pub enum FleetError {
     ZeroRouteInterval,
     /// A route with nothing to carry would only fly empty hulls.
     EmptyRouteCargo,
+    /// Destination-pays-return needs a round trip to a world the player owns.
+    ReturnPayerNotOffered,
     AlreadyReturning,
     NeedColonyShip,
     /// A visible rival colony already holds `dest`.
@@ -445,6 +488,12 @@ impl fmt::Display for FleetError {
             FleetError::UnknownRoute { id } => write!(f, "no route {id}"),
             FleetError::ZeroRouteInterval => write!(f, "route interval must be at least 1s"),
             FleetError::EmptyRouteCargo => write!(f, "route needs cargo to carry"),
+            FleetError::ReturnPayerNotOffered => {
+                write!(
+                    f,
+                    "destination cannot pay the return leg (needs a round trip to an owned world)"
+                )
+            }
             FleetError::AlreadyReturning => write!(f, "mission is already returning"),
             FleetError::NeedColonyShip => write!(f, "colony mission needs a colony ship"),
             FleetError::RivalClaim { dest, rival_id } => {
@@ -555,6 +604,20 @@ mod tests {
         let other_gal = distance(home, at(2, 1, 1), &cfg);
         assert!((other_gal - 20_000.0).abs() < 1e-9);
         assert_eq!(flight_secs(other_gal, 10_000.0, 100, &cfg), 1_566);
+    }
+
+    #[test]
+    fn return_payer_keys_round_trip_and_the_refusal_names_the_need() {
+        assert_eq!(ReturnPayer::from_key("origin"), Some(ReturnPayer::Origin));
+        assert_eq!(
+            ReturnPayer::from_key("destination"),
+            Some(ReturnPayer::Destination)
+        );
+        assert_eq!(ReturnPayer::from_key("home"), None);
+        assert_eq!(
+            FleetError::ReturnPayerNotOffered.to_string(),
+            "destination cannot pay the return leg (needs a round trip to an owned world)"
+        );
     }
 
     #[test]

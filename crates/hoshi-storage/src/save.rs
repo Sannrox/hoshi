@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 73;
+pub const SCHEMA_VERSION: u32 = 74;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -496,8 +496,8 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 id, origin_g, origin_s, origin_p, dest_g, dest_s, dest_p,
                 cargo_metal, cargo_crystal, cargo_deuterium,
                 cargo_rare_earths, cargo_water_ice, cargo_helium_3,
-                speed_percent, interval_secs, next_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                speed_percent, interval_secs, next_at, return_payer
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 route.id as i64,
                 route.origin.galaxy as i64,
@@ -515,6 +515,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 route.speed_percent as i64,
                 route.interval_secs as i64,
                 route.next_at as i64,
+                route.return_payer.as_key(),
             ],
         )?;
         for kind in ShipKind::ALL {
@@ -3987,6 +3988,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     if found < 73 {
         migrate_v73(conn)?;
     }
+    if found < 74 {
+        migrate_v74(conn)?;
+    }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
 }
@@ -5252,6 +5256,19 @@ fn migrate_v73(conn: &Connection) -> Result<(), SaveError> {
     if !missions_has_column(conn, "fuel_water_ice")? {
         conn.execute(
             "ALTER TABLE missions ADD COLUMN fuel_water_ice REAL NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+/// v74: who pays a route's return leg. Older routes billed the origin for
+/// both legs, so the column defaults to origin; an older binary refuses a
+/// v74 save instead of ignoring a dest-pays choice.
+fn migrate_v74(conn: &Connection) -> Result<(), SaveError> {
+    if table_exists(conn, "routes") && !table_has_column(conn, "routes", "return_payer")? {
+        conn.execute(
+            "ALTER TABLE routes ADD COLUMN return_payer TEXT NOT NULL DEFAULT 'origin'",
             [],
         )?;
     }
@@ -10145,7 +10162,7 @@ fn read_routes(conn: &Connection) -> Result<Vec<TradeRoute>, SaveError> {
         "SELECT id, origin_g, origin_s, origin_p, dest_g, dest_s, dest_p,
                 cargo_metal, cargo_crystal, cargo_deuterium,
                 cargo_rare_earths, cargo_water_ice, cargo_helium_3,
-                speed_percent, interval_secs, next_at
+                speed_percent, interval_secs, next_at, return_payer
          FROM routes ORDER BY id",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -10166,6 +10183,7 @@ fn read_routes(conn: &Connection) -> Result<Vec<TradeRoute>, SaveError> {
             row.get::<_, i64>(13)?,
             row.get::<_, i64>(14)?,
             row.get::<_, i64>(15)?,
+            row.get::<_, String>(16)?,
         ))
     })?;
     let mut pending = Vec::new();
@@ -10191,6 +10209,7 @@ fn read_routes(conn: &Connection) -> Result<Vec<TradeRoute>, SaveError> {
         speed,
         interval_secs,
         next_at,
+        return_payer,
     ) in pending
     {
         let mut ships = Fleet::default();
@@ -10228,6 +10247,8 @@ fn read_routes(conn: &Connection) -> Result<Vec<TradeRoute>, SaveError> {
             speed_percent: u8::try_from(speed).map_err(|_| SaveError::Corrupt("speed percent"))?,
             interval_secs: unix_ts(interval_secs)?,
             next_at: unix_ts(next_at)?,
+            return_payer: hoshi_core::ReturnPayer::from_key(&return_payer)
+                .ok_or(SaveError::Corrupt("return payer"))?,
         });
     }
     Ok(routes)
@@ -10400,6 +10421,7 @@ mod tests {
             speed_percent: 100,
             interval_secs: 60,
             next_at: 1_700_000_000,
+            return_payer: hoshi_core::ReturnPayer::Origin,
         });
         state.next_route_id = 1;
         state.events.push(hoshi_core::GameEvent {
@@ -11462,6 +11484,50 @@ label = "Leave it"
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(format!("{}-wal", path.display()));
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    #[test]
+    fn migrate_v74_loads_old_routes_as_origin_payer_and_keeps_dest_pays() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let (mut state, dest) = state_with_colony_yard();
+        let mut ships = hoshi_core::Fleet::default();
+        ships.add(hoshi_core::ShipKind::SmallCargo, 1);
+        state.routes.push(hoshi_core::TradeRoute {
+            id: 1,
+            origin: state.home,
+            dest,
+            ships,
+            cargo: Resources::from_parts(10.0, 0.0, 0.0),
+            speed_percent: 100,
+            interval_secs: 60,
+            next_at: 100,
+            return_payer: hoshi_core::ReturnPayer::Destination,
+        });
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(
+            loaded.routes[0].return_payer,
+            hoshi_core::ReturnPayer::Destination
+        );
+        conn.execute_batch(
+            "CREATE TABLE routes_v73 AS SELECT
+                id, origin_g, origin_s, origin_p, dest_g, dest_s, dest_p,
+                cargo_metal, cargo_crystal, cargo_deuterium,
+                cargo_rare_earths, cargo_water_ice, cargo_helium_3,
+                speed_percent, interval_secs, next_at
+             FROM routes;
+             DROP TABLE routes;
+             ALTER TABLE routes_v73 RENAME TO routes;
+             PRAGMA user_version = 73;",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        let old = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(old.routes[0].return_payer, hoshi_core::ReturnPayer::Origin);
+        let version: u32 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
     }
 
     #[test]

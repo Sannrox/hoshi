@@ -143,8 +143,8 @@ pub use finance::{
     Ledger, PendingKind, PendingSpend, Treasury,
 };
 pub use fleets::{
-    Coord, FleetError, FlightConfig, Haul, LaunchFuel, Mission, MissionPhase, TradeRoute, distance,
-    flight_secs,
+    Coord, FleetError, FlightConfig, Haul, LaunchFuel, Mission, MissionPhase, ReturnPayer,
+    TradeRoute, distance, flight_secs,
 };
 pub use frontier::{
     FrontierBoard, FrontierConfig, FrontierError, FrontierGlance, FrontierSignal, FrontierWorld,

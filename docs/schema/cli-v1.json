@@ -56,7 +56,13 @@
       "description": "Home planet defence counts and dome/station levels."
     },
     "missions": { "type": "array" },
-    "routes": { "type": "array", "description": "Repeating transports (fleet route): id, origin, dest, interval_secs, next_at and cargo." },
+    "routes": { "type": "array", "description": "Repeating transports (fleet route): id, origin, dest, interval_secs, next_at, cargo and return_payer (origin or destination)." },
+    "fuel_out_payer": { "type": "string", "description": "Who paid the outbound launch bill. Always origin. Additive on a launch reply." },
+    "fuel_back_payer": { "type": "string", "description": "Who paid the return launch bill: origin or destination. Additive on a launch reply." },
+    "fuel_out_water_ice": { "type": "number", "description": "Outbound water ice billed at launch. Additive on a launch reply." },
+    "fuel_out_deuterium": { "type": "number", "description": "Outbound deuterium billed at launch. Additive on a launch reply." },
+    "fuel_back_water_ice": { "type": "number", "description": "Return water ice billed at launch. Additive on a launch reply." },
+    "fuel_back_deuterium": { "type": "number", "description": "Return deuterium billed at launch. Additive on a launch reply." },
     "spy_reports": {
       "type": "array",
       "description": "Arrived spy reports with source, observed_at, age_secs and confidence. Each outpost also carries its latest arrived report. Pending reports are omitted."

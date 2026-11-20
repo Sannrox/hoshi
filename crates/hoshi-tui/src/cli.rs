@@ -121,12 +121,14 @@ crate::help::catalog_commands! {
     Cancel {
         item: CancelItem,
     },
-    #[help("fleet send", "Dispatch ships on a mission. The reply reports the water ice the launch debited as `fuel_water_ice` and the deuterium share as `fuel_deuterium`; each mission in `state` carries the same keys.", "fleet send FROM TO MISSION SHIP:COUNT...", "fleet send home 1:1:2 expedition small_cargo:1")]
+    #[help("fleet send", "Dispatch ships on a mission. A transport may take resource=amount cargo and --dest-pays-return so the owned destination pays the empty return at launch. The reply reports `fuel_water_ice` / `fuel_deuterium` plus `fuel_out_*` / `fuel_back_*` and `fuel_out_payer` / `fuel_back_payer`.", "fleet send FROM TO MISSION [RESOURCE=AMOUNT...] SHIP:COUNT... [--dest-pays-return]", "fleet send 1:1:10 home transport water_ice=500 small_cargo:1 --dest-pays-return")]
     FleetSend {
         from: Coord,
         to: Coord,
         mission: MissionKind,
         ships: Fleet,
+        cargo: Vec<String>,
+        dest_pays_return: bool,
     },
     #[help("fleet deploy", "Hold cargo away from a home raid, then bring it back. The reply reports the water ice the launch debited as `fuel_water_ice` and the deuterium share as `fuel_deuterium`.", "fleet deploy FROM TO HOLD_SECS RESOURCE=AMOUNT... SHIP:COUNT...", "fleet deploy home 1:1:9 3600 iron=2000 large_cargo:2")]
     FleetDeploy {
@@ -137,7 +139,7 @@ crate::help::catalog_commands! {
         cargo: Vec<String>,
         ships: Fleet,
     },
-    #[help("fleet route", "Repeat a transport between owned worlds every INTERVAL_SECS until unrouted. A launch that cannot leave (no fuel, no ships) skips and is logged.", "fleet route FROM TO INTERVAL_SECS RESOURCE=AMOUNT... SHIP:COUNT...", "fleet route 1:1:10 home 21600 water_ice=500 small_cargo:1")]
+    #[help("fleet route", "Repeat a transport between owned worlds every INTERVAL_SECS until unrouted. --dest-pays-return bills the owned destination for each empty return. A launch that cannot leave (no fuel, no ships) skips and is logged.", "fleet route FROM TO INTERVAL_SECS RESOURCE=AMOUNT... SHIP:COUNT... [--dest-pays-return]", "fleet route 1:1:10 home 21600 water_ice=500 small_cargo:1 --dest-pays-return")]
     FleetRoute {
         from: Coord,
         to: Coord,
@@ -145,6 +147,7 @@ crate::help::catalog_commands! {
         /// `resource=amount` specs, parsed when applied like other amounts.
         cargo: Vec<String>,
         ships: Fleet,
+        dest_pays_return: bool,
     },
     #[help("fleet unroute", "Stop a repeating transport. Flights already out finish.", "fleet unroute ID", "fleet unroute 1")]
     FleetUnroute { id: u64 },
@@ -516,6 +519,7 @@ enum MissionKind {
     Colonize,
     Expedition,
     Spy,
+    Transport,
 }
 
 #[derive(Debug)]
@@ -1293,7 +1297,12 @@ fn apply(
             state
                 .launch_deploy(*from, *to, *ships, cargo, *hold_secs, 100, now)
                 .map_err(|e| CliError::Refused(e.to_string()))?;
-            Ok(ok_launched(state, &before, "deployed"))
+            Ok(ok_launched(
+                state,
+                &before,
+                "deployed",
+                hoshi_core::ReturnPayer::Origin,
+            ))
         }
         Command::FleetRoute {
             from,
@@ -1301,10 +1310,16 @@ fn apply(
             interval_secs,
             cargo,
             ships,
+            dest_pays_return,
         } => {
             let cargo = parse_cargo(cargo)?;
+            let payer = if *dest_pays_return {
+                hoshi_core::ReturnPayer::Destination
+            } else {
+                hoshi_core::ReturnPayer::Origin
+            };
             let id = state
-                .schedule_route(*from, *to, *ships, cargo, *interval_secs, now)
+                .schedule_route_paying(*from, *to, *ships, cargo, *interval_secs, now, payer)
                 .map_err(|e| CliError::Refused(e.to_string()))?;
             Ok(ok_state(state, &format!("route {id} scheduled")))
         }
@@ -1319,9 +1334,26 @@ fn apply(
             to,
             mission,
             ships,
+            cargo,
+            dest_pays_return,
         } => {
             let before = mission_ids(state);
+            let mut return_payer = hoshi_core::ReturnPayer::Origin;
             match mission {
+                MissionKind::Transport => {
+                    let cargo = parse_cargo(cargo)?;
+                    if cargo.total() <= 0.0 {
+                        return Err(CliError::Invalid("transport needs cargo".into()));
+                    }
+                    return_payer = if *dest_pays_return {
+                        hoshi_core::ReturnPayer::Destination
+                    } else {
+                        hoshi_core::ReturnPayer::Origin
+                    };
+                    let _ = state
+                        .launch_transport_paying(*from, *to, *ships, cargo, 100, now, return_payer)
+                        .map_err(|e| CliError::Refused(e.to_string()))?;
+                }
                 MissionKind::Attack => {
                     let _ = state
                         .launch_attack(*from, *ships, *to, 100, now)
@@ -1371,7 +1403,7 @@ fn apply(
                         .map_err(|e| CliError::Refused(e.to_string()))?;
                 }
             }
-            Ok(ok_launched(state, &before, "fleet launched"))
+            Ok(ok_launched(state, &before, "fleet launched", return_payer))
         }
         Command::Tick { advance } => {
             if !state.deterministic {
@@ -2640,7 +2672,13 @@ fn mission_ids(state: &GameState) -> Vec<u64> {
 
 /// `ok_state` plus `fuel_water_ice` and `fuel_deuterium`: the fuel the
 /// missions launched since `before` paid, under the keys planned missions use.
-fn ok_launched(state: &GameState, before: &[u64], message: &str) -> Value {
+/// Additive `fuel_out_*` / `fuel_back_*` name each leg and its payer.
+fn ok_launched(
+    state: &GameState,
+    before: &[u64],
+    message: &str,
+    return_payer: hoshi_core::ReturnPayer,
+) -> Value {
     let launched: Vec<_> = state
         .missions
         .iter()
@@ -2651,6 +2689,39 @@ fn ok_launched(state: &GameState, before: &[u64], message: &str) -> Value {
     let mut value = ok_state(state, message);
     value["fuel_water_ice"] = json!(ice);
     value["fuel_deuterium"] = json!(deut);
+    if let Some(mission) = launched.first() {
+        let haul = if mission.deploy {
+            hoshi_core::Haul::deploy(mission.cargo)
+        } else if mission.station {
+            hoshi_core::Haul::station(mission.cargo)
+        } else if mission.colonize {
+            hoshi_core::Haul::colony()
+        } else if mission.transport {
+            hoshi_core::Haul::transport(mission.cargo)
+        } else {
+            hoshi_core::Haul::empty_round_trip()
+        };
+        if let Ok((_, out, back)) = state.flight_legs(
+            mission.origin,
+            mission.dest,
+            mission.ships,
+            haul,
+            mission.speed_percent,
+        ) {
+            value["fuel_out_water_ice"] = json!(out.water_ice);
+            value["fuel_out_deuterium"] = json!(out.deuterium);
+            value["fuel_out_payer"] = json!("origin");
+            value["fuel_back_water_ice"] = json!(back.water_ice);
+            value["fuel_back_deuterium"] = json!(back.deuterium);
+            value["fuel_back_payer"] = json!(
+                if return_payer == hoshi_core::ReturnPayer::Destination && haul.back.is_some() {
+                    "destination"
+                } else {
+                    "origin"
+                }
+            );
+        }
+    }
     value
 }
 
@@ -3153,6 +3224,7 @@ fn state_value_for(
                 "interval_secs": r.interval_secs,
                 "next_at": r.next_at,
                 "cargo": resources_json(r.cargo),
+                "return_payer": r.return_payer.as_key(),
             }))
             .collect::<Vec<_>>()
     );
@@ -3696,8 +3768,8 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
                 .ok()
                 .filter(|&secs| secs > 0)
                 .ok_or_else(|| CliError::Invalid(format!("invalid interval in {USAGE}")))?;
-            let (cargo, ships): (Vec<_>, Vec<_>) =
-                args[5..].iter().cloned().partition(|a| a.contains('='));
+            let (dest_pays_return, rest) = take_flag(&args[5..], "--dest-pays-return");
+            let (cargo, ships): (Vec<_>, Vec<_>) = rest.into_iter().partition(|a| a.contains('='));
             parse_cargo(&cargo)?;
             Ok(Command::FleetRoute {
                 from,
@@ -3705,6 +3777,7 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
                 interval_secs,
                 cargo,
                 ships: parse_ships(&ships)?,
+                dest_pays_return,
             })
         }
         "fleet" if args.get(1).map(String::as_str) == Some("unroute") => {
@@ -3725,12 +3798,27 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
             let to = parse_coord(nth(args, 3, "fleet send <from> <to> <mission> <ships...>")?)?;
             let mission =
                 parse_mission(nth(args, 4, "fleet send <from> <to> <mission> <ships...>")?)?;
-            let ships = parse_ships(&args[5..])?;
+            let (dest_pays_return, rest) = take_flag(&args[5..], "--dest-pays-return");
+            if dest_pays_return && mission != MissionKind::Transport {
+                return Err(CliError::Invalid(
+                    "--dest-pays-return is only for a transport to an owned world".into(),
+                ));
+            }
+            let (cargo, ships): (Vec<_>, Vec<_>) = rest.into_iter().partition(|a| a.contains('='));
+            if mission == MissionKind::Transport {
+                parse_cargo(&cargo)?;
+            } else if !cargo.is_empty() {
+                return Err(CliError::Invalid(
+                    "cargo specs are only for a transport".into(),
+                ));
+            }
             Ok(Command::FleetSend {
                 from,
                 to,
                 mission,
-                ships,
+                ships: parse_ships(&ships)?,
+                cargo,
+                dest_pays_return,
             })
         }
         "finance" => match args.get(1).map(String::as_str) {
@@ -5571,6 +5659,12 @@ fn parse_cancel(text: &str) -> Result<CancelItem, CliError> {
     Ok(CancelItem::Build(index))
 }
 
+fn take_flag(args: &[String], flag: &str) -> (bool, Vec<String>) {
+    let present = args.iter().any(|a| a == flag);
+    let rest = args.iter().filter(|a| *a != flag).cloned().collect();
+    (present, rest)
+}
+
 fn parse_mission(text: &str) -> Result<MissionKind, CliError> {
     match text {
         "attack" => Ok(MissionKind::Attack),
@@ -5578,6 +5672,7 @@ fn parse_mission(text: &str) -> Result<MissionKind, CliError> {
         "colonize" => Ok(MissionKind::Colonize),
         "expedition" => Ok(MissionKind::Expedition),
         "spy" => Ok(MissionKind::Spy),
+        "transport" => Ok(MissionKind::Transport),
         other => Err(CliError::Invalid(format!("unknown mission {other}"))),
     }
 }
@@ -5995,6 +6090,49 @@ mod tests {
             Command::FleetSend { mission, ships, .. } => {
                 assert_eq!(mission, MissionKind::Spy);
                 assert_eq!(ships.get(ShipKind::EspionageProbe), 3);
+            }
+            other => panic!("{other:?}"),
+        }
+        let opts = parse_cli(&args(&[
+            "fleet",
+            "send",
+            "1:1:10",
+            "home",
+            "transport",
+            "water_ice=500",
+            "small_cargo:1",
+            "--dest-pays-return",
+        ]))
+        .unwrap();
+        match opts.command {
+            Command::FleetSend {
+                mission,
+                dest_pays_return,
+                cargo,
+                ..
+            } => {
+                assert_eq!(mission, MissionKind::Transport);
+                assert!(dest_pays_return);
+                assert_eq!(cargo, vec!["water_ice=500".to_string()]);
+            }
+            other => panic!("{other:?}"),
+        }
+        let err = parse_cli(&args(&[
+            "fleet",
+            "send",
+            "home",
+            "1:1:8",
+            "attack",
+            "light_fighter:1",
+            "--dest-pays-return",
+        ]))
+        .unwrap_err();
+        match err {
+            CliError::Invalid(m) => {
+                assert!(
+                    m.contains("--dest-pays-return is only for a transport"),
+                    "{m}"
+                );
             }
             other => panic!("{other:?}"),
         }
@@ -6665,6 +6803,71 @@ mod tests {
         assert_eq!(gone["routes"].as_array().unwrap().len(), 0);
         let (bad, exit) = run_on(&save, &["fleet", "unroute", &id]);
         assert_ne!(exit, EXIT_OK, "{bad}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fleet_send_transport_dest_pays_return_names_payers() {
+        let dir = unique_save("dest-pays").with_extension("d");
+        std::fs::create_dir_all(&dir).unwrap();
+        let save = dir.join("save.sqlite");
+        let mut state = GameState::new(0);
+        state.deterministic = true;
+        state.resources = hoshi_core::Resources::from_parts(5_000.0, 5_000.0, 10_000.0);
+        state.resources.water_ice = 50_000.0;
+        let colony = hoshi_core::Coord {
+            galaxy: 1,
+            system: 1,
+            position: 2,
+        };
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::SmallCargo, 1);
+        state.colonies.push(hoshi_core::Colony {
+            coord: colony,
+            kind: hoshi_core::PlanetType::Rocky,
+            size: 100,
+            resources: {
+                let mut stock = hoshi_core::Resources::from_parts(5_000.0, 0.0, 10_000.0);
+                stock.water_ice = 50_000.0;
+                stock
+            },
+            buildings: hoshi_core::Buildings::default(),
+            fleet: ships,
+            defences: hoshi_core::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: std::collections::BTreeMap::new(),
+        });
+        let mut conn = open_save(&save).unwrap();
+        save_state(&mut conn, &state).unwrap();
+        drop(conn);
+        let (value, exit) = run_on(
+            &save,
+            &[
+                "fleet",
+                "send",
+                "1:1:2",
+                "home",
+                "transport",
+                "iron=100",
+                "small_cargo:1",
+                "--dest-pays-return",
+            ],
+        );
+        assert_eq!(exit, EXIT_OK, "{value}");
+        assert_eq!(value["fuel_out_payer"], "origin");
+        assert_eq!(value["fuel_back_payer"], "destination");
+        assert!(
+            value["fuel_out_water_ice"].as_f64().unwrap() > 0.0,
+            "{value}"
+        );
+        assert!(
+            value["fuel_back_water_ice"].as_f64().unwrap() > 0.0,
+            "{value}"
+        );
+        let home_ice = value["resources"]["water_ice"].as_f64().unwrap();
+        assert!(home_ice < 50_000.0, "{home_ice}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

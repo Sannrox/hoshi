@@ -639,6 +639,7 @@ mod tests {
             speed_percent: 100,
             interval_secs: 60,
             next_at: 1_000,
+            return_payer: crate::ReturnPayer::Origin,
         };
         let before = state.adapt_route_cargo(&route);
         assert_eq!(before.iron, 500.0);
@@ -682,6 +683,7 @@ mod tests {
             speed_percent: 100,
             interval_secs: 60,
             next_at: 1_000,
+            return_payer: crate::ReturnPayer::Origin,
         };
         state.tech_levels.insert("auto_routes".into(), 1);
         let cargo = state.adapt_route_cargo(&route);
@@ -823,6 +825,7 @@ mod tests {
             speed_percent: 100,
             interval_secs: 60,
             next_at: 1_000,
+            return_payer: crate::ReturnPayer::Origin,
         });
         assert!(state.automation_control_energy() > 0.0);
     }
