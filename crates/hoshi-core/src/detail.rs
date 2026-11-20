@@ -77,6 +77,8 @@ pub struct RequirementLine {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShipTravel {
     pub speed: f64,
+    /// Player-facing name of the drive this hull flies.
+    pub drive: String,
     /// Exhaust velocity of the ship's drive in m/s; launch fuel follows
     /// the rocket equation on it.
     pub exhaust_velocity: f64,
@@ -492,6 +494,7 @@ impl GameState {
             complete: false,
             ship: Some(ShipTravel {
                 speed: stats.speed,
+                drive: self.display_name(self.hull_drive(kind)),
                 exhaust_velocity: self.drive_ve(self.hull_drive(kind)),
                 cargo: stats.cargo,
                 outbound_secs: travel.map(|(s, _)| s),
@@ -1675,6 +1678,10 @@ mod tests {
         let travel = detail.ship.expect("ship block");
         assert_eq!(travel.outbound_secs, Some(expected.0));
         assert!((travel.fuel_cost.unwrap() - expected.1).abs() < 1e-9);
+        assert_eq!(
+            travel.drive,
+            state.display_name(state.hull_drive(ShipKind::SmallCargo))
+        );
     }
 
     #[test]

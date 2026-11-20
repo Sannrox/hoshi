@@ -1820,16 +1820,7 @@ impl App {
                     .unwrap_or_default();
                 ("tech", extra)
             }
-            Some(DetailSubject::Ship { kind, .. }) => {
-                let drive = self.state.hull_drive(kind);
-                (
-                    "ship",
-                    vec![(
-                        "Drive".into(),
-                        Line::styled(self.state.display_name(drive), t.text()),
-                    )],
-                )
-            }
+            Some(DetailSubject::Ship { .. }) => ("ship", Vec::new()),
             Some(DetailSubject::Defence { .. }) => ("defence", Vec::new()),
             Some(DetailSubject::Wonder(id)) => {
                 let extra = self
@@ -10267,6 +10258,65 @@ mod tests {
         open_dispatch(&mut app, site.coord, ShipKind::Explorer, 2);
         let text = render_text(&app, 100, 40).to_lowercase();
         assert!(text.contains("find x2"), "{text}");
+    }
+
+    #[test]
+    fn dispatch_preview_names_combustion_on_an_interstellar_send() {
+        let far = Coord {
+            galaxy: 1,
+            system: 2,
+            position: 1,
+        };
+        let near = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 2,
+        };
+        let mut state = GameState::new(1_000);
+        state.buildings.shipyard = 4;
+        state.tech_levels.insert("combustion_drive".into(), 2);
+        state.tech_levels.insert("impulse_drive".into(), 4);
+        state.fleet.add(ShipKind::SmallCargo, 1);
+        state.resources.water_ice = 5_000.0;
+        state.resources.deuterium = 0.0;
+        state.colonies.push(colony_at(far));
+        state.colonies.push(colony_at(near));
+        let spare = state.clone();
+        let mut app = App::new(state);
+        open_dispatch(&mut app, far, ShipKind::SmallCargo, 1);
+        app.dispatch.as_mut().unwrap().cargo.water_ice = 5_000.0;
+        let form = app.dispatch.expect("dispatch open");
+        let text: String = app
+            .dispatch_window(&form, 40)
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Combustion Drive"), "{text}");
+        assert!(text.contains("Large Cargo"), "{text}");
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.status.contains("Combustion Drive"), "{}", app.status);
+        assert!(app.status.contains("Large Cargo"), "{}", app.status);
+
+        let mut app = App::new(spare);
+        open_dispatch(&mut app, near, ShipKind::SmallCargo, 1);
+        app.dispatch.as_mut().unwrap().cargo.water_ice = 5_000.0;
+        let form = app.dispatch.expect("dispatch open");
+        let text: String = app
+            .dispatch_window(&form, 40)
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!text.contains("Combustion Drive"), "{text}");
+        assert!(!text.contains("Large Cargo"), "{text}");
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(
+            app.status.contains("not enough deuterium"),
+            "{}",
+            app.status
+        );
+        assert!(!app.status.contains("Combustion Drive"), "{}", app.status);
     }
 
     #[test]

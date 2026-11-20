@@ -6422,6 +6422,42 @@ mod tests {
     }
 
     #[test]
+    fn fleet_deploy_refusal_names_combustion_on_an_interstellar_send() {
+        let dir = unique_save("deploy-hint").with_extension("d");
+        std::fs::create_dir_all(&dir).unwrap();
+        let save = dir.join("save.sqlite");
+        let mut state = GameState::new(0);
+        state.deterministic = true;
+        state.buildings.shipyard = 4;
+        state.tech_levels.insert("combustion_drive".into(), 2);
+        state.tech_levels.insert("impulse_drive".into(), 4);
+        state.resources.water_ice = 5_000.0;
+        state.resources.deuterium = 0.0;
+        state.fleet.add(ShipKind::SmallCargo, 1);
+        let mut conn = open_save(&save).unwrap();
+        save_state(&mut conn, &state).unwrap();
+        drop(conn);
+        let (value, exit) = run_on(
+            &save,
+            &[
+                "fleet",
+                "deploy",
+                "home",
+                "1:2:1",
+                "600",
+                "water_ice=5000",
+                "small_cargo:1",
+            ],
+        );
+        assert_eq!(exit, EXIT_REFUSED, "{value}");
+        let msg = value["error"]["message"].as_str().unwrap();
+        assert!(msg.contains("not enough deuterium"), "{msg}");
+        assert!(msg.contains("Combustion Drive"), "{msg}");
+        assert!(msg.contains("Large Cargo"), "{msg}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn fleet_route_repeats_until_unrouted() {
         let dir = unique_save("route").with_extension("d");
         std::fs::create_dir_all(&dir).unwrap();

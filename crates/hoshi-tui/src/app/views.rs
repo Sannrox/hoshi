@@ -1692,6 +1692,12 @@ impl App {
                     } else {
                         0.0
                     };
+                    let hint = self.state.expensive_send_hint(
+                        origin,
+                        dest,
+                        form.ships,
+                        form.cargo.total(),
+                    );
                     if fuel + cargo_d > stock.deuterium {
                         lines.extend(callout_lines(
                             t,
@@ -1699,6 +1705,15 @@ impl App {
                             "not enough deuterium",
                             &format!("have {:.0} D", stock.deuterium),
                         ));
+                    }
+                    if let Some(hint) = hint {
+                        let intent = if fuel + cargo_d > stock.deuterium {
+                            Intent::Danger
+                        } else {
+                            Intent::Warning
+                        };
+                        let (title, detail) = hint.split_once("; ").unwrap_or((hint.as_str(), ""));
+                        lines.extend(callout_lines(t, intent, title, detail));
                     }
                 }
                 Err(e) => lines.extend(callout_lines(t, Intent::Danger, &e.to_string(), "")),

@@ -260,6 +260,7 @@ pub fn inspector(
         out.push(Line::default());
         out.push(section(t, "travel"));
         let mut rows = vec![
+            ("Drive".to_string(), Line::from(ship.drive.clone())),
             (
                 "speed".to_string(),
                 Line::from(format!("{:.0}", ship.speed)),
