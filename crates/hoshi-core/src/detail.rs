@@ -1189,7 +1189,7 @@ mod tests {
         let table = [
             ("laser", 10),
             ("ion", 2),
-            ("hyperspace", 3),
+            ("hyperspace", 5),
             ("fission", 3),
             ("plasma_physics", 2),
             ("fusion_dd", 3),

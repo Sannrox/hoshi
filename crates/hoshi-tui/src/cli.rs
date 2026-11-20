@@ -265,7 +265,7 @@ crate::help::catalog_commands! {
         planet: Coord,
         facility: MoonFacility,
     },
-    #[help("moon jump", "Move ships and optional cargo between ready jump gates.", "moon jump FROM TO RESOURCE=AMOUNT... SHIP:COUNT...", "moon jump home 1:1:2 water_ice=500 small_cargo:1")]
+    #[help("moon jump", "Move ships and optional cargo between ready jump gates on moons or stations.", "moon jump FROM TO RESOURCE=AMOUNT... SHIP:COUNT...", "moon jump home 1:1:2 water_ice=500 small_cargo:1")]
     MoonJump {
         from: Coord,
         to: Coord,

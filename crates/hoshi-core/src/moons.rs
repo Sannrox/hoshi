@@ -12,6 +12,12 @@ use serde::Deserialize;
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GateKind {
+    Moon,
+    Station,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MoonFacility {
     Phalanx,
     JumpGate,
@@ -382,24 +388,8 @@ impl GameState {
             return Err(MoonError::InvalidCargo);
         }
         let now = self.last_tick_unix;
-        let from_moon = self.moon_at(from).ok_or(MoonError::NoMoon { at: from })?;
-        if from_moon.jump_gate == 0 {
-            return Err(MoonError::NoGate { at: from });
-        }
-        if from_moon.jump_ready_at > now {
-            return Err(MoonError::Cooling {
-                ready_at: from_moon.jump_ready_at,
-            });
-        }
-        let to_moon = self.moon_at(to).ok_or(MoonError::NoMoon { at: to })?;
-        if to_moon.jump_gate == 0 {
-            return Err(MoonError::NoGate { at: to });
-        }
-        if to_moon.jump_ready_at > now {
-            return Err(MoonError::Cooling {
-                ready_at: to_moon.jump_ready_at,
-            });
-        }
+        let from_site = self.gate_site(from, now)?;
+        let to_site = self.gate_site(to, now)?;
         let parked = parked_fleet(self, from);
         for kind in ShipKind::ALL {
             if parked.get(kind) < ships.get(kind) {
@@ -450,14 +440,51 @@ impl GameState {
             }
         }
         let ready = now.saturating_add(self.config.moons.jump_cooldown_secs);
-        if let Some(m) = self.moon_at_mut(from) {
-            m.jump_ready_at = ready;
-        }
-        if let Some(m) = self.moon_at_mut(to) {
-            m.jump_ready_at = ready;
-        }
+        self.set_gate_ready(from, from_site, ready);
+        self.set_gate_ready(to, to_site, ready);
         self.push_event(now, format!("jump: {from} -> {to}"));
         Ok(())
+    }
+
+    /// A ready moon gate wins when both stand; a cooling moon yields to a
+    /// ready station gate on the same world.
+    fn gate_site(&self, at: Coord, now: u64) -> Result<GateKind, MoonError> {
+        let moon = self.moon_at(at).filter(|moon| moon.jump_gate > 0);
+        let station = self
+            .buildings_at(at)
+            .is_some_and(|buildings| buildings.jump_gate > 0);
+        let moon_ready_at = moon.map(|moon| moon.jump_ready_at).unwrap_or(0);
+        let station_ready_at = self.station_gate_ready.get(&at).copied().unwrap_or(0);
+        if moon.is_some() && moon_ready_at <= now {
+            return Ok(GateKind::Moon);
+        }
+        if station && station_ready_at <= now {
+            return Ok(GateKind::Station);
+        }
+        if moon.is_some() {
+            return Err(MoonError::Cooling {
+                ready_at: moon_ready_at,
+            });
+        }
+        if station {
+            return Err(MoonError::Cooling {
+                ready_at: station_ready_at,
+            });
+        }
+        Err(MoonError::NoGate { at })
+    }
+
+    fn set_gate_ready(&mut self, at: Coord, site: GateKind, ready: u64) {
+        match site {
+            GateKind::Moon => {
+                if let Some(moon) = self.moon_at_mut(at) {
+                    moon.jump_ready_at = ready;
+                }
+            }
+            GateKind::Station => {
+                self.station_gate_ready.insert(at, ready);
+            }
+        }
     }
 
     pub fn phalanx_contacts(
@@ -925,5 +952,121 @@ mod tests {
             .unwrap_err();
         assert!(matches!(full, MoonError::DestFull), "{full}");
         assert_eq!(stocks(&state, dest), filled);
+    }
+
+    fn arm_station_gate(state: &mut GameState, coord: Coord) {
+        if coord == Coord::HOME {
+            state.buildings.jump_gate = 1;
+            state.defences.add(crate::DefenceKind::OrbitalStation, 1);
+            return;
+        }
+        let colony = state
+            .colonies
+            .iter_mut()
+            .find(|c| c.coord == coord)
+            .expect("colony");
+        colony.buildings.jump_gate = 1;
+        colony.defences.add(crate::DefenceKind::OrbitalStation, 1);
+    }
+
+    fn owned_world(state: &mut GameState, dest: Coord) {
+        state.colonies.push(crate::Colony {
+            coord: dest,
+            kind: crate::PlanetType::Rocky,
+            size: 80,
+            resources: Resources::ZERO,
+            buildings: crate::Buildings::default(),
+            fleet: Fleet::default(),
+            defences: crate::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: Default::default(),
+        });
+    }
+
+    #[test]
+    fn ships_jump_between_station_gates_and_a_moon_gate() {
+        let mut state = GameState::with_seed(0, moon_cfg(), 1);
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 4,
+        };
+        owned_world(&mut state, dest);
+        arm_station_gate(&mut state, Coord::HOME);
+        arm_station_gate(&mut state, dest);
+        state.fleet.add(ShipKind::LightFighter, 2);
+        state
+            .jump_between(Coord::HOME, dest, scout(), Resources::ZERO, 0)
+            .unwrap();
+        assert_eq!(state.fleet.get(ShipKind::LightFighter), 1);
+        assert_eq!(state.colonies[0].fleet.get(ShipKind::LightFighter), 1);
+        let ready = state.config.moons.jump_cooldown_secs;
+        assert_eq!(state.station_gate_ready.get(&Coord::HOME), Some(&ready));
+        assert_eq!(state.station_gate_ready.get(&dest), Some(&ready));
+        let cooling = state
+            .jump_between(Coord::HOME, dest, scout(), Resources::ZERO, 0)
+            .unwrap_err();
+        assert!(matches!(cooling, MoonError::Cooling { ready_at } if ready_at == ready));
+
+        let moon_world = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 5,
+        };
+        owned_world(&mut state, moon_world);
+        state.moons.push(Moon::new(moon_world));
+        state.colonies[1].resources.iron = 1_000.0;
+        state
+            .build_moon_facility(moon_world, MoonFacility::JumpGate, ready)
+            .unwrap();
+        state
+            .jump_between(dest, moon_world, scout(), Resources::ZERO, ready)
+            .unwrap();
+        assert_eq!(state.colonies[0].fleet.get(ShipKind::LightFighter), 0);
+        assert_eq!(state.colonies[1].fleet.get(ShipKind::LightFighter), 1);
+        assert_eq!(state.station_gate_ready.get(&dest), Some(&(ready + ready)));
+        assert_eq!(
+            state.moon_at(moon_world).unwrap().jump_ready_at,
+            ready + ready
+        );
+    }
+
+    #[test]
+    fn a_cooling_moon_yields_to_a_ready_station_gate() {
+        let (mut state, dest) = gated_pair();
+        arm_station_gate(&mut state, Coord::HOME);
+        arm_station_gate(&mut state, dest);
+        state.fleet.add(ShipKind::LightFighter, 2);
+        state
+            .jump_between(Coord::HOME, dest, scout(), Resources::ZERO, 0)
+            .unwrap();
+        assert_eq!(state.moon_at(Coord::HOME).unwrap().jump_ready_at, 100);
+        state
+            .jump_between(Coord::HOME, dest, scout(), Resources::ZERO, 0)
+            .unwrap();
+        assert_eq!(state.station_gate_ready.get(&Coord::HOME), Some(&100));
+        assert_eq!(state.station_gate_ready.get(&dest), Some(&100));
+        assert_eq!(state.moon_at(Coord::HOME).unwrap().jump_ready_at, 100);
+        assert_eq!(state.fleet.get(ShipKind::LightFighter), 0);
+        assert_eq!(state.colonies[0].fleet.get(ShipKind::LightFighter), 2);
+    }
+
+    #[test]
+    fn a_world_without_a_gate_is_refused_as_no_gate() {
+        let mut state = GameState::with_seed(0, moon_cfg(), 1);
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 4,
+        };
+        owned_world(&mut state, dest);
+        arm_station_gate(&mut state, Coord::HOME);
+        state.fleet.add(ShipKind::LightFighter, 1);
+        let err = state
+            .jump_between(Coord::HOME, dest, scout(), Resources::ZERO, 0)
+            .unwrap_err();
+        assert!(matches!(err, MoonError::NoGate { at } if at == dest));
     }
 }

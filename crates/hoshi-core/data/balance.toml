@@ -263,6 +263,22 @@ defence_prerequisites = [{ defence = "orbital_station", count = 1 }]
 planet_types = ["rocky", "ice"]
 max_level = 1
 
+# Orbital jump gate on a world's station. Late-game: hyperspace 5 and a price
+# well above the space elevator. Allowed on every planet type, including gas
+# giants; a station orbits those too. Draws orbits.gate_energy while it stands.
+[buildings.jump_gate]
+purpose = "Orbital jump gate; links instantly to any other gate on a moon or station."
+frames = 24000.0
+electronics = 18000.0
+fuel = 4000.0
+cost_growth = 1.0
+base_seconds = 7200.0
+time_growth = 1.0
+prerequisites = [{ building = "shipyard", level = 4 }]
+defence_prerequisites = [{ defence = "orbital_station", count = 1 }]
+tech_prerequisites = [{ id = "hyperspace", level = 5 }]
+max_level = 1
+
 [queues]
 max_build_queue = 5
 max_ship_queue = 5
@@ -499,6 +515,8 @@ assist_dv = 0.82
 turnaround_secs = 120
 # Power a space elevator draws while it stands.
 elevator_energy = 15.0
+# Power a station jump gate draws while it stands.
+gate_energy = 40.0
 
 [planet_types.rocky]
 iron = 0.10

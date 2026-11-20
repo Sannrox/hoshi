@@ -4315,6 +4315,27 @@ impl App {
         {
             rows.push(Line::from(format!("Debris {amount:.0}")));
         }
+        if self
+            .state
+            .buildings_at(coord)
+            .is_some_and(|buildings| buildings.jump_gate > 0)
+        {
+            let ready_at = self
+                .state
+                .station_gate_ready
+                .get(&coord)
+                .copied()
+                .unwrap_or(0);
+            let ready = if ready_at > self.state.last_tick_unix {
+                format!(
+                    "jump {}",
+                    ui::spans::duration(ready_at.saturating_sub(self.state.last_tick_unix))
+                )
+            } else {
+                "jump ready".into()
+            };
+            rows.push(Line::from(format!("Station gate  {ready}")));
+        }
         let deposits = self.state.deposits_at(coord);
         let parts: Vec<String> = deposits
             .iter()

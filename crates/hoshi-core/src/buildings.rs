@@ -21,6 +21,7 @@ pub enum BuildingKind {
     Radiator,
     Scrubber,
     SpaceElevator,
+    JumpGate,
 }
 
 impl BuildingKind {
@@ -41,6 +42,7 @@ impl BuildingKind {
             BuildingKind::Radiator => "radiator",
             BuildingKind::Scrubber => "scrubber",
             BuildingKind::SpaceElevator => "space_elevator",
+            BuildingKind::JumpGate => "jump_gate",
         }
     }
 
@@ -61,11 +63,12 @@ impl BuildingKind {
             "radiator" => BuildingKind::Radiator,
             "scrubber" => BuildingKind::Scrubber,
             "space_elevator" => BuildingKind::SpaceElevator,
+            "jump_gate" => BuildingKind::JumpGate,
             _ => return None,
         })
     }
 
-    pub const ALL: [BuildingKind; 15] = [
+    pub const ALL: [BuildingKind; 16] = [
         BuildingKind::MetalMine,
         BuildingKind::CrystalMine,
         BuildingKind::DeuteriumSynthesizer,
@@ -81,6 +84,7 @@ impl BuildingKind {
         BuildingKind::Radiator,
         BuildingKind::Scrubber,
         BuildingKind::SpaceElevator,
+        BuildingKind::JumpGate,
     ];
 }
 
@@ -102,6 +106,7 @@ impl fmt::Display for BuildingKind {
             BuildingKind::Radiator => "radiator",
             BuildingKind::Scrubber => "scrubber",
             BuildingKind::SpaceElevator => "space elevator",
+            BuildingKind::JumpGate => "jump gate",
         })
     }
 }
@@ -124,6 +129,7 @@ pub struct Buildings {
     pub radiator: u32,
     pub scrubber: u32,
     pub space_elevator: u32,
+    pub jump_gate: u32,
 }
 
 impl Buildings {
@@ -144,6 +150,7 @@ impl Buildings {
             BuildingKind::Radiator => self.radiator,
             BuildingKind::Scrubber => self.scrubber,
             BuildingKind::SpaceElevator => self.space_elevator,
+            BuildingKind::JumpGate => self.jump_gate,
         }
     }
 
@@ -164,6 +171,7 @@ impl Buildings {
             BuildingKind::Radiator => self.radiator = level,
             BuildingKind::Scrubber => self.scrubber = level,
             BuildingKind::SpaceElevator => self.space_elevator = level,
+            BuildingKind::JumpGate => self.jump_gate = level,
         }
     }
 

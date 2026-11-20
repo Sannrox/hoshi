@@ -40,6 +40,8 @@ pub struct OrbitConfig {
     pub turnaround_secs: u64,
     /// Power a built space elevator draws to lift climbers up its tether.
     pub elevator_energy: f64,
+    /// Power a built station jump gate draws while it stands.
+    pub gate_energy: f64,
 }
 
 impl Default for OrbitConfig {
@@ -160,6 +162,8 @@ pub(crate) struct FileOrbits {
     turnaround_secs: u64,
     #[serde(default = "default_elevator_energy")]
     elevator_energy: f64,
+    #[serde(default = "default_gate_energy")]
+    gate_energy: f64,
 }
 
 impl Default for FileOrbits {
@@ -192,6 +196,7 @@ impl Default for FileOrbits {
             assist_dv: default_assist(),
             turnaround_secs: default_turnaround(),
             elevator_energy: default_elevator_energy(),
+            gate_energy: default_gate_energy(),
         }
     }
 }
@@ -220,6 +225,7 @@ impl FileOrbits {
             ("high_energy_time", self.high_energy_time),
             ("assist_dv", self.assist_dv),
             ("elevator_energy", self.elevator_energy),
+            ("gate_energy", self.gate_energy),
         ] {
             if !(value.is_finite() && value > 0.0) {
                 return Err(format!("orbits.{name} must be > 0"));
@@ -280,12 +286,16 @@ impl FileOrbits {
             assist_dv: self.assist_dv,
             turnaround_secs: self.turnaround_secs.max(1),
             elevator_energy: self.elevator_energy,
+            gate_energy: self.gate_energy,
         })
     }
 }
 
 fn default_elevator_energy() -> f64 {
     15.0
+}
+fn default_gate_energy() -> f64 {
+    40.0
 }
 fn default_mu() -> f64 {
     1.327_124_4e20
