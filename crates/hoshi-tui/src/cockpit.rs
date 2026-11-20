@@ -2131,6 +2131,7 @@ mod tests {
             hold_secs: 0,
             phase_ends_at: 1_060,
             fuel_paid: 0.0,
+            fuel_water_ice: 0.0,
             colonize: false,
             expedition_seed: None,
             expedition_applied: false,
@@ -2188,6 +2189,7 @@ mod tests {
     fn the_upcoming_row_names_a_deploys_cargo() {
         let mut state = GameState::new(1_000);
         state.resources = Resources::from_parts(5_000.0, 5_000.0, 10_000.0);
+        state.resources.water_ice = 10_000.0;
         state.fleet.add(hoshi_core::ShipKind::LargeCargo, 1);
         let mut ships = hoshi_core::Fleet::default();
         ships.add(hoshi_core::ShipKind::LargeCargo, 1);

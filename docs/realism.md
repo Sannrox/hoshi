@@ -217,7 +217,8 @@ silent extra departure; they extend this list.
 | A space elevator's climb is paid by its continuous power draw, not per kilogram lifted | The elevator runs a tether from the surface to the world's Orbital station. With the scaled wells the climb energy is under 1.2 MJ/kg, so a tether of today's high-strength fibre needs almost no taper. Gas giants have no surface to anchor one. Releasing cargo from the tether tip for extra delta-v is not modelled. |
 | Hull points map to kilograms through `kg_per_hull` | Keeps a combustion cargo inside a mid-game deuterium stockpile for a 1–1.5 AU hop. |
 | A hop between systems costs escape plus capture delta-v, with no interstellar cruise burn | Each star gets its own gravity well, so a farther system never costs less fuel. Every other system costs the same; time still grows with distance. |
-| Propellant mass is paid from deuterium; it does not fill cargo volume | Tanks are part of the vehicle; cargo is payload. |
+| Propellant mass is paid from water ice; it does not fill cargo volume | Tanks are part of the vehicle; cargo is payload. |
+| Impulse and hyperspace burns a configured deuterium share of that mass | Physical fusion energy for 20 km/s exhaust is about 2e-6 of the reaction mass. The bundle uses a larger share so deuterium stays a flight cost for advanced drives. Combustion burns none. |
 | Inter-system and galaxy hops sit on summed AU radii around the same star | Keeps one μ and one Hohmann formula; ordering of hop size stays. |
 | Frontier galaxy uses the same `[flight].galaxy_unit` distance as a one-galaxy hop | Inter-galaxy flights stay on the existing clock; richer worlds are a generation overlay, not a second physics table. |
 | Casked spent fuel leaves the game | Real casks sit on site for decades; storing them would add a second waste stock with no decision behind it. Casking costs steel and is rate-limited, so the pool still matters. |

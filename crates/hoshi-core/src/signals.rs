@@ -234,6 +234,7 @@ impl GameState {
             return Err(FleetError::InsufficientFuel {
                 missing: (cost - have).max(0.0),
                 cost,
+                kind: crate::ResourceKind::Deuterium,
                 hint: None,
             });
         }

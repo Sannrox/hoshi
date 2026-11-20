@@ -323,7 +323,7 @@ fn fuel_of(
 ) -> f64 {
     state
         .flight_from(origin.unwrap_or(state.home), dest, ships, speed_percent)
-        .map(|(_, fuel)| fuel)
+        .map(|(_, fuel)| fuel.total())
         .unwrap_or(0.0)
 }
 

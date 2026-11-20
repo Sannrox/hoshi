@@ -521,7 +521,7 @@ Area: cli.
 
 ## fleet deploy
 
-Hold cargo away from a home raid, then bring it back. The reply reports the deuterium the launch debited as `fuel_deuterium`.
+Hold cargo away from a home raid, then bring it back. The reply reports the water ice the launch debited as `fuel_water_ice` and the deuterium share as `fuel_deuterium`.
 
 ```text
 hoshi fleet deploy FROM TO HOLD_SECS RESOURCE=AMOUNT... SHIP:COUNT...
@@ -553,7 +553,7 @@ Area: cli.
 
 ## fleet send
 
-Dispatch ships on a mission. The reply reports the deuterium the launch debited as `fuel_deuterium`; each mission in `state` carries the same key.
+Dispatch ships on a mission. The reply reports the water ice the launch debited as `fuel_water_ice` and the deuterium share as `fuel_deuterium`; each mission in `state` carries the same keys.
 
 ```text
 hoshi fleet send FROM TO MISSION SHIP:COUNT...
@@ -1097,7 +1097,7 @@ Area: cli.
 
 ## mission plan
 
-Plan a vehicle delivery through a transfer window. Destination is where the vehicle flies. Customer is who receives the cargo. Transfer is Hohmann (cheap slow transfer), high energy (more fuel and less coast), or assist (discount when a body sits between the two radii). Cargo and amount are the payload. Fuel is rocket-equation deuterium, not map [flight], debited from the origin when the plan is booked, even for a later window; each planned mission reports it as `fuel_deuterium`. With --dry-run the plan is checked and shown (delta-v, window, `fuel_deuterium`) but not booked: no resources, vehicle or save change.
+Plan a vehicle delivery through a transfer window. Destination is where the vehicle flies. Customer is who receives the cargo. Transfer is Hohmann (cheap slow transfer), high energy (more fuel and less coast), or assist (discount when a body sits between the two radii). Cargo and amount are the payload. Reaction mass is rocket-equation water ice, not map [flight], plus a deuterium share on impulse and above, debited from the origin when the plan is booked, even for a later window; each planned mission reports `fuel_water_ice` and `fuel_deuterium`. With --dry-run the plan is checked and shown (delta-v, window, `fuel_water_ice`, `fuel_deuterium`) but not booked: no resources, vehicle or save change.
 
 ```text
 hoshi mission plan TO --vehicle ID [--transfer KIND] [--customer ID] [--iron N] [--silicon N] [--deuterium N] [--window N] [--dry-run]
@@ -1113,7 +1113,7 @@ Area: cli.
 
 ## mission schedule
 
-Show planned departures and arrivals, with each mission's delta-v and the deuterium it debited (`fuel_deuterium`).
+Show planned departures and arrivals, with each mission's delta-v and the water ice and deuterium it debited (`fuel_water_ice`, `fuel_deuterium`).
 
 ```text
 hoshi mission schedule

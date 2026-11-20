@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Current schema. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 72;
+pub const SCHEMA_VERSION: u32 = 73;
 
 #[derive(Debug)]
 pub enum SaveError {
@@ -403,8 +403,9 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 phase_ends_at, fuel_paid, colonize, expedition_seed, expedition_applied,
                 cargo_metal, cargo_crystal, cargo_deuterium,
                 cargo_rare_earths, cargo_water_ice, cargo_helium_3,
-                transport, attack, invade, spy, survey, site_id, recycle, deploy, station
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32)",
+                transport, attack, invade, spy, survey, site_id, recycle, deploy, station,
+                fuel_water_ice
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33)",
             params![
                 mission.id as i64,
                 mission.origin.galaxy as i64,
@@ -438,6 +439,7 @@ pub fn save_state(conn: &mut Connection, state: &GameState) -> Result<(), SaveEr
                 mission.recycle as i64,
                 mission.deploy as i64,
                 mission.station as i64,
+                mission.fuel_water_ice,
             ],
         )?;
         for kind in ShipKind::ALL {
@@ -1939,7 +1941,8 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
                 phase_ends_at, fuel_paid, colonize, expedition_seed, expedition_applied,
                 cargo_metal, cargo_crystal, cargo_deuterium,
                 cargo_rare_earths, cargo_water_ice, cargo_helium_3,
-                transport, attack, invade, spy, survey, site_id, recycle, deploy, station
+                transport, attack, invade, spy, survey, site_id, recycle, deploy, station,
+                fuel_water_ice
          FROM missions ORDER BY id",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -1976,6 +1979,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             row.get::<_, i64>(29)?,
             row.get::<_, i64>(30)?,
             row.get::<_, i64>(31)?,
+            row.get::<_, f64>(32)?,
         ))
     })?;
     let mut missions = Vec::new();
@@ -2013,6 +2017,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             recycle,
             deploy,
             station,
+            fuel_water_ice,
         ) = row?;
         let phase =
             MissionPhase::from_key(&phase).ok_or(SaveError::Corrupt("unknown mission phase"))?;
@@ -2047,6 +2052,7 @@ pub fn load_state(conn: &Connection, config: BalanceConfig) -> Result<GameState,
             hold_secs: unix_ts(hold_secs)?,
             phase_ends_at: unix_ts(phase_ends_at)?,
             fuel_paid,
+            fuel_water_ice,
             colonize: colonize != 0,
             expedition_seed: expedition_seed.map(|s| s as u64),
             expedition_applied: expedition_applied != 0,
@@ -3978,6 +3984,9 @@ fn migrate(conn: &Connection) -> Result<(), SaveError> {
     // v72: the space elevator building. Its level is a `buildings` row, so
     // older saves need no data change; the bump makes older binaries refuse
     // a save that carries the new row instead of reading it as corrupt.
+    if found < 73 {
+        migrate_v73(conn)?;
+    }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
 }
@@ -5234,6 +5243,19 @@ fn load_raid_targets(conn: &Connection) -> Result<(Option<Coord>, Option<Coord>)
         Some((next, event)) => Ok((coord(next)?, coord(event)?)),
         None => Ok((None, None)),
     }
+}
+
+/// v73: water ice paid at launch. Older missions paid the whole rocket
+/// mass as deuterium (`fuel_paid`); the new column defaults to 0 so they
+/// keep the fuel they paid. An older binary refuses a v73 save.
+fn migrate_v73(conn: &Connection) -> Result<(), SaveError> {
+    if !missions_has_column(conn, "fuel_water_ice")? {
+        conn.execute(
+            "ALTER TABLE missions ADD COLUMN fuel_water_ice REAL NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    Ok(())
 }
 
 /// v71: one-way station missions. Older missions were round-trips, so the
@@ -10315,6 +10337,7 @@ mod tests {
         state.resources.iron = 10_000.0;
         state.resources.silicon = 10_000.0;
         state.resources.deuterium = 1e10;
+        state.resources.water_ice = 1e10;
         state.buildings.metal_mine = 3;
         state.buildings.research_lab = 1;
         state.tech_levels.insert("energy".into(), 2);
@@ -10545,6 +10568,7 @@ label = "Leave it"
         let mut state = GameState::new(0);
         state.surveyed_systems.insert((2, 7));
         state.resources.deuterium = 10_000.0;
+        state.resources.water_ice = 10_000.0;
         state.fleet.add(ShipKind::EspionageProbe, 1);
         let dest = (2u16..=16)
             .flat_map(|system| {
@@ -10874,6 +10898,7 @@ label = "Leave it"
         let mut conn = open_save(Path::new(":memory:")).unwrap();
         let mut state = GameState::new(100);
         state.resources = Resources::from_parts(5_000.0, 5_000.0, 10_000.0);
+        state.resources.water_ice = 10_000.0;
         state.fleet.add(ShipKind::Cruiser, 1);
         let dest = hoshi_core::Coord {
             galaxy: 1,
@@ -10918,10 +10943,66 @@ label = "Leave it"
     }
 
     #[test]
+    fn launch_water_ice_survives_save_and_v72_missions_keep_paid_deuterium() {
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        let mut state = GameState::new(100);
+        state.resources = Resources::from_parts(5_000.0, 5_000.0, 10_000.0);
+        state.resources.water_ice = 10_000.0;
+        state.fleet.add(ShipKind::Cruiser, 1);
+        let dest = hoshi_core::Coord {
+            galaxy: 1,
+            system: 1,
+            position: 2,
+        };
+        state.colonies.push(hoshi_core::Colony {
+            coord: dest,
+            kind: hoshi_core::PlanetType::Rocky,
+            size: 120,
+            resources: hoshi_core::Resources::ZERO,
+            buildings: hoshi_core::Buildings::default(),
+            fleet: Fleet::default(),
+            defences: hoshi_core::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: std::collections::BTreeMap::new(),
+        });
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::Cruiser, 1);
+        state
+            .launch_station(
+                state.home,
+                dest,
+                ships,
+                hoshi_core::Resources::ZERO,
+                100,
+                100,
+            )
+            .unwrap();
+        let ice = state.missions[0].fuel_water_ice;
+        let deut = state.missions[0].fuel_paid;
+        assert!(ice > 0.0);
+        assert!(deut > 0.0);
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert!((loaded.missions[0].fuel_water_ice - ice).abs() < 1e-9);
+        assert!((loaded.missions[0].fuel_paid - deut).abs() < 1e-9);
+        conn.execute_batch(
+            "ALTER TABLE missions DROP COLUMN fuel_water_ice; PRAGMA user_version = 72;",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        let old = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(old.missions[0].fuel_water_ice, 0.0);
+        assert!((old.missions[0].fuel_paid - deut).abs() < 1e-9);
+    }
+
+    #[test]
     fn a_deploy_survives_save_with_its_cargo_and_v56_saves_load_as_not_deploying() {
         let mut conn = open_save(Path::new(":memory:")).unwrap();
         let mut state = GameState::new(100);
         state.resources = Resources::from_parts(5_000.0, 5_000.0, 10_000.0);
+        state.resources.water_ice = 10_000.0;
         state.fleet.add(ShipKind::LargeCargo, 1);
         let dest = hoshi_core::Coord {
             galaxy: 1,
@@ -10958,6 +11039,7 @@ label = "Leave it"
         state.debris.insert(dest, 5_000.0);
         state.fleet.add(ShipKind::Recycler, 1);
         state.resources.deuterium = 1e10;
+        state.resources.water_ice = 1e10;
         let mut ships = Fleet::default();
         ships.add(ShipKind::Recycler, 1);
         state
@@ -11146,6 +11228,7 @@ label = "Leave it"
         state.sites.clear();
         state.fleet.add(ShipKind::LightFighter, 4);
         state.resources.deuterium = 1e10;
+        state.resources.water_ice = 1e10;
         state.config.expedition.min_hold_secs = 10;
         state.config.expedition.max_hold_secs = 10_000;
         let mut ships = Fleet::default();
@@ -13492,6 +13575,7 @@ label = "Leave it"
         let mut state = GameState::with_config(now, cfg);
         state.fleet.add(ShipKind::LightFighter, 10);
         state.resources.deuterium = 1e10;
+        state.resources.water_ice = 1e10;
         state
     }
 

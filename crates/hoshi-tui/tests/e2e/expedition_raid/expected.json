@@ -335,7 +335,7 @@
     "iron": 2018.5752899999993,
     "rare_earths": 54.762892153699454,
     "silicon": 1337.71686,
-    "water_ice": 0.0
+    "water_ice": 10000.0
   },
   "rivals": {
     "colonies": [],
@@ -343,7 +343,7 @@
     "enabled": false
   },
   "routes": [],
-  "save_schema": 72,
+  "save_schema": 73,
   "schema_version": 2,
   "season": null,
   "signals": [],

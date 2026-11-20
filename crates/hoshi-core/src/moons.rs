@@ -695,6 +695,7 @@ mod tests {
         let mut state = GameState::with_seed(0, moon_cfg(), 1);
         state.resources.iron = 1_000.0;
         state.resources.deuterium = 1e12;
+        state.resources.water_ice = 1e12;
         state.moons.push(Moon::new(Coord::HOME));
         state
             .build_moon_facility(Coord::HOME, MoonFacility::Phalanx, 0)

@@ -1552,6 +1552,13 @@ def migrate(conn: sqlite3.Connection, version: int) -> None:
     elif version == 72:
         # The space elevator is a `buildings` row; the schema is unchanged.
         pass
+    elif version == 73:
+        add_column(
+            conn,
+            "missions",
+            "fuel_water_ice",
+            "ALTER TABLE missions ADD COLUMN fuel_water_ice REAL NOT NULL DEFAULT 0",
+        )
     else:
         raise SystemExit(
             f"migrate_v{version} is not in this generator; extend it when SCHEMA_VERSION moves"
@@ -1632,8 +1639,6 @@ def write_expedition(path: Path) -> None:
         path,
         metal=500,
         crystal=500,
-        # Five fighters to the outer expedition slot and back burn about
-        # 4.3 million D of rocket-equation fuel at full speed.
         deuterium=6000000,
         buildings=(
             ("metal_mine", 1),
@@ -1642,6 +1647,19 @@ def write_expedition(path: Path) -> None:
         ),
         ships=(("light_fighter", 10),),
     )
+    # v9 has no ice column. Seed reaction mass so migrate_v40 keeps it
+    # (ADD COLUMN is skipped when the column already exists). Five fighters
+    # to the outer slot and back burn about 4.3 million cargo of ice.
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute(
+            "ALTER TABLE resources ADD COLUMN water_ice REAL NOT NULL DEFAULT 0"
+        )
+        conn.execute("UPDATE resources SET water_ice = 6000000")
+        conn.commit()
+        conn.execute("VACUUM")
+    finally:
+        conn.close()
 
 
 def write_build_research(path: Path) -> None:

@@ -7852,6 +7852,7 @@ mod tests {
         state.resources.iron = 1e12;
         state.resources.silicon = 1e12;
         state.resources.deuterium = 1e12;
+        state.resources.water_ice = 1e12;
         state.sync_maintenance_assets(1_000);
         let home = state.home;
         let mine = state
@@ -8546,6 +8547,7 @@ mod tests {
         let mut state = GameState::new(1_000);
         state.fleet.add(ShipKind::SmallCargo, 1);
         state.resources.deuterium = 1e9;
+        state.resources.water_ice = 1e9;
         let mut app = App::new(state);
         app.open(Screen::Ops);
         let empty = render_text(&app, 120, 40);
@@ -8627,6 +8629,7 @@ mod tests {
         let mut state = GameState::new(1_000);
         state.fleet.add(ShipKind::SmallCargo, 2);
         state.resources.deuterium = 1e9;
+        state.resources.water_ice = 1e9;
         state.resources.iron = 100.0;
         state.colonies.push(colony_at(dest));
         let mut app = App::new(state);
@@ -8662,7 +8665,7 @@ mod tests {
             .propose_mission(&request, app.state.last_tick_unix)
             .unwrap();
         let units = plan.fuel_mass / app.state.config.orbits.kg_per_cargo;
-        let fuel_bit = format!("{units:.0} deuterium");
+        let fuel_bit = format!("{units:.0} ice");
         assert!(form.contains(&fuel_bit), "missing {fuel_bit} in\n{form}");
 
         let mut cargo = Resources::ZERO;
@@ -8670,10 +8673,10 @@ mod tests {
         let mut ships = Fleet::default();
         ships.add(ShipKind::SmallCargo, 1);
         let mut map = app.state.clone();
-        let before = map.resources.deuterium;
+        let before = map.resources.water_ice;
         map.launch_transport(Coord::HOME, dest, ships, cargo, 100, 1_000)
             .unwrap();
-        let flight_used = before - map.resources.deuterium;
+        let flight_used = before - map.resources.water_ice;
         assert!(
             (flight_used - units).abs() > 1.0,
             "map send should debit [flight] fuel {flight_used}, not ops {units}"
@@ -8690,7 +8693,7 @@ mod tests {
         let mut state = GameState::new(1_000);
         state.fleet.add(ShipKind::SmallCargo, 1);
         state.resources.deuterium = 1e9;
-        state.resources.water_ice = 100.0;
+        state.resources.water_ice = 1e9;
         state.colonies.push(colony_at(dest));
         let mut app = App::new(state);
         app.open(Screen::Ops);
@@ -8714,7 +8717,12 @@ mod tests {
         app.handle_key(KeyCode::Enter, 1_000);
         assert_eq!(app.state.planned.len(), 1, "{}", app.status);
         let loaded = before - app.state.resources.water_ice;
-        assert!((loaded - 10.0).abs() < 1e-6, "loaded {loaded}");
+        assert!(loaded > 10.0, "cargo 10 plus launch ice, loaded {loaded}");
+        assert!(
+            (app.state.planned[0].payload.cargo.water_ice - 10.0).abs() < 1e-6,
+            "{:?}",
+            app.state.planned[0].payload.cargo
+        );
         let arrives = app.state.planned[0].arrives_at;
         app.state.catch_up(arrives);
         let colony = app.state.colonies.iter().find(|c| c.coord == dest).unwrap();
@@ -8834,6 +8842,7 @@ mod tests {
         let mut state = GameState::new(1_000);
         state.fleet.add(ShipKind::SmallCargo, 1);
         state.resources.deuterium = 1e9;
+        state.resources.water_ice = 1e9;
         let mut app = App::new(state);
         app.open(Screen::Ops);
         register_parked(&mut app, &[1]);
@@ -9022,6 +9031,7 @@ mod tests {
         cfg.market.enabled = false;
         let mut state = GameState::with_config(0, cfg);
         state.resources.deuterium = 1e9;
+        state.resources.water_ice = 1e9;
         state.fleet.add(ShipKind::EspionageProbe, 1);
         let dest = (2u16..=16)
             .flat_map(|system| {
@@ -9121,6 +9131,7 @@ mod tests {
         let mut state = GameState::new(1_000);
         state.fleet.add(ShipKind::SmallCargo, 1);
         state.resources.deuterium = 1e9;
+        state.resources.water_ice = 1e9;
         state
             .launch_fleet(state.home, ships, dest, 100, 0, 1_000)
             .unwrap();
@@ -9157,7 +9168,7 @@ mod tests {
         open_dispatch(&mut app, home, ShipKind::Recycler, 1);
         let text = render_text(&app, 100, 40);
         assert!(text.contains("ETA"), "{text}");
-        assert!(text.contains("0.0 D"), "{text}");
+        assert!(text.contains("0.0 ice"), "{text}");
         assert!(!text.to_lowercase().contains("same location"), "{text}");
         app.handle_key(KeyCode::Enter, 1_000);
         assert!(app.state.missions[0].recycle, "{}", app.status);
@@ -9169,6 +9180,7 @@ mod tests {
         let mut state = GameState::new(1_000);
         state.fleet.add(ShipKind::SmallCargo, 2);
         state.resources.deuterium = 1e9;
+        state.resources.water_ice = 1e9;
         let mut app = App::new(state);
         app.open(Screen::Map);
         app.handle_key(KeyCode::Char('l'), 1_000);
@@ -9238,6 +9250,7 @@ mod tests {
         state.config.raid.enabled = false;
         state.next_raid_at = None;
         state.resources.deuterium = 1e9;
+        state.resources.water_ice = 1e9;
         state.fleet.add(ShipKind::LightFighter, 10);
         let mut app = App::new(state);
         app.open(Screen::Map);
@@ -9278,6 +9291,7 @@ mod tests {
         state.config.raid.enabled = false;
         state.next_raid_at = None;
         state.resources.deuterium = 1e9;
+        state.resources.water_ice = 1e9;
         state.fleet.add(ShipKind::Recycler, 1);
         let dest = (2..16)
             .map(|position| Coord {
@@ -9401,6 +9415,7 @@ mod tests {
         state.config.raid.enabled = false;
         state.next_raid_at = None;
         state.resources = Resources::from_parts(12_000.0, 6_000.0, 100_000.0);
+        state.resources.water_ice = 100_000.0;
         state.fleet.add(ShipKind::SmallCargo, 2);
         let dest = (2..16)
             .map(|position| Coord {
@@ -9750,7 +9765,8 @@ mod tests {
         assert_eq!(mission.cargo, Resources::from_parts(1_000.0, 500.0, 0.0));
         assert_eq!(app.state.resources.iron, 11_000.0);
         assert_eq!(app.state.resources.silicon, 5_500.0);
-        assert!((app.state.resources.deuterium - (100_000.0 - fuel)).abs() < 1e-6);
+        assert!((app.state.resources.deuterium - (100_000.0 - fuel.deuterium)).abs() < 1e-6);
+        assert!((app.state.resources.water_ice - (100_000.0 - fuel.water_ice)).abs() < 1e-6);
 
         let back = mission.phase_ends_at + mission.outbound_secs + 1;
         app.state.catch_up(back);
@@ -9797,7 +9813,8 @@ mod tests {
         app.handle_key(KeyCode::Enter, 1_000);
         assert!(app.dispatch.is_none(), "{}", app.status);
         assert!(app.state.missions[0].station);
-        assert!((app.state.resources.deuterium - (100_000.0 - fuel)).abs() < 1e-6);
+        assert!((app.state.resources.deuterium - (100_000.0 - fuel.deuterium)).abs() < 1e-6);
+        assert!((app.state.resources.water_ice - (100_000.0 - fuel.water_ice)).abs() < 1e-6);
         app.state.catch_up(1_000 + eta);
         assert!(app.state.missions.is_empty());
         assert_eq!(app.state.fleet.get(ShipKind::Cruiser), 0);
@@ -9870,7 +9887,7 @@ mod tests {
         let mut fleet = Fleet::default();
         fleet.add(ShipKind::SmallCargo, 1);
         let mut stock = Resources::from_parts(0.0, 0.0, 1e6);
-        stock.water_ice = 400.0;
+        stock.water_ice = 1e6;
         stock.helium_3 = 50.0;
         state.colonies.push(Colony {
             coord: ice,
@@ -9911,7 +9928,10 @@ mod tests {
         let mission = app.state.missions[0].clone();
         assert!(mission.transport);
         assert_eq!(mission.cargo.water_ice, 400.0);
-        assert_eq!(app.state.resources_at(ice).unwrap().water_ice, 0.0);
+        assert!(
+            app.state.resources_at(ice).unwrap().water_ice < 1e6 - 400.0,
+            "launch ice leaves the colony too"
+        );
 
         let land = mission.phase_ends_at + 1;
         app.state.catch_up(land);
@@ -9944,7 +9964,7 @@ mod tests {
         let mut fleet = Fleet::default();
         fleet.add(ShipKind::SmallCargo, 1);
         let mut stock = Resources::from_parts(0.0, 0.0, 1e6);
-        stock.water_ice = 1_000.0;
+        stock.water_ice = 1e6;
         let mut colony = colony_at(ice);
         colony.kind = PlanetType::Ice;
         colony.resources = stock;
@@ -9979,18 +9999,21 @@ mod tests {
         let start = app.state.last_tick_unix;
         app.state.catch_up(start + 4 * 3_600);
         let left = app.state.resources_at(ice).unwrap().water_ice;
-        assert!(left <= 800.0, "at least two hauls left the colony: {left}");
+        assert!(
+            left <= 1e6 - 200.0,
+            "at least two hauls left the colony: {left}"
+        );
 
         app.open(Screen::Ops);
         let ops = render_text(&app, 140, 40);
         assert!(ops.contains(&format!("route {}", route.id)), "{ops}");
         assert!(ops.contains("every 1h 00m"), "{ops}");
 
-        // No fuel: the next launch skips and Ops says why.
-        app.state.colonies[0].resources.deuterium = 0.0;
+        // Cargo still fits; leftover ice cannot cover reaction mass.
+        app.state.colonies[0].resources.water_ice = 100.0;
         app.state.catch_up(app.state.routes[0].next_at + 1);
         let ops = render_text(&app, 140, 40);
-        assert!(ops.contains("last skip: not enough deuterium"), "{ops}");
+        assert!(ops.contains("last skip: not enough water ice"), "{ops}");
         let header = |name: &str| {
             ops.lines()
                 .any(|line| line.trim_end().ends_with(&format!("  {name}")))
@@ -10012,6 +10035,7 @@ mod tests {
         };
         let mut state = GameState::new(1_000);
         state.resources.deuterium = 1e9;
+        state.resources.water_ice = 1e9;
         state.fleet.add(ShipKind::LightFighter, 3);
         state.fleet.add(ShipKind::EspionageProbe, 1);
         let mut defences = Fleet::default();
@@ -10069,6 +10093,7 @@ mod tests {
         };
         let mut state = GameState::new(1_000);
         state.resources.deuterium = 1e9;
+        state.resources.water_ice = 1e9;
         state.fleet.add(ShipKind::SmallCargo, 1);
         let mut defences = Fleet::default();
         defences.add(ShipKind::LightFighter, 1);
@@ -10094,6 +10119,7 @@ mod tests {
         };
         let mut state = GameState::new(1_000);
         state.resources.deuterium = 1e9;
+        state.resources.water_ice = 1e9;
         state.fleet.add(ShipKind::SmallCargo, 1);
         outpost_at(&mut state, dest, Fleet::default());
         let mut app = App::new(state);
@@ -10119,6 +10145,7 @@ mod tests {
         };
         let mut state = GameState::new(1_000);
         state.resources.deuterium = 1e9;
+        state.resources.water_ice = 1e9;
         state.tech_levels.insert("colonization".into(), 1);
         state.fleet.add(ShipKind::TroopTransport, 2);
         outpost_at(&mut state, dest, Fleet::default());
@@ -10180,7 +10207,11 @@ mod tests {
             coord: colony,
             kind: PlanetType::Rocky,
             size: 120,
-            resources: Resources::from_parts(0.0, 0.0, 1e9),
+            resources: {
+                let mut stock = Resources::from_parts(0.0, 0.0, 1e9);
+                stock.water_ice = 1e9;
+                stock
+            },
             buildings: Buildings::default(),
             fleet,
             defences: hoshi_core::DefenceGrid::default(),
@@ -10203,7 +10234,7 @@ mod tests {
         app.handle_key(KeyCode::Enter, 1_000);
         assert_eq!(app.state.missions[0].origin, colony, "{}", app.status);
         assert!(app.state.colonies[0].fleet.is_empty());
-        assert!(app.state.colonies[0].resources.deuterium < 1e9);
+        assert!(app.state.colonies[0].resources.water_ice < 1e9);
         assert_eq!(app.state.fleet.get(ShipKind::LightFighter), 5);
     }
 
@@ -10238,6 +10269,7 @@ mod tests {
     fn a_site_that_resolved_under_an_open_form_is_refused_not_redirected() {
         let mut state = GameState::new(1_000);
         state.resources.deuterium = 1e9;
+        state.resources.water_ice = 1e9;
         state.fleet.add(ShipKind::LightFighter, 10);
         let site = state.sites[0].clone();
         let mut app = App::new(state);
@@ -10252,6 +10284,7 @@ mod tests {
     fn dispatch_inspector_shows_the_explorer_factor() {
         let mut state = GameState::new(1_000);
         state.resources.deuterium = 1e9;
+        state.resources.water_ice = 1e9;
         state.fleet.add(ShipKind::Explorer, 2);
         let site = state.sites[0].clone();
         let mut app = App::new(state);
@@ -10312,7 +10345,7 @@ mod tests {
         assert!(!text.contains("Large Cargo"), "{text}");
         app.handle_key(KeyCode::Enter, 1_000);
         assert!(
-            app.status.contains("not enough deuterium"),
+            app.status.contains("not enough water ice"),
             "{}",
             app.status
         );
@@ -10323,6 +10356,7 @@ mod tests {
     fn dispatch_inspector_shows_pirate_weight_and_not_the_rolled_kind() {
         let mut state = GameState::new(1_000);
         state.resources.deuterium = 1e9;
+        state.resources.water_ice = 1e9;
         state.fleet.add(ShipKind::LightFighter, 10);
         let site = state.sites[0].clone();
         let mut ships = Fleet::default();
@@ -10366,6 +10400,7 @@ mod tests {
     fn dispatch_to_the_expedition_slot_runs_an_expedition() {
         let mut state = GameState::new(1_000);
         state.resources.deuterium = 1e9;
+        state.resources.water_ice = 1e9;
         state.fleet.add(ShipKind::SmallCargo, 1);
         let dest = state.expedition_dest();
         let mut app = App::new(state);
@@ -10383,6 +10418,7 @@ mod tests {
         let mut state = GameState::new(1_000);
         state.fleet.add(ShipKind::SmallCargo, 2);
         state.resources.deuterium = 1e9;
+        state.resources.water_ice = 1e9;
         let mut app = App::new(state);
         app.open(Screen::Map);
         app.handle_key(KeyCode::Char('l'), 1_000);
@@ -10405,6 +10441,7 @@ mod tests {
         };
         let mut state = GameState::new(1_000);
         state.resources.deuterium = 1e9;
+        state.resources.water_ice = 1e9;
         state.tech_levels.insert("colonization".into(), 1);
         state.fleet.add(ShipKind::TroopTransport, 2);
         outpost_at(&mut state, dest, Fleet::default());
@@ -11011,6 +11048,7 @@ mod tests {
         state.resources.iron = 1e12;
         state.resources.silicon = 1e12;
         state.resources.deuterium = 1e12;
+        state.resources.water_ice = 1e12;
         let cap = state.max_solar_level(state.home).unwrap();
         let mut app = App::new(state);
         app.screen = Screen::Planet;

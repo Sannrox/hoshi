@@ -450,6 +450,7 @@ pub(crate) fn assert_storage_contract(store: &mut dyn Storage) {
     let mut colony = GameState::with_config(now, cfg.clone());
     colony.tech_levels.insert("colonization".into(), 1);
     colony.resources.deuterium = 10_000.0;
+    colony.resources.water_ice = 10_000.0;
     colony.fleet.add(ShipKind::ColonyShip, 1);
     let dest = (2u16..=15)
         .map(|position| Coord {

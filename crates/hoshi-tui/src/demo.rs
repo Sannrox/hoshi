@@ -387,6 +387,7 @@ fn setup_empire(seed: u64) -> GameState {
     state.resources.iron = 80_000.0;
     state.resources.silicon = 40_000.0;
     state.resources.deuterium = 1_000_000.0;
+    state.resources.water_ice = 1_000_000.0;
     state.tech_levels.insert("colonization".into(), 1);
     state
 }

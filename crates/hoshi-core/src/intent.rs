@@ -1065,6 +1065,7 @@ mod tests {
         state.resources.iron = 100_000.0;
         state.resources.silicon = 100_000.0;
         state.resources.deuterium = 1e12;
+        state.resources.water_ice = 1e12;
         state.fleet.add(ShipKind::LightFighter, 4);
         let s = &mut state;
 
@@ -1185,7 +1186,11 @@ mod tests {
             coord: colony,
             kind: crate::PlanetType::Rocky,
             size: 120,
-            resources: Resources::from_parts(0.0, 0.0, 10_000.0),
+            resources: {
+                let mut stock = Resources::from_parts(0.0, 0.0, 10_000.0);
+                stock.water_ice = 1e12;
+                stock
+            },
             buildings: crate::Buildings::default(),
             fleet: Fleet::default(),
             defences: crate::DefenceGrid::default(),
@@ -1199,6 +1204,7 @@ mod tests {
         state.fleet = scout;
         state.colonies[0].fleet = scout;
         state.resources.deuterium = 1e12;
+        state.resources.water_ice = 1e12;
         let launch = |origin| Intent::Launch {
             origin,
             ships: scout,
@@ -1249,6 +1255,7 @@ mod tests {
         let mut ready = state;
         ready.tech_levels.insert("colonization".into(), 1);
         ready.resources.deuterium = 10_000.0;
+        ready.resources.water_ice = 10_000.0;
         ready.fleet.add(ShipKind::ColonyShip, 1);
         propose(
             &ready,

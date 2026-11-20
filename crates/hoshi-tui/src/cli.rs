@@ -121,14 +121,14 @@ crate::help::catalog_commands! {
     Cancel {
         item: CancelItem,
     },
-    #[help("fleet send", "Dispatch ships on a mission. The reply reports the deuterium the launch debited as `fuel_deuterium`; each mission in `state` carries the same key.", "fleet send FROM TO MISSION SHIP:COUNT...", "fleet send home 1:1:2 expedition small_cargo:1")]
+    #[help("fleet send", "Dispatch ships on a mission. The reply reports the water ice the launch debited as `fuel_water_ice` and the deuterium share as `fuel_deuterium`; each mission in `state` carries the same keys.", "fleet send FROM TO MISSION SHIP:COUNT...", "fleet send home 1:1:2 expedition small_cargo:1")]
     FleetSend {
         from: Coord,
         to: Coord,
         mission: MissionKind,
         ships: Fleet,
     },
-    #[help("fleet deploy", "Hold cargo away from a home raid, then bring it back. The reply reports the deuterium the launch debited as `fuel_deuterium`.", "fleet deploy FROM TO HOLD_SECS RESOURCE=AMOUNT... SHIP:COUNT...", "fleet deploy home 1:1:9 3600 iron=2000 large_cargo:2")]
+    #[help("fleet deploy", "Hold cargo away from a home raid, then bring it back. The reply reports the water ice the launch debited as `fuel_water_ice` and the deuterium share as `fuel_deuterium`.", "fleet deploy FROM TO HOLD_SECS RESOURCE=AMOUNT... SHIP:COUNT...", "fleet deploy home 1:1:9 3600 iron=2000 large_cargo:2")]
     FleetDeploy {
         from: Coord,
         to: Coord,
@@ -380,7 +380,7 @@ crate::help::catalog_commands! {
         to: Coord,
         transfer: TransferKind,
     },
-    #[help("mission plan", "Plan a vehicle delivery through a transfer window. Destination is where the vehicle flies. Customer is who receives the cargo. Transfer is Hohmann (cheap slow transfer), high energy (more fuel and less coast), or assist (discount when a body sits between the two radii). Cargo and amount are the payload. Fuel is rocket-equation deuterium, not map [flight], debited from the origin when the plan is booked, even for a later window; each planned mission reports it as `fuel_deuterium`. With --dry-run the plan is checked and shown (delta-v, window, `fuel_deuterium`) but not booked: no resources, vehicle or save change.", "mission plan TO --vehicle ID [--transfer KIND] [--customer ID] [--iron N] [--silicon N] [--deuterium N] [--window N] [--dry-run]", "mission plan 1:1:2 --vehicle 1 --iron 10")]
+    #[help("mission plan", "Plan a vehicle delivery through a transfer window. Destination is where the vehicle flies. Customer is who receives the cargo. Transfer is Hohmann (cheap slow transfer), high energy (more fuel and less coast), or assist (discount when a body sits between the two radii). Cargo and amount are the payload. Reaction mass is rocket-equation water ice, not map [flight], plus a deuterium share on impulse and above, debited from the origin when the plan is booked, even for a later window; each planned mission reports `fuel_water_ice` and `fuel_deuterium`. With --dry-run the plan is checked and shown (delta-v, window, `fuel_water_ice`, `fuel_deuterium`) but not booked: no resources, vehicle or save change.", "mission plan TO --vehicle ID [--transfer KIND] [--customer ID] [--iron N] [--silicon N] [--deuterium N] [--window N] [--dry-run]", "mission plan 1:1:2 --vehicle 1 --iron 10")]
     MissionPlan {
         to: Coord,
         vehicle: u64,
@@ -393,7 +393,7 @@ crate::help::catalog_commands! {
         /// Check and show the plan without booking it or writing the save.
         dry_run: bool,
     },
-    #[help("mission schedule", "Show planned departures and arrivals, with each mission's delta-v and the deuterium it debited (`fuel_deuterium`).", "mission schedule", "mission schedule")]
+    #[help("mission schedule", "Show planned departures and arrivals, with each mission's delta-v and the water ice and deuterium it debited (`fuel_water_ice`, `fuel_deuterium`).", "mission schedule", "mission schedule")]
     MissionSchedule,
     #[help("market region", "Inspect a regional market and contracts.", "market [region [COORD]]", "market region")]
     MarketRegion {
@@ -1865,6 +1865,7 @@ fn apply(
                 .propose_mission(&request, at)
                 .and_then(|plan| state.check_mission(&plan, at).map(|()| plan))
                 .map_err(|e| CliError::Refused(e.to_string()))?;
+            let fuel = planned_launch_fuel(state, plan.vehicle_id, plan.fuel_mass);
             Ok(json!({
                 "schema_version": SCHEMA_VERSION,
                 "ok": true,
@@ -1882,7 +1883,8 @@ fn apply(
                 "delta_v": plan.delta_v,
                 "available_dv": plan.available_dv,
                 "coast_secs": plan.coast_secs,
-                "fuel_deuterium": plan.fuel_mass / state.config.orbits.kg_per_cargo,
+                "fuel_water_ice": fuel.water_ice,
+                "fuel_deuterium": fuel.deuterium,
             }))
         }
         Command::MissionSchedule => {
@@ -1911,7 +1913,8 @@ fn apply(
                     "customer": m.customer.as_key(),
                     "arrives_at": m.arrives_at,
                     "delta_v": m.delta_v,
-                    "fuel_deuterium": m.fuel_mass / state.config.orbits.kg_per_cargo,
+                    "fuel_water_ice": planned_launch_fuel(state, m.vehicle_id, m.fuel_mass).water_ice,
+                    "fuel_deuterium": planned_launch_fuel(state, m.vehicle_id, m.fuel_mass).deuterium,
                 })).collect::<Vec<_>>(),
                 "alerts": schedule.alerts.iter().map(|a| json!({
                     "kind": match a.kind {
@@ -2635,18 +2638,34 @@ fn mission_ids(state: &GameState) -> Vec<u64> {
     state.missions.iter().map(|m| m.id).collect()
 }
 
-/// `ok_state` plus `fuel_deuterium`: the fuel the missions launched since
-/// `before` paid, under the key planned missions use.
+/// `ok_state` plus `fuel_water_ice` and `fuel_deuterium`: the fuel the
+/// missions launched since `before` paid, under the keys planned missions use.
 fn ok_launched(state: &GameState, before: &[u64], message: &str) -> Value {
-    let fuel: f64 = state
+    let launched: Vec<_> = state
         .missions
         .iter()
         .filter(|m| !before.contains(&m.id))
-        .map(|m| m.fuel_paid)
-        .sum();
+        .collect();
+    let ice: f64 = launched.iter().map(|m| m.fuel_water_ice).sum();
+    let deut: f64 = launched.iter().map(|m| m.fuel_paid).sum();
     let mut value = ok_state(state, message);
-    value["fuel_deuterium"] = json!(fuel);
+    value["fuel_water_ice"] = json!(ice);
+    value["fuel_deuterium"] = json!(deut);
     value
+}
+
+fn planned_launch_fuel(
+    state: &GameState,
+    vehicle_id: u64,
+    fuel_mass: f64,
+) -> hoshi_core::LaunchFuel {
+    let ships = state
+        .vehicles
+        .iter()
+        .find(|v| v.id == vehicle_id)
+        .map(|v| v.ships)
+        .unwrap_or_default();
+    state.launch_fuel_from_mass(ships, fuel_mass)
 }
 
 fn ok_state_as(state: &GameState, message: &str, actor: Actor) -> Value {
@@ -2882,8 +2901,8 @@ fn state_value_for(
                 "customer": m.customer.as_key(),
                 "arrives_at": m.arrives_at,
                 "delta_v": m.delta_v,
-                // Deuterium debited at the origin, as the TUI planner shows it.
-                "fuel_deuterium": m.fuel_mass / state.config.orbits.kg_per_cargo,
+                "fuel_water_ice": planned_launch_fuel(state, m.vehicle_id, m.fuel_mass).water_ice,
+                "fuel_deuterium": planned_launch_fuel(state, m.vehicle_id, m.fuel_mass).deuterium,
                 "marking": marking_value(state, ClassifiedKind::Plan, &m.id.to_string()),
             })
         })
@@ -2950,6 +2969,7 @@ fn state_value_for(
             "deploy": m.deploy,
             "station": m.station,
             "cargo": resources_json(m.cargo),
+            "fuel_water_ice": m.fuel_water_ice,
             "fuel_deuterium": m.fuel_paid,
         })).collect::<Vec<_>>(),
         "planets": planets,
@@ -6386,6 +6406,7 @@ mod tests {
         let mut state = GameState::new(0);
         state.deterministic = true;
         state.resources = hoshi_core::Resources::from_parts(5_000.0, 5_000.0, 10_000.0);
+        state.resources.water_ice = 10_000.0;
         state.fleet.add(ShipKind::LargeCargo, 1);
         let mut conn = open_save(&save).unwrap();
         save_state(&mut conn, &state).unwrap();
@@ -6410,12 +6431,19 @@ mod tests {
         assert_eq!(mission["cargo"]["silicon"], 250.0);
         assert_eq!(value["resources"]["iron"], 4000.0);
         // The reply and the mission both name the fuel the stock lost.
+        let ice = value["fuel_water_ice"].as_f64().unwrap();
         let fuel = value["fuel_deuterium"].as_f64().unwrap();
+        assert!(ice > 0.0, "{value}");
         assert!(fuel > 0.0, "{value}");
+        assert_eq!(
+            value["resources"]["water_ice"].as_f64(),
+            Some(10_000.0 - ice)
+        );
         assert_eq!(
             value["resources"]["deuterium"].as_f64(),
             Some(10_000.0 - fuel)
         );
+        assert_eq!(mission["fuel_water_ice"].as_f64(), Some(ice));
         assert_eq!(mission["fuel_deuterium"].as_f64(), Some(fuel));
         let (reloaded, exit) = run_on(&save, &["state"]);
         assert_eq!(exit, EXIT_OK, "{reloaded}");
@@ -6469,7 +6497,7 @@ mod tests {
         );
         assert_eq!(exit, EXIT_REFUSED, "{value}");
         let msg = value["error"]["message"].as_str().unwrap();
-        assert!(msg.contains("not enough deuterium"), "{msg}");
+        assert!(msg.contains("not enough water ice"), "{msg}");
         assert!(msg.contains("Combustion Drive"), "{msg}");
         assert!(msg.contains("Large Cargo"), "{msg}");
         let _ = std::fs::remove_dir_all(&dir);
@@ -6769,6 +6797,7 @@ mod tests {
         seeded.config.raid.enabled = false;
         seeded.fleet.add(ShipKind::SmallCargo, 2);
         seeded.resources.deuterium = 50_000.0;
+        seeded.resources.water_ice = 50_000.0;
         let dest = hoshi_core::Coord {
             galaxy: 1,
             system: 1,
@@ -6792,7 +6821,8 @@ mod tests {
         let (reg, exit) = run_on(&save, &["vehicle", "register", "home", "small_cargo:1"]);
         assert_eq!(exit, EXIT_OK, "{reg}");
         let id = reg["vehicles"][0]["id"].as_u64().unwrap().to_string();
-        let before = reg["resources"]["deuterium"].as_f64().unwrap();
+        let before_ice = reg["resources"]["water_ice"].as_f64().unwrap();
+        let before_deut = reg["resources"]["deuterium"].as_f64().unwrap();
         let argv = [
             "mission",
             "plan",
@@ -6804,16 +6834,21 @@ mod tests {
         ];
         let (plan, exit) = run_on(&save, &argv);
         assert_eq!(exit, EXIT_OK, "{plan}");
+        let ice = plan["planned"][0]["fuel_water_ice"].as_f64().unwrap();
         let fuel = plan["planned"][0]["fuel_deuterium"].as_f64().unwrap();
-        let debited = before - plan["resources"]["deuterium"].as_f64().unwrap();
-        assert!(fuel > 0.0, "{plan}");
+        let ice_debited = before_ice - plan["resources"]["water_ice"].as_f64().unwrap();
+        let deut_debited = before_deut - plan["resources"]["deuterium"].as_f64().unwrap();
+        assert!(ice > 0.0, "{plan}");
+        assert!(fuel.abs() < 1e-9, "{plan}");
         // Production between the two runs is far below a whole unit.
         assert!(
-            (fuel - debited).abs() < 1.0,
-            "fuel {fuel} debited {debited}"
+            (ice - ice_debited).abs() < 1.0,
+            "fuel {ice} debited {ice_debited}"
         );
+        assert!(deut_debited.abs() < 1.0, "deuterium moved {deut_debited}");
         let (sched, exit) = run_on(&save, &["mission", "schedule"]);
         assert_eq!(exit, EXIT_OK, "{sched}");
+        assert_eq!(sched["missions"][0]["fuel_water_ice"].as_f64(), Some(ice));
         assert_eq!(sched["missions"][0]["fuel_deuterium"].as_f64(), Some(fuel));
         let _ = std::fs::remove_file(&save);
     }
@@ -6827,6 +6862,7 @@ mod tests {
         seeded.config.raid.enabled = false;
         seeded.fleet.add(ShipKind::SmallCargo, 2);
         seeded.resources.deuterium = 50_000.0;
+        seeded.resources.water_ice = 50_000.0;
         let dest = hoshi_core::Coord {
             galaxy: 1,
             system: 1,
@@ -6869,6 +6905,7 @@ mod tests {
         let (booked, exit) = run_on(&save, &plan);
         assert_eq!(exit, EXIT_OK, "{booked}");
         let planned = &booked["planned"][0];
+        assert_eq!(preview["fuel_water_ice"], planned["fuel_water_ice"]);
         assert_eq!(preview["fuel_deuterium"], planned["fuel_deuterium"]);
         assert_eq!(preview["delta_v"], planned["delta_v"], "{planned}");
         let _ = std::fs::remove_file(&save);

@@ -348,8 +348,9 @@ impl App {
         }
     }
 
-    /// Rocket-equation deuterium confirm will try to debit. Show it even when
-    /// `check_mission` would refuse (unaffordable fuel is why this row exists).
+    /// Rocket-equation launch cost confirm will try to debit. Show it even
+    /// when `check_mission` would refuse (unaffordable fuel is why this row
+    /// exists).
     fn mission_form_fuel_preview(&self, form: &MissionForm) -> String {
         let Some(request) = self.mission_form_request(form) else {
             return "no customer for that destination".into();
@@ -359,8 +360,17 @@ impl App {
             .propose_mission(&request, self.state.last_tick_unix)
         {
             Ok(plan) => {
-                let units = plan.fuel_mass / self.state.config.orbits.kg_per_cargo;
-                format!("{units:.0} deuterium")
+                let vehicle = self.state.vehicles.iter().find(|v| v.id == plan.vehicle_id);
+                let ships = vehicle.map(|v| v.ships).unwrap_or_default();
+                let fuel = self.state.launch_fuel_from_mass(ships, plan.fuel_mass);
+                if fuel.deuterium > 1e-9 {
+                    format!(
+                        "{:.0} ice + {:.0} deuterium",
+                        fuel.water_ice, fuel.deuterium
+                    )
+                } else {
+                    format!("{:.0} ice", fuel.water_ice)
+                }
             }
             Err(error) => error.to_string(),
         }

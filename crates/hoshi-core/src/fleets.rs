@@ -1,5 +1,6 @@
 //! Fleet coordinates, flight time, fuel and in-flight missions.
 
+use crate::ResourceKind;
 use crate::Resources;
 use crate::ships::{Fleet, ShipKind};
 use std::fmt;
@@ -159,6 +160,48 @@ impl Haul {
     }
 }
 
+/// Reaction mass and deuterium share a launch pays at the origin.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct LaunchFuel {
+    /// Rocket-equation propellant mass, paid in water ice.
+    pub water_ice: f64,
+    /// Deuterium burned for energy: `water_ice * deuterium_share` of the
+    /// fleet's drives. Combustion is 0.
+    pub deuterium: f64,
+}
+
+impl LaunchFuel {
+    pub const ZERO: Self = Self {
+        water_ice: 0.0,
+        deuterium: 0.0,
+    };
+
+    /// Water ice plus deuterium, for spend totals that need one number.
+    pub fn total(self) -> f64 {
+        self.water_ice + self.deuterium
+    }
+
+    /// The first stockpile that cannot cover this launch, with how much is
+    /// missing and the amount that stockpile must hold.
+    pub fn shortfall(self, stock: Resources) -> Option<(ResourceKind, f64, f64)> {
+        if stock.water_ice + 1e-9 < self.water_ice {
+            Some((
+                ResourceKind::WaterIce,
+                (self.water_ice - stock.water_ice).max(0.0),
+                self.water_ice,
+            ))
+        } else if stock.deuterium + 1e-9 < self.deuterium {
+            Some((
+                ResourceKind::Deuterium,
+                (self.deuterium - stock.deuterium).max(0.0),
+                self.deuterium,
+            ))
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MissionPhase {
     Outbound,
@@ -197,7 +240,12 @@ pub struct Mission {
     pub outbound_secs: u64,
     pub hold_secs: u64,
     pub phase_ends_at: u64,
+    /// Deuterium debited at launch (the drive share). Older missions paid
+    /// the whole rocket-equation mass as deuterium and keep that figure.
     pub fuel_paid: f64,
+    /// Water ice debited at launch (the rocket-equation reaction mass).
+    /// `0` on missions that launched before this field existed.
+    pub fuel_water_ice: f64,
     /// When true, Action tries to found a colony instead of holding for return.
     pub colonize: bool,
     /// Seed drawn at launch. `None` means this mission has no seeded outcome.
@@ -259,6 +307,9 @@ pub enum FleetError {
     InsufficientFuel {
         missing: f64,
         cost: f64,
+        /// Stockpile the launch is short of: water ice (reaction mass) or
+        /// deuterium (drive share).
+        kind: ResourceKind,
         /// Combustion-to-another-system reason, when that is why the send
         /// is expensive. Other refusals leave this empty.
         hint: Option<String>,
@@ -374,11 +425,13 @@ impl fmt::Display for FleetError {
             FleetError::InsufficientFuel {
                 missing,
                 cost,
+                kind,
                 hint,
             } => {
                 write!(
                     f,
-                    "not enough deuterium (missing {missing:.0}, cost {cost:.0})"
+                    "not enough {} (missing {missing:.0}, cost {cost:.0})",
+                    kind.label()
                 )?;
                 if let Some(hint) = hint {
                     write!(f, "; {hint}")?;
