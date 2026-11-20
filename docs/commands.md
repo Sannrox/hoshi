@@ -537,15 +537,15 @@ Area: cli.
 
 ## fleet route
 
-Repeat a transport between owned worlds every INTERVAL_SECS until unrouted. A launch that cannot leave (no fuel, no ships) skips and is logged.
+Repeat a transport between owned worlds every INTERVAL_SECS until unrouted. --dest-pays-return bills the owned destination for each empty return. A launch that cannot leave (no fuel, no ships) skips and is logged.
 
 ```text
-hoshi fleet route FROM TO INTERVAL_SECS RESOURCE=AMOUNT... SHIP:COUNT...
+hoshi fleet route FROM TO INTERVAL_SECS RESOURCE=AMOUNT... SHIP:COUNT... [--dest-pays-return]
 ```
 
 Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair-play restrictions.
 
-Example: `hoshi fleet route 1:1:10 home 21600 water_ice=500 small_cargo:1`
+Example: `hoshi fleet route 1:1:10 home 21600 water_ice=500 small_cargo:1 --dest-pays-return`
 
 Environment: HOSHI_SAVE, HOSHI_BALANCE
 
@@ -553,15 +553,15 @@ Area: cli.
 
 ## fleet send
 
-Dispatch ships on a mission. The reply reports the water ice the launch debited as `fuel_water_ice` and the deuterium share as `fuel_deuterium`; each mission in `state` carries the same keys.
+Dispatch ships on a mission. A transport may take resource=amount cargo and --dest-pays-return so the owned destination pays the empty return at launch. The reply reports `fuel_water_ice` / `fuel_deuterium` plus `fuel_out_*` / `fuel_back_*` and `fuel_out_payer` / `fuel_back_payer`.
 
 ```text
-hoshi fleet send FROM TO MISSION SHIP:COUNT...
+hoshi fleet send FROM TO MISSION [RESOURCE=AMOUNT...] SHIP:COUNT... [--dest-pays-return]
 ```
 
 Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair-play restrictions.
 
-Example: `hoshi fleet send home 1:1:2 expedition small_cargo:1`
+Example: `hoshi fleet send 1:1:10 home transport water_ice=500 small_cargo:1 --dest-pays-return`
 
 Environment: HOSHI_SAVE, HOSHI_BALANCE
 

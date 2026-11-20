@@ -241,6 +241,7 @@ silent extra departure; they extend this list.
 | Expedition sites are placed stockpiles drawn down by the existing outcome roll, not extractors on a deposit | Fuel and flight time stay on the current flight rules. The config-slot expedition still has no deposit. |
 | Signal hostiles are a seeded NPC fleet with no home, supply or flight of their own | A scanned contact is a short local fight. Its wreckage joins the debris field on the same hull-loss rule as any fight; it pays no find. |
 | Survey probe loss per unit distance is an abstract rate, not derived from flux and cross-section | A long flight sweeps more space; asteroid belts are almost empty, so the cause is a micrometeoroid strike or a radiation fault. Catch-up stays one seeded roll. |
+| An owned destination may set the return propellant aside at launch | A colony supplying home should not also pay the empty flight back. The ice is not carried out or loaded on arrival, so a mission in flight needs no extra state. |
 
 ## Known gaps in current config
 

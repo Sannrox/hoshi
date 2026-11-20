@@ -1433,6 +1433,8 @@ impl App {
     pub(super) fn dispatch_window(&self, form: &DispatchForm, height: usize) -> Vec<Line<'static>> {
         let below = if form.mission == Mission::Invade {
             8
+        } else if form.mission == Mission::Transport {
+            DISPATCH_CARGO.len() + 3
         } else if form.mission.carries_cargo() {
             DISPATCH_CARGO.len() + 2
         } else {
@@ -1619,6 +1621,45 @@ impl App {
             ]));
         }
         if form.repeats() {
+            let on = form.dest_pays_row();
+            if on {
+                selected_line = lines.len();
+            }
+            let payer = if form.dest_pays_return {
+                form.dest.to_string()
+            } else {
+                form.origin.to_string()
+            };
+            let mut spans = vec![
+                Span::styled(if on { "▌" } else { " " }, t.intent(Intent::Primary)),
+                Span::styled(
+                    format!("{:<w$} ", "return"),
+                    if on { t.strong() } else { t.text() },
+                ),
+            ];
+            if on {
+                spans.push(keycap(t, "-"));
+                spans.push(Span::styled(format!(" {payer} "), t.strong()));
+                spans.push(keycap(t, "+"));
+            } else {
+                spans.push(Span::styled(
+                    format!("   {payer}"),
+                    if form.dest_pays_return {
+                        t.text()
+                    } else {
+                        t.faint()
+                    },
+                ));
+            }
+            lines.push(Line::from(spans));
+            if form.dest_pays_return {
+                lines.push(Line::styled(
+                    " dest sets the empty return aside at launch",
+                    t.muted(),
+                ));
+            }
+        }
+        if form.repeats() {
             let on = form.repeat_row();
             if on {
                 selected_line = lines.len();
@@ -1666,20 +1707,32 @@ impl App {
             ));
         } else {
             let flight = if form.mission == Mission::Recycle {
-                self.state.recycle_flight(origin, form.ships, dest, 100)
+                self.state
+                    .recycle_flight(origin, form.ships, dest, 100)
+                    .map(|(eta, fuel)| (eta, fuel, hoshi_core::LaunchFuel::ZERO))
             } else {
                 let haul = form.mission.haul(form.cargo);
-                self.state
-                    .flight_hauling(origin, dest, form.ships, haul, 100)
+                self.state.flight_legs(origin, dest, form.ships, haul, 100)
             };
             match flight {
-                Ok((eta, fuel)) => {
-                    let fuel_bit = if fuel.deuterium > 1e-9 {
-                        format!("{:.1} ice + {:.1} D", fuel.water_ice, fuel.deuterium)
-                    } else {
-                        format!("{:.1} ice", fuel.water_ice)
+                Ok((eta, out, back)) => {
+                    let fuel = out.plus(back);
+                    let fuel_fmt = |bill: hoshi_core::LaunchFuel| {
+                        if bill.deuterium > 1e-9 {
+                            format!("{:.1} ice + {:.1} D", bill.water_ice, bill.deuterium)
+                        } else {
+                            format!("{:.1} ice", bill.water_ice)
+                        }
                     };
+                    let fuel_bit = fuel_fmt(fuel);
                     lines.push(self.props(&[("ETA", duration(eta)), ("fuel", fuel_bit)]));
+                    if form.repeats() {
+                        let back_at = if form.dest_pays_return { dest } else { origin };
+                        lines.push(self.props(&[
+                            ("out", format!("{origin} {}", fuel_fmt(out))),
+                            ("back", format!("{back_at} {}", fuel_fmt(back))),
+                        ]));
+                    }
                     if form.mission == Mission::Expedition {
                         let hold = self.state.config.expedition.min_hold_secs;
                         let weight = self.state.expedition_pirate_weight(&form.ships, hold);
@@ -1701,23 +1754,46 @@ impl App {
                         form.ships,
                         form.cargo.total(),
                     );
-                    let ice_short = fuel.water_ice > stock.water_ice + 1e-9;
-                    let deut_need = fuel.deuterium + cargo_d;
-                    let deut_short = deut_need > stock.deuterium + 1e-9;
+                    let origin_bill = if form.dest_pays_return { out } else { fuel };
+                    let dest_bill = if form.dest_pays_return {
+                        back
+                    } else {
+                        hoshi_core::LaunchFuel::ZERO
+                    };
+                    let dest_stock = self
+                        .state
+                        .resources_at(dest)
+                        .copied()
+                        .unwrap_or(Resources::ZERO);
+                    let ice_short = origin_bill.water_ice > stock.water_ice + 1e-9
+                        || dest_bill.water_ice > dest_stock.water_ice + 1e-9;
+                    let deut_need = origin_bill.deuterium + cargo_d;
+                    let deut_short = deut_need > stock.deuterium + 1e-9
+                        || dest_bill.deuterium > dest_stock.deuterium + 1e-9;
                     if ice_short {
+                        let have = if dest_bill.water_ice > dest_stock.water_ice + 1e-9 {
+                            dest_stock.water_ice
+                        } else {
+                            stock.water_ice
+                        };
                         lines.extend(callout_lines(
                             t,
                             Intent::Danger,
                             "not enough water ice",
-                            &format!("have {:.0} ice", stock.water_ice),
+                            &format!("have {:.0} ice", have),
                         ));
                     }
                     if deut_short {
+                        let have = if dest_bill.deuterium > dest_stock.deuterium + 1e-9 {
+                            dest_stock.deuterium
+                        } else {
+                            stock.deuterium
+                        };
                         lines.extend(callout_lines(
                             t,
                             Intent::Danger,
                             "not enough deuterium",
-                            &format!("have {:.0} D", stock.deuterium),
+                            &format!("have {:.0} D", have),
                         ));
                     }
                     if let Some(hint) = hint {

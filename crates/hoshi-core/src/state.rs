@@ -2708,6 +2708,19 @@ impl GameState {
         haul: Haul,
         speed_percent: u8,
     ) -> Result<(u64, crate::LaunchFuel), FleetError> {
+        let (secs, out, back) = self.flight_legs(origin, dest, ships, haul, speed_percent)?;
+        Ok((secs, out.plus(back)))
+    }
+
+    /// Outbound time plus the outbound and return launch bills for `haul`.
+    pub fn flight_legs(
+        &self,
+        origin: Coord,
+        dest: Coord,
+        ships: Fleet,
+        haul: Haul,
+        speed_percent: u8,
+    ) -> Result<(u64, crate::LaunchFuel, crate::LaunchFuel), FleetError> {
         if ships.is_empty() {
             return Err(FleetError::EmptyFleet);
         }
@@ -2724,9 +2737,11 @@ impl GameState {
             .filter(|&&kind| ships.get(kind) > 0)
             .map(|&kind| self.ship_stats(kind).speed)
             .fold(f64::MAX, f64::min);
+        let (out, back) = self.launch_fuel_legs(origin, dest, ships, haul, speed_percent);
         Ok((
             flight_secs(dist, slowest, speed_percent, &self.config.flight),
-            self.launch_fuel(origin, dest, ships, haul, speed_percent),
+            out,
+            back,
         ))
     }
 
@@ -3200,8 +3215,40 @@ impl GameState {
         speed_percent: u8,
         now_unix: u64,
     ) -> Result<u64, FleetError> {
+        self.launch_transport_paying(
+            origin,
+            dest,
+            ships,
+            cargo,
+            speed_percent,
+            now_unix,
+            crate::ReturnPayer::Origin,
+        )
+    }
+
+    /// [`Self::launch_transport`] with an explicit return-leg payer.
+    #[allow(clippy::too_many_arguments)]
+    pub fn launch_transport_paying(
+        &mut self,
+        origin: Coord,
+        dest: Coord,
+        ships: Fleet,
+        cargo: Resources,
+        speed_percent: u8,
+        now_unix: u64,
+        return_payer: crate::ReturnPayer,
+    ) -> Result<u64, FleetError> {
         let haul = Haul::transport(cargo);
-        self.transport_hauling(origin, dest, ships, cargo, haul, speed_percent, now_unix)
+        self.transport_hauling(
+            origin,
+            dest,
+            ships,
+            cargo,
+            haul,
+            speed_percent,
+            now_unix,
+            return_payer,
+        )
     }
 
     /// Transport checks shared by a returning transport and a one-way
@@ -3216,6 +3263,7 @@ impl GameState {
         haul: Haul,
         speed_percent: u8,
         now_unix: u64,
+        return_payer: crate::ReturnPayer,
     ) -> Result<u64, FleetError> {
         self.catch_up(now_unix);
         if origin == dest {
@@ -3236,7 +3284,17 @@ impl GameState {
         if cargo_has_mass(cargo) && !self.dest_has_room_for(dest, cargo) {
             return Err(FleetError::DestFull);
         }
-        self.lift_and_fly(origin, dest, ships, cargo, haul, speed_percent, 0, false)
+        self.lift_and_fly(
+            origin,
+            dest,
+            ships,
+            cargo,
+            haul,
+            speed_percent,
+            0,
+            false,
+            return_payer,
+        )
     }
 
     /// One-way send: like [`Self::launch_transport`], but Action parks the
@@ -3252,7 +3310,16 @@ impl GameState {
         now_unix: u64,
     ) -> Result<u64, FleetError> {
         let haul = Haul::station(cargo);
-        self.transport_hauling(origin, dest, ships, cargo, haul, speed_percent, now_unix)?;
+        self.transport_hauling(
+            origin,
+            dest,
+            ships,
+            cargo,
+            haul,
+            speed_percent,
+            now_unix,
+            crate::ReturnPayer::Origin,
+        )?;
         let Some(mission) = self.missions.last_mut() else {
             return Err(FleetError::EmptyFleet);
         };
@@ -3308,6 +3375,7 @@ impl GameState {
             speed_percent,
             hold_secs,
             true,
+            crate::ReturnPayer::Origin,
         )
     }
 
@@ -3324,10 +3392,21 @@ impl GameState {
         speed_percent: u8,
         hold_secs: u64,
         deploy: bool,
+        return_payer: crate::ReturnPayer,
     ) -> Result<u64, FleetError> {
-        let (outbound_secs, fuel) =
-            self.flight_hauling(origin, dest, ships, haul, speed_percent)?;
-        let needed = cargo.with_launch_fuel(fuel);
+        let dest_pays = return_payer == crate::ReturnPayer::Destination;
+        if dest_pays && (haul.back.is_none() || !self.owns_world(dest)) {
+            return Err(FleetError::ReturnPayerNotOffered);
+        }
+        let (outbound_secs, out_fuel, back_fuel) =
+            self.flight_legs(origin, dest, ships, haul, speed_percent)?;
+        let origin_fuel = if dest_pays {
+            out_fuel
+        } else {
+            out_fuel.plus(back_fuel)
+        };
+        let fuel = out_fuel.plus(back_fuel);
+        let needed = cargo.with_launch_fuel(origin_fuel);
         let cargo_missing = {
             let res = self.resources_at_mut(origin)?;
             if !res.can_afford(cargo) {
@@ -3339,13 +3418,33 @@ impl GameState {
         if let Some(missing) = cargo_missing {
             return Err(FleetError::InsufficientCargo { missing });
         }
-        // Ice is cargo and reaction mass; price fuel on the leftover.
+        // Ice is cargo and reaction mass; price origin fuel on the leftover.
         let fuel_missing = {
             let res = self.resources_at_mut(origin)?;
-            fuel.shortfall(res.saturating_sub(cargo))
+            origin_fuel.shortfall(res.saturating_sub(cargo))
         };
         if let Some(shortfall) = fuel_missing {
             return Err(self.insufficient_fuel(origin, dest, ships, cargo.total(), shortfall));
+        }
+        if dest_pays {
+            let dest_stock = self.resources_at(dest).ok_or(FleetError::UnknownPlanet)?;
+            if let Some((kind, missing, cost)) = back_fuel.shortfall(*dest_stock) {
+                let mut err = self.insufficient_fuel(
+                    origin,
+                    dest,
+                    ships,
+                    cargo.total(),
+                    (kind, missing, cost),
+                );
+                if let FleetError::InsufficientFuel { hint, .. } = &mut err {
+                    let named = format!("{dest} pays the return {}", kind.label());
+                    *hint = Some(match hint.take() {
+                        Some(existing) => format!("{named}; {existing}"),
+                        None => named,
+                    });
+                }
+                return Err(err);
+            }
         }
         let cap_slots = self.fleet_slots();
         let used = self.missions.len() as u32;
@@ -3359,6 +3458,11 @@ impl GameState {
         {
             let res = self.resources_at_mut(origin)?;
             *res = res.saturating_sub(needed);
+        }
+        if dest_pays {
+            let res = self.resources_at_mut(dest)?;
+            res.water_ice = (res.water_ice - back_fuel.water_ice).max(0.0);
+            res.deuterium = (res.deuterium - back_fuel.deuterium).max(0.0);
         }
         let id = self.next_mission_id;
         self.next_mission_id = self.next_mission_id.saturating_add(1);
@@ -3414,6 +3518,30 @@ impl GameState {
         interval_secs: u64,
         now_unix: u64,
     ) -> Result<u64, FleetError> {
+        self.schedule_route_paying(
+            origin,
+            dest,
+            ships,
+            cargo,
+            interval_secs,
+            now_unix,
+            crate::ReturnPayer::Origin,
+        )
+    }
+
+    /// [`Self::schedule_route`] with an explicit return-leg payer, kept
+    /// across relaunches and a reload.
+    #[allow(clippy::too_many_arguments)]
+    pub fn schedule_route_paying(
+        &mut self,
+        origin: Coord,
+        dest: Coord,
+        ships: Fleet,
+        cargo: Resources,
+        interval_secs: u64,
+        now_unix: u64,
+        return_payer: crate::ReturnPayer,
+    ) -> Result<u64, FleetError> {
         self.catch_up(now_unix);
         if interval_secs == 0 {
             return Err(FleetError::ZeroRouteInterval);
@@ -3452,6 +3580,7 @@ impl GameState {
             speed_percent: 100,
             interval_secs,
             next_at: self.last_tick_unix,
+            return_payer,
         });
         Ok(id)
     }
@@ -3480,13 +3609,14 @@ impl GameState {
             let route = self.routes[index].clone();
             self.routes[index].next_at = done_at.saturating_add(route.interval_secs.max(1));
             let cargo = self.adapt_route_cargo(&route);
-            match self.launch_transport(
+            match self.launch_transport_paying(
                 route.origin,
                 route.dest,
                 route.ships,
                 cargo,
                 route.speed_percent,
                 done_at,
+                route.return_payer,
             ) {
                 Ok(_) => {}
                 Err(err) => self.note_stall(done_at, format!("route {id}: skipped ({err})")),
@@ -14032,6 +14162,142 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
         }
         assert_eq!(state.fleet.get(ShipKind::SmallCargo), 1);
         close(state.resources.water_ice, 100.0);
+    }
+
+    #[test]
+    fn dest_pays_return_debits_each_leg_from_its_payer() {
+        let mut origin_pays = GameState::with_config(0, logistics_config());
+        plant_colony(&mut origin_pays, neighbor());
+        origin_pays.fleet.add(ShipKind::SmallCargo, 1);
+        origin_pays.resources.iron = 10_000.0;
+        origin_pays.resources.deuterium = 50_000.0;
+        origin_pays.resources.water_ice = 50_000.0;
+        origin_pays.colonies[0].resources.water_ice = 50_000.0;
+        origin_pays.colonies[0].resources.deuterium = 50_000.0;
+        let mut dest_pays = origin_pays.clone();
+        let cargo = Resources::from_parts(100.0, 0.0, 0.0);
+        let (_, out, back) = origin_pays
+            .flight_legs(
+                origin_pays.home,
+                neighbor(),
+                cargo_fleet(),
+                Haul::transport(cargo),
+                100,
+            )
+            .unwrap();
+        assert!(out.water_ice > 0.0);
+        assert!(back.water_ice > 0.0);
+        origin_pays
+            .launch_transport(origin_pays.home, neighbor(), cargo_fleet(), cargo, 100, 0)
+            .unwrap();
+        dest_pays
+            .launch_transport_paying(
+                dest_pays.home,
+                neighbor(),
+                cargo_fleet(),
+                cargo,
+                100,
+                0,
+                crate::ReturnPayer::Destination,
+            )
+            .unwrap();
+        close(
+            origin_pays.resources.water_ice + origin_pays.colonies[0].resources.water_ice,
+            dest_pays.resources.water_ice + dest_pays.colonies[0].resources.water_ice,
+        );
+        close(dest_pays.resources.water_ice, 50_000.0 - out.water_ice);
+        close(
+            dest_pays.colonies[0].resources.water_ice,
+            50_000.0 - back.water_ice,
+        );
+        close(origin_pays.resources.iron, dest_pays.resources.iron);
+        close(
+            dest_pays.missions[0].fuel_water_ice,
+            origin_pays.missions[0].fuel_water_ice,
+        );
+        close(
+            dest_pays.missions[0].fuel_water_ice,
+            out.plus(back).water_ice,
+        );
+    }
+
+    #[test]
+    fn dest_pays_return_refuses_when_dest_is_short_and_debits_nothing() {
+        let mut state = GameState::with_config(0, logistics_config());
+        plant_colony(&mut state, neighbor());
+        state.fleet.add(ShipKind::SmallCargo, 1);
+        state.resources.iron = 10_000.0;
+        state.resources.deuterium = 50_000.0;
+        state.resources.water_ice = 50_000.0;
+        state.colonies[0].resources.water_ice = 0.0;
+        state.colonies[0].resources.deuterium = 0.0;
+        let cargo = Resources::from_parts(100.0, 0.0, 0.0);
+        let err = state
+            .launch_transport_paying(
+                state.home,
+                neighbor(),
+                cargo_fleet(),
+                cargo,
+                100,
+                0,
+                crate::ReturnPayer::Destination,
+            )
+            .unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("not enough water ice"), "{text}");
+        assert!(text.contains(&neighbor().to_string()), "{text}");
+        assert!(text.contains("pays the return"), "{text}");
+        assert_eq!(state.fleet.get(ShipKind::SmallCargo), 1);
+        close(state.resources.iron, 10_000.0);
+        close(state.resources.water_ice, 50_000.0);
+        close(state.colonies[0].resources.water_ice, 0.0);
+        assert!(state.missions.is_empty());
+    }
+
+    #[test]
+    fn dest_pays_return_route_relaunches_with_the_same_payer() {
+        let mut state = GameState::with_config(0, logistics_config());
+        plant_colony(&mut state, neighbor());
+        state.fleet.add(ShipKind::SmallCargo, 1);
+        state.resources.iron = 10_000.0;
+        state.resources.deuterium = 50_000.0;
+        state.resources.water_ice = 50_000.0;
+        state.colonies[0].resources.water_ice = 50_000.0;
+        state.colonies[0].resources.deuterium = 50_000.0;
+        let cargo = Resources::from_parts(100.0, 0.0, 0.0);
+        let (_, out, back) = state
+            .flight_legs(
+                state.home,
+                neighbor(),
+                cargo_fleet(),
+                Haul::transport(cargo),
+                100,
+            )
+            .unwrap();
+        state
+            .schedule_route_paying(
+                state.home,
+                neighbor(),
+                cargo_fleet(),
+                cargo,
+                10,
+                0,
+                crate::ReturnPayer::Destination,
+            )
+            .unwrap();
+        assert_eq!(
+            state.routes[0].return_payer,
+            crate::ReturnPayer::Destination
+        );
+        let origin_ice = state.resources.water_ice;
+        let dest_ice = state.colonies[0].resources.water_ice;
+        state.catch_up(1);
+        assert_eq!(state.missions.len(), 1);
+        close(state.resources.water_ice, origin_ice - out.water_ice);
+        close(
+            state.colonies[0].resources.water_ice,
+            dest_ice - back.water_ice,
+        );
     }
 
     #[test]

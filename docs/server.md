@@ -276,7 +276,7 @@ Game routes call the same hoshi-core actions as the CLI. Responses carry
 | `POST` | `/v1/fusion/mode` | `hoshi fusion mode <planet> dd\|dhe3\|off` |
 | `POST` | `/v1/research` | `hoshi research <tech>` |
 | `POST` | `/v1/cancel` | `hoshi cancel <queue-item>` |
-| `POST` | `/v1/fleet/send` | `hoshi fleet send <from> <to> <mission> <ships...>` |
+| `POST` | `/v1/fleet/send` | `hoshi fleet send <from> <to> <mission> [<resource=amount...>] <ships...> [--dest-pays-return]` |
 | `POST` | `/v1/ship` | `hoshi ship <planet> <ship-or-defence> [count]` |
 | `POST` | `/v1/trade` | `hoshi trade <pay> <receive> <amount>` |
 

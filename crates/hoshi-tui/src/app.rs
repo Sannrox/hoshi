@@ -118,8 +118,9 @@ const MAP_SLOT_COUNT: u16 = 16;
 const REPEAT_HOURS: [u64; 8] = [0, 1, 2, 4, 6, 12, 24, 48];
 
 /// Star map dispatch form. `selected` walks the ship rows, then (for a
-/// transport) the [`DISPATCH_CARGO`] rows and the repeat row. Ships, fuel
-/// and `cargo` come from `origin`, the planet selected when the form opened.
+/// transport) the [`DISPATCH_CARGO`] rows, who pays the return, and the
+/// repeat row. Ships, fuel and `cargo` come from `origin`, the planet
+/// selected when the form opened.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct DispatchForm {
     origin: Coord,
@@ -132,6 +133,8 @@ struct DispatchForm {
     mission_picked: bool,
     /// Index into [`REPEAT_HOURS`]; only a transport repeats.
     repeat: usize,
+    /// Transport only: dest pays the empty return at launch.
+    dest_pays_return: bool,
 }
 
 impl DispatchForm {
@@ -145,18 +148,19 @@ impl DispatchForm {
             mission,
             mission_picked: false,
             repeat: 0,
+            dest_pays_return: false,
         }
     }
 
     /// Selectable rows: every ship kind, plus the cargo rows on a transport
-    /// or station send, plus the repeat row on a transport.
+    /// or station send, plus return-payer and repeat rows on a transport.
     fn rows(&self) -> usize {
         let cargo = if self.mission.carries_cargo() {
             DISPATCH_CARGO.len()
         } else {
             0
         };
-        ShipKind::ALL.len() + cargo + usize::from(self.repeats())
+        ShipKind::ALL.len() + cargo + usize::from(self.repeats()) * 2
     }
 
     /// Only a transport between owned worlds can repeat (a core route).
@@ -164,9 +168,22 @@ impl DispatchForm {
         self.mission == Mission::Transport
     }
 
+    fn return_payer(&self) -> hoshi_core::ReturnPayer {
+        if self.repeats() && self.dest_pays_return {
+            hoshi_core::ReturnPayer::Destination
+        } else {
+            hoshi_core::ReturnPayer::Origin
+        }
+    }
+
+    /// The cursor sits on who pays the return.
+    fn dest_pays_row(&self) -> bool {
+        self.repeats() && self.selected == ShipKind::ALL.len() + DISPATCH_CARGO.len()
+    }
+
     /// The cursor sits on the repeat row.
     fn repeat_row(&self) -> bool {
-        self.repeats() && self.selected == ShipKind::ALL.len() + DISPATCH_CARGO.len()
+        self.repeats() && self.selected == ShipKind::ALL.len() + DISPATCH_CARGO.len() + 1
     }
 
     /// The chosen repeat interval, or `None` to send once.
@@ -3294,6 +3311,10 @@ impl App {
         let Some(form) = self.dispatch.as_mut() else {
             return;
         };
+        if form.dest_pays_row() {
+            form.dest_pays_return = delta > 0;
+            return;
+        }
         if form.repeat_row() {
             form.repeat =
                 (form.repeat as i32 + delta).clamp(0, REPEAT_HOURS.len() as i32 - 1) as usize;
@@ -3497,10 +3518,15 @@ impl App {
                     return;
                 }
                 if let Some(every) = form.repeat_secs() {
-                    match self
-                        .state
-                        .schedule_route(origin, dest, ships, form.cargo, every, now_unix)
-                    {
+                    match self.state.schedule_route_paying(
+                        origin,
+                        dest,
+                        ships,
+                        form.cargo,
+                        every,
+                        now_unix,
+                        form.return_payer(),
+                    ) {
                         Ok(id) => {
                             self.status = format!(
                                 "route {id} to {dest} every {}",
@@ -3512,8 +3538,15 @@ impl App {
                     }
                     return;
                 }
-                self.state
-                    .launch_transport(origin, dest, ships, form.cargo, 100, now_unix)
+                self.state.launch_transport_paying(
+                    origin,
+                    dest,
+                    ships,
+                    form.cargo,
+                    100,
+                    now_unix,
+                    form.return_payer(),
+                )
             }
             Mission::Station => self
                 .state
@@ -9856,6 +9889,68 @@ mod tests {
     }
 
     #[test]
+    fn dest_pays_return_toggle_names_payers_and_debits_home() {
+        let (mut app, dest) = app_with_new_colony();
+        app.state.fleet.saturating_sub(ShipKind::SmallCargo, 1);
+        app.state.colonies[0].fleet.add(ShipKind::SmallCargo, 1);
+        app.state.colonies[0].resources.iron = 1_000.0;
+        app.state.colonies[0].resources.water_ice = 100_000.0;
+        app.state.colonies[0].resources.deuterium = 100_000.0;
+        app.state.resources.iron = 1_000.0;
+        let home = app.state.home;
+        app.planet_index = 1;
+        (app.map_galaxy, app.map_system, app.map_position) =
+            (home.galaxy, home.system, home.position);
+        app.handle_key(KeyCode::Enter, 1_000);
+        let form = app.dispatch.expect("dispatch opens to home");
+        assert_eq!(form.origin, dest);
+        assert_eq!(form.dest, home);
+        assert_eq!(form.mission, Mission::Transport);
+        app.dispatch.as_mut().unwrap().selected = ShipKind::ALL
+            .iter()
+            .position(|k| *k == ShipKind::SmallCargo)
+            .unwrap();
+        app.handle_key(KeyCode::Char('+'), 1_000);
+        load_cargo(&mut app, ResourceKind::Iron, 100.0);
+        app.dispatch.as_mut().unwrap().selected = ShipKind::ALL.len() + DISPATCH_CARGO.len();
+        let before = render_text(&app, 100, 48);
+        assert!(before.contains(&format!("OUT {dest}")), "{before}");
+        assert!(before.contains(&format!("BACK {dest}")), "{before}");
+        assert!(!before.contains(&format!("BACK {home}")), "{before}");
+        app.handle_key(KeyCode::Char('+'), 1_000);
+        assert!(app.dispatch.unwrap().dest_pays_return);
+        let preview = render_text(&app, 100, 48);
+        assert!(preview.contains(&format!("OUT {dest}")), "{preview}");
+        assert!(preview.contains(&format!("BACK {home}")), "{preview}");
+        let (_, out, back) = app
+            .state
+            .flight_legs(
+                dest,
+                home,
+                {
+                    let mut ships = Fleet::default();
+                    ships.add(ShipKind::SmallCargo, 1);
+                    ships
+                },
+                Haul::transport({
+                    let mut cargo = Resources::ZERO;
+                    cargo.iron = 100.0;
+                    cargo
+                }),
+                100,
+            )
+            .unwrap();
+        let home_ice = app.state.resources.water_ice;
+        let colony_ice = app.state.colonies[0].resources.water_ice;
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.dispatch.is_none(), "{}", app.status);
+        assert!((app.state.resources.water_ice - (home_ice - back.water_ice)).abs() < 1e-6);
+        assert!(
+            (app.state.colonies[0].resources.water_ice - (colony_ice - out.water_ice)).abs() < 1e-6
+        );
+    }
+
+    #[test]
     fn transport_over_capacity_shows_core_refusal_and_keeps_the_form() {
         let (mut app, _) = app_with_new_colony();
         open_transport(&mut app);
@@ -9984,7 +10079,7 @@ mod tests {
             .unwrap();
         app.handle_key(KeyCode::Char('+'), 1_000);
         load_cargo(&mut app, ResourceKind::WaterIce, 100.0);
-        app.dispatch.as_mut().unwrap().selected = ShipKind::ALL.len() + DISPATCH_CARGO.len();
+        app.dispatch.as_mut().unwrap().selected = ShipKind::ALL.len() + DISPATCH_CARGO.len() + 1;
         app.handle_key(KeyCode::Char('+'), 1_000);
         let form = render_text(&app, 100, 60);
         assert!(form.contains("every 1h 00m"), "{form}");

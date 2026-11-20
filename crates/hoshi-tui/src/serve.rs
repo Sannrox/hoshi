@@ -1256,6 +1256,21 @@ fn v1_parts(method: &str, path: &str, body: &Value) -> Result<Vec<String>, (u16,
                     .ok_or_else(|| (400, error_body("invalid", "invalid ship spec")))?;
                 parts.push(spec.into());
             }
+            if let Some(cargo) = body.get("cargo").and_then(Value::as_array) {
+                for spec in cargo {
+                    let spec = spec
+                        .as_str()
+                        .ok_or_else(|| (400, error_body("invalid", "invalid cargo spec")))?;
+                    parts.push(spec.into());
+                }
+            }
+            if body
+                .get("dest_pays_return")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                parts.push("--dest-pays-return".into());
+            }
             parts
         }
         _ => return Err((404, error_body("invalid", "not found"))),
