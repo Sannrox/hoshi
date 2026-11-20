@@ -2777,13 +2777,21 @@ impl GameState {
         if used >= cap {
             return Err(FleetError::NoSlots { used, cap });
         }
-        let res = self.resources_at_mut(origin)?;
-        if res.deuterium + 1e-9 < fuel {
-            return Err(FleetError::InsufficientFuel {
-                missing: (fuel - res.deuterium).max(0.0),
-                cost: fuel,
-            });
+        let have = self
+            .resources_at(origin)
+            .ok_or(FleetError::UnknownPlanet)?
+            .deuterium;
+        if have + 1e-9 < fuel {
+            return Err(self.insufficient_fuel(
+                origin,
+                dest,
+                ships,
+                0.0,
+                (fuel - have).max(0.0),
+                fuel,
+            ));
         }
+        let res = self.resources_at_mut(origin)?;
         res.deuterium = (res.deuterium - fuel).max(0.0);
         self.take_ships_at(origin, ships)?;
         let id = self.next_mission_id;
@@ -3338,10 +3346,7 @@ impl GameState {
             }
         };
         if let Some(missing) = fuel_missing {
-            return Err(FleetError::InsufficientFuel {
-                missing,
-                cost: fuel,
-            });
+            return Err(self.insufficient_fuel(origin, dest, ships, cargo.total(), missing, fuel));
         }
         let cap_slots = self.fleet_slots();
         let used = self.missions.len() as u32;

@@ -2,6 +2,7 @@
 //!
 //! [`GameState::plan_mission`] is the governed action (propose, check, apply).
 
+use crate::buildings::BuildingKind;
 use crate::fleets::Coord;
 use crate::orbits::{
     fuel_mass_for_dv, heliocentric_radius_m, hohmann_transfer, interstellar_delta_v,
@@ -839,6 +840,112 @@ impl GameState {
         }
     }
 
+    /// Drive id of the slowest ship in `ships`, the one that sets propellant.
+    fn fleet_slowest_drive(&self, ships: Fleet) -> Option<&str> {
+        let mut best: Option<(&str, f64)> = None;
+        for kind in ShipKind::ALL {
+            if ships.get(kind) == 0 {
+                continue;
+            }
+            let drive = self.hull_drive(kind);
+            let ve = self.drive_ve(drive);
+            if best.is_none_or(|(_, slow)| ve < slow) {
+                best = Some((drive, ve));
+            }
+        }
+        best.map(|(drive, _)| drive)
+    }
+
+    /// Why a combustion fleet's send to another system is expensive, and the
+    /// cheapest faster hull the player has built or can build that still
+    /// carries this cargo. In-system sends and faster drives return `None`.
+    pub fn expensive_send_hint(
+        &self,
+        origin: Coord,
+        dest: Coord,
+        ships: Fleet,
+        cargo: f64,
+    ) -> Option<String> {
+        if (origin.galaxy, origin.system) == (dest.galaxy, dest.system) {
+            return None;
+        }
+        let drive = self.fleet_slowest_drive(ships)?;
+        if drive != "combustion_drive" {
+            return None;
+        }
+        let drive_name = self.display_name(drive);
+        let mut text = format!("{drive_name} makes this interstellar send expensive");
+        if let Some(kind) = self.faster_haul_hull(ships, cargo, self.drive_ve(drive)) {
+            let spec = self.config.ships.get(kind);
+            let faster = self.display_name(self.hull_drive(kind));
+            text.push_str(&format!("; {} flies {faster}", spec.name));
+        }
+        Some(text)
+    }
+
+    fn faster_haul_hull(&self, ships: Fleet, cargo: f64, slow_ve: f64) -> Option<ShipKind> {
+        let mut need = cargo;
+        for kind in ShipKind::ALL {
+            if ships.get(kind) == 0 {
+                continue;
+            }
+            if self.drive_ve(self.hull_drive(kind)) <= slow_ve + 1e-9 {
+                need = need.max(self.config.ships.get(kind).cargo);
+            }
+        }
+        let mut best: Option<(ShipKind, f64)> = None;
+        for kind in ShipKind::ALL {
+            if self.drive_ve(self.hull_drive(kind)) <= slow_ve + 1e-9 {
+                continue;
+            }
+            let spec = self.config.ships.get(kind);
+            if spec.cargo + 1e-9 < need {
+                continue;
+            }
+            if !self.owns_hull(kind) && !self.can_build_hull(kind) {
+                continue;
+            }
+            let cost = spec.unit_cost().total();
+            if best.is_none_or(|(_, cheapest)| cost < cheapest) {
+                best = Some((kind, cost));
+            }
+        }
+        best.map(|(kind, _)| kind)
+    }
+
+    fn owns_hull(&self, kind: ShipKind) -> bool {
+        self.owned_coords().iter().any(|coord| {
+            self.fleet_at(*coord)
+                .is_some_and(|fleet| fleet.get(kind) > 0)
+        })
+    }
+
+    fn can_build_hull(&self, kind: ShipKind) -> bool {
+        if !self.missing_ship_prereqs(kind).is_empty() {
+            return false;
+        }
+        let need = self.config.ships.get(kind).shipyard;
+        self.owned_coords()
+            .iter()
+            .any(|coord| self.available_building_level_at(*coord, BuildingKind::Shipyard) >= need)
+    }
+
+    pub(crate) fn insufficient_fuel(
+        &self,
+        origin: Coord,
+        dest: Coord,
+        ships: Fleet,
+        cargo: f64,
+        missing: f64,
+        cost: f64,
+    ) -> crate::FleetError {
+        crate::FleetError::InsufficientFuel {
+            missing,
+            cost,
+            hint: self.expensive_send_hint(origin, dest, ships, cargo),
+        }
+    }
+
     fn vehicle_volume(&self, vehicle: &Vehicle) -> f64 {
         let cfg = &self.config.orbits;
         ShipKind::ALL
@@ -1512,10 +1619,9 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert_eq!(
-            detail.ship.unwrap().exhaust_velocity,
-            state.drive_ve("impulse_drive")
-        );
+        let travel = detail.ship.unwrap();
+        assert_eq!(travel.exhaust_velocity, state.drive_ve("impulse_drive"));
+        assert_eq!(travel.drive, state.display_name("impulse_drive"));
     }
 
     #[test]
@@ -1775,5 +1881,76 @@ mod tests {
                 state.last_tick_unix,
             )
             .expect("vehicle can fly again from home");
+    }
+
+    fn haul_ready(dest: Coord) -> (GameState, Fleet, Resources) {
+        let mut state = GameState::new(0);
+        state.buildings.shipyard = 4;
+        state.tech_levels.insert("combustion_drive".into(), 2);
+        state.tech_levels.insert("impulse_drive".into(), 4);
+        state.fleet.add(ShipKind::SmallCargo, 1);
+        state.resources.water_ice = 5_000.0;
+        state.resources.deuterium = 0.0;
+        state.colonies.push(crate::Colony {
+            coord: dest,
+            kind: crate::PlanetType::Rocky,
+            size: 8,
+            rare: None,
+            resources: Resources::ZERO,
+            buildings: crate::Buildings::default(),
+            fleet: Fleet::default(),
+            defences: crate::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            goods: Default::default(),
+        });
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::SmallCargo, 1);
+        let mut cargo = Resources::ZERO;
+        cargo.water_ice = 5_000.0;
+        (state, ships, cargo)
+    }
+
+    #[test]
+    fn an_interstellar_combustion_send_names_the_drive_and_a_faster_hull() {
+        let dest = Coord {
+            galaxy: 1,
+            system: 2,
+            position: 1,
+        };
+        let (mut state, ships, cargo) = haul_ready(dest);
+        let hint = state
+            .expensive_send_hint(state.home, dest, ships, cargo.total())
+            .expect("combustion between systems");
+        assert!(hint.contains("Combustion Drive"), "{hint}");
+        assert!(hint.contains("Large Cargo"), "{hint}");
+        assert!(hint.contains("Impulse Drive"), "{hint}");
+        let err = state
+            .launch_transport(state.home, dest, ships, cargo, 100, 0)
+            .unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("not enough deuterium"), "{text}");
+        assert!(text.contains(&hint), "{text}");
+    }
+
+    #[test]
+    fn an_in_system_combustion_send_has_no_drive_hint() {
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 2,
+        };
+        let (mut state, ships, cargo) = haul_ready(dest);
+        assert_eq!(
+            state.expensive_send_hint(state.home, dest, ships, cargo.total()),
+            None
+        );
+        let err = state
+            .launch_transport(state.home, dest, ships, cargo, 100, 0)
+            .unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("not enough deuterium"), "{text}");
+        assert!(!text.contains("Combustion Drive"), "{text}");
+        assert!(!text.contains("Large Cargo"), "{text}");
     }
 }

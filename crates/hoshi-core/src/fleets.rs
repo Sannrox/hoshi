@@ -259,6 +259,9 @@ pub enum FleetError {
     InsufficientFuel {
         missing: f64,
         cost: f64,
+        /// Combustion-to-another-system reason, when that is why the send
+        /// is expensive. Other refusals leave this empty.
+        hint: Option<String>,
     },
     NoSlots {
         used: u32,
@@ -368,11 +371,19 @@ impl fmt::Display for FleetError {
             FleetError::MissingShips { kind, need, have } => {
                 write!(f, "not enough {kind} (need {need}, have {have})")
             }
-            FleetError::InsufficientFuel { missing, cost } => {
+            FleetError::InsufficientFuel {
+                missing,
+                cost,
+                hint,
+            } => {
                 write!(
                     f,
                     "not enough deuterium (missing {missing:.0}, cost {cost:.0})"
-                )
+                )?;
+                if let Some(hint) = hint {
+                    write!(f, "; {hint}")?;
+                }
+                Ok(())
             }
             FleetError::NoSlots { used, cap } => {
                 write!(f, "no free fleet slots ({used}/{cap})")
