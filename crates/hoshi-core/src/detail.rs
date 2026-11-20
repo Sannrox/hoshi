@@ -492,7 +492,7 @@ impl GameState {
             complete: false,
             ship: Some(ShipTravel {
                 speed: stats.speed,
-                exhaust_velocity: self.drive_ve(&spec.drive),
+                exhaust_velocity: self.drive_ve(self.hull_drive(kind)),
                 cargo: stats.cargo,
                 outbound_secs: travel.map(|(s, _)| s),
                 fuel_cost: travel.map(|(_, f)| f),
@@ -1077,6 +1077,15 @@ fn unlocks_from_tech(state: &GameState, id: &str) -> Vec<String> {
             out.push(kind.to_string());
         }
     }
+    if let Some(spec) = state.config.techs.get(id) {
+        for refit in &spec.refits {
+            out.push(format!(
+                "{} flies {}",
+                refit.ship,
+                state.display_name(&refit.drive)
+            ));
+        }
+    }
     out
 }
 
@@ -1208,6 +1217,17 @@ mod tests {
             .describe(DetailSubject::Tech("weapons".into()), None)
             .unwrap();
         assert_eq!(detail.description, weapons.purpose);
+        let refit = state
+            .describe(DetailSubject::Tech("small_cargo_impulse".into()), None)
+            .unwrap();
+        assert!(
+            refit
+                .unlocks
+                .iter()
+                .any(|line| line == "small cargo flies Impulse Drive"),
+            "{:?}",
+            refit.unlocks
+        );
     }
 
     #[test]

@@ -762,6 +762,7 @@ mod tests {
         let text = topic_help("research").unwrap();
         assert!(text.contains("parallel slots"), "{text}");
         assert!(text.contains("costs debit home"), "{text}");
+        assert!(text.contains("refit moves that hull class"), "{text}");
     }
 
     #[test]

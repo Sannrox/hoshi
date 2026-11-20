@@ -1821,7 +1821,7 @@ impl App {
                 ("tech", extra)
             }
             Some(DetailSubject::Ship { kind, .. }) => {
-                let drive = &self.state.config.ships.get(kind).drive;
+                let drive = self.state.hull_drive(kind);
                 (
                     "ship",
                     vec![(

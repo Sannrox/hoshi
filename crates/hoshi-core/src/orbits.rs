@@ -63,6 +63,14 @@ impl OrbitConfig {
         }
     }
 
+    /// True for a drive id the rocket equation has a distinct exhaust velocity for.
+    pub fn is_known_drive(&self, drive: &str) -> bool {
+        matches!(
+            drive,
+            "combustion_drive" | "impulse_drive" | "hyperspace_drive"
+        )
+    }
+
     /// Exhaust velocity that research on `drive` cannot pass: the next
     /// drive's base value, so the drive ladder stays ordered. Hyperspace has
     /// no cap.

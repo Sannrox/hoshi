@@ -10424,6 +10424,21 @@ mod tests {
     }
 
     #[test]
+    fn a_completed_hull_refit_survives_reload() {
+        let mut state = GameState::new(1_700_000_000);
+        state.tech_levels.insert("small_cargo_impulse".into(), 1);
+        assert_eq!(state.hull_drive(ShipKind::SmallCargo), "impulse_drive");
+        let mut conn = open_save(Path::new(":memory:")).unwrap();
+        save_state(&mut conn, &state).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        assert_eq!(
+            loaded.tech_levels.get("small_cargo_impulse").copied(),
+            Some(1)
+        );
+        assert_eq!(loaded.hull_drive(ShipKind::SmallCargo), "impulse_drive");
+    }
+
+    #[test]
     fn a_saved_gas_giant_colony_loads_with_the_type_solar_cap() {
         let mut conn = open_save(Path::new(":memory:")).unwrap();
         save_state(&mut conn, &sample_state()).unwrap();

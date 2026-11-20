@@ -1,6 +1,7 @@
 //! Research tree loaded from config and validated on parse.
 
 use crate::buildings::BuildingKind;
+use crate::ships::ShipKind;
 use crate::state::Resources;
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet};
@@ -158,6 +159,13 @@ impl TechNodeState {
     }
 }
 
+/// One hull class this tech moves onto a newer drive once researched.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HullRefit {
+    pub ship: ShipKind,
+    pub drive: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TechSpec {
     pub id: String,
@@ -179,6 +187,7 @@ pub struct TechSpec {
     pub keystone: bool,
     pub hidden: bool,
     pub max_level: Option<u32>,
+    pub refits: Vec<HullRefit>,
 }
 
 impl TechSpec {
@@ -258,6 +267,7 @@ impl TechTree {
                 keystone: raw.keystone,
                 hidden: raw.hidden || raw.branch == TechBranch::Ancient,
                 max_level: raw.max_level,
+                refits: parse_refits(&raw.id, raw.refits)?,
             };
             techs.insert(raw.id, spec);
         }
@@ -588,6 +598,8 @@ pub enum TechTreeError {
     ExclusiveDeadlock { group: String },
     UnreachableKeystone(String),
     KeystoneCount { branch: String, count: usize },
+    UnknownRefitShip { tech: String, ship: String },
+    EmptyRefitDrive { tech: String },
 }
 
 impl fmt::Display for TechTreeError {
@@ -616,6 +628,12 @@ impl fmt::Display for TechTreeError {
             }
             TechTreeError::KeystoneCount { branch, count } => {
                 write!(f, "{branch} has {count} keystones, want 1")
+            }
+            TechTreeError::UnknownRefitShip { tech, ship } => {
+                write!(f, "{tech} refit names unknown ship {ship}")
+            }
+            TechTreeError::EmptyRefitDrive { tech } => {
+                write!(f, "{tech} refit is missing a drive")
             }
         }
     }
@@ -669,6 +687,14 @@ struct FileTech {
     hidden: bool,
     #[serde(default)]
     max_level: Option<u32>,
+    #[serde(default)]
+    refits: Vec<FileRefit>,
+}
+
+#[derive(Deserialize)]
+struct FileRefit {
+    ship: String,
+    drive: String,
 }
 
 #[derive(Deserialize)]
@@ -687,6 +713,27 @@ fn parse_building(name: &str) -> Result<BuildingKind, TechTreeError> {
     BuildingKind::from_key(name).ok_or_else(|| TechTreeError::UnknownBuilding {
         name: name.to_string(),
     })
+}
+
+fn parse_refits(tech: &str, raw: Vec<FileRefit>) -> Result<Vec<HullRefit>, TechTreeError> {
+    raw.into_iter()
+        .map(|entry| {
+            let ship =
+                ShipKind::from_key(&entry.ship).ok_or_else(|| TechTreeError::UnknownRefitShip {
+                    tech: tech.to_string(),
+                    ship: entry.ship,
+                })?;
+            if entry.drive.is_empty() {
+                return Err(TechTreeError::EmptyRefitDrive {
+                    tech: tech.to_string(),
+                });
+            }
+            Ok(HullRefit {
+                ship,
+                drive: entry.drive,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -950,6 +997,66 @@ prereq_techs = [{ id = "loop_a", level = 1 }]
         match TechTree::parse(toml) {
             Err(TechTreeError::Cycle(_)) => {}
             Err(TechTreeError::UnreachableKeystone(id)) => assert_eq!(id, "stone"),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bundled_tree_ships_the_small_cargo_impulse_refit() {
+        let tree = TechTree::default();
+        let spec = tree.get("small_cargo_impulse").unwrap();
+        assert_eq!(spec.max_level, Some(1));
+        assert_eq!(
+            spec.refits,
+            vec![HullRefit {
+                ship: ShipKind::SmallCargo,
+                drive: "impulse_drive".into(),
+            }]
+        );
+        assert!(
+            spec.prereq_techs
+                .iter()
+                .any(|pre| pre.id == "impulse_drive" && pre.level == 4)
+        );
+    }
+
+    fn tech_toml(extra: &str) -> String {
+        format!(
+            r#"
+[[tech]]
+id = "a"
+name = "A"
+purpose = "test"
+metal = 0.0
+crystal = 0.0
+deuterium = 0.0
+cost_growth = 1.0
+base_seconds = 1.0
+time_growth = 1.0
+{extra}
+"#
+        )
+    }
+
+    #[test]
+    fn unknown_refit_ship_is_rejected() {
+        match TechTree::parse(&tech_toml(
+            r#"refits = [{ ship = "not_a_ship", drive = "impulse_drive" }]"#,
+        )) {
+            Err(TechTreeError::UnknownRefitShip { tech, ship }) => {
+                assert_eq!(tech, "a");
+                assert_eq!(ship, "not_a_ship");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_refit_drive_is_rejected() {
+        match TechTree::parse(&tech_toml(
+            r#"refits = [{ ship = "small_cargo", drive = "" }]"#,
+        )) {
+            Err(TechTreeError::EmptyRefitDrive { tech }) => assert_eq!(tech, "a"),
             other => panic!("unexpected {other:?}"),
         }
     }

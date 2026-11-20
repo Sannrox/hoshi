@@ -829,7 +829,7 @@ impl GameState {
             if ships.get(kind) == 0 {
                 continue;
             }
-            let drive = self.config.ships.get(kind).drive.as_str();
+            let drive = self.hull_drive(kind);
             ve = ve.min(self.drive_ve(drive));
         }
         if ve.is_finite() {
@@ -1466,6 +1466,79 @@ mod tests {
         state.tech_levels.insert(drive.clone(), 10_000);
         let cap = state.config.orbits.ve_cap_for_drive(&drive).unwrap();
         assert_eq!(state.drive_ve(&drive), cap);
+    }
+
+    #[test]
+    fn a_small_cargo_refit_pays_impulse_fuel_for_the_same_mass() {
+        let mut state = GameState::with_seed(1_000, BalanceConfig::default(), 1);
+        state.tech_levels.insert("combustion_drive".into(), 2);
+        state.tech_levels.insert("impulse_drive".into(), 4);
+        let dest = Coord {
+            galaxy: 1,
+            system: 2,
+            position: 1,
+        };
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::SmallCargo, 1);
+        let mut cargo = Resources::ZERO;
+        cargo.water_ice = 5_000.0;
+        let haul = Haul::one_way(cargo);
+        assert_eq!(state.hull_drive(ShipKind::SmallCargo), "combustion_drive");
+        let before = state.send_fuel(Coord::HOME, dest, ships, haul, 10);
+        let before_speed = state.ship_stats(ShipKind::SmallCargo).speed;
+        state.tech_levels.insert("small_cargo_impulse".into(), 1);
+        assert_eq!(state.hull_drive(ShipKind::SmallCargo), "impulse_drive");
+        let after = state.send_fuel(Coord::HOME, dest, ships, haul, 10);
+        let cfg = &state.config.orbits;
+        let delta_v = state.base_burn(Coord::HOME, dest).delta_v
+            + state.well_cost(Coord::HOME)
+            + state.well_cost(dest);
+        let dry = state.fleet_dry_kg(ships) + cargo.total() * cfg.kg_per_cargo;
+        let expected =
+            crate::orbits::fuel_mass_for_dv(state.drive_ve("impulse_drive"), dry, delta_v)
+                / cfg.kg_per_cargo;
+        assert!(
+            (after - expected).abs() < 1e-6,
+            "after {after} expected {expected}"
+        );
+        assert!(after < before / 10.0, "{after} is not far below {before}");
+        assert!(state.ship_stats(ShipKind::SmallCargo).speed > before_speed);
+        let detail = state
+            .describe(
+                crate::DetailSubject::Ship {
+                    kind: ShipKind::SmallCargo,
+                    planet: Coord::HOME,
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            detail.ship.unwrap().exhaust_velocity,
+            state.drive_ve("impulse_drive")
+        );
+    }
+
+    #[test]
+    fn a_mission_in_flight_keeps_the_fuel_it_booked_after_a_refit() {
+        let mut state = ready(1_000);
+        state.resources.deuterium = 1e9;
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::SmallCargo, 1);
+        let dest = Coord {
+            galaxy: 1,
+            system: 2,
+            position: 1,
+        };
+        state
+            .launch_fleet(state.home, ships, dest, 10, 0, 1_000)
+            .unwrap();
+        let fuel = state.missions[0].fuel_paid;
+        let arrives = state.missions[0].phase_ends_at;
+        state.tech_levels.insert("small_cargo_impulse".into(), 1);
+        assert_eq!(state.missions[0].fuel_paid, fuel);
+        assert_eq!(state.missions[0].phase_ends_at, arrives);
+        let cheaper = state.send_fuel(state.home, dest, ships, Haul::empty_round_trip(), 10);
+        assert!(cheaper < fuel, "{cheaper} >= {fuel}");
     }
 
     #[test]

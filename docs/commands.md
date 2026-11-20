@@ -1321,7 +1321,7 @@ Area: cli.
 
 ## research
 
-Start research, or queue it behind the running job. Colony labs add parallel slots; costs debit home.
+Start research, or queue it behind the running job. Colony labs add parallel slots; costs debit home. A completed refit moves that hull class onto the named drive.
 
 ```text
 hoshi research TECH
