@@ -7,7 +7,7 @@ use crate::intel::{
 };
 use crate::research::ModifierKind;
 use crate::ships::{Fleet, ShipKind};
-use crate::state::{GameState, Resources};
+use crate::state::{GameState, ResourceKind, Resources};
 use serde::Deserialize;
 use std::fmt;
 
@@ -43,6 +43,9 @@ pub enum MoonError {
     Cooling { ready_at: u64 },
     EmptyFleet,
     NotEnoughShips,
+    InvalidCargo,
+    CargoExceedsCapacity { need: f64, cap: f64 },
+    DestFull,
 }
 
 impl fmt::Display for MoonError {
@@ -55,6 +58,13 @@ impl fmt::Display for MoonError {
             MoonError::Cooling { ready_at } => write!(f, "jump ready at {ready_at}"),
             MoonError::EmptyFleet => write!(f, "no ships to jump"),
             MoonError::NotEnoughShips => write!(f, "not enough ships at origin"),
+            MoonError::InvalidCargo => {
+                write!(f, "cargo amounts must be finite and non-negative")
+            }
+            MoonError::CargoExceedsCapacity { need, cap } => {
+                write!(f, "cargo {need:.0} exceeds capacity {cap:.0}")
+            }
+            MoonError::DestFull => write!(f, "destination storage is full"),
         }
     }
 }
@@ -361,11 +371,15 @@ impl GameState {
         from: Coord,
         to: Coord,
         ships: Fleet,
+        cargo: Resources,
         now: u64,
     ) -> Result<(), MoonError> {
         self.catch_up(now);
         if ships.is_empty() {
             return Err(MoonError::EmptyFleet);
+        }
+        if !cargo.is_finite_nonneg() {
+            return Err(MoonError::InvalidCargo);
         }
         let now = self.last_tick_unix;
         let from_moon = self.moon_at(from).ok_or(MoonError::NoMoon { at: from })?;
@@ -392,6 +406,31 @@ impl GameState {
                 return Err(MoonError::NotEnoughShips);
             }
         }
+        let has_cargo = ResourceKind::ALL.iter().any(|&kind| cargo.get(kind) > 1e-9);
+        if has_cargo {
+            let cap = self.cargo_capacity(ships);
+            let need = cargo.total();
+            if need > cap + 1e-9 {
+                return Err(MoonError::CargoExceedsCapacity { need, cap });
+            }
+            let have = self.resources_at(from).copied().unwrap_or(Resources::ZERO);
+            if !have.can_afford(cargo) {
+                return Err(MoonError::Insufficient {
+                    missing: have.missing(cargo),
+                });
+            }
+            for kind in ResourceKind::ALL {
+                let amount = cargo.get(kind);
+                if amount <= 1e-9 {
+                    continue;
+                }
+                let dest_have = self.resources_at(to).map(|r| r.get(kind)).unwrap_or(0.0);
+                let room = (self.storage_cap_at(to, kind) - dest_have).max(0.0);
+                if amount > room + 1e-9 {
+                    return Err(MoonError::DestFull);
+                }
+            }
+        }
         if let Some(fleet) = parked_fleet_mut(self, from) {
             for kind in ShipKind::ALL {
                 fleet.saturating_sub(kind, ships.get(kind));
@@ -400,6 +439,14 @@ impl GameState {
         if let Some(fleet) = parked_fleet_mut(self, to) {
             for kind in ShipKind::ALL {
                 fleet.add(kind, ships.get(kind));
+            }
+        }
+        if has_cargo {
+            if let Ok(res) = self.resources_at_mut(from) {
+                *res = res.saturating_sub(cargo);
+            }
+            if let Ok(res) = self.resources_at_mut(to) {
+                *res = res.saturating_add(cargo);
             }
         }
         let ready = now.saturating_add(self.config.moons.jump_cooldown_secs);
@@ -621,7 +668,7 @@ mod tests {
             .build_moon_facility(Coord::HOME, MoonFacility::JumpGate, 0)
             .unwrap();
         let err = state
-            .jump_between(Coord::HOME, dest, scout(), 0)
+            .jump_between(Coord::HOME, dest, scout(), Resources::ZERO, 0)
             .unwrap_err();
         assert!(matches!(err, MoonError::NoGate { at } if at == dest));
         state.colonies[0].resources.iron = 1_000.0;
@@ -629,14 +676,18 @@ mod tests {
             .build_moon_facility(dest, MoonFacility::JumpGate, 0)
             .unwrap();
         state.fleet.add(ShipKind::LightFighter, 2);
-        state.jump_between(Coord::HOME, dest, scout(), 0).unwrap();
+        state
+            .jump_between(Coord::HOME, dest, scout(), Resources::ZERO, 0)
+            .unwrap();
         assert_eq!(state.fleet.get(ShipKind::LightFighter), 1);
         assert_eq!(state.colonies[0].fleet.get(ShipKind::LightFighter), 1);
         let err = state
-            .jump_between(Coord::HOME, dest, scout(), 0)
+            .jump_between(Coord::HOME, dest, scout(), Resources::ZERO, 0)
             .unwrap_err();
         assert!(matches!(err, MoonError::Cooling { .. }));
-        state.jump_between(Coord::HOME, dest, scout(), 100).unwrap();
+        state
+            .jump_between(Coord::HOME, dest, scout(), Resources::ZERO, 100)
+            .unwrap();
     }
 
     #[test]
@@ -752,5 +803,126 @@ mod tests {
         let mut f = Fleet::default();
         f.add(ShipKind::LightFighter, 1);
         f
+    }
+
+    fn haul() -> Fleet {
+        let mut f = Fleet::default();
+        f.add(ShipKind::SmallCargo, 1);
+        f
+    }
+
+    fn ice(amount: f64) -> Resources {
+        let mut cargo = Resources::ZERO;
+        cargo.water_ice = amount;
+        cargo
+    }
+
+    fn gated_pair() -> (GameState, Coord) {
+        let mut state = GameState::with_seed(0, moon_cfg(), 1);
+        state.resources.iron = 1_000.0;
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 4,
+        };
+        state.colonies.push(crate::Colony {
+            coord: dest,
+            kind: crate::PlanetType::Rocky,
+            size: 80,
+            resources: Resources::ZERO,
+            buildings: crate::Buildings::default(),
+            fleet: Fleet::default(),
+            defences: crate::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: Default::default(),
+        });
+        state.moons.push(Moon::new(Coord::HOME));
+        state.moons.push(Moon::new(dest));
+        state
+            .build_moon_facility(Coord::HOME, MoonFacility::JumpGate, 0)
+            .unwrap();
+        state.colonies[0].resources.iron = 1_000.0;
+        state
+            .build_moon_facility(dest, MoonFacility::JumpGate, 0)
+            .unwrap();
+        (state, dest)
+    }
+
+    fn stocks(state: &GameState, dest: Coord) -> (Resources, Resources, Fleet, Fleet, u64, u64) {
+        (
+            state.resources,
+            state.colonies[0].resources,
+            state.fleet,
+            state.colonies[0].fleet,
+            state.moon_at(Coord::HOME).unwrap().jump_ready_at,
+            state.moon_at(dest).unwrap().jump_ready_at,
+        )
+    }
+
+    #[test]
+    fn a_jump_carries_named_cargo_between_worlds() {
+        let (mut state, dest) = gated_pair();
+        state.fleet.add(ShipKind::SmallCargo, 1);
+        state.resources.water_ice = 500.0;
+        state
+            .jump_between(Coord::HOME, dest, haul(), ice(500.0), 0)
+            .unwrap();
+        assert_eq!(state.fleet.get(ShipKind::SmallCargo), 0);
+        assert_eq!(state.colonies[0].fleet.get(ShipKind::SmallCargo), 1);
+        assert!((state.resources.water_ice - 0.0).abs() < 1e-9);
+        assert!((state.colonies[0].resources.water_ice - 500.0).abs() < 1e-9);
+        let ready = state.config.moons.jump_cooldown_secs;
+        assert_eq!(state.moon_at(Coord::HOME).unwrap().jump_ready_at, ready);
+        assert_eq!(state.moon_at(dest).unwrap().jump_ready_at, ready);
+    }
+
+    #[test]
+    fn a_jump_without_cargo_leaves_stocks_alone() {
+        let (mut state, dest) = gated_pair();
+        state.fleet.add(ShipKind::SmallCargo, 1);
+        state.resources.water_ice = 500.0;
+        state
+            .jump_between(Coord::HOME, dest, haul(), Resources::ZERO, 0)
+            .unwrap();
+        assert_eq!(state.fleet.get(ShipKind::SmallCargo), 0);
+        assert_eq!(state.colonies[0].fleet.get(ShipKind::SmallCargo), 1);
+        assert!((state.resources.water_ice - 500.0).abs() < 1e-9);
+        assert!((state.colonies[0].resources.water_ice - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_refused_cargo_jump_moves_nothing() {
+        let (mut state, dest) = gated_pair();
+        state.fleet.add(ShipKind::SmallCargo, 1);
+        state.fleet.add(ShipKind::LightFighter, 1);
+        state.resources.water_ice = 100.0;
+        let before = stocks(&state, dest);
+
+        let over_hold = state
+            .jump_between(Coord::HOME, dest, scout(), ice(100.0), 0)
+            .unwrap_err();
+        assert!(
+            matches!(over_hold, MoonError::CargoExceedsCapacity { .. }),
+            "{over_hold}"
+        );
+        assert_eq!(stocks(&state, dest), before);
+
+        let short = state
+            .jump_between(Coord::HOME, dest, haul(), ice(500.0), 0)
+            .unwrap_err();
+        assert!(matches!(short, MoonError::Insufficient { .. }), "{short}");
+        assert_eq!(stocks(&state, dest), before);
+
+        let cap = state.storage_cap_at(dest, ResourceKind::WaterIce);
+        state.resources.water_ice = 500.0;
+        state.colonies[0].resources.water_ice = cap;
+        let filled = stocks(&state, dest);
+        let full = state
+            .jump_between(Coord::HOME, dest, haul(), ice(500.0), 0)
+            .unwrap_err();
+        assert!(matches!(full, MoonError::DestFull), "{full}");
+        assert_eq!(stocks(&state, dest), filled);
     }
 }

@@ -262,10 +262,12 @@ crate::help::catalog_commands! {
         planet: Coord,
         facility: MoonFacility,
     },
-    #[help("moon jump", "Move ships between ready jump gates.", "moon jump FROM TO SHIP:COUNT...", "moon jump home 1:1:2 small_cargo:1")]
+    #[help("moon jump", "Move ships and optional cargo between ready jump gates.", "moon jump FROM TO RESOURCE=AMOUNT... SHIP:COUNT...", "moon jump home 1:1:2 water_ice=500 small_cargo:1")]
     MoonJump {
         from: Coord,
         to: Coord,
+        /// `resource=amount` specs, parsed when applied like fleet deploy.
+        cargo: Vec<String>,
         ships: Fleet,
     },
     #[help("moon scan", "Read a moon phalanx scan.", "moon scan PLANET", "moon scan home")]
@@ -1649,11 +1651,19 @@ fn apply(
                 .map_err(|e| CliError::Refused(e.to_string()))?;
             Ok(ok_state(state, "built moon facility"))
         }
-        Command::MoonJump { from, to, ships } => {
+        Command::MoonJump {
+            from,
+            to,
+            cargo,
+            ships,
+        } => {
+            let cargo = parse_cargo(cargo)?;
             state
-                .jump_between(*from, *to, *ships, now)
+                .jump_between(*from, *to, *ships, cargo, now)
                 .map_err(|e| CliError::Refused(e.to_string()))?;
-            Ok(ok_state(state, "jumped"))
+            let mut value = ok_state(state, "jumped");
+            value["cargo"] = resources_json(cargo);
+            Ok(value)
         }
         Command::TutorialSkip => {
             state.skip_tutorial();
@@ -5314,10 +5324,18 @@ fn parse_moon_command(args: &[String]) -> Result<Command, CliError> {
             Ok(Command::MoonBuild { planet, facility })
         }
         Some("jump") => {
-            let from = parse_coord(nth(args, 2, "moon jump <from> <to> <ships...>")?)?;
-            let to = parse_coord(nth(args, 3, "moon jump <from> <to> <ships...>")?)?;
-            let ships = parse_ships(&args[4..])?;
-            Ok(Command::MoonJump { from, to, ships })
+            const USAGE: &str = "moon jump <from> <to> <resource=amount...> <ships...>";
+            let from = parse_coord(nth(args, 2, USAGE)?)?;
+            let to = parse_coord(nth(args, 3, USAGE)?)?;
+            let (cargo, ships): (Vec<_>, Vec<_>) =
+                args[4..].iter().cloned().partition(|a| a.contains('='));
+            parse_cargo(&cargo)?;
+            Ok(Command::MoonJump {
+                from,
+                to,
+                cargo,
+                ships: parse_ships(&ships)?,
+            })
         }
         Some("scan") => {
             let planet = parse_coord(nth(args, 2, "moon scan <planet>")?)?;
@@ -6454,6 +6472,116 @@ mod tests {
         assert!(msg.contains("not enough deuterium"), "{msg}");
         assert!(msg.contains("Combustion Drive"), "{msg}");
         assert!(msg.contains("Large Cargo"), "{msg}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn moon_jump_moves_named_cargo_and_refuses_a_full_destination() {
+        let dir = unique_save("moon-jump-cargo").with_extension("d");
+        std::fs::create_dir_all(&dir).unwrap();
+        let save = dir.join("save.sqlite");
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 4,
+        };
+        let mut state = GameState::new(0);
+        state.deterministic = true;
+        state.resources = hoshi_core::Resources::from_parts(2_000.0, 2_000.0, 2_000.0);
+        state.fleet.add(ShipKind::SmallCargo, 1);
+        state.colonies.push(hoshi_core::Colony {
+            coord: dest,
+            kind: hoshi_core::PlanetType::Rocky,
+            size: 80,
+            resources: hoshi_core::Resources::from_parts(2_000.0, 2_000.0, 2_000.0),
+            buildings: hoshi_core::Buildings::default(),
+            fleet: Fleet::default(),
+            defences: hoshi_core::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: Default::default(),
+        });
+        state.moons.push(hoshi_core::Moon::new(Coord::HOME));
+        state.moons.push(hoshi_core::Moon::new(dest));
+        state
+            .build_moon_facility(Coord::HOME, MoonFacility::JumpGate, 0)
+            .unwrap();
+        state
+            .build_moon_facility(dest, MoonFacility::JumpGate, 0)
+            .unwrap();
+        state.resources.water_ice = 500.0;
+        state.colonies[0].resources.water_ice = 0.0;
+        let mut conn = open_save(&save).unwrap();
+        save_state(&mut conn, &state).unwrap();
+        drop(conn);
+        let (value, exit) = run_on(
+            &save,
+            &[
+                "moon",
+                "jump",
+                "home",
+                "1:1:4",
+                "water_ice=500",
+                "small_cargo:1",
+            ],
+        );
+        assert_eq!(exit, EXIT_OK, "{value}");
+        assert_eq!(value["message"], "jumped");
+        assert_eq!(value["cargo"]["water_ice"], 500.0);
+        assert_eq!(value["resources"]["water_ice"], 0.0);
+        let conn = open_save(&save).unwrap();
+        let loaded = load_state(&conn, BalanceConfig::default()).unwrap();
+        drop(conn);
+        assert_eq!(loaded.fleet.get(ShipKind::SmallCargo), 0);
+        assert_eq!(loaded.colonies[0].fleet.get(ShipKind::SmallCargo), 1);
+        assert!((loaded.colonies[0].resources.water_ice - 500.0).abs() < 1e-9);
+
+        let cap = loaded.storage_cap_at(dest, ResourceKind::WaterIce);
+        let mut full = loaded;
+        full.moons.iter_mut().for_each(|m| m.jump_ready_at = 0);
+        full.colonies[0].fleet = Fleet::default();
+        full.fleet.add(ShipKind::SmallCargo, 1);
+        full.resources.water_ice = 500.0;
+        full.colonies[0].resources.water_ice = cap;
+        let before_ice = full.resources.water_ice;
+        let before_dest = full.colonies[0].resources.water_ice;
+        let before_home_ships = full.fleet.get(ShipKind::SmallCargo);
+        let before_dest_ships = full.colonies[0].fleet.get(ShipKind::SmallCargo);
+        let before_ready = full.moon_at(Coord::HOME).unwrap().jump_ready_at;
+        let mut conn = open_save(&save).unwrap();
+        save_state(&mut conn, &full).unwrap();
+        drop(conn);
+        let (refused, exit) = run_on(
+            &save,
+            &[
+                "moon",
+                "jump",
+                "home",
+                "1:1:4",
+                "water_ice=500",
+                "small_cargo:1",
+            ],
+        );
+        assert_eq!(exit, EXIT_REFUSED, "{refused}");
+        assert_eq!(
+            refused["error"]["message"], "destination storage is full",
+            "{refused}"
+        );
+        let conn = open_save(&save).unwrap();
+        let after = load_state(&conn, BalanceConfig::default()).unwrap();
+        drop(conn);
+        assert!((after.resources.water_ice - before_ice).abs() < 1e-9);
+        assert!((after.colonies[0].resources.water_ice - before_dest).abs() < 1e-9);
+        assert_eq!(after.fleet.get(ShipKind::SmallCargo), before_home_ships);
+        assert_eq!(
+            after.colonies[0].fleet.get(ShipKind::SmallCargo),
+            before_dest_ships
+        );
+        assert_eq!(
+            after.moon_at(Coord::HOME).unwrap().jump_ready_at,
+            before_ready
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

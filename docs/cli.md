@@ -109,7 +109,7 @@ hoshi --save PATH law propose <template> [--param N] [--jurisdiction empire|home
 hoshi --save PATH law approve <id>
 hoshi --save PATH law repeal <id> [--effective <dur>]
 hoshi --save PATH moon build <planet> phalanx|jump_gate
-hoshi --save PATH moon jump <from> <to> <ships...>
+hoshi --save PATH moon jump <from> <to> [resource=amount...] <ships...>
 hoshi --save PATH moon scan <planet>
 hoshi --save PATH tutorial skip
 hoshi --save PATH tutorial reset
@@ -134,7 +134,7 @@ no detection or losses. `state` lists arrived reports with
 age, source and confidence and attaches the latest arrived report to each
 outpost so attack and invade can read it. `intel` lists every arrived fact;
 `intel provenance <coord> <field>` prints the chain for one field. Pending
-reports and the internal deceived flag never appear. `colonize` takes exactly `colony_ship:1`. `moon build` spends stockpile on a phalanx or jump gate at that planet's moon. `moon jump` moves parked ships instantly between two moons that both have gates. `moon scan` lists fleets the phalanx can see. Once the home raid is announced and home is in range, it adds one `raid` contact (`id` null) from the nearest pirate outpost: the ETA is the raid clock, `ships` is a seeded noisy count from the probe sensor error, and `delay_secs` is the light-time from that outpost. Extra arguments
+reports and the internal deceived flag never appear. `colonize` takes exactly `colony_ship:1`. `moon build` spends stockpile on a phalanx or jump gate at that planet's moon. `moon jump` moves parked ships instantly between two moons that both have gates, and may carry `resource=amount` cargo up to the ships' hold when the destination can store it. `moon scan` lists fleets the phalanx can see. Once the home raid is announced and home is in range, it adds one `raid` contact (`id` null) from the nearest pirate outpost: the ETA is the raid clock, `ships` is a seeded noisy count from the probe sensor error, and `delay_secs` is the light-time from that outpost. Extra arguments
 on `build`, `research`, and `cancel` are invalid (`state` may take `--as`). Duration is seconds,
 or `30s` / `3m` / `1h` / `1d`.
 
