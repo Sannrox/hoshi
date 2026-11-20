@@ -499,6 +499,14 @@ struct FileTech {
     hidden: bool,
     #[serde(default)]
     max_level: Option<u32>,
+    #[serde(default)]
+    refits: Vec<FileRefit>,
+}
+
+#[derive(Deserialize)]
+struct FileRefit {
+    ship: String,
+    drive: String,
 }
 
 #[derive(Deserialize)]
@@ -628,7 +636,30 @@ fn tech_from_file(raw: FileTech) -> Result<TechSpec, SpeciesError> {
         keystone: raw.keystone,
         hidden: raw.hidden || raw.branch == TechBranch::Ancient,
         max_level: raw.max_level,
+        refits: parse_species_refits(&raw.id, raw.refits)?,
     })
+}
+
+fn parse_species_refits(
+    tech: &str,
+    raw: Vec<FileRefit>,
+) -> Result<Vec<crate::HullRefit>, SpeciesError> {
+    raw.into_iter()
+        .map(|entry| {
+            let ship = crate::ShipKind::from_key(&entry.ship).ok_or_else(|| {
+                SpeciesError::Invalid(format!("{tech} refit names unknown ship {}", entry.ship))
+            })?;
+            if entry.drive.is_empty() {
+                return Err(SpeciesError::Invalid(format!(
+                    "{tech} refit is missing a drive"
+                )));
+            }
+            Ok(crate::HullRefit {
+                ship,
+                drive: entry.drive,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]

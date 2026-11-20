@@ -229,8 +229,8 @@ pub use prestige::{
 };
 pub use production::{LimitingFactor, ProductionReport, RecipeFlow};
 pub use research::{
-    BuildingPrereq, ModifierKind, PrereqGap, ResearchError, ResearchJob, TechBranch, TechModifier,
-    TechNodeState, TechPrereq, TechSpec, TechTree, TechTreeError,
+    BuildingPrereq, HullRefit, ModifierKind, PrereqGap, ResearchError, ResearchJob, TechBranch,
+    TechModifier, TechNodeState, TechPrereq, TechSpec, TechTree, TechTreeError,
 };
 pub use rivals::{
     RivalBoard, RivalCatalog, RivalColonizeFlight, RivalColony, RivalEmpire, RivalError,

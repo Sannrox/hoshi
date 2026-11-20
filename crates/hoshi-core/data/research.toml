@@ -107,6 +107,24 @@ modifiers = [
 ]
 
 [[tech]]
+id = "small_cargo_impulse"
+name = "Small Cargo Impulse Refit"
+purpose = "Moves every Small Cargo onto the impulse drive, so hauls burn like an impulse hull of the same mass."
+branch = "military"
+tier = 2
+max_level = 1
+iron = 2000.0
+silicon = 4000.0
+deuterium = 600.0
+cost_growth = 2.0
+base_seconds = 480.0
+time_growth = 2.0
+prereq_buildings = [{ building = "research_lab", level = 2 }]
+prereq_techs = [{ id = "impulse_drive", level = 4 }]
+modifiers = []
+refits = [{ ship = "small_cargo", drive = "impulse_drive" }]
+
+[[tech]]
 id = "hyperspace_drive"
 name = "Hyperspace Drive"
 purpose = "Speeds ships that use this drive and raises its exhaust velocity, so missions burn less fuel."

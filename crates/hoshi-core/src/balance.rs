@@ -2940,6 +2940,30 @@ impl BalanceConfig {
             }
         }
         self.waste.validate().map_err(BalanceError::Invalid)?;
+        self.validate_refits()?;
+        Ok(())
+    }
+
+    fn validate_refits(&self) -> Result<(), BalanceError> {
+        for spec in self.techs.iter() {
+            for refit in &spec.refits {
+                if !self.orbits.is_known_drive(&refit.drive) {
+                    return Err(BalanceError::Invalid(format!(
+                        "{} refit of {} names unknown drive {}",
+                        spec.id, refit.ship, refit.drive
+                    )));
+                }
+                let catalog = self.ships.get(refit.ship).drive.as_str();
+                let from = self.orbits.ve_for_drive(catalog);
+                let to = self.orbits.ve_for_drive(&refit.drive);
+                if to <= from {
+                    return Err(BalanceError::Invalid(format!(
+                        "{} refit of {} onto {} is not an upgrade",
+                        spec.id, refit.ship, refit.drive
+                    )));
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -3279,5 +3303,34 @@ stages = []
         );
         let err = BalanceConfig::parse(&text).unwrap_err();
         assert!(err.to_string().contains("unknown building"), "{err}");
+    }
+
+    #[test]
+    fn bundled_config_accepts_the_small_cargo_impulse_refit() {
+        let cfg = BalanceConfig::default();
+        let spec = cfg.techs.get("small_cargo_impulse").unwrap();
+        assert_eq!(spec.refits[0].ship, ShipKind::SmallCargo);
+        assert_eq!(spec.refits[0].drive, "impulse_drive");
+        cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn refit_to_a_weaker_or_unknown_drive_is_rejected() {
+        let mut cfg = BalanceConfig::default();
+        let mut spec = cfg.techs.get("energy").unwrap().clone();
+        spec.id = "bad_refit".into();
+        spec.refits = vec![crate::HullRefit {
+            ship: ShipKind::LargeCargo,
+            drive: "combustion_drive".into(),
+        }];
+        cfg.techs.apply_overrides(&[], vec![spec.clone()]).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("not an upgrade"), "{err}");
+
+        spec.refits[0].drive = "not_a_drive".into();
+        let mut cfg = BalanceConfig::default();
+        cfg.techs.apply_overrides(&[], vec![spec]).unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(err.to_string().contains("unknown drive"), "{err}");
     }
 }

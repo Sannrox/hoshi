@@ -212,6 +212,7 @@ silent extra departure; they extend this list.
 | Combined vehicle uses the lowest exhaust velocity among its ships | One stack, one rocket equation. |
 | Gas giants get a solar cap of at least 14 whatever their size | They have no surface; floating or orbital collectors are not limited by planet size. |
 | Drive research raises exhaust velocity linearly per level, capped at the next drive's base value | Better engines get more velocity from the same propellant; the cap keeps each drive below the next one. |
+| A refit moves a whole hull class to a new drive at once; no per-ship cost or yard time | Refits are an engineering program, and a mixed-drive fleet would add state with no decision behind it. |
 | Gravity-well burns are scaled below LEO so chemical ships can leave | Full well escape would demand unplayable mass ratios on the idle clock. |
 | A space elevator's climb is paid by its continuous power draw, not per kilogram lifted | The elevator runs a tether from the surface to the world's Orbital station. With the scaled wells the climb energy is under 1.2 MJ/kg, so a tether of today's high-strength fibre needs almost no taper. Gas giants have no surface to anchor one. Releasing cargo from the tether tip for extra delta-v is not modelled. |
 | Hull points map to kilograms through `kg_per_hull` | Keeps a combustion cargo inside a mid-game deuterium stockpile for a 1–1.5 AU hop. |

@@ -4183,6 +4183,30 @@ impl GameState {
             .collect()
     }
 
+    /// Drive tech id this hull class flies: a researched refit with a higher
+    /// base exhaust velocity, else the catalog drive.
+    pub fn hull_drive(&self, kind: ShipKind) -> &str {
+        let catalog = self.config.ships.get(kind).drive.as_str();
+        let mut best = catalog;
+        let mut best_ve = self.config.orbits.ve_for_drive(best);
+        for spec in self.config.techs.iter() {
+            if self.tech_level(&spec.id) < 1 {
+                continue;
+            }
+            for refit in &spec.refits {
+                if refit.ship != kind {
+                    continue;
+                }
+                let ve = self.config.orbits.ve_for_drive(&refit.drive);
+                if ve > best_ve {
+                    best_ve = ve;
+                    best = refit.drive.as_str();
+                }
+            }
+        }
+        best
+    }
+
     /// Exhaust velocity in m/s of ships on `drive` (a drive tech id) at the
     /// current tech level. Mission fuel plans use it.
     pub fn drive_ve(&self, drive: &str) -> f64 {
@@ -4219,7 +4243,7 @@ impl GameState {
         let drive_bonus = self
             .config
             .techs
-            .get(&spec.drive)
+            .get(self.hull_drive(kind))
             .map(|tech| {
                 let level = f64::from(self.tech_level(&tech.id));
                 tech.modifiers
