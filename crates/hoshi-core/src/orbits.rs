@@ -27,6 +27,10 @@ pub struct OrbitConfig {
     pub combustion_ve: f64,
     pub impulse_ve: f64,
     pub hyperspace_ve: f64,
+    /// Deuterium burned per unit of reaction mass. Combustion is 0.
+    pub combustion_deuterium_share: f64,
+    pub impulse_deuterium_share: f64,
+    pub hyperspace_deuterium_share: f64,
     pub well_rocky: f64,
     pub well_ice: f64,
     pub well_gas_giant: f64,
@@ -60,6 +64,15 @@ impl OrbitConfig {
             "impulse_drive" => self.impulse_ve,
             "hyperspace_drive" => self.hyperspace_ve,
             _ => self.combustion_ve,
+        }
+    }
+
+    /// Deuterium per unit of reaction mass for `drive`. Combustion is 0.
+    pub fn deuterium_share_for_drive(&self, drive: &str) -> f64 {
+        match drive {
+            "impulse_drive" => self.impulse_deuterium_share,
+            "hyperspace_drive" => self.hyperspace_deuterium_share,
+            _ => self.combustion_deuterium_share,
         }
     }
 
@@ -125,6 +138,12 @@ pub(crate) struct FileOrbits {
     impulse_ve: f64,
     #[serde(default = "default_hyperspace")]
     hyperspace_ve: f64,
+    #[serde(default = "default_combustion_d_share")]
+    combustion_deuterium_share: f64,
+    #[serde(default = "default_impulse_d_share")]
+    impulse_deuterium_share: f64,
+    #[serde(default = "default_hyperspace_d_share")]
+    hyperspace_deuterium_share: f64,
     #[serde(default = "default_well_rocky")]
     well_rocky: f64,
     #[serde(default = "default_well_ice")]
@@ -162,6 +181,9 @@ impl Default for FileOrbits {
             combustion_ve: default_combustion(),
             impulse_ve: default_impulse(),
             hyperspace_ve: default_hyperspace(),
+            combustion_deuterium_share: default_combustion_d_share(),
+            impulse_deuterium_share: default_impulse_d_share(),
+            hyperspace_deuterium_share: default_hyperspace_d_share(),
             well_rocky: default_well_rocky(),
             well_ice: default_well_ice(),
             well_gas_giant: default_well_gas(),
@@ -215,6 +237,21 @@ impl FileOrbits {
         if self.assist_dv >= 1.0 {
             return Err("orbits.assist_dv must be < 1".into());
         }
+        for (name, value) in [
+            (
+                "combustion_deuterium_share",
+                self.combustion_deuterium_share,
+            ),
+            ("impulse_deuterium_share", self.impulse_deuterium_share),
+            (
+                "hyperspace_deuterium_share",
+                self.hyperspace_deuterium_share,
+            ),
+        ] {
+            if !(value.is_finite() && value >= 0.0) {
+                return Err(format!("orbits.{name} must be >= 0"));
+            }
+        }
         Ok(OrbitConfig {
             mu_star: self.mu_star,
             au_metres: self.au_metres,
@@ -232,6 +269,9 @@ impl FileOrbits {
             combustion_ve: self.combustion_ve,
             impulse_ve: self.impulse_ve,
             hyperspace_ve: self.hyperspace_ve,
+            combustion_deuterium_share: self.combustion_deuterium_share,
+            impulse_deuterium_share: self.impulse_deuterium_share,
+            hyperspace_deuterium_share: self.hyperspace_deuterium_share,
             well_rocky: self.well_rocky,
             well_ice: self.well_ice,
             well_gas_giant: self.well_gas_giant,
@@ -294,6 +334,15 @@ fn default_impulse() -> f64 {
 }
 fn default_hyperspace() -> f64 {
     30_000.0
+}
+fn default_combustion_d_share() -> f64 {
+    0.0
+}
+fn default_impulse_d_share() -> f64 {
+    0.05
+}
+fn default_hyperspace_d_share() -> f64 {
+    0.05
 }
 fn default_well_rocky() -> f64 {
     800.0

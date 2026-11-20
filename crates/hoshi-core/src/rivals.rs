@@ -381,6 +381,7 @@ impl GameState {
             let mut resources = self.config.starting_resources;
             resources.iron *= bonus;
             resources.silicon *= bonus;
+            resources.water_ice *= bonus;
             resources.deuterium *= bonus;
             let mut fleet = Fleet::default();
             fleet.add(ShipKind::ColonyShip, 1);
@@ -478,11 +479,13 @@ impl GameState {
         ships.add(ShipKind::ColonyShip, 1);
         let (outbound_secs, fuel) = self.flight_from(self.home, dest, ships, 100).ok()?;
         let empire = self.rivals.empires.get_mut(index)?;
-        if empire.fleet.get(ShipKind::ColonyShip) == 0 || empire.resources.deuterium + 1e-9 < fuel {
+        if empire.fleet.get(ShipKind::ColonyShip) == 0 || fuel.shortfall(empire.resources).is_some()
+        {
             return None;
         }
         empire.fleet.saturating_sub(ShipKind::ColonyShip, 1);
-        empire.resources.deuterium = (empire.resources.deuterium - fuel).max(0.0);
+        empire.resources.water_ice = (empire.resources.water_ice - fuel.water_ice).max(0.0);
+        empire.resources.deuterium = (empire.resources.deuterium - fuel.deuterium).max(0.0);
         let origin = empire.home;
         let rival_id = empire.id.clone();
         self.rivals.flights.push(RivalColonizeFlight {
@@ -618,10 +621,13 @@ impl GameState {
             Act::Raid => "launch".into(),
             Act::Colonize { fuel, .. } => {
                 if pocket.fleet.get(ShipKind::ColonyShip) > 0
-                    && pocket.resources.deuterium + 1e-9 >= *fuel
+                    && fuel.shortfall(pocket.resources).is_none()
                 {
                     pocket.fleet.saturating_sub(ShipKind::ColonyShip, 1);
-                    pocket.resources.deuterium = (pocket.resources.deuterium - *fuel).max(0.0);
+                    pocket.resources.water_ice =
+                        (pocket.resources.water_ice - fuel.water_ice).max(0.0);
+                    pocket.resources.deuterium =
+                        (pocket.resources.deuterium - fuel.deuterium).max(0.0);
                     "colonize".into()
                 } else {
                     "idle".into()
@@ -819,7 +825,7 @@ enum Act {
     Colonize {
         dest: Coord,
         outbound_secs: u64,
-        fuel: f64,
+        fuel: crate::LaunchFuel,
     },
     Idle,
 }
@@ -896,7 +902,7 @@ fn choose_action(
         let mut ships = Fleet::default();
         ships.add(ShipKind::ColonyShip, 1);
         if let Ok((outbound_secs, fuel)) = live.flight_from(live.home, dest, ships, 100)
-            && pocket.resources.deuterium + 1e-9 >= fuel
+            && fuel.shortfall(pocket.resources).is_none()
         {
             consider(
                 &mut best,
@@ -1297,6 +1303,7 @@ mod tests {
     fn rival_colonize_arrival_matches_stepped_ticks_and_waits_for_light() {
         let mut gap = spawn_on(quiet(1_000), 60);
         gap.rivals.empires[0].resources.deuterium = 50_000.0;
+        gap.rivals.empires[0].resources.water_ice = 50_000.0;
         let dest = gap.launch_rival_colonize(0, 1_000).expect("colony ship");
         freeze_rival_acts(&mut gap);
         let arrives = gap.rivals.flights[0].arrives_at;
@@ -1324,6 +1331,7 @@ mod tests {
         );
         let mut early = spawn_on(quiet(1_000), 60);
         early.rivals.empires[0].resources.deuterium = 50_000.0;
+        early.rivals.empires[0].resources.water_ice = 50_000.0;
         early.launch_rival_colonize(0, 1_000);
         freeze_rival_acts(&mut early);
         early.catch_up(arrives);
@@ -1342,7 +1350,9 @@ mod tests {
     fn player_colonize_of_a_rival_claim_fails_and_another_slot_still_works() {
         let mut state = spawn_on(quiet(1_000), 60);
         state.rivals.empires[0].resources.deuterium = 50_000.0;
+        state.rivals.empires[0].resources.water_ice = 50_000.0;
         state.resources.deuterium = 50_000.0;
+        state.resources.water_ice = 50_000.0;
         state.tech_levels.insert("colonization".into(), 1);
         state.fleet.add(ShipKind::ColonyShip, 2);
         let dest = state.launch_rival_colonize(0, 1_000).expect("colony ship");
@@ -1380,7 +1390,9 @@ mod tests {
     fn player_colonize_first_sends_the_rival_ship_home() {
         let mut state = spawn_on(quiet(1_000), 60);
         state.rivals.empires[0].resources.deuterium = 50_000.0;
+        state.rivals.empires[0].resources.water_ice = 50_000.0;
         state.resources.deuterium = 50_000.0;
+        state.resources.water_ice = 50_000.0;
         state.tech_levels.insert("colonization".into(), 2);
         state.fleet.add(ShipKind::ColonyShip, 1);
         let dest = state.rival_colonize_dest(0).expect("dest");

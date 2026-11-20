@@ -985,6 +985,10 @@ impl<P> ShardHost<P> {
         self.empires.get_mut(identity).unwrap().resources.deuterium = deuterium;
     }
 
+    pub(crate) fn stock_water_ice(&mut self, identity: &str, water_ice: f64) {
+        self.empires.get_mut(identity).unwrap().resources.water_ice = water_ice;
+    }
+
     pub(crate) fn seated(&self, identity: &str) -> bool {
         self.empires.contains_key(identity)
     }

@@ -84,7 +84,10 @@ pub struct ShipTravel {
     pub exhaust_velocity: f64,
     pub cargo: f64,
     pub outbound_secs: Option<u64>,
+    /// Water ice the trip debits (rocket-equation reaction mass).
     pub fuel_cost: Option<f64>,
+    /// Deuterium share the trip debits. Combustion is 0.
+    pub fuel_deuterium: Option<f64>,
 }
 
 /// Structured panel body. The TUI only formats these fields.
@@ -498,7 +501,8 @@ impl GameState {
                 exhaust_velocity: self.drive_ve(self.hull_drive(kind)),
                 cargo: stats.cargo,
                 outbound_secs: travel.map(|(s, _)| s),
-                fuel_cost: travel.map(|(_, f)| f),
+                fuel_cost: travel.map(|(_, f)| f.water_ice),
+                fuel_deuterium: travel.map(|(_, f)| f.deuterium),
             }),
         }
     }
@@ -1342,6 +1346,7 @@ mod tests {
         let mut state = GameState::new(0);
         state.config.survey = crate::SurveyConfig::default();
         state.resources.deuterium = 1e12;
+        state.resources.water_ice = 1e12;
         state.fleet.add(crate::ShipKind::EspionageProbe, 1);
         let dest = (2u16..=16)
             .flat_map(|system| {
@@ -1677,7 +1682,8 @@ mod tests {
             .unwrap();
         let travel = detail.ship.expect("ship block");
         assert_eq!(travel.outbound_secs, Some(expected.0));
-        assert!((travel.fuel_cost.unwrap() - expected.1).abs() < 1e-9);
+        assert!((travel.fuel_cost.unwrap() - expected.1.water_ice).abs() < 1e-9);
+        assert!((travel.fuel_deuterium.unwrap() - expected.1.deuterium).abs() < 1e-9);
         assert_eq!(
             travel.drive,
             state.display_name(state.hull_drive(ShipKind::SmallCargo))

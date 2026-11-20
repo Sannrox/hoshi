@@ -863,6 +863,7 @@ mod tests {
             hold_secs: 0,
             phase_ends_at: 1_100,
             fuel_paid: 0.0,
+            fuel_water_ice: 0.0,
             colonize: false,
             expedition_seed: None,
             expedition_applied: false,

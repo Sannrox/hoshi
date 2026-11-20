@@ -91,6 +91,7 @@ fn two_tenant_host() -> Host {
     a.fleet = Fleet::default();
     a.fleet.add(ShipKind::Battleship, 20);
     a.resources.deuterium = 1e8;
+    a.resources.water_ice = 1e8;
     let b = host.empires.get_mut("b").unwrap();
     b.fleet = Fleet::default();
     b.fleet.add(ShipKind::LightFighter, 2);

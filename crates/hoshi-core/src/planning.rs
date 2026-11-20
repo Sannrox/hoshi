@@ -3,7 +3,7 @@
 //! [`GameState::plan_mission`] is the governed action (propose, check, apply).
 
 use crate::buildings::BuildingKind;
-use crate::fleets::Coord;
+use crate::fleets::{Coord, LaunchFuel};
 use crate::orbits::{
     fuel_mass_for_dv, heliocentric_radius_m, hohmann_transfer, interstellar_delta_v,
     launch_window_times, mean_motion, orbital_radius_m, rocket_delta_v, to_game_secs,
@@ -261,8 +261,8 @@ impl fmt::Display for PlanError {
             }
             PlanError::CannotAfford { missing } => write!(
                 f,
-                "not enough resources (missing iron {:.0}, silicon {:.0}, deuterium {:.0})",
-                missing.iron, missing.silicon, missing.deuterium
+                "not enough resources (missing iron {:.0}, silicon {:.0}, water ice {:.0}, deuterium {:.0})",
+                missing.iron, missing.silicon, missing.water_ice, missing.deuterium
             ),
             PlanError::PayloadVolume { need, have } => {
                 write!(f, "payload volume {need:.0} exceeds cargo {have:.0}")
@@ -474,7 +474,7 @@ impl GameState {
         }
         let physics = self.physics_for(plan, now)?;
         let cfg = &self.config.orbits;
-        let fuel_units = physics.fuel_mass / cfg.kg_per_cargo;
+        let fuel = self.launch_fuel_from_mass(vehicle.ships, physics.fuel_mass);
         let volume = plan.payload.volume_m3(cfg.m3_per_cargo);
         let cap = self.vehicle_volume(vehicle);
         if volume > cap + 1e-9 {
@@ -493,7 +493,7 @@ impl GameState {
             .resources_at(plan.route.origin)
             .copied()
             .ok_or(PlanError::UnknownPlanet)?;
-        let need = plan.payload.cargo.with_fuel(fuel_units);
+        let need = plan.payload.cargo.with_launch_fuel(fuel);
         if !origin_stock.can_afford(need) {
             return Err(PlanError::CannotAfford {
                 missing: origin_stock.missing(need),
@@ -507,8 +507,13 @@ impl GameState {
         self.check_mission(&plan, now)?;
         let physics = self.physics_for(&plan, now)?;
         let cfg = self.config.orbits.clone();
-        let fuel_units = physics.fuel_mass / cfg.kg_per_cargo;
-        self.debit_at(plan.route.origin, plan.payload.cargo.with_fuel(fuel_units))?;
+        let vehicle = self
+            .vehicles
+            .iter()
+            .find(|v| v.id == plan.vehicle_id)
+            .ok_or(PlanError::UnknownVehicle(plan.vehicle_id))?;
+        let fuel = self.launch_fuel_from_mass(vehicle.ships, physics.fuel_mass);
+        self.debit_at(plan.route.origin, plan.payload.cargo.with_launch_fuel(fuel))?;
         let launched = now.max(plan.window.opens_at);
         let arrives = launched.saturating_add(physics.coast_secs);
         let free_at = arrives.saturating_add(cfg.turnaround_secs);
@@ -744,12 +749,13 @@ impl GameState {
         burn
     }
 
-    /// Deuterium a star-map send of `ships` from `origin` to `dest` burns at
-    /// launch: the rocket equation on the same delta-v, dry mass and
-    /// exhaust velocity a vehicle mission uses. `speed_percent` scales the
-    /// transfer burn from Hohmann (10%) to the high-energy burn (100%); the
-    /// wells cost the same at any speed. A round trip pays its return leg
-    /// now as well, at the mass it carries back.
+    /// Reaction mass a star-map send of `ships` from `origin` to `dest`
+    /// burns at launch: the rocket equation on the same delta-v, dry mass
+    /// and exhaust velocity a vehicle mission uses. Paid in water ice.
+    /// `speed_percent` scales the transfer burn from Hohmann (10%) to the
+    /// high-energy burn (100%); the wells cost the same at any speed. A
+    /// round trip pays its return leg now as well, at the mass it carries
+    /// back.
     pub(crate) fn send_fuel(
         &self,
         origin: Coord,
@@ -770,6 +776,50 @@ impl GameState {
             fuel_mass_for_dv(ve, dry + cargo.total() * cfg.kg_per_cargo, delta_v) / cfg.kg_per_cargo
         };
         leg(haul.out) + haul.back.map_or(0.0, leg)
+    }
+
+    /// Highest deuterium share among drives in `ships`. A mixed stack still
+    /// burns the fusion share of its impulse hulls.
+    pub fn fleet_deuterium_share(&self, ships: Fleet) -> f64 {
+        let mut share: f64 = 0.0;
+        for kind in ShipKind::ALL {
+            if ships.get(kind) == 0 {
+                continue;
+            }
+            share = share.max(
+                self.config
+                    .orbits
+                    .deuterium_share_for_drive(self.hull_drive(kind)),
+            );
+        }
+        share
+    }
+
+    /// Water ice plus deuterium share for `reaction` mass (cargo units).
+    pub fn launch_fuel_from_units(&self, ships: Fleet, water_ice: f64) -> LaunchFuel {
+        LaunchFuel {
+            water_ice,
+            deuterium: water_ice * self.fleet_deuterium_share(ships),
+        }
+    }
+
+    /// Water ice plus deuterium share for a rocket-equation mass in kg.
+    pub fn launch_fuel_from_mass(&self, ships: Fleet, fuel_mass_kg: f64) -> LaunchFuel {
+        self.launch_fuel_from_units(ships, fuel_mass_kg / self.config.orbits.kg_per_cargo)
+    }
+
+    pub(crate) fn launch_fuel(
+        &self,
+        origin: Coord,
+        dest: Coord,
+        ships: Fleet,
+        haul: crate::Haul,
+        speed_percent: u8,
+    ) -> LaunchFuel {
+        self.launch_fuel_from_units(
+            ships,
+            self.send_fuel(origin, dest, ships, haul, speed_percent),
+        )
     }
 
     /// Delta-v to climb out of (or descend into) `coord`'s surface well. A
@@ -936,12 +986,13 @@ impl GameState {
         dest: Coord,
         ships: Fleet,
         cargo: f64,
-        missing: f64,
-        cost: f64,
+        shortfall: (ResourceKind, f64, f64),
     ) -> crate::FleetError {
+        let (kind, missing, cost) = shortfall;
         crate::FleetError::InsufficientFuel {
             missing,
             cost,
+            kind,
             hint: self.expensive_send_hint(origin, dest, ships, cargo),
         }
     }
@@ -1045,6 +1096,7 @@ mod tests {
         state.resources.iron = 50_000.0;
         state.resources.silicon = 50_000.0;
         state.resources.deuterium = 50_000.0;
+        state.resources.water_ice = 50_000.0;
         state
     }
 
@@ -1095,7 +1147,10 @@ mod tests {
                 .flight_hauling(Coord::HOME, neighbor(), ships, Haul::one_way(cargo), speed)
                 .unwrap()
                 .1;
-            assert!((one_way - plan.fuel_mass / kg).abs() < 1e-6, "{speed}%");
+            assert!(
+                (one_way.water_ice - plan.fuel_mass / kg).abs() < 1e-6,
+                "{speed}%"
+            );
         }
         // A transport also pays its empty flight home at launch.
         let one_way = |haul| {
@@ -1103,6 +1158,7 @@ mod tests {
                 .flight_hauling(Coord::HOME, neighbor(), ships, haul, 10)
                 .unwrap()
                 .1
+                .water_ice
         };
         let back = one_way(Haul::one_way(Resources::ZERO));
         let round = one_way(Haul::round_trip(cargo, Resources::ZERO));
@@ -1135,24 +1191,119 @@ mod tests {
                 .unwrap()
                 .1
         };
+        let share = |state: &GameState, kind| state.fleet_deuterium_share(one(kind));
         let full = Resources::from_parts(state.ship_stats(ShipKind::SmallCargo).cargo, 0.0, 0.0);
-        // T2: a full Small Cargo hop fits base deuterium storage.
-        assert!(fuel(&state, ShipKind::SmallCargo, hop, full) <= 10_000.0);
-        // T3: a Colony Ship reaches the next system on one storage upgrade.
-        assert!(fuel(&state, ShipKind::ColonyShip, next_system, Resources::ZERO) <= 20_000.0);
+        // T2: a full Small Cargo hop fits base deuterium storage as water ice.
+        let t2 = fuel(&state, ShipKind::SmallCargo, hop, full);
+        assert!(t2.water_ice <= 10_000.0);
+        assert!(t2.deuterium < 1e-9);
+        // T3: a Colony Ship reaches the next system on one storage upgrade of ice.
+        let t3 = fuel(&state, ShipKind::ColonyShip, next_system, Resources::ZERO);
+        assert!(t3.water_ice <= 20_000.0);
+        assert!((t3.deuterium - t3.water_ice * share(&state, ShipKind::ColonyShip)).abs() < 1e-6);
         // T4: an Espionage Probe can reach the next system.
+        let t4 = fuel(
+            &state,
+            ShipKind::EspionageProbe,
+            next_system,
+            Resources::ZERO,
+        );
+        assert!(t4.water_ice <= 1_000.0);
         assert!(
-            fuel(
-                &state,
-                ShipKind::EspionageProbe,
-                next_system,
-                Resources::ZERO
-            ) <= 1_000.0
+            (t4.deuterium - t4.water_ice * share(&state, ShipKind::EspionageProbe)).abs() < 1e-6
         );
         // T1: from a world with an elevator, an empty hop costs at most 48 h
-        // of level-8 synthesizer income (33.2 D/h).
+        // of level-8 synthesizer income (33.2 /h) of water ice, and no deuterium.
         state.buildings.space_elevator = 1;
-        assert!(fuel(&state, ShipKind::SmallCargo, hop, Resources::ZERO) <= 48.0 * 33.2);
+        let t1 = fuel(&state, ShipKind::SmallCargo, hop, Resources::ZERO);
+        assert!(t1.water_ice <= 48.0 * 33.2);
+        assert!(t1.deuterium < 1e-9);
+    }
+
+    #[test]
+    fn combustion_launch_debits_water_ice_and_no_deuterium() {
+        let mut state = ready(1_000);
+        state.resources.water_ice = 1e9;
+        state.resources.deuterium = 1e9;
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::SmallCargo, 1);
+        let dest = neighbor();
+        let want = state.flight_from(state.home, dest, ships, 10).unwrap().1;
+        assert!(want.water_ice > 0.0);
+        assert!(want.deuterium < 1e-9);
+        let before = state.resources;
+        state
+            .launch_fleet(state.home, ships, dest, 10, 0, 1_000)
+            .unwrap();
+        assert!((before.water_ice - state.resources.water_ice - want.water_ice).abs() < 1e-6);
+        assert!((before.deuterium - state.resources.deuterium).abs() < 1e-6);
+        assert!((state.missions[0].fuel_water_ice - want.water_ice).abs() < 1e-6);
+        assert!(state.missions[0].fuel_paid < 1e-9);
+    }
+
+    #[test]
+    fn impulse_launch_debits_water_ice_plus_deuterium_share() {
+        let mut state = ready(1_000);
+        state.tech_levels.insert("impulse_drive".into(), 1);
+        state.resources.water_ice = 1e9;
+        state.resources.deuterium = 1e9;
+        state.fleet.add(ShipKind::LargeCargo, 1);
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::LargeCargo, 1);
+        let dest = neighbor();
+        let want = state.flight_from(state.home, dest, ships, 10).unwrap().1;
+        assert!(want.water_ice > 0.0);
+        assert!(want.deuterium > 0.0);
+        assert!(
+            (want.deuterium - want.water_ice * state.fleet_deuterium_share(ships)).abs() < 1e-6
+        );
+        let before = state.resources;
+        state
+            .launch_fleet(state.home, ships, dest, 10, 0, 1_000)
+            .unwrap();
+        assert!((before.water_ice - state.resources.water_ice - want.water_ice).abs() < 1e-6);
+        assert!((before.deuterium - state.resources.deuterium - want.deuterium).abs() < 1e-6);
+        assert!((state.missions[0].fuel_water_ice - want.water_ice).abs() < 1e-6);
+        assert!((state.missions[0].fuel_paid - want.deuterium).abs() < 1e-6);
+    }
+
+    #[test]
+    fn launch_refusal_names_the_short_resource() {
+        let mut state = ready(1_000);
+        state.tech_levels.insert("impulse_drive".into(), 1);
+        state.fleet.add(ShipKind::LargeCargo, 1);
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::LargeCargo, 1);
+        let dest = neighbor();
+        let want = state.flight_from(state.home, dest, ships, 10).unwrap().1;
+        state.resources.water_ice = 0.0;
+        state.resources.deuterium = 1e9;
+        let err = state
+            .launch_fleet(state.home, ships, dest, 10, 0, 1_000)
+            .unwrap_err();
+        match err {
+            crate::FleetError::InsufficientFuel {
+                kind: ResourceKind::WaterIce,
+                cost,
+                ..
+            } => assert!((cost - want.water_ice).abs() < 1e-6),
+            other => panic!("{other}"),
+        }
+        state.resources.water_ice = 1e9;
+        state.resources.deuterium = 0.0;
+        let err = state
+            .launch_fleet(state.home, ships, dest, 10, 0, 1_000)
+            .unwrap_err();
+        let text = err.to_string();
+        match err {
+            crate::FleetError::InsufficientFuel {
+                kind: ResourceKind::Deuterium,
+                cost,
+                ..
+            } => assert!((cost - want.deuterium).abs() < 1e-6),
+            other => panic!("{other}"),
+        }
+        assert!(text.contains("deuterium"), "{text}");
     }
 
     #[test]
@@ -1627,6 +1778,7 @@ mod tests {
     #[test]
     fn a_mission_in_flight_keeps_the_fuel_it_booked_after_a_refit() {
         let mut state = ready(1_000);
+        state.resources.water_ice = 1e9;
         state.resources.deuterium = 1e9;
         let mut ships = Fleet::default();
         ships.add(ShipKind::SmallCargo, 1);
@@ -1638,13 +1790,15 @@ mod tests {
         state
             .launch_fleet(state.home, ships, dest, 10, 0, 1_000)
             .unwrap();
-        let fuel = state.missions[0].fuel_paid;
+        let ice = state.missions[0].fuel_water_ice;
+        let deut = state.missions[0].fuel_paid;
         let arrives = state.missions[0].phase_ends_at;
         state.tech_levels.insert("small_cargo_impulse".into(), 1);
-        assert_eq!(state.missions[0].fuel_paid, fuel);
+        assert_eq!(state.missions[0].fuel_water_ice, ice);
+        assert_eq!(state.missions[0].fuel_paid, deut);
         assert_eq!(state.missions[0].phase_ends_at, arrives);
         let cheaper = state.send_fuel(state.home, dest, ships, Haul::empty_round_trip(), 10);
-        assert!(cheaper < fuel, "{cheaper} >= {fuel}");
+        assert!(cheaper < ice, "{cheaper} >= {ice}");
     }
 
     #[test]
@@ -1787,7 +1941,7 @@ mod tests {
             .unwrap();
         let now = estimate.windows[0].opens_at;
         state.last_tick_unix = now;
-        let deuterium = state.resources.deuterium;
+        let ice = state.resources.water_ice;
         let mut plan = state
             .propose_mission(
                 &PlanRequest {
@@ -1809,7 +1963,7 @@ mod tests {
         plan.available_dv = 0.0;
         plan.coast_secs = 1;
         state.apply_mission(plan).unwrap();
-        let used = deuterium - state.resources.deuterium;
+        let used = ice - state.resources.water_ice;
         assert!(
             (used - expected_fuel / state.config.orbits.kg_per_cargo).abs() < 1e-6,
             "used {used} expected {}",
@@ -1929,7 +2083,7 @@ mod tests {
             .launch_transport(state.home, dest, ships, cargo, 100, 0)
             .unwrap_err();
         let text = err.to_string();
-        assert!(text.contains("not enough deuterium"), "{text}");
+        assert!(text.contains("not enough water ice"), "{text}");
         assert!(text.contains(&hint), "{text}");
     }
 
@@ -1949,7 +2103,7 @@ mod tests {
             .launch_transport(state.home, dest, ships, cargo, 100, 0)
             .unwrap_err();
         let text = err.to_string();
-        assert!(text.contains("not enough deuterium"), "{text}");
+        assert!(text.contains("not enough water ice"), "{text}");
         assert!(!text.contains("Combustion Drive"), "{text}");
         assert!(!text.contains("Large Cargo"), "{text}");
     }

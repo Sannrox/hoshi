@@ -274,10 +274,16 @@ pub fn inspector(
                 Line::from(format!("{:.0}", ship.cargo)),
             ),
         ];
-        if let (Some(secs), Some(fuel)) = (ship.outbound_secs, ship.fuel_cost) {
+        if let (Some(secs), Some(ice)) = (ship.outbound_secs, ship.fuel_cost) {
+            let deut = ship.fuel_deuterium.unwrap_or(0.0);
+            let fuel = if deut > 1e-9 {
+                format!("fuel {ice:.1} ice + {deut:.1} D")
+            } else {
+                format!("fuel {ice:.1} ice")
+            };
             rows.push((
                 "trip".into(),
-                Line::from(format!("{}  fuel {fuel:.1} D", duration(secs))),
+                Line::from(format!("{}  {fuel}", duration(secs))),
             ));
         }
         out.extend(PropertyList { theme: t, rows }.lines());

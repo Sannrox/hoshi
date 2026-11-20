@@ -484,6 +484,12 @@ m3_per_cargo = 1.0
 combustion_ve = 3100.0
 impulse_ve = 20000.0
 hyperspace_ve = 30000.0
+# Deuterium burned per unit of reaction mass. Combustion is chemical.
+# Impulse and hyperspace keep a playable share so deuterium stays a
+# flight cost; the physical fusion share is ~2e-6 at 20 km/s.
+combustion_deuterium_share = 0.0
+impulse_deuterium_share = 0.05
+hyperspace_deuterium_share = 0.05
 well_rocky = 800.0
 well_ice = 500.0
 well_gas_giant = 1500.0

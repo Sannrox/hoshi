@@ -1140,14 +1140,11 @@ impl GameState {
         let (secs, fuel) = self
             .flight_hauling(origin, dest, ships, crate::Haul::one_way(cargo), 100)
             .map_err(|_| MarketError::CannotFly)?;
-        let have_fuel = self.trader_stock(TraderId::Player, origin).deuterium;
-        if have_fuel + 1e-9 < fuel {
-            return Err(MarketError::Insufficient {
-                missing: fuel - have_fuel,
-                kind: ResourceKind::Deuterium,
-            });
+        let stock = self.trader_stock(TraderId::Player, origin);
+        if let Some((kind, missing, _)) = fuel.shortfall(stock) {
+            return Err(MarketError::Insufficient { missing, kind });
         }
-        self.debit_trader(TraderId::Player, origin, cargo.with_fuel(fuel))?;
+        self.debit_trader(TraderId::Player, origin, cargo.with_launch_fuel(fuel))?;
         self.ensure_region(origin);
         self.ensure_region(dest);
         let id = self.board.next_shipment_id.max(1);
@@ -1159,7 +1156,7 @@ impl GameState {
                 origin,
                 dest,
                 cargo,
-                fuel,
+                fuel: fuel.water_ice,
                 launched_at: now,
                 arrives_at: now.saturating_add(secs),
                 contract_id,
@@ -1181,7 +1178,7 @@ impl GameState {
                 origin.to_string(),
                 dest.to_string(),
             ],
-            outcome: format!("fuel {fuel:.1}"),
+            outcome: format!("fuel ice {:.1} D {:.1}", fuel.water_ice, fuel.deuterium),
             mass: cargo.total(),
             ..crate::HistoryDraft::default()
         });
@@ -1738,7 +1735,7 @@ impl GameState {
         let mut ships = Fleet::default();
         ships.add(ShipKind::SmallCargo, cargo_ships(self, cargo));
         self.flight_hauling(origin, dest, ships, crate::Haul::one_way(cargo), 100)
-            .map(|(_, fuel)| fuel)
+            .map(|(_, fuel)| fuel.total())
             .unwrap_or(0.0)
     }
 
@@ -2000,6 +1997,7 @@ mod tests {
         state.resources.iron = 2_000.0;
         state.resources.silicon = 2_000.0;
         state.resources.deuterium = 5_000.0;
+        state.resources.water_ice = 5_000.0;
         state
     }
 
@@ -2197,8 +2195,10 @@ mod tests {
     fn shipment_takes_transit_time_and_fuel() {
         let mut state = ready(1_000);
         state.resources.deuterium = 1e7;
+        state.resources.water_ice = 1e7;
         let hub = state.config.market.hub();
         let metal = state.resources.iron;
+        let ice = state.resources.water_ice;
         let deut = state.resources.deuterium;
         let id = state
             .ship_goods(
@@ -2213,7 +2213,8 @@ mod tests {
             )
             .unwrap();
         assert!(state.resources.iron < metal);
-        assert!(state.resources.deuterium < deut);
+        assert!(state.resources.water_ice < ice);
+        assert!((state.resources.deuterium - deut).abs() < 1e-9);
         let ship = &state.board.shipments[&id];
         assert!(ship.arrives_at > 1_000);
         assert!(!ship.delivered);

@@ -774,7 +774,7 @@ mod tests {
             "cheap slow transfer",
             "more fuel and less coast",
             "discount when a body sits between the two radii",
-            "rocket-equation deuterium",
+            "rocket-equation water ice",
             "map [flight]",
         ] {
             assert!(text.contains(needle), "missing {needle} in\n{text}");

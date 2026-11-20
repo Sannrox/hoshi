@@ -276,10 +276,10 @@ fn conquest_step(state: &GameState) -> Option<String> {
             Some((secs, fuel, o.coord))
         })
         .min_by_key(|&(secs, _, coord)| (secs, coord))?;
-    let stock = state.resources.deuterium;
-    Some(if fuel > stock + 1e-9 {
+    Some(if fuel.shortfall(state.resources).is_some() {
         format!(
-            "the docked warships need {fuel:.0} deuterium to reach the pirate outpost at {coord} ({stock:.0} in stock); stock more or send fewer ships"
+            "the docked warships need {:.0} water ice and {:.0} deuterium to reach the pirate outpost at {coord} ({:.0} ice, {:.0} D in stock); stock more or send fewer ships",
+            fuel.water_ice, fuel.deuterium, state.resources.water_ice, state.resources.deuterium
         )
     } else {
         format!(
@@ -764,6 +764,7 @@ mod tests {
         assert!(advice.iter().any(|a| a.id == "energy"), "energy stays");
         state.fleet.add(ShipKind::LightFighter, 5);
         state.resources.deuterium = 1e11;
+        state.resources.water_ice = 1e11;
         let text = |state: &GameState| advise(state, Some(VictoryPath::Conquest))[0].text.clone();
         let near = text(&state);
         assert!(near.contains("nearest pirate outpost"), "{near}");
@@ -772,6 +773,7 @@ mod tests {
             outpost.defences = crate::ships::Fleet::default();
         }
         assert_eq!(text(&state), near, "no hidden intel");
+        state.resources.water_ice = 0.0;
         state.resources.deuterium = 0.0;
         assert!(
             text(&state).contains("send fewer ships"),

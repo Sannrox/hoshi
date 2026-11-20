@@ -1674,9 +1674,12 @@ impl App {
             };
             match flight {
                 Ok((eta, fuel)) => {
-                    lines.push(
-                        self.props(&[("ETA", duration(eta)), ("fuel", format!("{fuel:.1} D"))]),
-                    );
+                    let fuel_bit = if fuel.deuterium > 1e-9 {
+                        format!("{:.1} ice + {:.1} D", fuel.water_ice, fuel.deuterium)
+                    } else {
+                        format!("{:.1} ice", fuel.water_ice)
+                    };
+                    lines.push(self.props(&[("ETA", duration(eta)), ("fuel", fuel_bit)]));
                     if form.mission == Mission::Expedition {
                         let hold = self.state.config.expedition.min_hold_secs;
                         let weight = self.state.expedition_pirate_weight(&form.ships, hold);
@@ -1698,7 +1701,18 @@ impl App {
                         form.ships,
                         form.cargo.total(),
                     );
-                    if fuel + cargo_d > stock.deuterium {
+                    let ice_short = fuel.water_ice > stock.water_ice + 1e-9;
+                    let deut_need = fuel.deuterium + cargo_d;
+                    let deut_short = deut_need > stock.deuterium + 1e-9;
+                    if ice_short {
+                        lines.extend(callout_lines(
+                            t,
+                            Intent::Danger,
+                            "not enough water ice",
+                            &format!("have {:.0} ice", stock.water_ice),
+                        ));
+                    }
+                    if deut_short {
                         lines.extend(callout_lines(
                             t,
                             Intent::Danger,
@@ -1707,7 +1721,7 @@ impl App {
                         ));
                     }
                     if let Some(hint) = hint {
-                        let intent = if fuel + cargo_d > stock.deuterium {
+                        let intent = if ice_short || deut_short {
                             Intent::Danger
                         } else {
                             Intent::Warning

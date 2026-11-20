@@ -3198,6 +3198,7 @@ mod tests {
             hold_secs: 0,
             phase_ends_at: now + 120,
             fuel_paid: 1.0,
+            fuel_water_ice: 0.0,
             colonize: false,
             expedition_seed: Some(0xFEED_FACE_FEED_FACE),
             expedition_applied: false,
@@ -3561,6 +3562,7 @@ mod tests {
         let mut shard = session(1_000);
         let mut a = test_state(1_000);
         a.resources.deuterium = 10_000.0;
+        a.resources.water_ice = 10_000.0;
         a.fleet.add(ShipKind::ColonyShip, 1);
         let mut empires = two_empires(a, tenant_b(1_000));
         place_sites(&mut shard);
@@ -3592,6 +3594,7 @@ mod tests {
         let mut shard = session(1_000);
         let mut state = test_state(1_000);
         state.resources.deuterium = 10_000.0;
+        state.resources.water_ice = 10_000.0;
         state.fleet.add(ShipKind::ColonyShip, 1);
         let before = state.clone();
         let err = shard
@@ -3818,6 +3821,7 @@ mod tests {
     fn spy_empires() -> BTreeMap<String, GameState> {
         let mut a = test_state(SPY_START);
         a.resources.deuterium = 1e12;
+        a.resources.water_ice = 1e12;
         a.fleet.add(ShipKind::EspionageProbe, 4);
         a.config.espionage.error_base = 0.3;
         two_empires(a, tenant_b(SPY_START))
@@ -4019,10 +4023,12 @@ mod tests {
         let stock = 100.0;
         let mut a = test_state(start);
         a.resources.deuterium = 1e12;
+        a.resources.water_ice = 1e12;
         a.fleet.add(ShipKind::Recycler, 1);
         let mut b = test_state(start);
         b.home = B_HOME;
         b.resources.deuterium = 1e12;
+        b.resources.water_ice = 1e12;
         b.fleet.add(ShipKind::EspionageProbe, 1);
         b.config.survey.weights.find = 1;
         b.config.survey.find_debris = find;
@@ -4095,6 +4101,7 @@ mod tests {
         b.home = B_HOME;
         for state in [&mut a, &mut b] {
             state.resources.deuterium = 1e12;
+            state.resources.water_ice = 1e12;
             state.fleet = ships;
             state.tech_levels.insert("colonization".into(), 1);
         }
@@ -4197,8 +4204,9 @@ mod tests {
                 raid_cmd(atk_battleships, B_HOME, "").ships,
                 100,
             )
-            .map_or(0.0, |(_, fuel)| fuel);
-        a.resources.deuterium = fuel + 5_000.0;
+            .map_or(crate::LaunchFuel::ZERO, |(_, fuel)| fuel);
+        a.resources.water_ice = fuel.water_ice;
+        a.resources.deuterium = fuel.deuterium + 5_000.0;
         let mut b = armed(RAID_START, def_fighters);
         b.home = B_HOME;
         b.config.moons.form_chance_per_debris = 0.0;
@@ -4925,7 +4933,8 @@ mod tests {
             assert_eq!(mission.dest, coord, "{identity}");
             assert!(mission.expedition_seed.is_some());
             assert_eq!(mission.outbound_secs, secs, "{identity}");
-            assert_eq!(mission.fuel_paid, fuel, "{identity}");
+            assert_eq!(mission.fuel_paid, fuel.deuterium, "{identity}");
+            assert_eq!(mission.fuel_water_ice, fuel.water_ice, "{identity}");
             outbound.push(secs);
         }
         assert_ne!(outbound[0], outbound[1], "each pays its own distance");

@@ -14,7 +14,7 @@ writes:
   migrate, with a last-tick stamp in the future so a live `state` command is a
   catch-up no-op
 - `too_new.sqlite` — `PRAGMA user_version = 999`
-- `expedition.sqlite` — schema v9, deterministic, with fighters and deuterium
+- `expedition.sqlite` — schema v9, deterministic, with fighters and water ice for the rocket-equation send
 - `build_research.sqlite` — schema v9, deterministic, with a lab and enough stockpile to queue energy research
 
 When a new save schema lands, rerun the script and keep the new `vN.sqlite`.

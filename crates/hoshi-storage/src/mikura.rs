@@ -411,6 +411,7 @@ mod tests {
         let mut state = GameState::with_config(now, cfg.clone());
         state.tech_levels.insert("colonization".into(), 1);
         state.resources.deuterium = 10_000.0;
+        state.resources.water_ice = 10_000.0;
         state.fleet.add(ShipKind::ColonyShip, 1);
         state
             .launch_colony(

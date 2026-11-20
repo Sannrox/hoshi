@@ -495,6 +495,7 @@ impl LoopbackHost {
         if let Some(state) = self.empires.get_mut(&self.identity) {
             state.fleet.add(kind, n);
             state.resources.deuterium += 1e8;
+            state.resources.water_ice += 1e8;
         }
     }
 
@@ -512,6 +513,7 @@ impl LoopbackHost {
             state.fleet = Fleet::default();
             state.fleet.add(ShipKind::Battleship, 20);
             state.resources.deuterium = 1e8;
+            state.resources.water_ice = 1e8;
         }
         let ships = self.empires[attacker].fleet;
         self.shard

@@ -158,6 +158,7 @@ mod tests {
         host.apply(&join("join-b", "b")).unwrap();
         host.park("a", ShipKind::Battleship, 20);
         host.stock_deuterium("a", 1e8);
+        host.stock_water_ice("a", 1e8);
         host.park("b", ShipKind::LightFighter, 2);
         host.stock_iron("b", 40_000.0);
         host.save_now();
