@@ -30,7 +30,7 @@ factors must be `> 0`, bases `>= 0`, build and ship queues at least 1.
 
 Construction stockpiles are iron, silicon, rare earths, water ice, helium-3 and deuterium (also named frames, electronics and fuel). Three tanks hold them: iron storage (`metal_storage`) for iron and rare earths, silicon storage (`crystal_storage`) for silicon, deuterium storage for water ice, helium-3 and fuel. Intermediate goods live in the save `goods` table. Building costs may use `frames`, `electronics` and `fuel`; ship costs may use `frames`, `electronics` and `propellant` (`fuel` on a ship is still flight consumption).
 
-`[chains.deposits.<type>]` is richness by planet type. `deposit_jitter` (in `[0, 1)`) spreads that richness from the galaxy seed and coord. The planet screen lists the resulting deposits.
+`[chains.deposits.<type>]` is richness by planet type. `deposit_jitter` (in `[0, 1)`) spreads that richness from the galaxy seed and coord. The planet screen lists the resulting deposits. Every planet type's `water_ice` richness sits above the 0.5 that `refine_propellant` draws per synthesizer unit, so each world keeps spare ice for launch reaction mass after the synthesizer takes its share (bundled: rocky 0.72, gas giant 0.75, ice 1.25).
 
 ## Waste heat and pollution
 
@@ -132,7 +132,7 @@ Playability targets, held by a core test on the bundled config at 10% speed (Hoh
 
 | | Target |
 | --- | --- |
-| T1 | An empty Small Cargo hop to the next slot, from a world with a space elevator, costs at most 48 h of level-8 synthesizer income (1,594 water ice) and no deuterium. |
+| T1 | An empty Small Cargo hop to the next slot, from a world with a space elevator, costs at most 48 h of the water ice a rocky home nets with a level-8 synthesizer, and no deuterium. |
 | T2 | A full Small Cargo hop to the next slot costs at most base deuterium storage (10,000 water ice) and no deuterium. |
 | T3 | A Colony Ship reaches the next system within one storage upgrade (20,000 water ice) plus its impulse deuterium share. |
 | T4 | An Espionage Probe reaches the next system (impulse drive) within 1,000 water ice plus its deuterium share. |

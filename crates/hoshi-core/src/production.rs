@@ -1308,16 +1308,16 @@ mod tests {
         let state = GameState::new(1_000);
         assert_eq!(state.planet_kind(state.home), Some(PlanetType::Rocky));
         let limiter = LimitingFactor::Input {
-            good: "water_ice".into(),
+            good: "helium_3".into(),
         };
-        assert_eq!(state.limiter_row_label(&limiter), "input water ice");
+        assert_eq!(state.limiter_row_label(&limiter), "input helium-3");
         let [need, next] = state.limiter_hint(&limiter, state.home);
         let text = format!("{need} {next}");
         assert!(need.contains("deuterium synthesizer"), "{need}");
         assert!(need.contains("deposit"), "{need}");
-        assert!(next.contains("Ice worlds"), "{next}");
-        assert!(next.contains("9"), "{next}");
-        assert!(next.contains("12"), "{next}");
+        assert!(next.contains("Gas giants"), "{next}");
+        assert!(next.contains("13"), "{next}");
+        assert!(next.contains("16"), "{next}");
         assert!(!text.to_lowercase().contains("buy"), "{text}");
     }
 
