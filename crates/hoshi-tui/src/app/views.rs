@@ -1427,18 +1427,18 @@ impl App {
 
     /// The dispatch form cut to `height` rows. A short panel scrolls so the
     /// selected row and the lines below it stay visible: the rest of the
-    /// cargo list plus the hold when cargo rides, more when Invade lists
+    /// cargo list plus the hold and speed row when cargo rides, more when Invade lists
     /// its launch checks. The selected row never scrolls off the top, even
     /// if the reserved context is taller than the panel.
     pub(super) fn dispatch_window(&self, form: &DispatchForm, height: usize) -> Vec<Line<'static>> {
         let below = if form.mission == Mission::Invade {
             8
         } else if form.mission == Mission::Transport {
-            DISPATCH_CARGO.len() + 3
+            DISPATCH_CARGO.len() + 4
         } else if form.mission.carries_cargo() {
-            DISPATCH_CARGO.len() + 2
+            DISPATCH_CARGO.len() + 3
         } else {
-            3
+            4
         };
         let (lines, selected) = self.dispatch_lines(form);
         let offset = (selected + 1 + below)
@@ -1620,6 +1620,38 @@ impl App {
                 ),
             ]));
         }
+        {
+            let on = form.speed_row();
+            if on {
+                selected_line = lines.len();
+            }
+            let speed = format!("{:>3}%", form.launch_speed());
+            let mut spans = vec![
+                Span::styled(if on { "▌" } else { " " }, t.intent(Intent::Primary)),
+                Span::styled(
+                    format!("{:<w$} ", "speed"),
+                    if on { t.strong() } else { t.text() },
+                ),
+            ];
+            if on {
+                spans.push(keycap(t, "-"));
+                spans.push(Span::styled(format!(" {speed} "), t.strong()));
+                spans.push(keycap(t, "+"));
+            } else {
+                spans.push(Span::styled(
+                    format!("   {speed}"),
+                    if form.launch_speed() < 100 {
+                        t.text()
+                    } else {
+                        t.faint()
+                    },
+                ));
+            }
+            if form.repeat_secs().is_some() {
+                spans.push(Span::styled("  routes fly at 100%", t.muted()));
+            }
+            lines.push(Line::from(spans));
+        }
         if form.repeats() {
             let on = form.dest_pays_row();
             if on {
@@ -1708,11 +1740,12 @@ impl App {
         } else {
             let flight = if form.mission == Mission::Recycle {
                 self.state
-                    .recycle_flight(origin, form.ships, dest, 100)
+                    .recycle_flight(origin, form.ships, dest, form.launch_speed())
                     .map(|(eta, fuel)| (eta, fuel, hoshi_core::LaunchFuel::ZERO))
             } else {
                 let haul = form.mission.haul(form.cargo);
-                self.state.flight_legs(origin, dest, form.ships, haul, 100)
+                self.state
+                    .flight_legs(origin, dest, form.ships, haul, form.launch_speed())
             };
             match flight {
                 Ok((eta, out, back)) => {
@@ -1776,11 +1809,15 @@ impl App {
                         } else {
                             stock.water_ice
                         };
+                        let mut detail = format!("have {have:.0} ice");
+                        if let Some(cheapest) = self.slowest_send_ice(form) {
+                            detail.push_str(&format!("; at 10% this send costs {cheapest:.0} ice"));
+                        }
                         lines.extend(callout_lines(
                             t,
                             Intent::Danger,
                             "not enough water ice",
-                            &format!("have {:.0} ice", have),
+                            &detail,
                         ));
                     }
                     if deut_short {
@@ -1832,21 +1869,48 @@ impl App {
         }
         lines.push(Line::default());
         let mut keys = if form.mission.carries_cargo() {
-            vec![
-                keycap(t, "⏎"),
-                Span::styled(" send  ", t.muted()),
-                keycap(t, "+/-"),
-                Span::styled(" amount  ", t.muted()),
-            ]
+            vec![keycap(t, "⏎"), Span::styled(" send  ", t.muted())]
         } else {
             vec![keycap(t, "⏎"), Span::styled(" launch  ", t.muted())]
         };
+        if form.speed_row() {
+            keys.extend([keycap(t, "+/-"), Span::styled(" speed  ", t.muted())]);
+        } else if form.mission.carries_cargo() {
+            keys.extend([keycap(t, "+/-"), Span::styled(" amount  ", t.muted())]);
+        }
         if self.dispatch_missions(origin, dest).len() > 1 {
             keys.extend([keycap(t, "space"), Span::styled(" mission  ", t.muted())]);
         }
         keys.extend([keycap(t, "x"), Span::styled(" close", t.muted())]);
         lines.push(Line::from(keys));
         (lines, selected_line)
+    }
+
+    /// The origin's ice bill for this send at 10% speed, when the form flies
+    /// faster than that: what the ice-short callout offers as the way out.
+    fn slowest_send_ice(&self, form: &DispatchForm) -> Option<f64> {
+        if form.launch_speed() <= 10 {
+            return None;
+        }
+        let (origin, dest) = (form.origin, form.dest);
+        let bill = if form.mission == Mission::Recycle {
+            self.state
+                .recycle_flight(origin, form.ships, dest, 10)
+                .ok()?
+                .1
+        } else {
+            let haul = form.mission.haul(form.cargo);
+            let (_, out, back) = self
+                .state
+                .flight_legs(origin, dest, form.ships, haul, 10)
+                .ok()?;
+            if form.dest_pays_return {
+                out
+            } else {
+                out.plus(back)
+            }
+        };
+        Some(bill.water_ice)
     }
 
     fn standing_gauge(&self, standing: f64, min: f64, max: f64) -> Line<'static> {

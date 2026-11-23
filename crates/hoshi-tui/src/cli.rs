@@ -121,7 +121,7 @@ crate::help::catalog_commands! {
     Cancel {
         item: CancelItem,
     },
-    #[help("fleet send", "Dispatch ships on a mission. A transport may take resource=amount cargo and --dest-pays-return so the owned destination pays the empty return at launch. The reply reports `fuel_water_ice` / `fuel_deuterium` plus `fuel_out_*` / `fuel_back_*` and `fuel_out_payer` / `fuel_back_payer`.", "fleet send FROM TO MISSION [RESOURCE=AMOUNT...] SHIP:COUNT... [--dest-pays-return]", "fleet send 1:1:10 home transport water_ice=500 small_cargo:1 --dest-pays-return")]
+    #[help("fleet send", "Dispatch ships on a mission. A transport may take resource=amount cargo and --dest-pays-return so the owned destination pays the empty return at launch. --speed PERCENT (10 to 100, default 100) trades time for fuel: a slower send flies a cheaper transfer and takes longer. The reply reports `fuel_water_ice` / `fuel_deuterium` plus `fuel_out_*` / `fuel_back_*` and `fuel_out_payer` / `fuel_back_payer`.", "fleet send FROM TO MISSION [RESOURCE=AMOUNT...] SHIP:COUNT... [--dest-pays-return] [--speed PERCENT]", "fleet send 1:1:10 home transport water_ice=500 small_cargo:1 --speed 10")]
     FleetSend {
         from: Coord,
         to: Coord,
@@ -129,8 +129,10 @@ crate::help::catalog_commands! {
         ships: Fleet,
         cargo: Vec<String>,
         dest_pays_return: bool,
+        /// Send speed in percent, 10 to 100.
+        speed: u8,
     },
-    #[help("fleet deploy", "Hold cargo away from a home raid, then bring it back. The reply reports the water ice the launch debited as `fuel_water_ice` and the deuterium share as `fuel_deuterium`.", "fleet deploy FROM TO HOLD_SECS RESOURCE=AMOUNT... SHIP:COUNT...", "fleet deploy home 1:1:9 3600 iron=2000 large_cargo:2")]
+    #[help("fleet deploy", "Hold cargo away from a home raid, then bring it back. --speed PERCENT (10 to 100, default 100) trades time for fuel. The reply reports the water ice the launch debited as `fuel_water_ice` and the deuterium share as `fuel_deuterium`.", "fleet deploy FROM TO HOLD_SECS RESOURCE=AMOUNT... SHIP:COUNT... [--speed PERCENT]", "fleet deploy home 1:1:9 3600 iron=2000 large_cargo:2")]
     FleetDeploy {
         from: Coord,
         to: Coord,
@@ -138,6 +140,8 @@ crate::help::catalog_commands! {
         /// `resource=amount` specs, parsed when applied like other amounts.
         cargo: Vec<String>,
         ships: Fleet,
+        /// Send speed in percent, 10 to 100.
+        speed: u8,
     },
     #[help("fleet route", "Repeat a transport between owned worlds every INTERVAL_SECS until unrouted. --dest-pays-return bills the owned destination for each empty return. A launch that cannot leave (no fuel, no ships) skips and is logged.", "fleet route FROM TO INTERVAL_SECS RESOURCE=AMOUNT... SHIP:COUNT... [--dest-pays-return]", "fleet route 1:1:10 home 21600 water_ice=500 small_cargo:1 --dest-pays-return")]
     FleetRoute {
@@ -1291,11 +1295,12 @@ fn apply(
             hold_secs,
             cargo,
             ships,
+            speed,
         } => {
             let cargo = parse_cargo(cargo)?;
             let before = mission_ids(state);
             state
-                .launch_deploy(*from, *to, *ships, cargo, *hold_secs, 100, now)
+                .launch_deploy(*from, *to, *ships, cargo, *hold_secs, *speed, now)
                 .map_err(|e| CliError::Refused(e.to_string()))?;
             Ok(ok_launched(
                 state,
@@ -1336,7 +1341,9 @@ fn apply(
             ships,
             cargo,
             dest_pays_return,
+            speed,
         } => {
+            let speed = *speed;
             let before = mission_ids(state);
             let mut return_payer = hoshi_core::ReturnPayer::Origin;
             match mission {
@@ -1351,12 +1358,20 @@ fn apply(
                         hoshi_core::ReturnPayer::Origin
                     };
                     let _ = state
-                        .launch_transport_paying(*from, *to, *ships, cargo, 100, now, return_payer)
+                        .launch_transport_paying(
+                            *from,
+                            *to,
+                            *ships,
+                            cargo,
+                            speed,
+                            now,
+                            return_payer,
+                        )
                         .map_err(|e| CliError::Refused(e.to_string()))?;
                 }
                 MissionKind::Attack => {
                     let _ = state
-                        .launch_attack(*from, *ships, *to, 100, now)
+                        .launch_attack(*from, *ships, *to, speed, now)
                         .map_err(|e| CliError::Refused(e.to_string()))?;
                 }
                 MissionKind::Invade => {
@@ -1366,7 +1381,7 @@ fn apply(
                             origin: Some(*from),
                             ships: *ships,
                             dest: *to,
-                            speed_percent: 100,
+                            speed_percent: speed,
                         },
                         now,
                     )?;
@@ -1382,7 +1397,7 @@ fn apply(
                         Intent::Colonize {
                             origin: Some(*from),
                             dest: *to,
-                            speed_percent: 100,
+                            speed_percent: speed,
                         },
                         now,
                     )?;
@@ -1394,12 +1409,12 @@ fn apply(
                     }
                     let hold = state.config.expedition.min_hold_secs;
                     let _ = state
-                        .launch_expedition(*from, *ships, hold, 100, now)
+                        .launch_expedition(*from, *ships, hold, speed, now)
                         .map_err(|e| CliError::Refused(e.to_string()))?;
                 }
                 MissionKind::Spy => {
                     let _ = state
-                        .launch_spy(*from, *ships, *to, 100, now)
+                        .launch_spy(*from, *ships, *to, speed, now)
                         .map_err(|e| CliError::Refused(e.to_string()))?;
                 }
             }
@@ -3747,8 +3762,8 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
             let hold_secs: u64 = nth(args, 4, USAGE)?
                 .parse()
                 .map_err(|_| CliError::Invalid(format!("invalid hold in {USAGE}")))?;
-            let (cargo, ships): (Vec<_>, Vec<_>) =
-                args[5..].iter().cloned().partition(|a| a.contains('='));
+            let (speed, rest) = take_speed(&args[5..])?;
+            let (cargo, ships): (Vec<_>, Vec<_>) = rest.into_iter().partition(|a| a.contains('='));
             parse_cargo(&cargo)?;
             Ok(Command::FleetDeploy {
                 from,
@@ -3756,6 +3771,7 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
                 hold_secs,
                 cargo,
                 ships: parse_ships(&ships)?,
+                speed,
             })
         }
         "fleet" if args.get(1).map(String::as_str) == Some("route") => {
@@ -3798,7 +3814,8 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
             let to = parse_coord(nth(args, 3, "fleet send <from> <to> <mission> <ships...>")?)?;
             let mission =
                 parse_mission(nth(args, 4, "fleet send <from> <to> <mission> <ships...>")?)?;
-            let (dest_pays_return, rest) = take_flag(&args[5..], "--dest-pays-return");
+            let (speed, rest) = take_speed(&args[5..])?;
+            let (dest_pays_return, rest) = take_flag(&rest, "--dest-pays-return");
             if dest_pays_return && mission != MissionKind::Transport {
                 return Err(CliError::Invalid(
                     "--dest-pays-return is only for a transport to an owned world".into(),
@@ -3819,6 +3836,7 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
                 ships: parse_ships(&ships)?,
                 cargo,
                 dest_pays_return,
+                speed,
             })
         }
         "finance" => match args.get(1).map(String::as_str) {
@@ -5659,6 +5677,22 @@ fn parse_cancel(text: &str) -> Result<CancelItem, CliError> {
     Ok(CancelItem::Build(index))
 }
 
+/// Splits `--speed PERCENT` out of a send's arguments. Absent means 100 (full
+/// speed); a value outside 10..=100 is invalid input.
+fn take_speed(args: &[String]) -> Result<(u8, Vec<String>), CliError> {
+    let Some(at) = args.iter().position(|a| a == "--speed") else {
+        return Ok((100, args.to_vec()));
+    };
+    let speed = args
+        .get(at + 1)
+        .and_then(|v| v.parse::<u8>().ok())
+        .filter(|v| (10..=100).contains(v))
+        .ok_or_else(|| CliError::Invalid("--speed takes a percent from 10 to 100".into()))?;
+    let mut rest = args.to_vec();
+    rest.drain(at..=at + 1);
+    Ok((speed, rest))
+}
+
 fn take_flag(args: &[String], flag: &str) -> (bool, Vec<String>) {
     let present = args.iter().any(|a| a == flag);
     let rest = args.iter().filter(|a| *a != flag).cloned().collect();
@@ -6869,6 +6903,95 @@ mod tests {
         let home_ice = value["resources"]["water_ice"].as_f64().unwrap();
         assert!(home_ice < 50_000.0, "{home_ice}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `--speed` reaches the launch: a 10% send pays the core fuel quote for
+    /// 10% and arrives as much later as the core flight time says (#660).
+    #[test]
+    fn fleet_send_speed_pays_and_flies_at_the_chosen_speed() {
+        let dir = unique_save("send-speed").with_extension("d");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut state = GameState::new(0);
+        state.deterministic = true;
+        state.resources = hoshi_core::Resources::from_parts(5_000.0, 5_000.0, 10_000.0);
+        state.resources.water_ice = 500_000.0;
+        state.fleet.add(ShipKind::SmallCargo, 2);
+        let colony = hoshi_core::Coord {
+            galaxy: 1,
+            system: 1,
+            position: 2,
+        };
+        state.colonies.push(hoshi_core::Colony {
+            coord: colony,
+            kind: hoshi_core::PlanetType::Rocky,
+            size: 100,
+            resources: hoshi_core::Resources::ZERO,
+            buildings: hoshi_core::Buildings::default(),
+            fleet: Fleet::default(),
+            defences: hoshi_core::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: std::collections::BTreeMap::new(),
+        });
+        let mut one = Fleet::default();
+        one.add(ShipKind::SmallCargo, 1);
+        let cargo = hoshi_core::Resources::from_parts(100.0, 0.0, 0.0);
+        let quote = |speed| {
+            state
+                .flight_hauling(
+                    state.home,
+                    colony,
+                    one,
+                    hoshi_core::Haul::round_trip(cargo, hoshi_core::Resources::ZERO),
+                    speed,
+                )
+                .unwrap()
+        };
+        let (slow_secs, slow_fuel) = quote(10);
+        let (fast_secs, fast_fuel) = quote(100);
+        assert!(slow_fuel.water_ice < fast_fuel.water_ice);
+        // One save per send: a new empire flies one fleet at a time.
+        let send = |name: &str, extra: &[&str]| {
+            let save = dir.join(name);
+            let mut conn = open_save(&save).unwrap();
+            save_state(&mut conn, &state).unwrap();
+            drop(conn);
+            let mut argv = vec!["fleet", "send", "home", "1:1:2", "transport", "iron=100"];
+            argv.extend_from_slice(extra);
+            let (value, exit) = run_on(&save, &argv);
+            assert_eq!(exit, EXIT_OK, "{value}");
+            value
+        };
+        let slow = send("slow.sqlite", &["small_cargo:1", "--speed", "10"]);
+        let fast = send("fast.sqlite", &["small_cargo:1"]);
+        let close = |got: &Value, want: f64| {
+            let got = got.as_f64().unwrap();
+            assert!((got - want).abs() < 1e-6, "got {got} want {want}");
+        };
+        close(&slow["fuel_water_ice"], slow_fuel.water_ice);
+        close(&fast["fuel_water_ice"], fast_fuel.water_ice);
+        let arrives = |value: &Value| value["missions"][0]["phase_ends_at"].as_u64().unwrap();
+        assert_eq!(arrives(&slow) - arrives(&fast), slow_secs - fast_secs);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fleet_send_speed_outside_ten_to_hundred_is_invalid_input() {
+        for bad in ["5", "101", "fast"] {
+            let err = parse_cli(&args(&[
+                "fleet",
+                "send",
+                "home",
+                "1:1:8",
+                "attack",
+                "light_fighter:2",
+                "--speed",
+                bad,
+            ]))
+            .unwrap_err();
+            assert!(matches!(err, CliError::Invalid(_)), "{bad}: {err:?}");
+        }
     }
 
     #[test]

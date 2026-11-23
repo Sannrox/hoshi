@@ -135,6 +135,8 @@ struct DispatchForm {
     repeat: usize,
     /// Transport only: dest pays the empty return at launch.
     dest_pays_return: bool,
+    /// Send speed in percent, 10 to 100: lower is a cheaper, slower transfer.
+    speed: u8,
 }
 
 impl DispatchForm {
@@ -149,18 +151,38 @@ impl DispatchForm {
             mission_picked: false,
             repeat: 0,
             dest_pays_return: false,
+            speed: 100,
         }
     }
 
-    /// Selectable rows: every ship kind, plus the cargo rows on a transport
-    /// or station send, plus return-payer and repeat rows on a transport.
+    /// Selectable rows: every ship kind, the cargo rows on a transport or
+    /// station send, the speed row, then return-payer and repeat rows on a
+    /// transport.
     fn rows(&self) -> usize {
-        let cargo = if self.mission.carries_cargo() {
+        ShipKind::ALL.len() + self.cargo_rows() + 1 + usize::from(self.repeats()) * 2
+    }
+
+    fn cargo_rows(&self) -> usize {
+        if self.mission.carries_cargo() {
             DISPATCH_CARGO.len()
         } else {
             0
-        };
-        ShipKind::ALL.len() + cargo + usize::from(self.repeats()) * 2
+        }
+    }
+
+    /// The cursor sits on the speed row, right after ships and cargo.
+    fn speed_row(&self) -> bool {
+        self.selected == ShipKind::ALL.len() + self.cargo_rows()
+    }
+
+    /// The speed the launch flies at: a repeating route always flies at
+    /// full speed, so its preview does too.
+    fn launch_speed(&self) -> u8 {
+        if self.repeat_secs().is_some() {
+            100
+        } else {
+            self.speed
+        }
     }
 
     /// Only a transport between owned worlds can repeat (a core route).
@@ -178,12 +200,12 @@ impl DispatchForm {
 
     /// The cursor sits on who pays the return.
     fn dest_pays_row(&self) -> bool {
-        self.repeats() && self.selected == ShipKind::ALL.len() + DISPATCH_CARGO.len()
+        self.repeats() && self.selected == ShipKind::ALL.len() + DISPATCH_CARGO.len() + 1
     }
 
     /// The cursor sits on the repeat row.
     fn repeat_row(&self) -> bool {
-        self.repeats() && self.selected == ShipKind::ALL.len() + DISPATCH_CARGO.len() + 1
+        self.repeats() && self.selected == ShipKind::ALL.len() + DISPATCH_CARGO.len() + 2
     }
 
     /// The chosen repeat interval, or `None` to send once.
@@ -196,6 +218,7 @@ impl DispatchForm {
     fn cargo_row(&self) -> Option<ResourceKind> {
         self.selected
             .checked_sub(ShipKind::ALL.len())
+            .filter(|&i| i < self.cargo_rows())
             .and_then(|i| DISPATCH_CARGO.get(i).copied())
     }
 }
@@ -3306,11 +3329,16 @@ impl App {
     }
 
     /// `+`/`-` on the selected row: a ship count up to the origin's fleet,
-    /// or a cargo amount (market-sized steps) up to the origin's stock.
+    /// a cargo amount (market-sized steps) up to the origin's stock, or the
+    /// send speed in steps of 10 between 10% and 100%.
     fn nudge_dispatch_ships(&mut self, delta: i32) {
         let Some(form) = self.dispatch.as_mut() else {
             return;
         };
+        if form.speed_row() {
+            form.speed = (i32::from(form.speed) + delta.signum() * 10).clamp(10, 100) as u8;
+            return;
+        }
         if form.dest_pays_row() {
             form.dest_pays_return = delta > 0;
             return;
@@ -3511,6 +3539,7 @@ impl App {
             return;
         }
         let (origin, ships, dest) = (form.origin, form.ships, form.dest);
+        let speed = form.launch_speed();
         let launched = match form.mission {
             Mission::Transport => {
                 if form.cargo.total() <= 0.0 {
@@ -3543,32 +3572,34 @@ impl App {
                     dest,
                     ships,
                     form.cargo,
-                    100,
+                    speed,
                     now_unix,
                     form.return_payer(),
                 )
             }
             Mission::Station => self
                 .state
-                .launch_station(origin, dest, ships, form.cargo, 100, now_unix),
-            Mission::Attack => self.state.launch_attack(origin, ships, dest, 100, now_unix),
-            Mission::Spy => self.state.launch_spy(origin, ships, dest, 100, now_unix),
+                .launch_station(origin, dest, ships, form.cargo, speed, now_unix),
+            Mission::Attack => self
+                .state
+                .launch_attack(origin, ships, dest, speed, now_unix),
+            Mission::Spy => self.state.launch_spy(origin, ships, dest, speed, now_unix),
             Mission::Invade => self
                 .state
-                .launch_invasion(origin, ships, dest, 100, now_unix),
+                .launch_invasion(origin, ships, dest, speed, now_unix),
             Mission::Colonize => {
                 if ships.get(ShipKind::ColonyShip) != 1 || ships.total() != 1 {
                     self.status = "colonize needs exactly one colony ship".into();
                     return;
                 }
-                self.state.launch_colony(origin, dest, 100, now_unix)
+                self.state.launch_colony(origin, dest, speed, now_unix)
             }
             Mission::Recycle => self
                 .state
-                .launch_recycle(origin, dest, ships, 100, now_unix),
+                .launch_recycle(origin, dest, ships, speed, now_unix),
             // A signal that resolved while the form was open is refused by core.
             Mission::Hold => match self.state.open_signal_at(dest).map(|signal| signal.id) {
-                Some(id) => self.state.hold_signal(origin, id, ships, 100, now_unix),
+                Some(id) => self.state.hold_signal(origin, id, ships, speed, now_unix),
                 None => {
                     self.status = format!("no open signal at {dest}");
                     return;
@@ -3580,10 +3611,10 @@ impl App {
                 // never redirected to the config slot.
                 if let Some(site_id) = self.state.site_at(dest).map(|site| site.id) {
                     self.state
-                        .launch_expedition_site(origin, site_id, ships, hold, 100, now_unix)
+                        .launch_expedition_site(origin, site_id, ships, hold, speed, now_unix)
                 } else {
                     self.state
-                        .launch_expedition(origin, ships, hold, 100, now_unix)
+                        .launch_expedition(origin, ships, hold, speed, now_unix)
                 }
             }
         };
@@ -3617,10 +3648,13 @@ impl App {
             self.dispatch = None;
             return;
         }
-        match self
-            .state
-            .launch_invasion(form.origin, form.ships, form.dest, 100, now_unix)
-        {
+        match self.state.launch_invasion(
+            form.origin,
+            form.ships,
+            form.dest,
+            form.launch_speed(),
+            now_unix,
+        ) {
             Ok(_) => {
                 self.status = format!("invasion of {} approved", form.dest);
                 self.dispatch = None;
@@ -9794,6 +9828,98 @@ mod tests {
         app.handle_key(KeyCode::Char('+'), 1_000);
     }
 
+    /// Moves the dispatch cursor to the speed row and presses `-` `steps` times.
+    fn slow_dispatch(app: &mut App, steps: usize) {
+        let form = app.dispatch.as_mut().unwrap();
+        form.selected = ShipKind::ALL.len() + form.cargo_rows();
+        for _ in 0..steps {
+            app.handle_key(KeyCode::Char('-'), 1_000);
+        }
+    }
+
+    #[test]
+    fn dispatch_speed_row_previews_and_launches_the_slower_cheaper_send() {
+        let (mut app, dest) = app_with_new_colony();
+        open_transport(&mut app);
+        load_cargo(&mut app, ResourceKind::Iron, 100.0);
+        slow_dispatch(&mut app, 12);
+        assert_eq!(app.dispatch.unwrap().speed, 10, "clamps at 10%");
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::SmallCargo, 1);
+        let haul = Haul::transport(Resources::from_parts(100.0, 0.0, 0.0));
+        let home = app.state.home;
+        let (slow_secs, slow) = app
+            .state
+            .flight_hauling(home, dest, ships, haul, 10)
+            .unwrap();
+        let (fast_secs, fast) = app
+            .state
+            .flight_hauling(home, dest, ships, haul, 100)
+            .unwrap();
+        assert!(slow.water_ice < fast.water_ice && slow_secs > fast_secs);
+        let text = render_text(&app, 100, 48);
+        assert!(text.contains(" 10%"), "{text}");
+        assert!(
+            text.contains(&format!("{:.1} ice", slow.water_ice)),
+            "{text}"
+        );
+        assert!(text.contains("+/-  speed"), "{text}");
+
+        let ice = app.state.resources.water_ice;
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.dispatch.is_none(), "{}", app.status);
+        assert!((ice - app.state.resources.water_ice - slow.water_ice).abs() < 1e-6);
+        assert_eq!(app.state.missions[0].phase_ends_at, 1_000 + slow_secs);
+    }
+
+    #[test]
+    fn dispatch_ice_short_callout_names_the_ten_percent_cost() {
+        let (mut app, dest) = app_with_new_colony();
+        open_transport(&mut app);
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::SmallCargo, 1);
+        let haul = Haul::transport(Resources::ZERO);
+        let home = app.state.home;
+        let (_, slow) = app
+            .state
+            .flight_hauling(home, dest, ships, haul, 10)
+            .unwrap();
+        let (_, fast) = app
+            .state
+            .flight_hauling(home, dest, ships, haul, 100)
+            .unwrap();
+        app.state.resources.water_ice = (slow.water_ice + fast.water_ice) / 2.0;
+        // The callout is wider than the map panel, so read the form lines.
+        let form_text = |app: &App| -> String {
+            let lines = app.dispatch_window(&app.dispatch.unwrap(), 100);
+            lines.iter().map(|l| format!("{l}\n")).collect()
+        };
+        let text = form_text(&app);
+        assert!(text.contains("not enough water ice"), "{text}");
+        assert!(
+            text.contains(&format!("at 10% this send costs {:.0} ice", slow.water_ice)),
+            "{text}"
+        );
+
+        slow_dispatch(&mut app, 9);
+        let text = form_text(&app);
+        assert!(!text.contains("not enough water ice"), "{text}");
+    }
+
+    #[test]
+    fn repeating_route_flies_at_full_speed_whatever_the_speed_row_says() {
+        let (mut app, _) = app_with_new_colony();
+        open_transport(&mut app);
+        slow_dispatch(&mut app, 9);
+        app.dispatch.as_mut().unwrap().selected = ShipKind::ALL.len() + DISPATCH_CARGO.len() + 2;
+        app.handle_key(KeyCode::Char('+'), 1_000);
+        let form = app.dispatch.unwrap();
+        assert!(form.repeat_secs().is_some());
+        assert_eq!((form.speed, form.launch_speed()), (10, 100));
+        let text = render_text(&app, 100, 48);
+        assert!(text.contains("100%  routes fly at 100%"), "{text}");
+    }
+
     #[test]
     fn map_enter_on_own_colony_transports_cargo_and_unblocks_a_build() {
         let (mut app, dest) = app_with_new_colony();
@@ -9933,7 +10059,7 @@ mod tests {
             .unwrap();
         app.handle_key(KeyCode::Char('+'), 1_000);
         load_cargo(&mut app, ResourceKind::Iron, 100.0);
-        app.dispatch.as_mut().unwrap().selected = ShipKind::ALL.len() + DISPATCH_CARGO.len();
+        app.dispatch.as_mut().unwrap().selected = ShipKind::ALL.len() + DISPATCH_CARGO.len() + 1;
         let before = render_text(&app, 100, 48);
         assert!(before.contains(&format!("OUT {dest}")), "{before}");
         assert!(before.contains(&format!("BACK {dest}")), "{before}");
@@ -10100,7 +10226,7 @@ mod tests {
             .unwrap();
         app.handle_key(KeyCode::Char('+'), 1_000);
         load_cargo(&mut app, ResourceKind::WaterIce, 100.0);
-        app.dispatch.as_mut().unwrap().selected = ShipKind::ALL.len() + DISPATCH_CARGO.len() + 1;
+        app.dispatch.as_mut().unwrap().selected = ShipKind::ALL.len() + DISPATCH_CARGO.len() + 2;
         app.handle_key(KeyCode::Char('+'), 1_000);
         let form = render_text(&app, 100, 60);
         assert!(form.contains("every 1h 00m"), "{form}");

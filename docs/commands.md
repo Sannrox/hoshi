@@ -521,10 +521,10 @@ Area: cli.
 
 ## fleet deploy
 
-Hold cargo away from a home raid, then bring it back. The reply reports the water ice the launch debited as `fuel_water_ice` and the deuterium share as `fuel_deuterium`.
+Hold cargo away from a home raid, then bring it back. --speed PERCENT (10 to 100, default 100) trades time for fuel. The reply reports the water ice the launch debited as `fuel_water_ice` and the deuterium share as `fuel_deuterium`.
 
 ```text
-hoshi fleet deploy FROM TO HOLD_SECS RESOURCE=AMOUNT... SHIP:COUNT...
+hoshi fleet deploy FROM TO HOLD_SECS RESOURCE=AMOUNT... SHIP:COUNT... [--speed PERCENT]
 ```
 
 Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair-play restrictions.
@@ -553,15 +553,15 @@ Area: cli.
 
 ## fleet send
 
-Dispatch ships on a mission. A transport may take resource=amount cargo and --dest-pays-return so the owned destination pays the empty return at launch. The reply reports `fuel_water_ice` / `fuel_deuterium` plus `fuel_out_*` / `fuel_back_*` and `fuel_out_payer` / `fuel_back_payer`.
+Dispatch ships on a mission. A transport may take resource=amount cargo and --dest-pays-return so the owned destination pays the empty return at launch. --speed PERCENT (10 to 100, default 100) trades time for fuel: a slower send flies a cheaper transfer and takes longer. The reply reports `fuel_water_ice` / `fuel_deuterium` plus `fuel_out_*` / `fuel_back_*` and `fuel_out_payer` / `fuel_back_payer`.
 
 ```text
-hoshi fleet send FROM TO MISSION [RESOURCE=AMOUNT...] SHIP:COUNT... [--dest-pays-return]
+hoshi fleet send FROM TO MISSION [RESOURCE=AMOUNT...] SHIP:COUNT... [--dest-pays-return] [--speed PERCENT]
 ```
 
 Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair-play restrictions.
 
-Example: `hoshi fleet send 1:1:10 home transport water_ice=500 small_cargo:1 --dest-pays-return`
+Example: `hoshi fleet send 1:1:10 home transport water_ice=500 small_cargo:1 --speed 10`
 
 Environment: HOSHI_SAVE, HOSHI_BALANCE
 
