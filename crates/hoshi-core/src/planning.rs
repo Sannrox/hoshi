@@ -1231,11 +1231,38 @@ mod tests {
             (t4.deuterium - t4.water_ice * share(&state, ShipKind::EspionageProbe)).abs() < 1e-6
         );
         // T1: from a world with an elevator, an empty hop costs at most 48 h
-        // of level-8 synthesizer income (33.2 /h) of water ice, and no deuterium.
+        // of the water ice a rocky home earns with a level-8 synthesizer, and
+        // no deuterium.
         state.buildings.space_elevator = 1;
         let t1 = fuel(&state, ShipKind::SmallCargo, hop, Resources::ZERO);
-        assert!(t1.water_ice <= 48.0 * 33.2);
+        assert!(t1.water_ice <= 48.0 * level_8_ice_per_hour(crate::PlanetType::Rocky));
         assert!(t1.deuterium < 1e-9);
+    }
+
+    /// Net water ice per hour at a powered home of `kind` with a level-8
+    /// deuterium synthesizer, after the synthesizer takes its share.
+    fn level_8_ice_per_hour(kind: crate::PlanetType) -> f64 {
+        let mut state = GameState::with_seed(1_000, BalanceConfig::default(), 1);
+        state.home_kind = kind;
+        state.buildings.deuterium_synthesizer = 8;
+        state.buildings.solar_plant = 20;
+        state.production_per_hour(ResourceKind::WaterIce)
+    }
+
+    /// Launches pay reaction mass in water ice, so no world type may refine
+    /// all the ice it extracts into deuterium (#658).
+    #[test]
+    fn every_world_type_keeps_spare_water_ice_for_launches() {
+        for kind in [
+            crate::PlanetType::Rocky,
+            crate::PlanetType::Ice,
+            crate::PlanetType::GasGiant,
+        ] {
+            assert!(
+                level_8_ice_per_hour(kind) > 1.0,
+                "{kind:?} nets no water ice"
+            );
+        }
     }
 
     #[test]

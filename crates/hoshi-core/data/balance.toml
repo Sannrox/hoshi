@@ -743,7 +743,7 @@ uranium_ore = 0.30
 iron_ore = 1.10
 silicon = 1.10
 rare_earths = 1.05
-water_ice = 0.20
+water_ice = 0.72
 helium_3 = 0.10
 
 [chains.deposits.ice]
@@ -759,7 +759,7 @@ uranium_ore = 0.0
 iron_ore = 0.10
 silicon = 0.10
 rare_earths = 0.05
-water_ice = 0.50
+water_ice = 0.75
 helium_3 = 1.50
 
 [[chains.recipes]]
