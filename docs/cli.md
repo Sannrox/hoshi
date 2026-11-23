@@ -57,7 +57,7 @@ hoshi --save PATH research <tech>
 hoshi --save PATH cancel <queue-item>
 hoshi --save PATH fleet send <from> <to> <mission> [<resource=amount...>] <ships...> [--dest-pays-return]
 hoshi --save PATH fleet deploy <from> <to> <hold_secs> <resource=amount...> <ships...>
-hoshi --save PATH fleet route <from> <to> <interval_secs> <resource=amount...> <ships...> [--dest-pays-return]
+hoshi --save PATH fleet route <from> <to> <interval_secs> <resource=amount...> <ships...> [--speed PERCENT] [--dest-pays-return]
 hoshi --save PATH fleet unroute <id>
 hoshi --save PATH tick --advance <dur>
 hoshi --save PATH scenario create
@@ -140,7 +140,7 @@ or `30s` / `3m` / `1h` / `1d`.
 
 `fleet deploy` lifts cargo from `from` like a transport, holds at `to` (an owned or empty coord, never a pirate outpost) for `hold_secs` (1 up to `flight.deploy_max_hold_secs`, one week bundled), and brings the same cargo back. A home raid only reaches stock still on the pad. Recall at any phase returns ships and cargo. Each mission in `state` carries `deploy` and its `cargo`.
 
-`fleet send` and `fleet deploy` take `--speed PERCENT`, 10 to 100 (default 100). A slower send flies a cheaper transfer: it debits less water ice and arrives later. A value outside that range exits 2. `fleet route` schedules a repeating transport between two owned worlds: the first launch leaves on the next tick, then one every `interval_secs`, also while the game is closed. Fuel is star-map `[flight]` fuel. `--dest-pays-return` is kept on the route and used at each launch. A launch that cannot leave (no fuel, ships still out, not enough cargo) skips and is logged as a stall. `state` lists `routes` (`id`, `origin`, `dest`, `interval_secs`, `next_at`, `cargo`, `return_payer`). `fleet unroute <id>` stops one; flights already out finish. In the TUI, a transport's return and repeat rows on the dispatch form do the same, and Fleet / Ops lists routes with their last skip and stops one with cancel.
+`fleet send`, `fleet deploy` and `fleet route` take `--speed PERCENT`, 10 to 100 (default 100). A slower send flies a cheaper transfer: it debits less water ice and arrives later. A value outside that range exits 2. `fleet route` schedules a repeating transport between two owned worlds: the first launch leaves on the next tick, then one every `interval_secs`, also while the game is closed. Fuel is star-map `[flight]` fuel. `--speed` and `--dest-pays-return` are kept on the route and used at each launch. A launch that cannot leave (no fuel, ships still out, not enough cargo) skips and is logged as a stall. `state` lists `routes` (`id`, `origin`, `dest`, `interval_secs`, `speed_percent`, `next_at`, `cargo`, `return_payer`). `fleet unroute <id>` stops one; flights already out finish. In the TUI, a transport's return and repeat rows on the dispatch form do the same, and Fleet / Ops lists routes with their last skip and stops one with cancel.
 
 `state` includes a `signals` array: scanned signals whose light has arrived, each with `id`, `coord`, `deadline`, `status` (`open`, `fought` or `expired`) and the holding `mission_id`. A signal still in flight as light stays hidden.
 

@@ -3527,13 +3527,15 @@ impl GameState {
             ships,
             cargo,
             interval_secs,
+            100,
             now_unix,
             crate::ReturnPayer::Origin,
         )
     }
 
-    /// [`Self::schedule_route`] with an explicit return-leg payer, kept
-    /// across relaunches and a reload.
+    /// [`Self::schedule_route`] with an explicit send speed (10 to 100
+    /// percent) and return-leg payer, both kept across relaunches and a
+    /// reload.
     #[allow(clippy::too_many_arguments)]
     pub fn schedule_route_paying(
         &mut self,
@@ -3542,12 +3544,16 @@ impl GameState {
         ships: Fleet,
         cargo: Resources,
         interval_secs: u64,
+        speed_percent: u8,
         now_unix: u64,
         return_payer: crate::ReturnPayer,
     ) -> Result<u64, FleetError> {
         self.catch_up(now_unix);
         if interval_secs == 0 {
             return Err(FleetError::ZeroRouteInterval);
+        }
+        if !(10..=100).contains(&speed_percent) {
+            return Err(FleetError::SpeedPercent { got: speed_percent });
         }
         if origin == dest {
             return Err(FleetError::SameLocation);
@@ -3580,7 +3586,7 @@ impl GameState {
             dest,
             ships,
             cargo,
-            speed_percent: 100,
+            speed_percent,
             interval_secs,
             next_at: self.last_tick_unix,
             return_payer,
@@ -14259,6 +14265,55 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
     }
 
     #[test]
+    fn route_relaunches_at_the_speed_it_was_scheduled_with() {
+        let mut state = GameState::with_config(0, logistics_config());
+        plant_colony(&mut state, neighbor());
+        state.fleet.add(ShipKind::SmallCargo, 1);
+        state.resources.iron = 10_000.0;
+        state.resources.deuterium = 50_000.0;
+        state.resources.water_ice = 50_000.0;
+        let cargo = Resources::from_parts(100.0, 0.0, 0.0);
+        let haul = Haul::round_trip(cargo, Resources::ZERO);
+        let (secs, fuel) = state
+            .flight_hauling(state.home, neighbor(), cargo_fleet(), haul, 10)
+            .unwrap();
+        let err = state
+            .schedule_route_paying(
+                state.home,
+                neighbor(),
+                cargo_fleet(),
+                cargo,
+                10,
+                5,
+                0,
+                crate::ReturnPayer::Origin,
+            )
+            .unwrap_err();
+        assert_eq!(err, FleetError::SpeedPercent { got: 5 });
+        state
+            .schedule_route_paying(
+                state.home,
+                neighbor(),
+                cargo_fleet(),
+                cargo,
+                10,
+                10,
+                0,
+                crate::ReturnPayer::Origin,
+            )
+            .unwrap();
+        let ice = state.resources.water_ice;
+        state.catch_up(1);
+        assert_eq!(state.missions.len(), 1, "{:?}", state.logistics.stalls);
+        assert_eq!(state.missions[0].speed_percent, 10);
+        assert_eq!(
+            state.missions[0].phase_ends_at, secs,
+            "launched at next_at 0"
+        );
+        close(state.resources.water_ice, ice - fuel.water_ice);
+    }
+
+    #[test]
     fn dest_pays_return_route_relaunches_with_the_same_payer() {
         let mut state = GameState::with_config(0, logistics_config());
         plant_colony(&mut state, neighbor());
@@ -14285,6 +14340,7 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
                 cargo_fleet(),
                 cargo,
                 10,
+                100,
                 0,
                 crate::ReturnPayer::Destination,
             )

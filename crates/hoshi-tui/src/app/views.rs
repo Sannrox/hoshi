@@ -1625,7 +1625,7 @@ impl App {
             if on {
                 selected_line = lines.len();
             }
-            let speed = format!("{:>3}%", form.launch_speed());
+            let speed = format!("{:>3}%", form.speed);
             let mut spans = vec![
                 Span::styled(if on { "▌" } else { " " }, t.intent(Intent::Primary)),
                 Span::styled(
@@ -1640,15 +1640,12 @@ impl App {
             } else {
                 spans.push(Span::styled(
                     format!("   {speed}"),
-                    if form.launch_speed() < 100 {
+                    if form.speed < 100 {
                         t.text()
                     } else {
                         t.faint()
                     },
                 ));
-            }
-            if form.repeat_secs().is_some() {
-                spans.push(Span::styled("  routes fly at 100%", t.muted()));
             }
             lines.push(Line::from(spans));
         }
@@ -1740,12 +1737,12 @@ impl App {
         } else {
             let flight = if form.mission == Mission::Recycle {
                 self.state
-                    .recycle_flight(origin, form.ships, dest, form.launch_speed())
+                    .recycle_flight(origin, form.ships, dest, form.speed)
                     .map(|(eta, fuel)| (eta, fuel, hoshi_core::LaunchFuel::ZERO))
             } else {
                 let haul = form.mission.haul(form.cargo);
                 self.state
-                    .flight_legs(origin, dest, form.ships, haul, form.launch_speed())
+                    .flight_legs(origin, dest, form.ships, haul, form.speed)
             };
             match flight {
                 Ok((eta, out, back)) => {
@@ -1889,7 +1886,7 @@ impl App {
     /// The origin's ice bill for this send at 10% speed, when the form flies
     /// faster than that: what the ice-short callout offers as the way out.
     fn slowest_send_ice(&self, form: &DispatchForm) -> Option<f64> {
-        if form.launch_speed() <= 10 {
+        if form.speed <= 10 {
             return None;
         }
         let (origin, dest) = (form.origin, form.dest);

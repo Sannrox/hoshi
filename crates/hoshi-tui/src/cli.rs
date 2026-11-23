@@ -143,7 +143,7 @@ crate::help::catalog_commands! {
         /// Send speed in percent, 10 to 100.
         speed: u8,
     },
-    #[help("fleet route", "Repeat a transport between owned worlds every INTERVAL_SECS until unrouted. --dest-pays-return bills the owned destination for each empty return. A launch that cannot leave (no fuel, no ships) skips and is logged.", "fleet route FROM TO INTERVAL_SECS RESOURCE=AMOUNT... SHIP:COUNT... [--dest-pays-return]", "fleet route 1:1:10 home 21600 water_ice=500 small_cargo:1 --dest-pays-return")]
+    #[help("fleet route", "Repeat a transport between owned worlds every INTERVAL_SECS until unrouted. --speed PERCENT (10 to 100, default 100) sets the speed every launch flies at; lower is slower and costs less water ice. --dest-pays-return bills the owned destination for each empty return. A launch that cannot leave (no fuel, no ships) skips and is logged.", "fleet route FROM TO INTERVAL_SECS RESOURCE=AMOUNT... SHIP:COUNT... [--speed PERCENT] [--dest-pays-return]", "fleet route 1:1:10 home 21600 water_ice=500 small_cargo:1 --speed 10 --dest-pays-return")]
     FleetRoute {
         from: Coord,
         to: Coord,
@@ -151,6 +151,8 @@ crate::help::catalog_commands! {
         /// `resource=amount` specs, parsed when applied like other amounts.
         cargo: Vec<String>,
         ships: Fleet,
+        /// Speed every launch flies at, in percent, 10 to 100.
+        speed: u8,
         dest_pays_return: bool,
     },
     #[help("fleet unroute", "Stop a repeating transport. Flights already out finish.", "fleet unroute ID", "fleet unroute 1")]
@@ -1315,6 +1317,7 @@ fn apply(
             interval_secs,
             cargo,
             ships,
+            speed,
             dest_pays_return,
         } => {
             let cargo = parse_cargo(cargo)?;
@@ -1324,7 +1327,16 @@ fn apply(
                 hoshi_core::ReturnPayer::Origin
             };
             let id = state
-                .schedule_route_paying(*from, *to, *ships, cargo, *interval_secs, now, payer)
+                .schedule_route_paying(
+                    *from,
+                    *to,
+                    *ships,
+                    cargo,
+                    *interval_secs,
+                    *speed,
+                    now,
+                    payer,
+                )
                 .map_err(|e| CliError::Refused(e.to_string()))?;
             Ok(ok_state(state, &format!("route {id} scheduled")))
         }
@@ -3237,6 +3249,7 @@ fn state_value_for(
                 "origin": r.origin.to_string(),
                 "dest": r.dest.to_string(),
                 "interval_secs": r.interval_secs,
+                "speed_percent": r.speed_percent,
                 "next_at": r.next_at,
                 "cargo": resources_json(r.cargo),
                 "return_payer": r.return_payer.as_key(),
@@ -3784,7 +3797,8 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
                 .ok()
                 .filter(|&secs| secs > 0)
                 .ok_or_else(|| CliError::Invalid(format!("invalid interval in {USAGE}")))?;
-            let (dest_pays_return, rest) = take_flag(&args[5..], "--dest-pays-return");
+            let (speed, rest) = take_speed(&args[5..])?;
+            let (dest_pays_return, rest) = take_flag(&rest, "--dest-pays-return");
             let (cargo, ships): (Vec<_>, Vec<_>) = rest.into_iter().partition(|a| a.contains('='));
             parse_cargo(&cargo)?;
             Ok(Command::FleetRoute {
@@ -3793,6 +3807,7 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
                 interval_secs,
                 cargo,
                 ships: parse_ships(&ships)?,
+                speed,
                 dest_pays_return,
             })
         }
@@ -6825,11 +6840,14 @@ mod tests {
                 "3600",
                 "iron=100",
                 "large_cargo:1",
+                "--speed",
+                "10",
             ],
         );
         assert_eq!(exit, EXIT_OK, "{value}");
         let route = &value["routes"][0];
         assert_eq!(route["interval_secs"], 3600);
+        assert_eq!(route["speed_percent"], 10);
         assert_eq!(route["cargo"]["iron"], 100.0);
         let id = route["id"].as_u64().unwrap().to_string();
         let (gone, exit) = run_on(&save, &["fleet", "unroute", &id]);
