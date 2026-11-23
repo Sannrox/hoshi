@@ -175,16 +175,6 @@ impl DispatchForm {
         self.selected == ShipKind::ALL.len() + self.cargo_rows()
     }
 
-    /// The speed the launch flies at: a repeating route always flies at
-    /// full speed, so its preview does too.
-    fn launch_speed(&self) -> u8 {
-        if self.repeat_secs().is_some() {
-            100
-        } else {
-            self.speed
-        }
-    }
-
     /// Only a transport between owned worlds can repeat (a core route).
     fn repeats(&self) -> bool {
         self.mission == Mission::Transport
@@ -3539,7 +3529,7 @@ impl App {
             return;
         }
         let (origin, ships, dest) = (form.origin, form.ships, form.dest);
-        let speed = form.launch_speed();
+        let speed = form.speed;
         let launched = match form.mission {
             Mission::Transport => {
                 if form.cargo.total() <= 0.0 {
@@ -3553,6 +3543,7 @@ impl App {
                         ships,
                         form.cargo,
                         every,
+                        speed,
                         now_unix,
                         form.return_payer(),
                     ) {
@@ -3648,13 +3639,10 @@ impl App {
             self.dispatch = None;
             return;
         }
-        match self.state.launch_invasion(
-            form.origin,
-            form.ships,
-            form.dest,
-            form.launch_speed(),
-            now_unix,
-        ) {
+        match self
+            .state
+            .launch_invasion(form.origin, form.ships, form.dest, form.speed, now_unix)
+        {
             Ok(_) => {
                 self.status = format!("invasion of {} approved", form.dest);
                 self.dispatch = None;
@@ -9907,17 +9895,19 @@ mod tests {
     }
 
     #[test]
-    fn repeating_route_flies_at_full_speed_whatever_the_speed_row_says() {
+    fn repeating_route_keeps_the_speed_row_for_every_launch() {
         let (mut app, _) = app_with_new_colony();
         open_transport(&mut app);
+        load_cargo(&mut app, ResourceKind::Iron, 100.0);
         slow_dispatch(&mut app, 9);
         app.dispatch.as_mut().unwrap().selected = ShipKind::ALL.len() + DISPATCH_CARGO.len() + 2;
         app.handle_key(KeyCode::Char('+'), 1_000);
-        let form = app.dispatch.unwrap();
-        assert!(form.repeat_secs().is_some());
-        assert_eq!((form.speed, form.launch_speed()), (10, 100));
+        assert!(app.dispatch.unwrap().repeat_secs().is_some());
         let text = render_text(&app, 100, 48);
-        assert!(text.contains("100%  routes fly at 100%"), "{text}");
+        assert!(text.contains(" 10%"), "{text}");
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.dispatch.is_none(), "{}", app.status);
+        assert_eq!(app.state.routes[0].speed_percent, 10);
     }
 
     #[test]

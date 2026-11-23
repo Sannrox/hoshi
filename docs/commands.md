@@ -537,15 +537,15 @@ Area: cli.
 
 ## fleet route
 
-Repeat a transport between owned worlds every INTERVAL_SECS until unrouted. --dest-pays-return bills the owned destination for each empty return. A launch that cannot leave (no fuel, no ships) skips and is logged.
+Repeat a transport between owned worlds every INTERVAL_SECS until unrouted. --speed PERCENT (10 to 100, default 100) sets the speed every launch flies at; lower is slower and costs less water ice. --dest-pays-return bills the owned destination for each empty return. A launch that cannot leave (no fuel, no ships) skips and is logged.
 
 ```text
-hoshi fleet route FROM TO INTERVAL_SECS RESOURCE=AMOUNT... SHIP:COUNT... [--dest-pays-return]
+hoshi fleet route FROM TO INTERVAL_SECS RESOURCE=AMOUNT... SHIP:COUNT... [--speed PERCENT] [--dest-pays-return]
 ```
 
 Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair-play restrictions.
 
-Example: `hoshi fleet route 1:1:10 home 21600 water_ice=500 small_cargo:1 --dest-pays-return`
+Example: `hoshi fleet route 1:1:10 home 21600 water_ice=500 small_cargo:1 --speed 10 --dest-pays-return`
 
 Environment: HOSHI_SAVE, HOSHI_BALANCE
 

@@ -503,17 +503,17 @@ hoshi fleet deploy home 1:1:9 3600 iron=2000 large_cargo:2
 .PP
 Environment: HOSHI_SAVE, HOSHI_BALANCE
 .SS fleet route
-Repeat a transport between owned worlds every INTERVAL_SECS until unrouted. \-\-dest\-pays\-return bills the owned destination for each empty return. A launch that cannot leave (no fuel, no ships) skips and is logged.
+Repeat a transport between owned worlds every INTERVAL_SECS until unrouted. \-\-speed PERCENT (10 to 100, default 100) sets the speed every launch flies at; lower is slower and costs less water ice. \-\-dest\-pays\-return bills the owned destination for each empty return. A launch that cannot leave (no fuel, no ships) skips and is logged.
 .PP
 Uses the selected save and the same core rules as interactive play. Results use the versioned JSON envelope. A refused action does not bypass prerequisites or fair\-play restrictions.
 .PP
 .nf
-hoshi fleet route FROM TO INTERVAL_SECS RESOURCE=AMOUNT... SHIP:COUNT... [\-\-dest\-pays\-return]
+hoshi fleet route FROM TO INTERVAL_SECS RESOURCE=AMOUNT... SHIP:COUNT... [\-\-speed PERCENT] [\-\-dest\-pays\-return]
 .fi
 .PP
 Example:
 .nf
-hoshi fleet route 1:1:10 home 21600 water_ice=500 small_cargo:1 \-\-dest\-pays\-return
+hoshi fleet route 1:1:10 home 21600 water_ice=500 small_cargo:1 \-\-speed 10 \-\-dest\-pays\-return
 .fi
 .PP
 Environment: HOSHI_SAVE, HOSHI_BALANCE
