@@ -1235,18 +1235,21 @@ mod tests {
         // no deuterium.
         state.buildings.space_elevator = 1;
         let t1 = fuel(&state, ShipKind::SmallCargo, hop, Resources::ZERO);
-        assert!(t1.water_ice <= 48.0 * level_8_ice_per_hour(crate::PlanetType::Rocky));
+        assert!(
+            t1.water_ice
+                <= 48.0 * level_8_per_hour(crate::PlanetType::Rocky, ResourceKind::WaterIce)
+        );
         assert!(t1.deuterium < 1e-9);
     }
 
-    /// Net water ice per hour at a powered home of `kind` with a level-8
-    /// deuterium synthesizer, after the synthesizer takes its share.
-    fn level_8_ice_per_hour(kind: crate::PlanetType) -> f64 {
+    /// Net `res` per hour at a powered home of `kind` with a level-8
+    /// deuterium synthesizer, after the synthesizer's recipes take their share.
+    fn level_8_per_hour(kind: crate::PlanetType, res: ResourceKind) -> f64 {
         let mut state = GameState::with_seed(1_000, BalanceConfig::default(), 1);
         state.home_kind = kind;
         state.buildings.deuterium_synthesizer = 8;
         state.buildings.solar_plant = 20;
-        state.production_per_hour(ResourceKind::WaterIce)
+        state.production_per_hour(res)
     }
 
     /// Launches pay reaction mass in water ice, so no world type may refine
@@ -1259,10 +1262,60 @@ mod tests {
             crate::PlanetType::GasGiant,
         ] {
             assert!(
-                level_8_ice_per_hour(kind) > 1.0,
+                level_8_per_hour(kind, ResourceKind::WaterIce) > 1.0,
                 "{kind:?} nets no water ice"
             );
         }
+    }
+
+    /// A gas giant's own water ice pays a Large Cargo helium-3 route home
+    /// (out loaded, back empty, at 10%) in the time the route fills a load
+    /// (#667). Production rates share one power factor, so the ratio holds at
+    /// any level or orbit.
+    #[test]
+    fn gas_giant_ice_fuels_its_helium_3_route_home() {
+        let state = ready(1_000);
+        let giant = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 13,
+        };
+        assert_eq!(state.planet_kind(giant), None);
+        assert_eq!(
+            crate::planet_profile(state.galaxy_seed, giant, state.generator_version).0,
+            crate::PlanetType::GasGiant
+        );
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::LargeCargo, 1);
+        let load = state.ship_stats(ShipKind::LargeCargo).cargo;
+        let mut cargo = Resources::ZERO;
+        cargo.set(ResourceKind::Helium3, load);
+        let (_, fuel) = state
+            .flight_hauling(giant, Coord::HOME, ships, Haul::transport(cargo), 10)
+            .unwrap();
+        let helium = level_8_per_hour(crate::PlanetType::GasGiant, ResourceKind::Helium3);
+        let ice = level_8_per_hour(crate::PlanetType::GasGiant, ResourceKind::WaterIce);
+        let fill_hours = load / helium;
+        assert!(
+            ice * fill_hours >= fuel.water_ice,
+            "{:.0} ice made while filling, {:.0} burned",
+            ice * fill_hours,
+            fuel.water_ice
+        );
+    }
+
+    /// The rocky home's synthesizer is short of helium-3, so a stock of it
+    /// multiplies home deuterium. That is what makes the gas giant export
+    /// worth hauling (#667).
+    #[test]
+    fn helium_3_stock_multiplies_home_deuterium() {
+        let mut state = GameState::with_seed(1_000, BalanceConfig::default(), 1);
+        state.buildings.deuterium_synthesizer = 8;
+        state.buildings.solar_plant = 20;
+        let without = state.production_per_hour(ResourceKind::Deuterium);
+        state.resources.helium_3 = 1e6;
+        let with = state.production_per_hour(ResourceKind::Deuterium);
+        assert!(with >= 3.0 * without, "{without:.1} -> {with:.1} D/h");
     }
 
     #[test]
