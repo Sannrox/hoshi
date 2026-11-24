@@ -218,6 +218,7 @@ silent extra departure; they extend this list.
 | Hull points map to kilograms through `kg_per_hull` | Keeps a combustion cargo inside a mid-game deuterium stockpile for a 1–1.5 AU hop. |
 | A hop between systems costs escape plus capture delta-v, with no interstellar cruise burn | Each star gets its own gravity well, so a farther system never costs less fuel. Every other system costs the same; time still grows with distance. |
 | Propellant mass is paid from water ice; it does not fill cargo volume | Tanks are part of the vehicle; cargo is payload. |
+| A gas giant's water ice deposit stands in for hydrogen reaction mass | A giant's atmosphere is mostly hydrogen, the natural propellant. Counting it as water ice keeps one propellant good, and lets a gas giant fuel its own helium-3 exports. |
 | Impulse and hyperspace burns a configured deuterium share of that mass | Physical fusion energy for 20 km/s exhaust is about 2e-6 of the reaction mass. The bundle uses a larger share so deuterium stays a flight cost for advanced drives. Combustion burns none. |
 | Inter-system and galaxy hops sit on summed AU radii around the same star | Keeps one μ and one Hohmann formula; ordering of hop size stays. |
 | Frontier galaxy uses the same `[flight].galaxy_unit` distance as a one-galaxy hop | Inter-galaxy flights stay on the existing clock; richer worlds are a generation overlay, not a second physics table. |

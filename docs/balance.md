@@ -30,7 +30,7 @@ factors must be `> 0`, bases `>= 0`, build and ship queues at least 1.
 
 Construction stockpiles are iron, silicon, rare earths, water ice, helium-3 and deuterium (also named frames, electronics and fuel). Three tanks hold them: iron storage (`metal_storage`) for iron and rare earths, silicon storage (`crystal_storage`) for silicon, deuterium storage for water ice, helium-3 and fuel. Intermediate goods live in the save `goods` table. Building costs may use `frames`, `electronics` and `fuel`; ship costs may use `frames`, `electronics` and `propellant` (`fuel` on a ship is still flight consumption).
 
-`[chains.deposits.<type>]` is richness by planet type. `deposit_jitter` (in `[0, 1)`) spreads that richness from the galaxy seed and coord. The planet screen lists the resulting deposits. Every planet type's `water_ice` richness sits above the 0.5 that `refine_propellant` draws per synthesizer unit, so each world keeps spare ice for launch reaction mass after the synthesizer takes its share (bundled: rocky 0.72, gas giant 0.75, ice 1.25).
+`[chains.deposits.<type>]` is richness by planet type. `deposit_jitter` (in `[0, 1)`) spreads that richness from the galaxy seed and coord. The planet screen lists the resulting deposits. Every planet type's `water_ice` richness sits above the 0.5 that `refine_propellant` draws per synthesizer unit, so each world keeps spare ice for launch reaction mass after the synthesizer takes its share (bundled: rocky 0.72, ice 1.25, gas giant 2.25). The gas giant's richness also stands in for hydrogen reaction mass: its spare ice pays a Large Cargo helium-3 route home, round trip at 10%, in the time the route fills a load.
 
 ## Waste heat and pollution
 
