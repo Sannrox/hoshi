@@ -227,6 +227,8 @@
   "planets": [
     {
       "coord": "1:1:1",
+      "export": null,
+      "helium_3_deuterium_gain": null,
       "home": true,
       "label": "Home (1:1:1)",
       "rare": null

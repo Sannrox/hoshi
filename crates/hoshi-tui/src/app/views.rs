@@ -289,6 +289,7 @@ impl App {
             Screen::Daily => self.daily_view(),
             Screen::Goals => self.goals_view(),
             Screen::Production => self.production_view(),
+            Screen::Worlds => self.worlds_view(),
             Screen::Market => self.market_view(),
             Screen::Diplomacy => self.diplomacy_view(),
             Screen::Laws => self.law_view(),
@@ -1105,6 +1106,109 @@ impl App {
                 selected: Some(self.selected),
             }),
             ..ListView::default()
+        }
+    }
+
+    /// One row per owned world: its type, export, rate now, the next level
+    /// of the building that makes it, and the home's rate of the same good.
+    /// The foot says what holds home deuterium back and where helium-3 is.
+    fn worlds_view(&self) -> ListView {
+        let t = &self.theme;
+        let home = self.state.home;
+        let rate = |n: f64| format!("{n:.0}");
+        let label = |coord| hoshi_core::fit_label(self.state.world_name(coord), coord, 14);
+        let mut helium_source: Option<(Coord, f64)> = None;
+        let rows = self
+            .state
+            .owned_coords()
+            .into_iter()
+            .map(|coord| {
+                let name = Line::styled(label(coord), t.text());
+                let kind = Line::styled(self.planet_kind_words(coord), t.muted());
+                let Some(export) = self.state.world_export_at(coord) else {
+                    let dash = || Line::styled("—", t.muted());
+                    return vec![name, kind, dash(), dash(), dash(), dash()];
+                };
+                if export.good == ResourceKind::Helium3
+                    && helium_source.is_none_or(|(_, best)| export.per_hour > best)
+                {
+                    helium_source = Some((coord, export.per_hour));
+                }
+                let next = if export.per_hour < 0.5
+                    && let limit = self.state.production_report_at(coord).limited_by
+                    && limit != hoshi_core::LimitingFactor::None
+                {
+                    Line::styled(
+                        format!("limit {}", self.state.limiter_row_label(&limit)),
+                        t.intent(Intent::Warning),
+                    )
+                } else {
+                    let building = match export.building {
+                        BuildingKind::DeuteriumSynthesizer => "synth",
+                        _ => "mine",
+                    };
+                    Line::styled(
+                        format!(
+                            "{building} lv{} {}",
+                            export.next_level,
+                            rate(export.next_level_per_hour)
+                        ),
+                        t.text(),
+                    )
+                };
+                vec![
+                    name,
+                    kind,
+                    Line::styled(self.state.display_name(export.good.as_key()), t.text()),
+                    Line::styled(rate(export.per_hour), t.text()),
+                    next,
+                    Line::styled(rate(export.home_per_hour), t.muted()),
+                ]
+            })
+            .collect();
+        let mut foot = vec![Line::styled("HOME DEUTERIUM", t.muted())];
+        let now = self.state.production_per_hour(ResourceKind::Deuterium);
+        foot.push(Line::styled(
+            match self.state.helium_3_deuterium_gain_at(home) {
+                Some(gain) => format!(
+                    "{now:.0}/h now. Helium-3 is the short input: a full store adds +{gain:.0}/h."
+                ),
+                None => format!("{now:.0}/h now. Helium-3 is not holding it back."),
+            },
+            t.text(),
+        ));
+        if self.state.colonies.is_empty() {
+            foot.push(Line::styled(
+                "No colonies yet. Ice worlds in slots 9-12 export deuterium; gas giants in slots 13-16 export helium-3.",
+                t.muted(),
+            ));
+        } else if let Some((coord, per_hour)) = helium_source {
+            foot.push(Line::styled(
+                format!(
+                    "{} makes {per_hour:.0} helium-3/h. Ship it home with a transport.",
+                    label(coord)
+                ),
+                t.muted(),
+            ));
+        }
+        ListView {
+            strip: Vec::new(),
+            head: Vec::new(),
+            table: Some(TableView {
+                columns: vec![
+                    Column::left("world", 14),
+                    Column::left("type", 9),
+                    Column::left("export", 10),
+                    Column::right("now /h", 7),
+                    Column::left("next level", 16),
+                    Column::right("home /h", 7),
+                ],
+                rows,
+                lead: 0,
+                groups: Vec::new(),
+                selected: Some(self.selected),
+            }),
+            foot,
         }
     }
 

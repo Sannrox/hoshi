@@ -228,7 +228,7 @@ pub use prestige::{
     PRESTIGE_KEPT, PRESTIGE_LOST, Prestige, PrestigeBonusSpec, PrestigeConfig, PrestigeError,
     PrestigePreview, RunStats,
 };
-pub use production::{LimitingFactor, ProductionReport, RecipeFlow};
+pub use production::{LimitingFactor, ProductionReport, RecipeFlow, WorldExport};
 pub use research::{
     BuildingPrereq, HullRefit, ModifierKind, PrereqGap, ResearchError, ResearchJob, TechBranch,
     TechModifier, TechNodeState, TechPrereq, TechSpec, TechTree, TechTreeError,

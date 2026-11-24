@@ -2902,6 +2902,15 @@ fn state_value_for(
                 "label": state.world_label(coord),
                 "home": coord == state.home,
                 "rare": state.rare_bonus_at(coord).map(|row| row.id.clone()),
+                "export": state.world_export_at(coord).map(|e| json!({
+                    "good": e.good.as_key(),
+                    "per_hour": e.per_hour,
+                    "building": e.building.as_key(),
+                    "next_level": e.next_level,
+                    "next_level_per_hour": e.next_level_per_hour,
+                    "home_per_hour": e.home_per_hour,
+                })),
+                "helium_3_deuterium_gain": state.helium_3_deuterium_gain_at(coord),
             })
         })
         .collect();
@@ -6562,6 +6571,52 @@ mod tests {
         let raid = &state_value(&state, Actor::Player)["raid"];
         assert_eq!(raid["target"], "1:3:5");
         assert_eq!(state.upcoming_raid().map(|raid| raid.target), Some(target));
+    }
+
+    #[test]
+    fn state_names_each_colony_export_and_the_home_helium_3_gain() {
+        let mut state = GameState::new(0);
+        state.buildings.deuterium_synthesizer = 12;
+        state.buildings.solar_plant = 20;
+        let ice = hoshi_core::Coord {
+            galaxy: 1,
+            system: state.home.system,
+            position: 9,
+        };
+        state.colonies.push(hoshi_core::Colony {
+            coord: ice,
+            kind: hoshi_core::PlanetType::Ice,
+            size: 120,
+            resources: hoshi_core::Resources::ZERO,
+            buildings: hoshi_core::Buildings {
+                deuterium_synthesizer: 8,
+                solar_plant: 13,
+                ..hoshi_core::Buildings::default()
+            },
+            fleet: Fleet::default(),
+            defences: hoshi_core::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: Default::default(),
+        });
+        let planets = state_value(&state, Actor::Player)["planets"].clone();
+        let gain = state.helium_3_deuterium_gain_at(state.home).unwrap();
+        assert_eq!(planets[0]["export"], Value::Null);
+        assert_eq!(planets[0]["helium_3_deuterium_gain"], json!(gain));
+        let export = state.world_export_at(ice).unwrap();
+        assert_eq!(planets[1]["coord"], ice.to_string());
+        assert_eq!(planets[1]["export"]["good"], "deuterium");
+        assert_eq!(planets[1]["export"]["building"], "deuterium_synthesizer");
+        assert_eq!(planets[1]["export"]["next_level"], 9);
+        assert_eq!(
+            planets[1]["export"]["next_level_per_hour"],
+            json!(export.next_level_per_hour)
+        );
+        assert_eq!(
+            planets[1]["export"]["home_per_hour"],
+            json!(export.home_per_hour)
+        );
     }
 
     #[test]

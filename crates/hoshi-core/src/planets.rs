@@ -33,6 +33,16 @@ impl PlanetType {
         })
     }
 
+    /// The good a colony of this type is founded for: an ice world refines
+    /// deuterium, a gas giant extracts helium-3, a rocky world mines iron.
+    pub fn export(self) -> crate::ResourceKind {
+        match self {
+            PlanetType::Rocky => crate::ResourceKind::Iron,
+            PlanetType::Ice => crate::ResourceKind::Deuterium,
+            PlanetType::GasGiant => crate::ResourceKind::Helium3,
+        }
+    }
+
     /// Inclusive 1-based slot positions this band covers on the star map.
     pub fn slot_range(self) -> std::ops::RangeInclusive<u16> {
         match self {

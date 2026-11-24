@@ -705,6 +705,75 @@ impl GameState {
             slots.end()
         ))
     }
+
+    /// What the colony at `coord` is for: its world type's export, its rate
+    /// now and one level up of the building that makes it, and the home's
+    /// rate of the same good. `None` for the home or an unowned coord.
+    pub fn world_export_at(&self, coord: Coord) -> Option<WorldExport> {
+        if coord == self.home {
+            return None;
+        }
+        let good = self.planet_kind(coord)?.export();
+        let per_hour = self.production_per_hour_at(coord, good)?;
+        let building = match good {
+            ResourceKind::Iron | ResourceKind::RareEarths => crate::BuildingKind::MetalMine,
+            ResourceKind::Silicon => crate::BuildingKind::CrystalMine,
+            _ => crate::BuildingKind::DeuteriumSynthesizer,
+        };
+        let next_level = self.buildings_at(coord)?.get(building) + 1;
+        let next_level_per_hour = self
+            .what_if(coord, |site, _| site.set(building, next_level))
+            .production_per_hour_at(coord, good)?;
+        Some(WorldExport {
+            good,
+            per_hour,
+            building,
+            next_level,
+            next_level_per_hour,
+            home_per_hour: self.production_per_hour(good),
+        })
+    }
+
+    /// Extra deuterium per hour a full helium-3 store would give the planet
+    /// at `coord`, from the same recipe pass as production. `None` when
+    /// helium-3 is not what holds its deuterium back.
+    pub fn helium_3_deuterium_gain_at(&self, coord: Coord) -> Option<f64> {
+        let now = self.production_per_hour_at(coord, ResourceKind::Deuterium)?;
+        let cap = self.storage_cap_for(*self.buildings_at(coord)?, ResourceKind::Helium3);
+        let stocked = self
+            .what_if(coord, |_, stock| stock.helium_3 = stock.helium_3.max(cap))
+            .production_per_hour_at(coord, ResourceKind::Deuterium)?;
+        // Under one unit an hour is rounding, not a bottleneck.
+        (stocked - now >= 1.0).then_some(stocked - now)
+    }
+
+    /// A copy with the site at `coord` changed, for rate previews.
+    fn what_if(
+        &self,
+        coord: Coord,
+        change: impl FnOnce(&mut crate::Buildings, &mut Resources),
+    ) -> Self {
+        let mut next = self.clone();
+        if coord == next.home {
+            change(&mut next.buildings, &mut next.resources);
+        } else if let Some(colony) = next.colonies.iter_mut().find(|c| c.coord == coord) {
+            change(&mut colony.buildings, &mut colony.resources);
+        }
+        next
+    }
+}
+
+/// A colony's role, from [`GameState::world_export_at`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WorldExport {
+    /// The good this world type makes better than a rocky home.
+    pub good: ResourceKind,
+    pub per_hour: f64,
+    /// The building that makes `good`.
+    pub building: crate::BuildingKind,
+    pub next_level: u32,
+    pub next_level_per_hour: f64,
+    pub home_per_hour: f64,
 }
 
 #[cfg(test)]
@@ -1417,5 +1486,72 @@ mod tests {
                 "{id} {text}"
             );
         }
+    }
+
+    /// Home at synthesizer 12 with an ice colony at synthesizer 8, both with
+    /// enough solar to run.
+    fn home_and_ice_colony() -> (GameState, Coord) {
+        let mut state = GameState::with_config(0, test_config());
+        state.buildings.deuterium_synthesizer = 12;
+        state.buildings.solar_plant = 20;
+        let coord = Coord {
+            galaxy: 1,
+            system: state.home.system,
+            position: 9,
+        };
+        state.colonies.push(Colony {
+            coord,
+            kind: PlanetType::Ice,
+            size: 120,
+            resources: Resources::ZERO,
+            buildings: Buildings {
+                deuterium_synthesizer: 8,
+                solar_plant: 13,
+                ..Buildings::default()
+            },
+            fleet: Fleet::default(),
+            defences: crate::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: BTreeMap::new(),
+        });
+        (state, coord)
+    }
+
+    #[test]
+    fn ice_colony_exports_deuterium_and_previews_its_next_synthesizer() {
+        let (state, ice) = home_and_ice_colony();
+        assert_eq!(state.world_export_at(state.home), None);
+        let export = state.world_export_at(ice).unwrap();
+        assert_eq!(export.good, ResourceKind::Deuterium);
+        assert_eq!(export.building, BuildingKind::DeuteriumSynthesizer);
+        assert_eq!(export.next_level, 9);
+        close(
+            export.per_hour,
+            state
+                .production_per_hour_at(ice, ResourceKind::Deuterium)
+                .unwrap(),
+        );
+        assert!(export.next_level_per_hour > export.per_hour, "{export:?}");
+        close(
+            export.home_per_hour,
+            state.production_per_hour(ResourceKind::Deuterium),
+        );
+    }
+
+    #[test]
+    fn helium_3_gain_shows_until_the_home_is_stocked() {
+        let (mut state, _) = home_and_ice_colony();
+        let home = state.home;
+        let before = state.production_per_hour(ResourceKind::Deuterium);
+        let gain = state.helium_3_deuterium_gain_at(home).unwrap();
+        assert!(gain > before, "gain {gain} on {before}/h");
+        state.resources.helium_3 = 1e9;
+        close(
+            state.production_per_hour(ResourceKind::Deuterium),
+            before + gain,
+        );
+        assert_eq!(state.helium_3_deuterium_gain_at(home), None);
     }
 }

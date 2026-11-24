@@ -42,6 +42,7 @@ pub enum Screen {
     Daily,
     Goals,
     Production,
+    Worlds,
     Maintenance,
     Market,
     Diplomacy,
@@ -1478,6 +1479,7 @@ impl App {
             Screen::Daily => HelpContext::Daily,
             Screen::Goals => HelpContext::Goals,
             Screen::Production => HelpContext::Production,
+            Screen::Worlds => HelpContext::Worlds,
             Screen::Maintenance => HelpContext::Maintenance,
             Screen::Market => HelpContext::Market,
             Screen::Diplomacy => HelpContext::Diplomacy,
@@ -2265,6 +2267,7 @@ impl App {
             Screen::Incidents => "resolve",
             Screen::Maintenance => "schedule",
             Screen::Scenarios => "promote",
+            Screen::Worlds => "open world",
             Screen::Cockpit
             | Screen::Achievements
             | Screen::Daily
@@ -3143,6 +3146,11 @@ impl App {
             Screen::Wonder => self.activate_wonder(now_unix),
             Screen::Prestige => self.activate_prestige(now_unix),
             Screen::Achievements | Screen::Daily | Screen::Goals | Screen::Production => {}
+            // Enter opens the selected world's buildings.
+            Screen::Worlds => {
+                self.planet_index = self.selected;
+                self.open(Screen::Planet);
+            }
             Screen::Ops => self.open_mission_form(),
             Screen::Automation => self.activate_automation(),
             Screen::Finance => self.activate_finance(now_unix),
@@ -3820,6 +3828,7 @@ impl App {
             | Screen::Daily
             | Screen::Goals
             | Screen::Production
+            | Screen::Worlds
             | Screen::Market
             | Screen::Diplomacy
             | Screen::Laws
@@ -3844,6 +3853,7 @@ impl App {
             Screen::Daily => self.state.daily.slots.len(),
             Screen::Goals => 3,
             Screen::Production => self.production_here().steps.len(),
+            Screen::Worlds => self.state.owned_coords().len(),
             Screen::Market => TRADE_PAIRS.len(),
             Screen::Diplomacy => self.state.config.diplomacy.len(),
             Screen::Laws => self.state.config.laws.len() + self.state.laws.laws.len(),
@@ -4027,6 +4037,7 @@ impl App {
                 }
                 Screen::Production =>
                     format!("{planets}  {select}  {} detail", k.primary(Binding::Detail)),
+                Screen::Worlds => format!("{select}  {confirm} open world"),
                 Screen::Market => format!(
                     "{select}  {}/{} amount  {confirm} trade  {} detail",
                     k.primary(Binding::Increase),
@@ -8161,6 +8172,101 @@ mod tests {
             text.chars().any(|c| "▁▂▃▄▅▆▇█".contains(c)) || text.contains("Fe /h"),
             "history missing: {text}"
         );
+    }
+
+    /// Home at synthesizer 12, an ice colony at 8 and a gas giant at 12,
+    /// raids off so the header stays still.
+    fn app_with_worlds() -> (App, Coord, Coord) {
+        let mut state = GameState::new(1_000);
+        state.config.raid.enabled = false;
+        state.next_raid_at = None;
+        state.buildings.deuterium_synthesizer = 12;
+        state.buildings.solar_plant = 20;
+        let at = |position| Coord {
+            galaxy: 1,
+            system: state.home.system,
+            position,
+        };
+        let (ice, gas) = (at(9), at(13));
+        for (coord, kind) in [(ice, PlanetType::Ice), (gas, PlanetType::GasGiant)] {
+            state.colonies.push(Colony {
+                coord,
+                kind,
+                size: 120,
+                resources: Resources::ZERO,
+                buildings: Buildings {
+                    deuterium_synthesizer: if kind == PlanetType::Ice { 8 } else { 12 },
+                    solar_plant: 13,
+                    ..Buildings::default()
+                },
+                fleet: Fleet::default(),
+                defences: hoshi_core::DefenceGrid::default(),
+                build_queue: Vec::new(),
+                ship_queue: Vec::new(),
+                rare: None,
+                goods: std::collections::BTreeMap::new(),
+            });
+        }
+        let mut app = App::new(state);
+        app.open(Screen::Worlds);
+        (app, ice, gas)
+    }
+
+    #[test]
+    fn worlds_screen_names_each_export_and_the_helium_3_gain() {
+        let (app, _, _) = app_with_worlds();
+        let text = render_text(&app, 80, 24);
+        assert_eq!(
+            text,
+            include_str!("../tests/fixtures/worlds/80x24.txt"),
+            "{text}"
+        );
+        let narrow = render_text(&app, 40, 12);
+        assert_eq!(
+            narrow,
+            include_str!("../tests/fixtures/worlds/40x12.txt"),
+            "{narrow}"
+        );
+    }
+
+    #[test]
+    fn worlds_screen_without_colonies_says_where_exports_come_from() {
+        let mut app = App::new(GameState::new(1_000));
+        app.open(Screen::Worlds);
+        let text = render_text(&app, 120, 24);
+        assert!(text.contains("No colonies yet."), "{text}");
+        assert!(
+            text.contains("gas giants in slots 13-16 export helium-3"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn worlds_screen_names_the_limit_of_a_colony_that_makes_nothing() {
+        let (mut app, ice, _) = app_with_worlds();
+        let colony = app
+            .state
+            .colonies
+            .iter_mut()
+            .find(|c| c.coord == ice)
+            .unwrap();
+        colony.buildings.solar_plant = 0;
+        assert_eq!(
+            app.state.world_export_at(ice).map(|e| e.per_hour.round()),
+            Some(0.0)
+        );
+        let text = render_text(&app, 80, 24);
+        let row = text.lines().find(|l| l.contains("1:1:9")).unwrap();
+        assert!(row.contains("limit energy"), "{row}");
+    }
+
+    #[test]
+    fn worlds_enter_opens_the_selected_world_buildings() {
+        let (mut app, ice, _) = app_with_worlds();
+        app.handle_key(KeyCode::Char('j'), 1_000);
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert_eq!(app.screen, Screen::Planet);
+        assert_eq!(app.selected_coord(), ice);
     }
 
     #[test]
