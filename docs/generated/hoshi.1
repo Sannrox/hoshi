@@ -1762,6 +1762,21 @@ hoshi \-\-version
 .fi
 .PP
 Environment: None required. See the global environment reference below.
+.SH GUIDES
+.SS worlds
+.nf
+What each world type is for.
+
+  rocky home: builds everything; a thin helium\-3 deposit caps its deuterium.
+  ice world: deuterium exporter and cheap launch base. A deuterium haul
+    home keeps most of its load; a water ice haul burns most of its own.
+  gas giant: helium\-3 exporter. A helium\-3 stock at home multiplies home
+    deuterium.
+
+Colony / Worlds lists each world's export next to the home's rate and what
+a helium\-3 stock would add at home. In `hoshi state`, read planets[].export
+and planets[].helium_3_deuterium_gain.
+.fi
 .SH FLAGS
 .TP
 .B \-\-offline

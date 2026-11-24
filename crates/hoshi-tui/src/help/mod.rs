@@ -78,6 +78,13 @@ impl Topic {
     }
 }
 
+/// Concept guides: `hoshi help NAME` prints the text. Not commands, so they
+/// carry no usage, environment, or exit codes.
+const GUIDES: &[(&str, &str)] = &[(
+    "worlds",
+    "What each world type is for.\n\n  rocky home: builds everything; a thin helium-3 deposit caps its deuterium.\n  ice world: deuterium exporter and cheap launch base. A deuterium haul\n    home keeps most of its load; a water ice haul burns most of its own.\n  gas giant: helium-3 exporter. A helium-3 stock at home multiplies home\n    deuterium.\n\nColony / Worlds lists each world's export next to the home's rate and what\na helium-3 stock would add at home. In `hoshi state`, read planets[].export\nand planets[].helium_3_deuterium_gain.",
+)];
+
 const EXTRA: &[Topic] = &[
     Topic {
         name: "help",
@@ -384,6 +391,11 @@ fn summary() -> String {
             out.push_str(&format!("  {root:<14} {}\n", topic.summary));
         }
     }
+    out.push_str("\nGuides:\n");
+    for (name, text) in GUIDES {
+        let first = text.lines().next().unwrap_or_default();
+        out.push_str(&format!("  {name:<14} {first}\n"));
+    }
     out.push_str("\nFlags (availability depends on the command):\n");
     for flag in FLAGS {
         out.push_str(&format!(
@@ -402,6 +414,9 @@ fn summary() -> String {
 }
 
 fn topic_help(name: &str) -> Result<String, String> {
+    if let Some((_, text)) = GUIDES.iter().find(|(guide, _)| *guide == name) {
+        return Ok(format!("{name}\n{text}\n"));
+    }
     let all = topics();
     let matches: Vec<_> = all
         .iter()
@@ -505,6 +520,9 @@ pub(crate) fn markdown() -> String {
     for t in topics() {
         out.push_str(&format!("## {}\n\n{}\n\n```text\nhoshi {}\n```\n\n{}\n\nExample: `hoshi {}`\n\nEnvironment: {}\n\nArea: {}.{}\n\n", t.name, t.summary, t.usage, t.details(), t.example, t.environment(), t.area, if t.planned { " Planned." } else { "" }));
     }
+    for (name, text) in GUIDES {
+        out.push_str(&format!("## Guide: {name}\n\n```text\n{text}\n```\n\n"));
+    }
     out.push_str("## Flags\n\n");
     for f in FLAGS {
         out.push_str(&format!("- `{} {}`: {}\n", f.name, f.value, f.summary));
@@ -539,6 +557,10 @@ pub(crate) fn man() -> String {
     );
     for t in topics() {
         out.push_str(&format!(".SS {}\n{}\n.PP\n{}\n.PP\n.nf\nhoshi {}\n.fi\n.PP\nExample:\n.nf\nhoshi {}\n.fi\n.PP\nEnvironment: {}\n", roff(t.name), roff(t.summary), roff(t.details()), roff(t.usage), roff(t.example), roff(t.environment())));
+    }
+    out.push_str(".SH GUIDES\n");
+    for (name, text) in GUIDES {
+        out.push_str(&format!(".SS {}\n.nf\n{}\n.fi\n", roff(name), roff(text)));
     }
     out.push_str(".SH FLAGS\n");
     for f in FLAGS {
@@ -739,6 +761,15 @@ mod tests {
                 "{path} is stale; run scripts/generate-help.sh"
             );
         }
+    }
+
+    #[test]
+    fn worlds_guide_names_each_world_role_and_is_listed() {
+        let text = topic_help("worlds").unwrap();
+        assert!(text.contains("ice world: deuterium exporter"), "{text}");
+        assert!(text.contains("gas giant: helium-3 exporter"), "{text}");
+        assert!(!text.contains("Usage:"), "{text}");
+        assert!(summary().contains("worlds"), "{}", summary());
     }
 
     #[test]

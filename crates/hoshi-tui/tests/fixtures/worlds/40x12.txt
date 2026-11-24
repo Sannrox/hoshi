@@ -1,0 +1,12 @@
+ ◆ HOSHI  │  Colony / Worlds H… (1:1:1)
+  Fe │ Si │ D  │ REE│ H2O│ He3│ Energy
+  500│ 500│ 0  │ 0  │ 0  │ 0  │ +236
+  +30│ +20│ +16│ +2/│ +17│ 0/h│ heat 91/
+────────────────────────────────────────
+ ▦ Colony   Home (1:1:1)          ✕ esc
+  Buildings   Production   Worlds   Mai
+ ──────────────────────────━━━━━━──────
+ ▌ Waste      heat 91/80  pol 36/50  un
+  WORLD           TYPE       EXPORT
+                          ⏎ open world
+      j/k  select   enter  open world

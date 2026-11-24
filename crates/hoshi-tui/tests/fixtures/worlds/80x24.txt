@@ -1,0 +1,24 @@
+ ◆ HOSHI  │  Colony / Worlds                                       Home (1:1:1)
+  Fe       │ Si       │ D        │ REE      │ H2O      │ He3      │ Energy
+  500      │ 500      │ 0        │ 0        │ 0        │ 0        │ +236
+  +30/h    │ +20/h    │ +162/h   │ +2/h     │ +172/h   │ 0/h      │ heat 91/80
+────────────────────────────────────────────────────────────────────────────────
+ ▦ Colony   Home (1:1:1) · rocky · queue 0/5                              ✕ esc
+  Buildings   Production   Worlds   Maintenance   Research   Wonder
+ ──────────────────────────━━━━━━──────────────────────────────────────────────
+
+ ▌ Waste      heat 91/80  pol 36/50  unrest 0.90
+
+  WORLD           TYPE       EXPORT       NOW /H  NEXT LEVEL        HOME /H
+ ▌Home (1:1:1)    rocky      —                 —  —                       —
+  1:1:9           ice        deuterium       142  synth lv9 179         162
+  1:1:13          gas giant  helium-3        592  synth lv13 807          0
+
+
+
+
+ HOME DEUTERIUM
+ 162/h now. Helium-3 is the short input: a full store adds +619/h.
+ 1:1:13 makes 592 helium-3/h. Ship it home with a transport.
+                                                                  ⏎ open world
+      j/k  select   enter  open world   1-6  hubs      0000-0000-0000-00 gen 1
