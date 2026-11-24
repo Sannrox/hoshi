@@ -153,10 +153,10 @@ impl Haul {
         Self::round_trip(cargo, cargo)
     }
 
-    /// A colony ship becomes the colony. A failed settlement's flight home
-    /// is not charged.
-    pub fn colony() -> Self {
-        Self::one_way(Resources::ZERO)
+    /// A colony ship becomes the colony and lands `cargo` as its starter
+    /// stock. A failed settlement's flight home is not charged.
+    pub fn colony(cargo: Resources) -> Self {
+        Self::one_way(cargo)
     }
 }
 

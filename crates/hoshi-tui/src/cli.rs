@@ -121,7 +121,7 @@ crate::help::catalog_commands! {
     Cancel {
         item: CancelItem,
     },
-    #[help("fleet send", "Dispatch ships on a mission. A transport may take resource=amount cargo and --dest-pays-return so the owned destination pays the empty return at launch. --speed PERCENT (10 to 100, default 100) trades time for fuel: a slower send flies a cheaper transfer and takes longer. The reply reports `fuel_water_ice` / `fuel_deuterium` plus `fuel_out_*` / `fuel_back_*` and `fuel_out_payer` / `fuel_back_payer`.", "fleet send FROM TO MISSION [RESOURCE=AMOUNT...] SHIP:COUNT... [--dest-pays-return] [--speed PERCENT]", "fleet send 1:1:10 home transport water_ice=500 small_cargo:1 --speed 10")]
+    #[help("fleet send", "Dispatch ships on a mission. A transport may take resource=amount cargo and --dest-pays-return so the owned destination pays the empty return at launch. A colonize may take cargo up to the colony ship's hold; it lands as the new colony's starter stock. --speed PERCENT (10 to 100, default 100) trades time for fuel: a slower send flies a cheaper transfer and takes longer. The reply reports `fuel_water_ice` / `fuel_deuterium` plus `fuel_out_*` / `fuel_back_*` and `fuel_out_payer` / `fuel_back_payer`.", "fleet send FROM TO MISSION [RESOURCE=AMOUNT...] SHIP:COUNT... [--dest-pays-return] [--speed PERCENT]", "fleet send 1:1:10 home transport water_ice=500 small_cargo:1 --speed 10")]
     FleetSend {
         from: Coord,
         to: Coord,
@@ -1409,6 +1409,7 @@ fn apply(
                         Intent::Colonize {
                             origin: Some(*from),
                             dest: *to,
+                            cargo: parse_cargo(cargo)?,
                             speed_percent: speed,
                         },
                         now,
@@ -2722,7 +2723,7 @@ fn ok_launched(
         } else if mission.station {
             hoshi_core::Haul::station(mission.cargo)
         } else if mission.colonize {
-            hoshi_core::Haul::colony()
+            hoshi_core::Haul::colony(mission.cargo)
         } else if mission.transport {
             hoshi_core::Haul::transport(mission.cargo)
         } else {
@@ -3837,11 +3838,11 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
                 ));
             }
             let (cargo, ships): (Vec<_>, Vec<_>) = rest.into_iter().partition(|a| a.contains('='));
-            if mission == MissionKind::Transport {
+            if matches!(mission, MissionKind::Transport | MissionKind::Colonize) {
                 parse_cargo(&cargo)?;
             } else if !cargo.is_empty() {
                 return Err(CliError::Invalid(
-                    "cargo specs are only for a transport".into(),
+                    "cargo specs are only for a transport or a colonize".into(),
                 ));
             }
             Ok(Command::FleetSend {
@@ -7323,6 +7324,20 @@ mod tests {
         );
         assert_eq!(exit, EXIT_REFUSED);
         assert_eq!(value["error"]["code"], "refused");
+        // Starter cargo parses; core refuses for lack of a colony ship.
+        let (value, exit) = run_on(
+            &save,
+            &[
+                "fleet",
+                "send",
+                "home",
+                "1:1:8",
+                "colonize",
+                "iron=100",
+                "colony_ship:1",
+            ],
+        );
+        assert_eq!(exit, EXIT_REFUSED, "{value}");
         let _ = std::fs::remove_file(&save);
     }
 

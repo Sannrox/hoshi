@@ -1362,7 +1362,7 @@ mod tests {
         let visible = arrives.saturating_add(light_delay_secs(origin, dest, &state.config.orbits));
         state.catch_up(visible);
         let err = state
-            .launch_colony(state.home, dest, 100, visible)
+            .launch_colony(state.home, dest, Resources::ZERO, 100, visible)
             .unwrap_err();
         assert!(
             matches!(err, crate::FleetError::RivalClaim { dest: taken, .. } if taken == dest),
@@ -1382,7 +1382,7 @@ mod tests {
             })
             .expect("another empty slot");
         state
-            .launch_colony(state.home, other, 100, visible)
+            .launch_colony(state.home, other, Resources::ZERO, 100, visible)
             .expect("other empty coord still colonizes");
     }
 
@@ -1397,7 +1397,9 @@ mod tests {
         state.fleet.add(ShipKind::ColonyShip, 1);
         let dest = state.rival_colonize_dest(0).expect("dest");
         freeze_rival_acts(&mut state);
-        state.launch_colony(state.home, dest, 100, 1_000).unwrap();
+        state
+            .launch_colony(state.home, dest, Resources::ZERO, 100, 1_000)
+            .unwrap();
         let player_arrives = state.missions[0].phase_ends_at;
         state.catch_up(player_arrives);
         assert!(state.colonies.iter().any(|c| c.coord == dest));

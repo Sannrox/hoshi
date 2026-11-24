@@ -259,11 +259,12 @@ pub fn spend_of(state: &GameState, intent: &Intent, _now: u64) -> f64 {
         Intent::Colonize {
             origin,
             dest,
+            cargo,
             speed_percent,
         } => {
             let mut ships = Fleet::default();
             ships.add(ShipKind::ColonyShip, 1);
-            fuel_of(state, *origin, ships, *dest, *speed_percent)
+            fuel_of(state, *origin, ships, *dest, *speed_percent) + cargo.total()
         }
         Intent::PlaceOrder {
             amount,

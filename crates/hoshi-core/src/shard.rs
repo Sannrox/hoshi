@@ -1445,6 +1445,7 @@ impl<C: Clock> ShardSession<C> {
         let intent = Intent::Colonize {
             origin: None,
             dest,
+            cargo: crate::Resources::ZERO,
             speed_percent,
         };
         let proposal = propose(state, &intent, now).map_err(ShardError::Intent)?;
@@ -3606,6 +3607,7 @@ mod tests {
                     intent: Intent::Colonize {
                         origin: None,
                         dest: empty_slot(),
+                        cargo: crate::Resources::ZERO,
                         speed_percent: 100,
                     },
                     client_now_unix: None,

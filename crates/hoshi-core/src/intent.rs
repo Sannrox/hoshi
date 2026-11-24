@@ -45,9 +45,11 @@ pub enum Intent {
         speed_percent: u8,
         hold_secs: u64,
     },
+    /// `cargo` rides in the colony ship's hold as the colony's starter stock.
     Colonize {
         origin: Option<Coord>,
         dest: Coord,
+        cargo: Resources,
         speed_percent: u8,
     },
     Invade {
@@ -318,13 +320,21 @@ fn proposal_id(intent: &Intent, now_unix: u64, tick: u64) -> String {
             fleet_sig(ships),
             origin_sig(*origin)
         ),
+        // Cargo joins the key only when present, so empty colonize keys keep
+        // their old form.
         Intent::Colonize {
             origin,
             dest,
+            cargo,
             speed_percent,
         } => format!(
-            "colonize:{now_unix}:{tick}:{dest}:{speed_percent}{}",
-            origin_sig(*origin)
+            "colonize:{now_unix}:{tick}:{dest}:{speed_percent}{}{}",
+            origin_sig(*origin),
+            if *cargo == Resources::ZERO {
+                String::new()
+            } else {
+                format!(":{}", cargo.brief())
+            }
         ),
         Intent::Invade {
             origin,
@@ -553,11 +563,13 @@ fn apply_inner(state: &mut GameState, intent: &Intent, now_unix: u64) -> Result<
         Intent::Colonize {
             origin,
             dest,
+            cargo,
             speed_percent,
         } => state
             .launch_colony(
                 origin.unwrap_or(state.home),
                 *dest,
+                *cargo,
                 *speed_percent,
                 now_unix,
             )
@@ -788,6 +800,7 @@ mod tests {
             Intent::Colonize {
                 origin: None,
                 dest: Coord::HOME,
+                cargo: Resources::ZERO,
                 speed_percent: 100,
             }
             .as_key(),
@@ -1243,6 +1256,7 @@ mod tests {
             &Intent::Colonize {
                 origin: None,
                 dest,
+                cargo: Resources::ZERO,
                 speed_percent: 100,
             },
             1_000,
@@ -1262,6 +1276,7 @@ mod tests {
             &Intent::Colonize {
                 origin: None,
                 dest,
+                cargo: Resources::ZERO,
                 speed_percent: 100,
             },
             1_000,

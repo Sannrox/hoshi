@@ -553,7 +553,7 @@ Area: cli.
 
 ## fleet send
 
-Dispatch ships on a mission. A transport may take resource=amount cargo and --dest-pays-return so the owned destination pays the empty return at launch. --speed PERCENT (10 to 100, default 100) trades time for fuel: a slower send flies a cheaper transfer and takes longer. The reply reports `fuel_water_ice` / `fuel_deuterium` plus `fuel_out_*` / `fuel_back_*` and `fuel_out_payer` / `fuel_back_payer`.
+Dispatch ships on a mission. A transport may take resource=amount cargo and --dest-pays-return so the owned destination pays the empty return at launch. A colonize may take cargo up to the colony ship's hold; it lands as the new colony's starter stock. --speed PERCENT (10 to 100, default 100) trades time for fuel: a slower send flies a cheaper transfer and takes longer. The reply reports `fuel_water_ice` / `fuel_deuterium` plus `fuel_out_*` / `fuel_back_*` and `fuel_out_payer` / `fuel_back_payer`.
 
 ```text
 hoshi fleet send FROM TO MISSION [RESOURCE=AMOUNT...] SHIP:COUNT... [--dest-pays-return] [--speed PERCENT]

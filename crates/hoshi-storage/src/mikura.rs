@@ -421,6 +421,7 @@ mod tests {
                     system: 1,
                     position: 14,
                 },
+                hoshi_core::Resources::ZERO,
                 100,
                 now,
             )
