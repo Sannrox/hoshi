@@ -3633,12 +3633,15 @@ impl GameState {
         }
     }
 
-    /// Send one colony ship from `origin`. Settlement is attempted on Action;
-    /// failure returns the ship to `origin`.
+    /// Send one colony ship from `origin` carrying `cargo` up to its hold.
+    /// The cargo is debited at launch and priced into the fuel. Settlement on
+    /// Action lands it as the colony's starter stock; failure returns the ship
+    /// and its cargo to `origin`.
     pub fn launch_colony(
         &mut self,
         origin: Coord,
         dest: Coord,
+        cargo: Resources,
         speed_percent: u8,
         now_unix: u64,
     ) -> Result<u64, FleetError> {
@@ -3655,13 +3658,34 @@ impl GameState {
         }
         let mut ships = Fleet::default();
         ships.add(ShipKind::ColonyShip, 1);
+        Self::check_cargo(cargo)?;
+        let cap = self.cargo_capacity(ships);
+        let need = Self::cargo_mass(cargo);
+        if need > cap + 1e-9 {
+            return Err(FleetError::CargoExceedsCapacity { need, cap });
+        }
         let (outbound_secs, fuel) =
-            self.flight_hauling(origin, dest, ships, Haul::colony(), speed_percent)?;
-        self.launch_with_flight(origin, ships, dest, speed_percent, 0, outbound_secs, fuel)?;
+            self.flight_hauling(origin, dest, ships, Haul::colony(cargo), speed_percent)?;
+        let stock = *self.resources_at(origin).ok_or(FleetError::UnknownPlanet)?;
+        if !stock.can_afford(cargo) {
+            return Err(FleetError::InsufficientCargo {
+                missing: stock.missing(cargo),
+            });
+        }
+        // Ice is cargo and reaction mass: lift the cargo first so the fuel
+        // check sees only what is left, and put it back if the launch fails.
+        *self.resources_at_mut(origin)? = stock.saturating_sub(cargo);
+        if let Err(err) =
+            self.launch_with_flight(origin, ships, dest, speed_percent, 0, outbound_secs, fuel)
+        {
+            *self.resources_at_mut(origin)? = stock;
+            return Err(err);
+        }
         let Some(mission) = self.missions.last_mut() else {
             return Err(FleetError::EmptyFleet);
         };
         mission.colonize = true;
+        mission.cargo = cargo;
         Ok(mission.id)
     }
 
@@ -5224,6 +5248,10 @@ impl GameState {
                     if mission.transport {
                         self.credit_at(mission.origin, mission.cargo);
                     }
+                    // A colony ship that founded nothing brings its starter stock back.
+                    if mission.colonize && cargo_has_mass(mission.cargo) {
+                        self.credit_at(mission.origin, mission.cargo);
+                    }
                     if mission.deploy && cargo_has_mass(mission.cargo) {
                         self.credit_at(mission.origin, mission.cargo);
                         self.note_delivery(
@@ -5452,7 +5480,9 @@ impl GameState {
         if self.occupied(dest) || planets >= self.colony_cap() || no_ship {
             return false;
         }
-        let mut ships = self.missions.remove(index).ships;
+        let mission = self.missions.remove(index);
+        let mission_cargo = mission.cargo;
+        let mut ships = mission.ships;
         ships.saturating_sub(ShipKind::ColonyShip, 1);
         let (kind, size, rare) = if let Some(world) = self.frontier.world_at(dest).cloned() {
             (world.kind, world.size, world.rare)
@@ -5473,6 +5503,8 @@ impl GameState {
             rare,
             goods: BTreeMap::new(),
         });
+        // The starter stock lands under the new colony's storage caps.
+        self.credit_at(dest, mission_cargo);
         true
     }
 
@@ -12604,9 +12636,82 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
         let mut empty = GameState::with_config(0, colony_config());
         empty.resources.deuterium = 10_000.0;
         assert_eq!(
-            empty.launch_colony(empty.home, empty_slot(), 100, 0),
+            empty.launch_colony(empty.home, empty_slot(), Resources::ZERO, 100, 0),
             Err(FleetError::NeedColonyShip)
         );
+    }
+
+    /// #669: a colony ship's cargo is debited at launch, priced into its
+    /// fuel, and lands as the new colony's stock.
+    #[test]
+    fn colony_ship_lands_its_cargo_as_starter_stock() {
+        let mut state = colony_ready(0);
+        state.tech_levels.insert("colonization".into(), 1);
+        state.resources.iron = 900.0;
+        state.resources.silicon = 900.0;
+        let cargo = Resources::from_parts(600.0, 400.0, 0.0);
+        let mut ship = Fleet::default();
+        ship.add(ShipKind::ColonyShip, 1);
+        let (_, empty) = state
+            .flight_hauling(
+                state.home,
+                empty_slot(),
+                ship,
+                Haul::colony(Resources::ZERO),
+                100,
+            )
+            .unwrap();
+        let (_, loaded) = state
+            .flight_hauling(state.home, empty_slot(), ship, Haul::colony(cargo), 100)
+            .unwrap();
+        assert!(loaded.water_ice > empty.water_ice);
+        state
+            .launch_colony(state.home, empty_slot(), cargo, 100, 0)
+            .unwrap();
+        assert!((state.resources.iron - 300.0).abs() < 1e-6);
+        assert!((state.resources.silicon - 500.0).abs() < 1e-6);
+        assert!((state.missions[0].fuel_water_ice - loaded.water_ice).abs() < 1e-6);
+        let outbound = state.missions[0].outbound_secs;
+        state.catch_up(outbound);
+        assert_eq!(state.colonies.len(), 1);
+        assert_eq!(state.colonies[0].resources, cargo);
+    }
+
+    /// #669: a colony ship that founds nothing brings its cargo back, and a
+    /// load over its hold is refused.
+    #[test]
+    fn failed_colonize_returns_its_cargo() {
+        let mut state = colony_ready(0);
+        assert_eq!(state.colony_cap(), 1);
+        // No mine, so the only iron that comes back is the cargo.
+        state.buildings.metal_mine = 0;
+        state.resources.iron = 900.0;
+        let hold = state.ship_stats(ShipKind::ColonyShip).cargo;
+        assert!(matches!(
+            state.launch_colony(
+                state.home,
+                empty_slot(),
+                Resources::from_parts(hold + 1.0, 0.0, 0.0),
+                100,
+                0
+            ),
+            Err(FleetError::CargoExceedsCapacity { .. })
+        ));
+        state
+            .launch_colony(
+                state.home,
+                empty_slot(),
+                Resources::from_parts(600.0, 0.0, 0.0),
+                100,
+                0,
+            )
+            .unwrap();
+        assert!((state.resources.iron - 300.0).abs() < 1e-6);
+        let outbound = state.missions[0].outbound_secs;
+        state.catch_up(outbound * 2);
+        assert!(state.colonies.is_empty());
+        assert!(state.missions.is_empty());
+        assert!((state.resources.iron - 900.0).abs() < 1e-6);
     }
 
     #[test]
@@ -12614,7 +12719,7 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
         let mut state = colony_ready(0);
         assert_eq!(state.colony_cap(), 1);
         state
-            .launch_colony(state.home, empty_slot(), 100, 0)
+            .launch_colony(state.home, empty_slot(), Resources::ZERO, 100, 0)
             .unwrap();
         let outbound = state.missions[0].outbound_secs;
         state.catch_up(outbound * 2);
@@ -12625,7 +12730,7 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
         state.tech_levels.insert("colonization".into(), 1);
         let now = state.last_tick_unix;
         state
-            .launch_colony(state.home, empty_slot(), 100, now)
+            .launch_colony(state.home, empty_slot(), Resources::ZERO, 100, now)
             .unwrap();
         let outbound = state.missions[0].outbound_secs;
         state.catch_up(now + outbound * 2);
@@ -12634,7 +12739,7 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
 
         state.fleet.add(ShipKind::ColonyShip, 1);
         state
-            .launch_colony(state.home, empty_slot(), 100, 0)
+            .launch_colony(state.home, empty_slot(), Resources::ZERO, 100, 0)
             .unwrap();
         let outbound = state.missions[0].outbound_secs;
         state.catch_up(state.last_tick_unix + outbound * 2);
@@ -12663,7 +12768,8 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
         let mut a = colony_ready(0);
         a.galaxy_seed = 11;
         a.tech_levels.insert("colonization".into(), 1);
-        a.launch_colony(a.home, empty_slot(), 100, 0).unwrap();
+        a.launch_colony(a.home, empty_slot(), Resources::ZERO, 100, 0)
+            .unwrap();
         let outbound = a.missions[0].outbound_secs;
         a.catch_up(outbound * 2);
         let expected = planet_profile(11, empty_slot(), a.generator_version);
@@ -12672,7 +12778,8 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
         let mut b = colony_ready(0);
         b.galaxy_seed = 11;
         b.tech_levels.insert("colonization".into(), 1);
-        b.launch_colony(b.home, empty_slot(), 100, 0).unwrap();
+        b.launch_colony(b.home, empty_slot(), Resources::ZERO, 100, 0)
+            .unwrap();
         b.catch_up(outbound * 2);
         assert_eq!(a.colonies[0].kind, b.colonies[0].kind);
         assert_eq!(a.colonies[0].size, b.colonies[0].size);
@@ -12698,7 +12805,8 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
     fn offline_arrival_founds_the_colony_at_the_landing_time() {
         let mut gap = colony_ready(0);
         gap.tech_levels.insert("colonization".into(), 1);
-        gap.launch_colony(gap.home, empty_slot(), 100, 0).unwrap();
+        gap.launch_colony(gap.home, empty_slot(), Resources::ZERO, 100, 0)
+            .unwrap();
         let outbound = gap.missions[0].outbound_secs;
         gap.catch_up(outbound * 10);
         assert_eq!(gap.colonies.len(), 1);
@@ -12706,7 +12814,8 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
 
         let mut step = colony_ready(0);
         step.tech_levels.insert("colonization".into(), 1);
-        step.launch_colony(step.home, empty_slot(), 100, 0).unwrap();
+        step.launch_colony(step.home, empty_slot(), Resources::ZERO, 100, 0)
+            .unwrap();
         for t in 1..=outbound * 10 {
             step.catch_up(t);
         }

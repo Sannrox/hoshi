@@ -256,9 +256,10 @@ impl Mission {
         }
     }
 
-    /// Cargo amounts ride on a round-trip transport or a one-way station.
+    /// Cargo amounts ride on a round-trip transport, a one-way station, or
+    /// a colony ship as the new colony's starter stock.
     fn carries_cargo(self) -> bool {
-        matches!(self, Self::Transport | Self::Station)
+        matches!(self, Self::Transport | Self::Station | Self::Colonize)
     }
 
     /// What this send carries each leg, so the preview prices the fuel the
@@ -267,7 +268,7 @@ impl Mission {
         match self {
             Self::Transport => hoshi_core::Haul::transport(cargo),
             Self::Station => hoshi_core::Haul::station(cargo),
-            Self::Colonize => hoshi_core::Haul::colony(),
+            Self::Colonize => hoshi_core::Haul::colony(cargo),
             _ => hoshi_core::Haul::empty_round_trip(),
         }
     }
@@ -3583,7 +3584,8 @@ impl App {
                     self.status = "colonize needs exactly one colony ship".into();
                     return;
                 }
-                self.state.launch_colony(origin, dest, speed, now_unix)
+                self.state
+                    .launch_colony(origin, dest, form.cargo, speed, now_unix)
             }
             Mission::Recycle => self
                 .state
@@ -9261,17 +9263,18 @@ mod tests {
         app.open(Screen::Map);
         app.handle_key(KeyCode::Char('l'), 1_000);
         app.handle_key(KeyCode::Enter, 1_000);
-        let overlay = render_text(&app, 100, 32);
+        // Colonize lists cargo rows, so the form needs 40 rows to show its foot.
+        let overlay = render_text(&app, 100, 40);
         assert!(overlay.contains("dispatch"), "{overlay}");
         assert!(overlay.contains("to 1:1:2"), "{overlay}");
         assert!(overlay.contains("pick ships"), "{overlay}");
         assert!(overlay.contains("Small cargo"), "{overlay}");
         assert!(
-            text_is_dimmed(&app, 100, 32, "Fleet / Star map"),
+            text_is_dimmed(&app, 100, 40, "Fleet / Star map"),
             "dispatch overlay left the map chrome undimmed:\n{overlay}"
         );
         app.handle_key(KeyCode::Char('+'), 1_000);
-        let preview = render_text(&app, 100, 32);
+        let preview = render_text(&app, 100, 40);
         assert!(preview.contains("ETA"), "{preview}");
         assert!(preview.contains("colonize"), "{preview}");
         // An empty slot means colonize: cargo ships alone are refused, not flown.
@@ -10656,7 +10659,7 @@ mod tests {
         app.handle_key(KeyCode::Char('l'), 1_000);
         app.handle_key(KeyCode::Enter, 1_000);
         app.handle_key(KeyCode::Char('+'), 1_000);
-        let text = render_text(&app, 140, 44);
+        let text = render_text(&app, 140, 52);
         assert!(text.contains("Fleet / Star map"), "{text}");
         assert!(text.contains("home"), "{text}");
         assert!(text.contains("to 1:1:2"), "{text}");

@@ -1483,8 +1483,8 @@ impl App {
         Some(format!("troops {troops} vs garrison {garrison}"))
     }
 
-    /// Dispatch form: target, ship steppers, cargo steppers and hold on a
-    /// transport, flight time and fuel, and Invade launch checks. Also
+    /// Dispatch form: target, ship steppers, cargo steppers and hold when
+    /// the mission carries cargo, flight time and fuel, and Invade launch checks. Also
     /// returns the selected row's line.
     fn dispatch_lines(&self, form: &DispatchForm) -> (Vec<Line<'static>>, usize) {
         let t = &self.theme;
@@ -1865,7 +1865,8 @@ impl App {
             }
         }
         lines.push(Line::default());
-        let mut keys = if form.mission.carries_cargo() {
+        // Goods are sent; a colony ship launches, starter cargo or not.
+        let mut keys = if matches!(form.mission, Mission::Transport | Mission::Station) {
             vec![keycap(t, "⏎"), Span::styled(" send  ", t.muted())]
         } else {
             vec![keycap(t, "⏎"), Span::styled(" launch  ", t.muted())]

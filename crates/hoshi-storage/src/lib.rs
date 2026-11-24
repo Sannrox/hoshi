@@ -460,7 +460,9 @@ pub(crate) fn assert_storage_contract(store: &mut dyn Storage) {
         })
         .find(|coord| *coord != Coord::HOME && colony.outpost(*coord).is_none())
         .expect("empty slot");
-    colony.launch_colony(colony.home, dest, 100, now).unwrap();
+    colony
+        .launch_colony(colony.home, dest, hoshi_core::Resources::ZERO, 100, now)
+        .unwrap();
     let outbound = colony.missions[0].outbound_secs;
     colony.catch_up(now + outbound * 2);
     assert_eq!(colony.colonies.len(), 1);
