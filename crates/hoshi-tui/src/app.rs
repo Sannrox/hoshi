@@ -10635,7 +10635,7 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_preview_names_combustion_on_an_interstellar_send() {
+    fn dispatch_preview_names_combustion_and_the_refit_that_fixes_it() {
         let far = Coord {
             galaxy: 1,
             system: 2,
@@ -10682,7 +10682,15 @@ mod tests {
             .map(|line| line.to_string())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(!text.contains("Combustion Drive"), "{text}");
+        // #668: an in-system haul burning more ice than it carries names the refit.
+        assert!(
+            text.contains("Combustion Drive makes this send expensive"),
+            "{text}"
+        );
+        assert!(
+            text.contains("research Small Cargo Impulse Refit"),
+            "{text}"
+        );
         assert!(!text.contains("Large Cargo"), "{text}");
         app.handle_key(KeyCode::Enter, 1_000);
         assert!(
@@ -10690,7 +10698,11 @@ mod tests {
             "{}",
             app.status
         );
-        assert!(!app.status.contains("Combustion Drive"), "{}", app.status);
+        assert!(
+            app.status.contains("Small Cargo Impulse Refit"),
+            "{}",
+            app.status
+        );
     }
 
     #[test]
