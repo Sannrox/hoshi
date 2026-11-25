@@ -924,31 +924,67 @@ impl GameState {
         best.map(|(drive, _)| drive)
     }
 
-    /// Why a combustion fleet's send to another system is expensive, and the
-    /// cheapest faster hull the player has built or can build that still
-    /// carries this cargo. In-system sends and faster drives return `None`.
+    /// Why a combustion fleet's send is expensive, with the refit research
+    /// that moves its slowest hull onto a faster drive and, between systems,
+    /// the cheapest faster hull the player has built or can build that
+    /// still carries this cargo. `fuel_ice` is the send's water ice bill.
+    /// An in-system send is expensive only when that bill exceeds `cargo`
+    /// and a refit exists to point at; faster drives return `None`.
     pub fn expensive_send_hint(
         &self,
         origin: Coord,
         dest: Coord,
         ships: Fleet,
         cargo: f64,
+        fuel_ice: f64,
     ) -> Option<String> {
-        if (origin.galaxy, origin.system) == (dest.galaxy, dest.system) {
-            return None;
-        }
         let drive = self.fleet_slowest_drive(ships)?;
         if drive != "combustion_drive" {
             return None;
         }
+        let interstellar = (origin.galaxy, origin.system) != (dest.galaxy, dest.system);
+        let refit = self.refit_off_drive(ships, drive);
+        if !interstellar && (fuel_ice <= cargo || refit.is_none()) {
+            return None;
+        }
         let drive_name = self.display_name(drive);
-        let mut text = format!("{drive_name} makes this interstellar send expensive");
-        if let Some(kind) = self.faster_haul_hull(ships, cargo, self.drive_ve(drive)) {
+        let scope = if interstellar {
+            "interstellar send"
+        } else {
+            "send"
+        };
+        let mut text = format!("{drive_name} makes this {scope} expensive");
+        if let Some(tech) = refit {
+            text.push_str(&format!("; research {}", tech.name));
+            let gaps = self.missing_research_prereqs(&tech.id).unwrap_or_default();
+            if !gaps.is_empty() {
+                let gaps: Vec<String> = gaps.iter().map(ToString::to_string).collect();
+                text.push_str(&format!(" (needs {})", gaps.join(", ")));
+            }
+        }
+        if interstellar
+            && let Some(kind) = self.faster_haul_hull(ships, cargo, self.drive_ve(drive))
+        {
             let spec = self.config.ships.get(kind);
             let faster = self.display_name(self.hull_drive(kind));
             text.push_str(&format!("; {} flies {faster}", spec.name));
         }
         Some(text)
+    }
+
+    /// An unresearched tech that refits a hull in `ships` now flying `drive`
+    /// onto a drive with a higher base exhaust velocity.
+    fn refit_off_drive(&self, ships: Fleet, drive: &str) -> Option<&crate::TechSpec> {
+        let orbits = &self.config.orbits;
+        let slow_ve = orbits.ve_for_drive(drive);
+        self.config.techs.iter().find(|spec| {
+            self.tech_level(&spec.id) < 1
+                && spec.refits.iter().any(|refit| {
+                    ships.get(refit.ship) > 0
+                        && self.hull_drive(refit.ship) == drive
+                        && orbits.ve_for_drive(&refit.drive) > slow_ve
+                })
+        })
     }
 
     fn faster_haul_hull(&self, ships: Fleet, cargo: f64, slow_ve: f64) -> Option<ShipKind> {
@@ -1004,6 +1040,7 @@ impl GameState {
         dest: Coord,
         ships: Fleet,
         cargo: f64,
+        fuel_ice: f64,
         shortfall: (ResourceKind, f64, f64),
     ) -> crate::FleetError {
         let (kind, missing, cost) = shortfall;
@@ -1011,7 +1048,7 @@ impl GameState {
             missing,
             cost,
             kind,
-            hint: self.expensive_send_hint(origin, dest, ships, cargo),
+            hint: self.expensive_send_hint(origin, dest, ships, cargo, fuel_ice),
         }
     }
 
@@ -2218,9 +2255,13 @@ mod tests {
         };
         let (mut state, ships, cargo) = haul_ready(dest);
         let hint = state
-            .expensive_send_hint(state.home, dest, ships, cargo.total())
+            .expensive_send_hint(state.home, dest, ships, cargo.total(), 0.0)
             .expect("combustion between systems");
         assert!(hint.contains("Combustion Drive"), "{hint}");
+        assert!(
+            hint.contains("research Small Cargo Impulse Refit"),
+            "{hint}"
+        );
         assert!(hint.contains("Large Cargo"), "{hint}");
         assert!(hint.contains("Impulse Drive"), "{hint}");
         let err = state
@@ -2232,23 +2273,44 @@ mod tests {
     }
 
     #[test]
-    fn an_in_system_combustion_send_has_no_drive_hint() {
-        let dest = Coord {
+    fn an_in_system_send_names_a_refit_only_when_one_moves_its_hull() {
+        let near = Coord {
             galaxy: 1,
             system: 1,
             position: 2,
         };
-        let (mut state, ships, cargo) = haul_ready(dest);
+        // No refit moves a Light Fighter, so an in-system strike stays quiet.
+        let (state, _, _) = haul_ready(near);
+        let mut fighters = Fleet::default();
+        fighters.add(ShipKind::LightFighter, 1);
         assert_eq!(
-            state.expensive_send_hint(state.home, dest, ships, cargo.total()),
+            state.expensive_send_hint(state.home, near, fighters, 0.0, 1_000.0),
             None
         );
+
+        // #668: an outer-slot haul burns far more ice than it carries.
+        let far = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 9,
+        };
+        let (mut state, ships, _) = haul_ready(far);
+        state.tech_levels.insert("impulse_drive".into(), 2);
+        state.buildings.research_lab = 2;
+        let mut cargo = Resources::ZERO;
+        cargo.water_ice = 300.0;
         let err = state
-            .launch_transport(state.home, dest, ships, cargo, 100, 0)
+            .launch_transport(state.home, far, ships, cargo, 10, 0)
             .unwrap_err();
         let text = err.to_string();
         assert!(text.contains("not enough water ice"), "{text}");
-        assert!(!text.contains("Combustion Drive"), "{text}");
+        assert!(
+            text.contains(
+                "Combustion Drive makes this send expensive; research Small Cargo Impulse \
+                 Refit (needs impulse drive level 4 (have 2))"
+            ),
+            "{text}"
+        );
         assert!(!text.contains("Large Cargo"), "{text}");
     }
 }

@@ -1887,6 +1887,7 @@ impl App {
                         dest,
                         form.ships,
                         form.cargo.total(),
+                        fuel.water_ice,
                     );
                     let origin_bill = if form.dest_pays_return { out } else { fuel };
                     let dest_bill = if form.dest_pays_return {

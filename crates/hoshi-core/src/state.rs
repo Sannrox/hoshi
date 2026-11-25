@@ -2804,7 +2804,14 @@ impl GameState {
         }
         let have = self.resources_at(origin).ok_or(FleetError::UnknownPlanet)?;
         if let Some((kind, missing, cost)) = fuel.shortfall(*have) {
-            return Err(self.insufficient_fuel(origin, dest, ships, 0.0, (kind, missing, cost)));
+            return Err(self.insufficient_fuel(
+                origin,
+                dest,
+                ships,
+                0.0,
+                fuel.water_ice,
+                (kind, missing, cost),
+            ));
         }
         let res = self.resources_at_mut(origin)?;
         res.water_ice = (res.water_ice - fuel.water_ice).max(0.0);
@@ -3427,7 +3434,14 @@ impl GameState {
             origin_fuel.shortfall(res.saturating_sub(cargo))
         };
         if let Some(shortfall) = fuel_missing {
-            return Err(self.insufficient_fuel(origin, dest, ships, cargo.total(), shortfall));
+            return Err(self.insufficient_fuel(
+                origin,
+                dest,
+                ships,
+                cargo.total(),
+                fuel.water_ice,
+                shortfall,
+            ));
         }
         if dest_pays {
             let dest_stock = self.resources_at(dest).ok_or(FleetError::UnknownPlanet)?;
@@ -3437,6 +3451,7 @@ impl GameState {
                     dest,
                     ships,
                     cargo.total(),
+                    fuel.water_ice,
                     (kind, missing, cost),
                 );
                 if let FleetError::InsufficientFuel { hint, .. } = &mut err {
