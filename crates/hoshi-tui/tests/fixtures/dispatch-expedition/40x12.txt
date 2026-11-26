@@ -1,0 +1,12 @@
+ ◆ HOSHI  │  Star map      RAID 2h 00m
+ ▦ Dispatch                           x
+
+  OUT 5m 29s   HOLD 1h 00m   HOME IN
+  1h 10m   FUEL 839885.3 ice
+   Large cargo          0      of 0
+  ▌Light fighter    -    5  +   of 5
+   Heavy fighter        0      of 0
+   Cruiser              0      of 0
+   Battleship           0      of 0
+
+      d  detail   hjkl  cursor

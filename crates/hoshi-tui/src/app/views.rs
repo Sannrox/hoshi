@@ -1550,12 +1550,25 @@ impl App {
         } else {
             4
         };
-        let (lines, selected) = self.dispatch_lines(form);
-        let offset = (selected + 1 + below)
-            .saturating_sub(height)
-            .min(lines.len().saturating_sub(height))
-            .min(selected);
-        lines.into_iter().skip(offset).collect()
+        let (lines, selected, pinned) = self.dispatch_lines(form);
+        let offset = |height: usize| {
+            (selected + 1 + below)
+                .saturating_sub(height)
+                .min(lines.len().saturating_sub(height))
+                .min(selected)
+        };
+        // A pinned line scrolled out of view leads the window instead.
+        if let Some(pin) = pinned
+            && height > 1
+            && !(offset(height)..offset(height) + height).contains(&pin)
+        {
+            let start = offset(height - 1);
+            let mut window = vec![lines[pin].clone()];
+            window.extend(lines.into_iter().skip(start).take(height - 1));
+            return window;
+        }
+        let start = offset(height);
+        lines.into_iter().skip(start).collect()
     }
 
     /// The same three `launch_invasion` checks, shown before launch.
@@ -1612,7 +1625,9 @@ impl App {
     /// Dispatch form: target, ship steppers, cargo steppers and hold when
     /// the mission carries cargo, flight time and fuel, and Invade launch checks. Also
     /// returns the selected row's line.
-    fn dispatch_lines(&self, form: &DispatchForm) -> (Vec<Line<'static>>, usize) {
+    /// The form's lines, the index of the selected row, and a line that must
+    /// stay in view however far the form scrolls (an expedition's times).
+    fn dispatch_lines(&self, form: &DispatchForm) -> (Vec<Line<'static>>, usize, Option<usize>) {
         let t = &self.theme;
         let (origin, dest) = (form.origin, form.dest);
         let fleet = self.state.fleet_at(origin).unwrap_or_default();
@@ -1669,6 +1684,7 @@ impl App {
             .max()
             .unwrap_or(0);
         let mut selected_line = 0;
+        let mut pinned = None;
         for (i, &kind) in ShipKind::ALL.iter().enumerate() {
             let have = fleet.get(kind);
             let picked = form.ships.get(kind);
@@ -1881,7 +1897,20 @@ impl App {
                         }
                     };
                     let fuel_bit = fuel_fmt(fuel);
-                    lines.push(self.props(&[("ETA", duration(eta)), ("fuel", fuel_bit)]));
+                    if form.mission == Mission::Expedition {
+                        // The fleet holds at the site, then flies the same
+                        // leg back (`MissionPhase::Return` uses outbound_secs).
+                        let hold = self.state.config.expedition.min_hold_secs;
+                        pinned = Some(lines.len());
+                        lines.push(self.props(&[
+                            ("out", duration(eta)),
+                            ("hold", duration(hold)),
+                            ("home in", duration(2 * eta + hold)),
+                            ("fuel", fuel_bit),
+                        ]));
+                    } else {
+                        lines.push(self.props(&[("ETA", duration(eta)), ("fuel", fuel_bit)]));
+                    }
                     if form.repeats() {
                         let back_at = if form.dest_pays_return { dest } else { origin };
                         lines.push(self.props(&[
@@ -1899,7 +1928,7 @@ impl App {
                         lines.push(self.props(&[
                             ("pirate weight", weight.to_string()),
                             ("find", format!("x{factor}")),
-                            ("hold", format!("{hold:.0}")),
+                            ("cargo hold", format!("{hold:.0}")),
                         ]));
                     }
                     let cargo_d = if form.mission.carries_cargo() {
@@ -2018,7 +2047,7 @@ impl App {
         }
         keys.extend([keycap(t, "x"), Span::styled(" close", t.muted())]);
         lines.push(Line::from(keys));
-        (lines, selected_line)
+        (lines, selected_line, pinned)
     }
 
     /// The origin's ice bill for this send at 10% speed, when the form flies
