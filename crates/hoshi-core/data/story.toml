@@ -69,7 +69,7 @@ ships = { light_fighter = -2 }
 [[event]]
 id = "comet_ice"
 title = "Comet ice"
-text = "A dirty snowball crosses the inner system. Scooping it is free silicon. Ignoring it costs nothing."
+text = "A dirty snowball crosses the inner system. Scooping it is free water ice. Ignoring it costs nothing."
 weight = 11
 timeout_secs = 86400
 timeout_choice = "leave"
@@ -78,7 +78,7 @@ min_elapsed_secs = 0
 [[event.choices]]
 id = "scoop"
 label = "Scoop the ice"
-silicon = 220.0
+water_ice = 220.0
 
 [[event.choices]]
 id = "leave"
@@ -228,7 +228,7 @@ min_elapsed_secs = 0
 [[event.choices]]
 id = "claim"
 label = "Claim the ice"
-silicon = 80.0
+water_ice = 80.0
 deuterium = 20.0
 
 [[event.choices]]
