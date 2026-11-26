@@ -22,19 +22,25 @@ pub(super) struct TableView {
     pub selected: Option<usize>,
 }
 
-/// Slot-column header: band names sit above the slots they cover.
-fn slot_band_header() -> String {
+/// Slot-column header: band names sit above the slots they cover, `cell`
+/// columns per slot. A name wider than its band keeps its first word.
+fn slot_band_header(cell: usize) -> String {
     let mut out = String::new();
     for kind in [
         hoshi_core::PlanetType::Rocky,
         hoshi_core::PlanetType::Ice,
         hoshi_core::PlanetType::GasGiant,
     ] {
-        let width = 3 * kind.slot_range().count();
+        let width = cell * kind.slot_range().count();
         let label = match kind {
             hoshi_core::PlanetType::Rocky => "rocky",
             hoshi_core::PlanetType::Ice => "ice",
             hoshi_core::PlanetType::GasGiant => "gas giant",
+        };
+        let label = if label.len() < width {
+            label
+        } else {
+            label.split(' ').next().unwrap_or(label)
         };
         out.push_str(&format!("{label:<width$}"));
     }
@@ -2303,7 +2309,12 @@ impl App {
             ("R", "rival", Intent::Warning),
             ("P", "pirate", Intent::Danger),
             ("F", "frontier", Intent::Warning),
-            ("f", "fleet", Intent::Neutral),
+            ("f", "fleet", Intent::Warning),
+        ];
+        let point_legend = [
+            ("w/k/l", "site", Intent::Warning),
+            ("!", "signal", Intent::Danger),
+            ("*", "debris", Intent::Warning),
         ];
         let mut head = vec![self.props(&[
             ("galaxy", cursor.galaxy.to_string()),
@@ -2326,21 +2337,35 @@ impl App {
             None => "deposits unknown".into(),
         };
         head.push(Line::styled(format!("{type_name} · {deposits}"), t.muted()));
-        let mut legend_spans = Vec::new();
-        for (glyph, name, intent) in legend {
-            legend_spans.push(Span::styled(
-                glyph,
-                t.intent(intent).add_modifier(Modifier::BOLD),
-            ));
-            legend_spans.push(Span::styled(format!(" {name}   "), t.muted()));
-        }
-        head.push(Line::from(legend_spans));
+        let legend_line = |entries: &[(&'static str, &'static str, Intent)]| {
+            let mut spans = Vec::new();
+            for &(glyph, name, intent) in entries {
+                spans.push(Span::styled(
+                    glyph,
+                    t.intent(intent).add_modifier(Modifier::BOLD),
+                ));
+                spans.push(Span::styled(format!(" {name}   "), t.muted()));
+            }
+            Line::from(spans)
+        };
+        head.push(legend_line(&legend));
+        head.push(legend_line(&point_legend));
         let owned = self.state.owned_coords();
+        let signals = crate::cockpit::arrived_signals(&self.state);
         let now = self.state.last_tick_unix;
-        // The notes column gets what the sys and slot columns, their two
-        // gaps and the lead cell leave of the list area.
-        let notes_width = usize::from(self.list_width.get())
-            .saturating_sub(3 + 3 * usize::from(MAP_SLOT_COUNT) + 5);
+        // Three columns a slot (` H `, cursor `[H]`) when every slot fits,
+        // else two (` H`, cursor `[H]` sharing its neighbour's gap) so a
+        // narrow terminal cuts notes before it cuts slots. The sys column,
+        // two gaps and the lead cell take 3 + 5.
+        let list_width = usize::from(self.list_width.get());
+        let slots = usize::from(MAP_SLOT_COUNT);
+        let cell = if list_width >= 3 + 3 * slots + 5 {
+            3
+        } else {
+            2
+        };
+        let slot_width = cell * slots + usize::from(cell == 2);
+        let notes_width = list_width.saturating_sub(3 + slot_width + 5);
         let mut rows = Vec::new();
         for system in 1..=MAP_SYSTEM_MAX {
             let mut slots = Vec::new();
@@ -2353,31 +2378,19 @@ impl App {
                     system,
                     position: pos,
                 };
-                let (ch, intent) = if coord == self.state.home {
-                    ('H', Some(Intent::Primary))
-                } else if owned.contains(&coord) {
-                    ('C', Some(Intent::Success))
-                } else if self.state.visible_rival_colony_at(coord).is_some() {
-                    ('R', Some(Intent::Warning))
-                } else if self.state.outposts.iter().any(|o| o.coord == coord) {
-                    ('P', Some(Intent::Danger))
-                } else if self
-                    .state
-                    .frontier
-                    .visible_worlds()
-                    .any(|w| w.coord == coord)
-                {
-                    ('F', Some(Intent::Warning))
-                } else if self.state.missions.iter().any(|m| m.dest == coord) {
-                    ('f', Some(Intent::Neutral))
-                } else {
-                    ('·', None)
-                };
+                let (ch, intent) =
+                    crate::cockpit::map_mark(&self.state, &owned, &signals, coord, true);
                 let style = intent.map_or(t.faint(), |i| t.intent(i).add_modifier(Modifier::BOLD));
-                if pos == self.map_position && system == self.map_system {
+                let cursor = system == self.map_system;
+                if cursor && pos == self.map_position {
                     slots.push(Span::styled(format!("[{ch}]"), t.selected()));
-                } else {
+                } else if cell == 3 {
                     slots.push(Span::styled(format!(" {ch} "), style));
+                } else if cursor && pos == self.map_position + 1 {
+                    // The cursor's `]` already took this slot's gap.
+                    slots.push(Span::styled(ch.to_string(), style));
+                } else {
+                    slots.push(Span::styled(format!(" {ch}"), style));
                 }
                 if coord == self.state.home {
                     worlds.push((labels.len(), coord));
@@ -2419,6 +2432,7 @@ impl App {
                 if self.state.moon_at(coord).is_some() {
                     labels.push("moon".into());
                 }
+                crate::cockpit::point_notes(&self.state, &signals, coord, &mut labels);
             }
             for mission in &self.state.missions {
                 if mission.dest.galaxy == cursor.galaxy && mission.dest.system == system {
@@ -2447,7 +2461,7 @@ impl App {
             table: Some(TableView {
                 columns: vec![
                     Column::right("sys", 3),
-                    Column::left(&slot_band_header(), MAP_SLOT_COUNT * 3),
+                    Column::left(&slot_band_header(cell), slot_width as u16),
                     Column::fill("notes"),
                 ],
                 rows,

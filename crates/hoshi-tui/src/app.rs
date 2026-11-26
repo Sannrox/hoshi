@@ -9343,6 +9343,8 @@ mod tests {
         let mut ships = Fleet::default();
         ships.add(ShipKind::SmallCargo, 1);
         let mut state = GameState::new(1_000);
+        // Site notes would push the fleet note past the edge.
+        state.sites.clear();
         state.fleet.add(ShipKind::SmallCargo, 1);
         state.resources.deuterium = 1e9;
         state.resources.water_ice = 1e9;
@@ -9625,6 +9627,85 @@ mod tests {
 
     /// Home with stock and two small cargo ships, plus an empty new colony
     /// in the home system; the map cursor sits on the colony.
+    /// Home system with an open wreck, a cache resolved as resources,
+    /// debris and an arrived open signal: every point mark the Fleet star
+    /// map shares with the bridge map.
+    fn app_with_map_points() -> App {
+        let mut state = GameState::new(1_000);
+        state.sites[1].outcome = Some(hoshi_core::ExpeditionKind::Resources);
+        let debris = (2..=16)
+            .map(|position| Coord {
+                galaxy: 1,
+                system: 1,
+                position,
+            })
+            .find(|c| state.site_at(*c).is_none())
+            .unwrap();
+        state.debris.insert(debris, 1_500.0);
+        state.resources.deuterium = 10_000.0;
+        let open = state.scan_signal(state.home, 1_000).unwrap();
+        state.last_tick_unix = state.signal(open).unwrap().seen_at;
+        let mut app = App::new(state);
+        app.open(Screen::Map);
+        app
+    }
+
+    #[test]
+    fn fleet_map_marks_sites_signals_and_debris_like_the_bridge_map() {
+        let app = app_with_map_points();
+        let state = &app.state;
+        let signals = crate::cockpit::arrived_signals(state);
+        let owned = state.owned_coords();
+        let row: String = (1..=MAP_SLOT_COUNT)
+            .map(|position| {
+                let coord = Coord {
+                    galaxy: 1,
+                    system: 1,
+                    position,
+                };
+                crate::cockpit::map_mark(state, &owned, &signals, coord, false).0
+            })
+            .collect();
+        for mark in ['w', 'r', 'l', '*', '!'] {
+            assert!(row.contains(mark), "bridge row {row}");
+        }
+        let text = render_text(&app, 80, 24);
+        assert_eq!(
+            text,
+            include_str!("../tests/fixtures/fleet-map/80x24.txt"),
+            "{text}"
+        );
+        let glyphs: String = text
+            .lines()
+            .find(|line| line.contains("[H]"))
+            .unwrap()
+            .split("[H]")
+            .nth(1)
+            .unwrap()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .take(usize::from(MAP_SLOT_COUNT) - 1)
+            .collect();
+        assert_eq!(glyphs, row[1..], "{text}");
+        let narrow = render_text(&app, 40, 12);
+        assert_eq!(
+            narrow,
+            include_str!("../tests/fixtures/fleet-map/40x12.txt"),
+            "{narrow}"
+        );
+    }
+
+    #[test]
+    fn narrow_fleet_map_keeps_every_slot_and_cuts_notes_first() {
+        let app = app_with_map_points();
+        let text = render_text(&app, 40, 20);
+        let row = text.lines().find(|line| line.contains("[H]")).unwrap();
+        let slots = row.split("[H]").nth(1).unwrap();
+        let glyphs = slots.chars().filter(|c| !c.is_whitespace()).count();
+        assert_eq!(glyphs, usize::from(MAP_SLOT_COUNT) - 1, "{text}");
+        assert!(text.contains("w/k/l site"), "{text}");
+    }
+
     fn app_with_new_colony() -> (App, Coord) {
         let mut state = GameState::new(1_000);
         state.config.raid.enabled = false;
@@ -9668,6 +9749,8 @@ mod tests {
         app.state
             .rename_world(colony, "Northern Reach Forge Two", 1_000)
             .unwrap();
+        // Site notes would share the row these name tests measure.
+        app.state.sites.clear();
         (app, colony)
     }
 
