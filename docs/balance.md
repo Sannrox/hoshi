@@ -145,7 +145,7 @@ Combustion-drive ships stay inside their own system: a hop to the next system co
 
 ## Expeditions
 
-`[expedition]` sets the outcome weights, find sizes and site budgets. `explorer_mult` (bundled 2.0) multiplies resource and ship finds when the fleet carries at least one explorer; more explorers do not stack, and every other outcome is unchanged. A site find is then clamped to that site's remaining budget. An override that omits the key keeps 1.0.
+`[expedition]` sets the outcome weights, find sizes and site budgets. `explorer_mult` (bundled 2.0) multiplies resource and ship finds when the fleet carries at least one explorer; more explorers do not stack, and every other outcome is unchanged. A site find is then clamped to that site's remaining budget. The fleet carries a find home in its hold (iron, then silicon, then deuterium, up to its cargo capacity), and the origin's stock gains it when the ships land. A site gives up only what was loaded, so the rest stays for a later expedition; at the config slot the excess is lost and the event says how much. An override that omits the key keeps 1.0.
 
 `weights.merchant` (bundled 3, carved from `nothing`, now 27) opens a merchant visit at the market. For `merchant_secs` (bundled 7200) the market fee is `merchant_fee` (bundled 0.01) in place of `[market].fee`; trader tiers and laws still apply on top. Spot trades read it; the visit moves no mass. A second merchant outcome while a visit is open only extends it, keeping its fee. Catch-up closes the visit at its end, the away summary names the open and close, and the market screen shows the time left. An override that omits `weights.merchant` rolls no merchant. `merchant_fee` must be in `[0, 1)` and `merchant_secs > 0`.
 

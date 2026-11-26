@@ -492,6 +492,20 @@ pub struct GameState {
     pub config: BalanceConfig,
 }
 
+/// Split `found` into what fits in `hold` and what does not, filling iron,
+/// then silicon, then deuterium, in the order a find lists them.
+fn load_into_hold(found: Resources, hold: f64) -> (Resources, Resources) {
+    let mut room = hold.max(0.0);
+    let mut take = |amount: f64| {
+        let n = amount.max(0.0).min(room);
+        room -= n;
+        n
+    };
+    let loaded =
+        Resources::from_parts(take(found.iron), take(found.silicon), take(found.deuterium));
+    (loaded, found.saturating_sub(loaded))
+}
+
 impl GameState {
     pub fn new(now_unix: u64) -> Self {
         Self::with_config(now_unix, BalanceConfig::default())
@@ -3027,7 +3041,10 @@ impl GameState {
     }
 
     /// Clamp a resource or ship find to the site budget and mark the site resolved.
-    fn pay_site(&mut self, site_id: u64, result: ExpeditionResult) -> ExpeditionResult {
+    /// Clamp `result` to what site `site_id` still holds and draw the site
+    /// down. A resource find draws down only what fits in `hold`; the rest
+    /// stays in the stockpile for a later expedition.
+    fn pay_site(&mut self, site_id: u64, result: ExpeditionResult, hold: f64) -> ExpeditionResult {
         let outcome = result.kind();
         let ship_kind = self.config.expedition.ship_kind;
         let Some(site) = self.sites.iter_mut().find(|site| site.id == site_id) else {
@@ -3035,13 +3052,16 @@ impl GameState {
         };
         let paid = match result {
             ExpeditionResult::Resources(found) => {
-                let iron = found.iron.min(site.iron).max(0.0);
-                let silicon = found.silicon.min(site.silicon).max(0.0);
-                let deuterium = found.deuterium.min(site.deuterium).max(0.0);
-                site.iron -= iron;
-                site.silicon -= silicon;
-                site.deuterium -= deuterium;
-                ExpeditionResult::Resources(Resources::from_parts(iron, silicon, deuterium))
+                let there = Resources::from_parts(
+                    found.iron.min(site.iron).max(0.0),
+                    found.silicon.min(site.silicon).max(0.0),
+                    found.deuterium.min(site.deuterium).max(0.0),
+                );
+                let (loaded, _) = load_into_hold(there, hold);
+                site.iron -= loaded.iron;
+                site.silicon -= loaded.silicon;
+                site.deuterium -= loaded.deuterium;
+                ExpeditionResult::Resources(there)
             }
             ExpeditionResult::Ships(found) => {
                 let n = found.get(ship_kind).min(site.ships);
@@ -5301,6 +5321,23 @@ impl GameState {
                             ),
                         );
                     }
+                    // An expedition's find lands when the fleet is home.
+                    if mission.expedition_seed.is_some()
+                        && !mission.survey
+                        && cargo_has_mass(mission.cargo)
+                    {
+                        self.settle_ledger(Term::Transfer);
+                        self.credit_at(mission.origin, mission.cargo);
+                        self.settle_ledger(Term::Other);
+                        self.note_delivery(
+                            done_at,
+                            format!(
+                                "expedition brought {} home to {}",
+                                format_cargo(mission.cargo),
+                                mission.origin
+                            ),
+                        );
+                    }
                     // Only a shard raid's survivors carry cargo on an attack.
                     if mission.attack && cargo_has_mass(mission.cargo) {
                         self.credit_at(mission.origin, mission.cargo);
@@ -5341,8 +5378,10 @@ impl GameState {
             &self.config.expedition,
             &self.config.ships,
         );
-        if let Some(site_id) = self.missions[index].site_id {
-            result = self.pay_site(site_id, result);
+        let hold_cap = (self.cargo_capacity(ships) - self.missions[index].cargo.total()).max(0.0);
+        let site_id = self.missions[index].site_id;
+        if let Some(site_id) = site_id {
+            result = self.pay_site(site_id, result, hold_cap);
         }
         if let Some(ledger) = &mut self.ledger {
             ledger.expeditions += 1;
@@ -5362,10 +5401,20 @@ impl GameState {
                 false
             }
             ExpeditionResult::Resources(found) => {
-                self.settle_ledger(Term::Transfer);
-                self.credit_at(self.missions[index].origin, found);
-                self.settle_ledger(Term::Other);
-                note(self, format!("found {}", found.brief()));
+                // The find rides home in the hold and lands on Return.
+                let (loaded, left) = load_into_hold(found, hold_cap);
+                let mission = &mut self.missions[index];
+                mission.cargo = mission.cargo.saturating_add(loaded);
+                let mut outcome = format!("found {}, loaded {}", found.brief(), loaded.brief());
+                if left.total() > 1e-9 {
+                    let place = if site_id.is_some() {
+                        "left at the site"
+                    } else {
+                        "left behind"
+                    };
+                    outcome.push_str(&format!("; {} {place}", left.brief()));
+                }
+                note(self, outcome);
                 false
             }
             ExpeditionResult::Ships(found) => {
@@ -13279,6 +13328,10 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
         let outbound = state.missions[0].outbound_secs;
         state.resources.iron = 0.0;
         state.catch_up(outbound);
+        // The find rides home; the stock is unchanged until the fleet lands.
+        close(state.resources.iron, 0.0);
+        state.catch_up(outbound * 2 + 100);
+        assert!(state.missions.is_empty());
         assert!(state.resources.iron <= 10.0, "{}", state.resources.iron);
         assert!(state.resources.iron > 0.0, "{}", state.resources.iron);
         assert_eq!(state.sites[0].iron, 10.0 - state.resources.iron);
@@ -13295,6 +13348,102 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
             )
             .unwrap_err();
         assert_eq!(err, FleetError::SiteResolved { id: site_id });
+    }
+
+    /// #685: a find rides home in the hold. It fills iron, then silicon,
+    /// then deuterium, lands only on Return, and the rest is left behind.
+    #[test]
+    fn an_expedition_find_rides_home_in_the_hold() {
+        let (mut state, at) = expedition_rolling(crate::ExpeditionKind::Resources);
+        state.buildings.metal_mine = 0;
+        state.buildings.crystal_mine = 0;
+        state.buildings.deuterium_synthesizer = 0;
+        let before = state.resources;
+        let hold = state.cargo_capacity(state.missions[0].ships);
+        let found = match roll_expedition(
+            state.missions[0].expedition_seed.unwrap(),
+            &state.missions[0].ships,
+            state.expedition_astro(),
+            state.missions[0].hold_secs,
+            &state.config.expedition,
+            &state.config.ships,
+        ) {
+            ExpeditionResult::Resources(found) => found,
+            other => panic!("{other:?}"),
+        };
+        assert!(found.total() > hold, "find {found:?} fits hold {hold}");
+        state.catch_up(at);
+        let cargo = state.missions[0].cargo;
+        close(cargo.total(), hold);
+        close(cargo.iron, found.iron.min(hold));
+        close(state.resources.iron, before.iron);
+        let line = state
+            .events
+            .iter()
+            .rev()
+            .find(|e| e.text.starts_with("expedition: found"))
+            .unwrap();
+        assert!(line.text.contains("left behind"), "{}", line.text);
+
+        state.catch_up(at * 2 + 100);
+        assert!(state.missions.is_empty());
+        close(state.resources.iron, before.iron + cargo.iron);
+        close(state.resources.silicon, before.silicon + cargo.silicon);
+    }
+
+    /// #685: at a placed site what does not fit stays in the stockpile.
+    #[test]
+    fn a_site_keeps_what_the_hold_cannot_carry() {
+        let mut state = expedition_state(0);
+        let site_id = state.sites[0].id;
+        state.sites[0].iron = 1e6;
+        state.sites[0].silicon = 0.0;
+        state.sites[0].deuterium = 0.0;
+        state.sites[0].ships = 0;
+        let ships = scout_fleet();
+        let hold = state.cargo_capacity(ships);
+        let seed = (0..10_000u64)
+            .find(|seed| {
+                matches!(
+                    roll_expedition(*seed, &ships, 0, 10, &state.config.expedition, &state.config.ships),
+                    ExpeditionResult::Resources(found) if found.iron > hold
+                )
+            })
+            .expect("a resource seed bigger than the hold");
+        state
+            .launch_expedition_site(state.home, site_id, ships, 10, 100, 0)
+            .unwrap();
+        state.missions[0].expedition_seed = Some(seed);
+        state.catch_up(state.missions[0].outbound_secs);
+        close(state.missions[0].cargo.iron, hold);
+        close(state.sites[0].iron, 1e6 - hold);
+    }
+
+    /// #685: one catch-up across arrival and return lands the same stock as
+    /// ticking second by second.
+    #[test]
+    fn an_expedition_find_catch_up_matches_step_by_step() {
+        let run = |stepped: bool| {
+            let (mut state, at) = expedition_rolling(crate::ExpeditionKind::Resources);
+            let end = at * 2 + 100;
+            if stepped {
+                for t in 1..=end {
+                    state.catch_up(t);
+                }
+            } else {
+                state.catch_up(end);
+            }
+            assert!(state.missions.is_empty());
+            state.resources
+        };
+        let (jumped, stepped) = (run(false), run(true));
+        for kind in ResourceKind::ALL {
+            let (a, b) = (jumped.get(kind), stepped.get(kind));
+            assert!(
+                (a - b).abs() <= 1e-6 * a.abs().max(1.0),
+                "{kind:?}: {a} vs {b}"
+            );
+        }
     }
 
     #[test]
@@ -13341,7 +13490,8 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
         state.missions[0].expedition_seed = Some(seed);
         state.buildings.metal_mine = 0;
         state.resources.iron = 0.0;
-        state.catch_up(state.missions[0].outbound_secs);
+        let outbound = state.missions[0].outbound_secs;
+        state.catch_up(outbound * 2 + 100);
         let paid = 10.0 - state.sites[0].iron;
         assert!(paid > 0.0, "{paid}");
         assert!(state.colonies[0].resources.iron >= paid);

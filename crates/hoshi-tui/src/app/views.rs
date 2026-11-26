@@ -1888,9 +1888,12 @@ impl App {
                         let weight = self.state.expedition_pirate_weight(&form.ships, hold);
                         let factor =
                             hoshi_core::explorer_factor(&form.ships, &self.state.config.expedition);
+                        // Finds ride home in the hold; the rest is left behind.
+                        let hold = self.state.cargo_capacity(form.ships);
                         lines.push(self.props(&[
                             ("pirate weight", weight.to_string()),
                             ("find", format!("x{factor}")),
+                            ("hold", format!("{hold:.0}")),
                         ]));
                     }
                     let cargo_d = if form.mission.carries_cargo() {

@@ -10796,6 +10796,9 @@ mod tests {
         );
         assert!(text.contains("ETA"), "{text}");
         assert!(folded.contains("find x1"), "no explorer: {text}");
+        // #685: the hold the find rides home in.
+        let cargo = app.state.cargo_capacity(ships);
+        assert!(folded.contains(&format!("hold {cargo:.0}")), "{text}");
         assert!(
             !text.contains(&format!("found {}", rolled.as_key())),
             "{text}"
