@@ -1041,6 +1041,78 @@ fn tab_line(panels: &[Panel], focus: usize, t: &Theme) -> Line<'static> {
     Line::from(spans)
 }
 
+/// Signals whose light has arrived. Open ones get a map glyph, resolved
+/// ones only a note; a signal still in flight is not on any map.
+pub(crate) fn arrived_signals(state: &GameState) -> Vec<&hoshi_core::Signal> {
+    let now = state.last_tick_unix;
+    state.signals.iter().filter(|s| s.seen_at <= now).collect()
+}
+
+/// The glyph and colour a star map draws at `coord`, shared by the bridge
+/// map and the Fleet star map so both pick the same mark when several
+/// markers share a coord. `frontier` adds the Fleet map's frontier worlds
+/// right after pirates. `None` is an empty slot (`·`).
+pub(crate) fn map_mark(
+    state: &GameState,
+    owned: &[Coord],
+    signals: &[&hoshi_core::Signal],
+    coord: Coord,
+    frontier: bool,
+) -> (char, Option<Intent>) {
+    if coord == state.home {
+        ('H', Some(Intent::Primary))
+    } else if owned.contains(&coord) {
+        ('C', Some(Intent::Success))
+    } else if state.visible_rival_colony_at(coord).is_some() {
+        ('R', Some(Intent::Warning))
+    } else if state.outposts.iter().any(|o| o.coord == coord) {
+        ('P', Some(Intent::Danger))
+    } else if frontier && state.frontier.visible_worlds().any(|w| w.coord == coord) {
+        ('F', Some(Intent::Warning))
+    } else if signals.iter().any(|s| s.coord == coord && s.is_open()) {
+        ('!', Some(Intent::Danger))
+    } else if state.missions.iter().any(|m| m.dest == coord) {
+        ('f', Some(Intent::Warning))
+    } else if let Some(site) = state.site_at(coord) {
+        (site.map_mark(), Some(Intent::Warning))
+    } else if debris_at(state, coord) > 0.0 {
+        ('*', Some(Intent::Warning))
+    } else {
+        ('·', None)
+    }
+}
+
+/// Push the notes both star maps give `coord` for an expedition site (kind,
+/// plus outcome once resolved), each arrived signal, and debris.
+pub(crate) fn point_notes(
+    state: &GameState,
+    signals: &[&hoshi_core::Signal],
+    coord: Coord,
+    labels: &mut Vec<String>,
+) {
+    let now = state.last_tick_unix;
+    if let Some(site) = state.site_at(coord) {
+        labels.push(match site.outcome {
+            Some(outcome) => format!("{} {}", site.kind.as_key(), outcome.as_key()),
+            None => site.kind.as_key().to_string(),
+        });
+    }
+    for signal in signals.iter().filter(|s| s.coord == coord) {
+        labels.push(match signal.outcome {
+            Some(outcome) => format!("signal #{} {}", signal.id, outcome.as_key()),
+            None => format!(
+                "signal #{} {}",
+                signal.id,
+                countdown(signal.deadline.saturating_sub(now))
+            ),
+        });
+    }
+    let debris = debris_at(state, coord);
+    if debris > 0.0 {
+        labels.push(format!("debris {}", crate::ui::spans::compact(debris)));
+    }
+}
+
 fn map_lines(
     state: &GameState,
     map_system: u16,
@@ -1050,13 +1122,7 @@ fn map_lines(
     t: &Theme,
 ) -> Vec<Line<'static>> {
     let owned = state.owned_coords();
-    let now = state.last_tick_unix;
-    // Signals whose light has arrived: open ones get a glyph, resolved ones a label.
-    let signals: Vec<&hoshi_core::Signal> = state
-        .signals
-        .iter()
-        .filter(|signal| signal.seen_at <= now)
-        .collect();
+    let signals = arrived_signals(state);
     let mut entries = Vec::new();
     for system in 1..=MAP_SYSTEM_MAX {
         let current = system == map_system;
@@ -1075,24 +1141,10 @@ fn map_lines(
                 system,
                 position: pos,
             };
-            let (ch, style) = if coord == state.home {
-                ('H', t.intent(Intent::Primary).add_modifier(Modifier::BOLD))
-            } else if owned.contains(&coord) {
-                ('C', t.intent(Intent::Success))
-            } else if state.visible_rival_colony_at(coord).is_some() {
-                ('R', t.intent(Intent::Warning))
-            } else if state.outposts.iter().any(|o| o.coord == coord) {
-                ('P', t.intent(Intent::Danger))
-            } else if signals.iter().any(|s| s.coord == coord && s.is_open()) {
-                ('!', t.intent(Intent::Danger))
-            } else if state.missions.iter().any(|m| m.dest == coord) {
-                ('f', t.intent(Intent::Warning))
-            } else if let Some(site) = state.site_at(coord) {
-                (site.map_mark(), t.intent(Intent::Warning))
-            } else if debris_at(state, coord) > 0.0 {
-                ('*', t.intent(Intent::Warning))
-            } else {
-                ('·', t.faint())
+            let (ch, style) = match map_mark(state, &owned, &signals, coord, false) {
+                ('H', Some(intent)) => ('H', t.intent(intent).add_modifier(Modifier::BOLD)),
+                (ch, Some(intent)) => (ch, t.intent(intent)),
+                (ch, None) => (ch, t.faint()),
             };
             let style = if current && pos == map_position {
                 t.selected().patch(style).add_modifier(Modifier::REVERSED)
@@ -1107,27 +1159,8 @@ fn map_lines(
                 labels.push("home".to_string());
             } else if let Some(claim) = state.visible_rival_colony_at(coord) {
                 labels.push(format!("rival {}", claim.rival_id));
-            } else if let Some(site) = state.site_at(coord) {
-                let label = match site.outcome {
-                    Some(outcome) => format!("{} {}", site.kind.as_key(), outcome.as_key()),
-                    None => site.kind.as_key().to_string(),
-                };
-                labels.push(label);
             }
-            for signal in signals.iter().filter(|s| s.coord == coord) {
-                labels.push(match signal.outcome {
-                    Some(outcome) => format!("signal #{} {}", signal.id, outcome.as_key()),
-                    None => format!(
-                        "signal #{} {}",
-                        signal.id,
-                        countdown(signal.deadline.saturating_sub(now))
-                    ),
-                });
-            }
-            let debris = debris_at(state, coord);
-            if debris > 0.0 {
-                labels.push(format!("debris {}", crate::ui::spans::compact(debris)));
-            }
+            point_notes(state, &signals, coord, &mut labels);
         }
         for mission in &state.missions {
             if mission.dest.galaxy == state.home.galaxy && mission.dest.system == system {

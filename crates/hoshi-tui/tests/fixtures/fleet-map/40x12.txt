@@ -1,0 +1,12 @@
+ ◆ HOSHI  │  Star map      RAID 1h 51m
+  Fe │ Si │ D  │ REE│ Fle│ Ene│ Poll
+  500│ 500│ 9.8│ 0  │ 0  │ +2 │ 9
+  +33│ +22│ 0/h│ +3/│ def│ hea│ 9/50
+────────────────────────────────────────
+ ▦ Fleet   Home (1:1:1)           ✕ esc
+  Shipyard   Star map   Ops   Intel
+ ────────────━━━━━━━━──────────────────
+
+  SYS  ROCKY           ICE     GAS
+ scan from 1:1:1: signal #1 pending
+      d  detail   hjkl  cursor

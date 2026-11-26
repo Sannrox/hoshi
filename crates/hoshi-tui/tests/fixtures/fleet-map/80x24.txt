@@ -1,0 +1,24 @@
+ ◆ HOSHI  │  Fleet / Star map                        RAID 1h 51m   Home (1:1:1)
+  Fe       │ Si       │ D        │ REE      │ Fleet    │ Energy   │ Poll
+  500      │ 500      │ 9.8k     │ 0        │ 0        │ +2       │ 9
+  +33/h    │ +22/h    │ 0/h      │ +3/h     │ def 0    │ heat 22/8│ 9/50
+────────────────────────────────────────────────────────────────────────────────
+ ▦ Fleet   Home (1:1:1) · ship queue 0                                    ✕ esc
+  Shipyard   Star map   Ops   Intel
+ ────────────━━━━━━━━──────────────────────────────────────────────────────────
+
+ GALAXY 1   CURSOR 1:1:1
+ rocky · helium-3 0.10, iron ore 1.08, rare earths 1.19, silicon 1.09, uranium
+ H home   C colony   R rival   P pirate   F frontier   f fleet
+ w/k/l site   ! signal   * debris
+
+  SYS  ROCKY                   ICE         GAS GIANT     NOTES
+ ▌ *1  [H] *  ·  r  ·  ·  ·  ·  ·  w  !  ·  l  ·  ·  ·   home  debris 1.5k  cac
+    2   ·  ·  ·  P  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·   pirate 1:2:4 rocky
+    3   ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·
+    4   ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·
+    5   ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·
+    6   ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·
+    7   ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·
+ scan from 1:1:1: signal #1 pending                                 ⏎ dispatch
+      d  detail   hjkl  cursor   enter  dispatch       0000-0000-0000-00 gen 1
