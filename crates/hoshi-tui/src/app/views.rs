@@ -47,7 +47,8 @@ fn slot_band_header(cell: usize) -> String {
     out
 }
 
-/// What one legacy bonus gives a new run, from its config fields.
+/// What one legacy bonus gives, from its config fields. A starting cache
+/// adds to home stock at purchase and again at each new run's start.
 fn bonus_effect(spec: &hoshi_core::PrestigeBonusSpec) -> String {
     let mut parts = Vec::new();
     let start = [
@@ -57,10 +58,10 @@ fn bonus_effect(spec: &hoshi_core::PrestigeBonusSpec) -> String {
     ]
     .into_iter()
     .filter(|(amount, _)| *amount > 0.0)
-    .map(|(amount, sym)| format!("{sym} {amount:.0}"))
+    .map(|(amount, sym)| format!("+{sym} {amount:.0}"))
     .collect::<Vec<_>>();
     if !start.is_empty() {
-        parts.push(format!("start with {}", start.join(" ")));
+        parts.push(format!("{} now and at each new start", start.join(" ")));
     }
     if spec.production > 0.0 {
         parts.push(format!("+{:.0}% production", spec.production * 100.0));
