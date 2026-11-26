@@ -128,26 +128,53 @@ const RAID_WARNING_SECS: u64 = 7_200;
 /// Units the advice aims for; past this the home counts as guarded.
 const RAID_GUARD: u32 = 5;
 
-/// Before a raid: the cheapest defence the shipyard can build now (as many
-/// as the stock pays for), or else the next building on the way to the
-/// shipyard. Never a unit whose shipyard or research is still out of reach.
+/// Before a raid: the cheapest defence the target world's shipyard can build
+/// now (as many as its stock pays for), or else the next building on the way
+/// to that shipyard. Never a unit whose shipyard or research is still out of
+/// reach. Once the warning shows, a raid on a colony names the colony and
+/// reads the colony's own defences, parked fleet, shipyard and stock.
 fn push_raid(state: &GameState, out: &mut Vec<Advice>) {
-    let Some(at) = state.upcoming_raid_at() else {
+    let Some(raid) = state.upcoming_raid() else {
         return;
     };
-    let wait = at.saturating_sub(state.last_tick_unix);
+    let wait = raid.at.saturating_sub(state.last_tick_unix);
     if wait > RAID_WARNING_SECS {
         return;
     }
+    // The target stays hidden until the raid warning shows, as in `state`
+    // and on the bridge; before that the advice guards home.
+    let target = if state.raid_countdown_secs().is_some() {
+        raid.target
+    } else {
+        state.home
+    };
+    let (Some(defences), Some(fleet), Some(buildings), Some(stock)) = (
+        state.defences_at(target),
+        state.fleet_at(target),
+        state.buildings_at(target),
+        state.resources_at(target),
+    ) else {
+        return;
+    };
     let batteries: u32 = DefenceKind::ALL
         .into_iter()
         .filter(|&kind| state.config.defences.get(kind).role == DefenceRole::Battery)
-        .map(|kind| state.defences.get(kind))
+        .map(|kind| defences.get(kind))
         .sum();
-    if batteries >= RAID_GUARD || state.fleet.get(ShipKind::LightFighter) >= RAID_GUARD {
+    if batteries >= RAID_GUARD || fleet.get(ShipKind::LightFighter) >= RAID_GUARD {
         return;
     }
-    let shipyard = state.buildings.shipyard;
+    // Home keeps its original wording; a colony target is named.
+    let (raid_on, yard, at) = if target == state.home {
+        (String::new(), "the shipyard".to_string(), String::new())
+    } else {
+        (
+            format!(" on {target}"),
+            format!("the shipyard at {target}"),
+            format!(" at {target}"),
+        )
+    };
+    let shipyard = buildings.shipyard;
     let cheapest = DefenceKind::ALL
         .into_iter()
         // Batteries fire on raiders; garrisons only fight landings and domes
@@ -167,7 +194,7 @@ fn push_raid(state: &GameState, out: &mut Vec<Advice>) {
         let afford = ResourceKind::ALL
             .into_iter()
             .filter(|&r| unit.get(r) > 0.0)
-            .map(|r| (state.resources.get(r) / unit.get(r)).floor())
+            .map(|r| (stock.get(r) / unit.get(r)).floor())
             .fold(f64::from(RAID_GUARD), f64::min)
             .max(0.0) as u32;
         let name = state.config.defences.get(kind).name.to_lowercase();
@@ -175,19 +202,24 @@ fn push_raid(state: &GameState, out: &mut Vec<Advice>) {
             id: "raid",
             text: if afford > 0 {
                 format!(
-                    "a raid in {wait}s; queue {afford} {name} in the shipyard ({} each)",
+                    "a raid{raid_on} in {wait}s; queue {afford} {name} in {yard} ({} each)",
                     unit.brief()
                 )
             } else {
                 format!(
-                    "a raid in {wait}s; a {name} costs {}, more than the stock holds",
+                    "a raid{raid_on} in {wait}s; a {name} costs {}, more than the stock{at} holds",
                     unit.brief()
                 )
             },
         });
         return;
     }
-    let step = shipyard_step(state);
+    let step = shipyard_step(state, buildings);
+    let park = if target == state.home {
+        String::new()
+    } else {
+        format!(", or park light fighters{at}")
+    };
     let market = if state.config.market.enabled {
         ", and trade iron for deuterium on the market if it is short"
     } else {
@@ -195,19 +227,22 @@ fn push_raid(state: &GameState, out: &mut Vec<Advice>) {
     };
     out.push(Advice {
         id: "raid",
-        text: format!("a raid in {wait}s; no defence can be built yet: {step}{market}"),
+        text: format!(
+            "a raid{raid_on} in {wait}s; no defence can be built yet: {step}{at}{park}{market}"
+        ),
     });
 }
 
-/// No shipyard yet: the next building on its prerequisite path.
-fn shipyard_step(state: &GameState) -> String {
+/// No shipyard yet on a world with `buildings`: the next building on its
+/// prerequisite path.
+fn shipyard_step(state: &GameState, buildings: &crate::Buildings) -> String {
     let gate = state
         .config
         .buildings
         .get(BuildingKind::Shipyard)
         .prerequisites
         .iter()
-        .find(|(building, level)| state.buildings.get(*building) < *level)
+        .find(|(building, level)| buildings.get(*building) < *level)
         .map(|(building, _)| *building)
         .unwrap_or(BuildingKind::Shipyard);
     if gate == BuildingKind::Shipyard {
@@ -263,7 +298,7 @@ fn conquest_step(state: &GameState) -> Option<String> {
     }
     if warships.is_empty() {
         return Some(if state.buildings.shipyard == 0 {
-            format!("{} to arm the home", shipyard_step(state))
+            format!("{} to arm the home", shipyard_step(state, &state.buildings))
         } else {
             "queue warships in the shipyard to arm the home".into()
         });
@@ -688,6 +723,65 @@ mod tests {
             hit.text.contains(&format!("queue {afford} light cannon")),
             "{}",
             hit.text
+        );
+    }
+
+    #[test]
+    fn raid_advice_guards_the_colony_the_raid_will_hit() {
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.enabled = true;
+        let mut state = GameState::with_config(0, cfg);
+        let colony = crate::Coord {
+            galaxy: 1,
+            system: state.home.system,
+            position: 9,
+        };
+        state.colonies.push(crate::Colony {
+            coord: colony,
+            kind: crate::PlanetType::Ice,
+            size: 120,
+            resources: crate::Resources::ZERO,
+            buildings: Buildings::default(),
+            fleet: crate::Fleet::default(),
+            defences: crate::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: std::collections::BTreeMap::new(),
+        });
+        // Home could build cannon today; the colony has no shipyard.
+        state.buildings.robotics_factory = 1;
+        state.buildings.shipyard = 1;
+        state.resources = crate::Resources::from_parts(500.0, 500.0, 0.0);
+        state.next_raid_target = Some(colony);
+        state.next_raid_at = Some(state.config.raid.min_warning_secs);
+        let raid = |state: &GameState| {
+            advise(state, None)
+                .into_iter()
+                .find(|a| a.id == "raid")
+                .unwrap()
+                .text
+        };
+        let text = raid(&state);
+        assert!(text.contains(&format!("a raid on {colony}")), "{text}");
+        assert!(text.contains("robotics factory"), "{text}");
+        assert!(text.contains("park light fighters"), "{text}");
+        assert!(!text.contains("queue"), "{text}");
+
+        // With its own shipyard and stock, the count comes from the colony.
+        let c = &mut state.colonies[0];
+        c.buildings.robotics_factory = 1;
+        c.buildings.shipyard = 1;
+        let cannon = state
+            .config
+            .defences
+            .get(DefenceKind::LightCannon)
+            .unit_cost();
+        state.colonies[0].resources = crate::Resources::from_parts(cannon.iron * 2.0, 500.0, 0.0);
+        let text = raid(&state);
+        assert!(
+            text.contains(&format!("queue 2 light cannon in the shipyard at {colony}")),
+            "{text}"
         );
     }
 
