@@ -929,7 +929,9 @@ impl GameState {
     /// the cheapest faster hull the player has built or can build that
     /// still carries this cargo. `fuel_ice` is the send's water ice bill.
     /// An in-system send is expensive only when that bill exceeds `cargo`
-    /// and a refit exists to point at; faster drives return `None`.
+    /// and a refit exists to point at; faster drives return `None`. Between
+    /// two worlds that both have a jump gate, any drive is pointed at the
+    /// free jump instead.
     pub fn expensive_send_hint(
         &self,
         origin: Coord,
@@ -938,6 +940,9 @@ impl GameState {
         cargo: f64,
         fuel_ice: f64,
     ) -> Option<String> {
+        if origin != dest && self.has_jump_gate(origin) && self.has_jump_gate(dest) {
+            return Some("jump gates at both worlds; jump is free".into());
+        }
         let drive = self.fleet_slowest_drive(ships)?;
         if drive != "combustion_drive" {
             return None;

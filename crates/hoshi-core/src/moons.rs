@@ -372,6 +372,9 @@ impl GameState {
         Ok(())
     }
 
+    /// Jump `ships` and `cargo` from one gated owned world to another: no
+    /// fuel, no flight time, and both gates start their cooldown. Used by
+    /// `hoshi moon jump` and the dispatch form's jump mission.
     pub fn jump_between(
         &mut self,
         from: Coord,
@@ -381,13 +384,70 @@ impl GameState {
         now: u64,
     ) -> Result<(), MoonError> {
         self.catch_up(now);
+        let now = self.last_tick_unix;
+        let (from_site, to_site) = self.jump_sites(from, to, ships, cargo, now)?;
+        let has_cargo = ResourceKind::ALL.iter().any(|&kind| cargo.get(kind) > 1e-9);
+        if let Some(fleet) = parked_fleet_mut(self, from) {
+            for kind in ShipKind::ALL {
+                fleet.saturating_sub(kind, ships.get(kind));
+            }
+        }
+        if let Some(fleet) = parked_fleet_mut(self, to) {
+            for kind in ShipKind::ALL {
+                fleet.add(kind, ships.get(kind));
+            }
+        }
+        if has_cargo {
+            if let Ok(res) = self.resources_at_mut(from) {
+                *res = res.saturating_sub(cargo);
+            }
+            if let Ok(res) = self.resources_at_mut(to) {
+                *res = res.saturating_add(cargo);
+            }
+        }
+        let ready = now.saturating_add(self.config.moons.jump_cooldown_secs);
+        self.set_gate_ready(from, from_site, ready);
+        self.set_gate_ready(to, to_site, ready);
+        self.push_event(now, format!("jump: {from} -> {to}"));
+        Ok(())
+    }
+
+    /// Why a jump from `from` to `to` would be refused at `now`, checked
+    /// without moving anything: the same refusals `jump_between` gives.
+    pub fn check_jump(
+        &self,
+        from: Coord,
+        to: Coord,
+        ships: Fleet,
+        cargo: Resources,
+        now: u64,
+    ) -> Result<(), MoonError> {
+        self.jump_sites(from, to, ships, cargo, now).map(|_| ())
+    }
+
+    /// Whether `at` has a jump gate built, on its moon or as a station,
+    /// ready or cooling.
+    pub fn has_jump_gate(&self, at: Coord) -> bool {
+        self.moon_at(at).is_some_and(|moon| moon.jump_gate > 0)
+            || self
+                .buildings_at(at)
+                .is_some_and(|buildings| buildings.jump_gate > 0)
+    }
+
+    fn jump_sites(
+        &self,
+        from: Coord,
+        to: Coord,
+        ships: Fleet,
+        cargo: Resources,
+        now: u64,
+    ) -> Result<(GateKind, GateKind), MoonError> {
         if ships.is_empty() {
             return Err(MoonError::EmptyFleet);
         }
         if !cargo.is_finite_nonneg() {
             return Err(MoonError::InvalidCargo);
         }
-        let now = self.last_tick_unix;
         let from_site = self.gate_site(from, now)?;
         let to_site = self.gate_site(to, now)?;
         let parked = parked_fleet(self, from);
@@ -421,29 +481,7 @@ impl GameState {
                 }
             }
         }
-        if let Some(fleet) = parked_fleet_mut(self, from) {
-            for kind in ShipKind::ALL {
-                fleet.saturating_sub(kind, ships.get(kind));
-            }
-        }
-        if let Some(fleet) = parked_fleet_mut(self, to) {
-            for kind in ShipKind::ALL {
-                fleet.add(kind, ships.get(kind));
-            }
-        }
-        if has_cargo {
-            if let Ok(res) = self.resources_at_mut(from) {
-                *res = res.saturating_sub(cargo);
-            }
-            if let Ok(res) = self.resources_at_mut(to) {
-                *res = res.saturating_add(cargo);
-            }
-        }
-        let ready = now.saturating_add(self.config.moons.jump_cooldown_secs);
-        self.set_gate_ready(from, from_site, ready);
-        self.set_gate_ready(to, to_site, ready);
-        self.push_event(now, format!("jump: {from} -> {to}"));
-        Ok(())
+        Ok((from_site, to_site))
     }
 
     /// A ready moon gate wins when both stand; a cooling moon yields to a
@@ -952,6 +990,29 @@ mod tests {
             .unwrap_err();
         assert!(matches!(full, MoonError::DestFull), "{full}");
         assert_eq!(stocks(&state, dest), filled);
+    }
+
+    #[test]
+    fn a_send_between_gated_worlds_points_at_the_free_jump() {
+        let (mut state, dest) = gated_pair();
+        // Any drive: the impulse refit leaves no combustion hull to name.
+        state.tech_levels.insert("impulse_drive".into(), 4);
+        state.fleet.add(ShipKind::SmallCargo, 1);
+        let hint = state.expensive_send_hint(Coord::HOME, dest, haul(), 0.0, 0.0);
+        assert_eq!(
+            hint.as_deref(),
+            Some("jump gates at both worlds; jump is free")
+        );
+        assert_eq!(
+            state.check_jump(Coord::HOME, dest, haul(), Resources::ZERO, 0),
+            Ok(())
+        );
+        state.moons.retain(|moon| moon.parent != dest);
+        assert!(!state.has_jump_gate(dest));
+        assert_eq!(
+            state.check_jump(Coord::HOME, dest, haul(), Resources::ZERO, 0),
+            Err(MoonError::NoGate { at: dest })
+        );
     }
 
     fn arm_station_gate(state: &mut GameState, coord: Coord) {

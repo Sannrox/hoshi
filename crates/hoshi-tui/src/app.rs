@@ -240,6 +240,8 @@ enum Mission {
     Expedition,
     Recycle,
     Hold,
+    /// Through the jump gates at both owned worlds: no fuel, no flight.
+    Jump,
 }
 
 impl Mission {
@@ -254,13 +256,17 @@ impl Mission {
             Self::Expedition => "expedition",
             Self::Recycle => "recycle",
             Self::Hold => "hold",
+            Self::Jump => "jump",
         }
     }
 
-    /// Cargo amounts ride on a round-trip transport, a one-way station, or
-    /// a colony ship as the new colony's starter stock.
+    /// Cargo amounts ride on a round-trip transport, a one-way station, a
+    /// gate jump, or a colony ship as the new colony's starter stock.
     fn carries_cargo(self) -> bool {
-        matches!(self, Self::Transport | Self::Station | Self::Colonize)
+        matches!(
+            self,
+            Self::Transport | Self::Station | Self::Colonize | Self::Jump
+        )
     }
 
     /// What this send carries each leg, so the preview prices the fuel the
@@ -3444,7 +3450,12 @@ impl App {
         } else if dest == origin {
             Vec::new()
         } else if self.state.owned_coords().contains(&dest) {
-            vec![Mission::Transport, Mission::Station]
+            let mut owned = vec![Mission::Transport, Mission::Station];
+            // Built gates at both ends, ready or cooling: the preview says which.
+            if self.state.has_jump_gate(origin) && self.state.has_jump_gate(dest) {
+                owned.push(Mission::Jump);
+            }
+            owned
         } else {
             vec![Mission::Colonize, Mission::Spy]
         };
@@ -3542,6 +3553,19 @@ impl App {
             return;
         }
         let (origin, ships, dest) = (form.origin, form.ships, form.dest);
+        if form.mission == Mission::Jump {
+            match self
+                .state
+                .jump_between(origin, dest, ships, form.cargo, now_unix)
+            {
+                Ok(()) => {
+                    self.status = format!("jumped to {dest}");
+                    self.dispatch = None;
+                }
+                Err(e) => self.status = jump_refusal(&e, self.state.last_tick_unix),
+            }
+            return;
+        }
         let speed = form.speed;
         let launched = match form.mission {
             Mission::Transport => {
@@ -3610,6 +3634,8 @@ impl App {
                     return;
                 }
             },
+            // Handled above: a jump is not a flight.
+            Mission::Jump => return,
             Mission::Expedition => {
                 let hold = self.state.config.expedition.min_hold_secs;
                 // A site that resolved while the form was open is refused,
@@ -5162,6 +5188,18 @@ fn parked_defence(state: &GameState, coord: Coord) -> f64 {
         .iter()
         .map(|&kind| state.config.defences.get(kind).attack * f64::from(grid.get(kind)))
         .sum()
+}
+
+/// A jump refusal as the player reads it: a cooling gate says how long,
+/// not the unix time `MoonError` carries.
+fn jump_refusal(error: &hoshi_core::MoonError, now: u64) -> String {
+    match error {
+        hoshi_core::MoonError::Cooling { ready_at } => format!(
+            "gate cooling: ready in {}",
+            crate::ui::spans::duration(ready_at.saturating_sub(now))
+        ),
+        other => other.to_string(),
+    }
 }
 
 fn fleet_brief(fleet: Fleet) -> String {
@@ -10290,6 +10328,56 @@ mod tests {
         app.state
             .enqueue_build_on(dest, BuildingKind::SolarPlant, back)
             .unwrap();
+    }
+
+    #[test]
+    fn dispatch_jumps_cargo_through_both_gates_for_no_fuel() {
+        let (mut app, dest) = app_with_new_colony();
+        app.state.buildings.jump_gate = 1;
+        app.state.colonies[0].buildings.jump_gate = 1;
+        app.handle_key(KeyCode::Enter, 1_000);
+        let pick_cargo = |app: &mut App| {
+            let form = app.dispatch.as_mut().unwrap();
+            form.selected = ShipKind::ALL
+                .iter()
+                .position(|k| *k == ShipKind::SmallCargo)
+                .unwrap();
+            app.handle_key(KeyCode::Char('+'), 1_000);
+            app.dispatch.as_mut().unwrap().cargo = Resources::from_parts(1_000.0, 0.0, 0.0);
+        };
+        pick_cargo(&mut app);
+        let text = render_text(&app, 100, 48);
+        assert!(text.contains("jump gates at both worlds"), "{text}");
+        cycle_dispatch_to(&mut app, Mission::Jump);
+        let text = render_text(&app, 80, 24);
+        assert_eq!(
+            text,
+            include_str!("../tests/fixtures/dispatch-jump/80x24.txt"),
+            "{text}"
+        );
+        let ice = app.state.resources.water_ice;
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.dispatch.is_none(), "{}", app.status);
+        assert!(app.state.missions.is_empty());
+        assert_eq!(app.state.fleet.get(ShipKind::SmallCargo), 1);
+        assert_eq!(app.state.colonies[0].fleet.get(ShipKind::SmallCargo), 1);
+        assert_eq!(app.state.resources.iron, 11_000.0);
+        assert_eq!(app.state.resources_at(dest).unwrap().iron, 1_000.0);
+        assert_eq!(app.state.resources.water_ice, ice);
+        let ready = 1_000 + app.state.config.moons.jump_cooldown_secs;
+        assert_eq!(app.state.station_gate_ready.get(&dest), Some(&ready));
+
+        // Both gates cool: the preview and the confirm refuse, nothing moves.
+        app.handle_key(KeyCode::Enter, 1_000);
+        cycle_dispatch_to(&mut app, Mission::Jump);
+        pick_cargo(&mut app);
+        let text = render_text(&app, 80, 24);
+        assert!(text.contains("gate cooling: ready in 1h 00m"), "{text}");
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.dispatch.is_some());
+        assert_eq!(app.status, "gate cooling: ready in 1h 00m");
+        assert_eq!(app.state.fleet.get(ShipKind::SmallCargo), 1);
+        assert_eq!(app.state.resources.iron, 11_000.0);
     }
 
     #[test]

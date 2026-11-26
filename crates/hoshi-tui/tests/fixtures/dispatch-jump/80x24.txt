@@ -1,0 +1,24 @@
+ ◆ HOSHI  │  Fleet / Star map                                      Home (1:1:1)
+   ▦ Dispatch                                                               x
+
+    DISPATCH
+──  to 1:1:2 from 1:1:1   COLONY                                              ──
+ ▦  mission  transport  station  jump                                         c
+    JUMP now   FUEL 0   BOTH GATES COOL 1h 00m
+ ─                                                                            ─
+    SHIPS
+ G  ▌Small cargo      -    1  +   of 2
+ r   Large cargo          0      of 0
+ H   Light fighter        0      of 0
+ w   Heavy fighter        0      of 0
+     Cruiser              0      of 0
+     Battleship           0      of 0
+ ▌   Recycler             0      of 0                                         a
+     Espionage probe      0      of 0
+     Explorer             0      of 0
+     Colony ship          0      of 0
+     Troop transport      0      of 0
+    CARGO
+     iron                 1000      of 12000
+
+      d  detail   hjkl  cursor   enter  dispatch       0000-0000-0000-00 gen 1
