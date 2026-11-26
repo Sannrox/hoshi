@@ -375,7 +375,8 @@ impl GameState {
         }
     }
 
-    pub(crate) fn goods_at(&self, coord: Coord) -> BTreeMap<String, f64> {
+    /// Intermediate goods stocked at `coord`; empty when this empire does not hold it.
+    pub fn goods_at(&self, coord: Coord) -> BTreeMap<String, f64> {
         if coord == self.home {
             self.goods.clone()
         } else {
