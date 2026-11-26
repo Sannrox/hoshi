@@ -152,7 +152,7 @@ With `focus` set in `config.toml` beside the save (`conquest`, `wonder` or
 Extra arguments on `advise` are invalid.
 
 `log` searches the structured history (build, research, ship, fleet, combat,
-trade, activity, prestige). `--lineage ID` walks cause links; `--at UNIX`
+trade, activity, prestige). An expedition writes a `fleet` record with action `expedition` when its outcome resolves at the site, under the launch's `mission:<id>` cause. `--lineage ID` walks cause links; `--at UNIX`
 returns the recorded empire glance at that time if it is still retained;
 `--export PATH` writes JSON lines of the retained window. History keeps the
 last 256 events and one snapshot per event. The TUI `log` screen filters by

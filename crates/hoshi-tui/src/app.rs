@@ -9262,6 +9262,36 @@ mod tests {
         );
     }
 
+    /// #682: the expedition outcome stays on the cockpit timeline after the
+    /// fleet is home.
+    #[test]
+    fn cockpit_keeps_the_expedition_outcome_after_the_fleet_returns() {
+        let mut cfg = BalanceConfig::default();
+        cfg.raid.enabled = false;
+        cfg.market.enabled = false;
+        cfg.expedition.min_hold_secs = 10;
+        let mut state = GameState::with_config(0, cfg);
+        state.resources.deuterium = 1e9;
+        state.resources.water_ice = 1e9;
+        state.fleet.add(ShipKind::LightFighter, 2);
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::LightFighter, 2);
+        state
+            .launch_expedition(state.home, ships, 10, 100, 0)
+            .unwrap();
+        let dest = state.missions[0].dest;
+        let outbound = state.missions[0].outbound_secs;
+        state.catch_up(outbound * 2 + 3_600);
+        assert!(state.missions.is_empty());
+        let mut app = App::new(state);
+        app.open(Screen::Cockpit);
+        let cockpit = render_text(&app, 120, 40);
+        assert!(
+            cockpit.contains(&format!("expedition to {dest}:")),
+            "{cockpit}"
+        );
+    }
+
     #[test]
     fn map_and_planet_switcher_label_moons() {
         let mut state = GameState::new(1_000);
