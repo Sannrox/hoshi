@@ -2604,6 +2604,33 @@ impl App {
                 ..ListView::default()
             };
         }
+        let event_text = |event: &hoshi_core::HistoryEvent| {
+            let action = event.action.replace('_', " ");
+            let objects = event
+                .objects
+                .iter()
+                .map(|id| self.state.object_label(id))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let outcome = event.outcome.replace('_', " ");
+            if outcome.is_empty() {
+                format!("{action}  {objects}")
+            } else {
+                format!("{action}  {objects}  {outcome}")
+            }
+        };
+        // The event column is narrow at 80 columns; the selected row reads
+        // in full, wrapped, under the table.
+        let foot = events
+            .get(self.selected)
+            .map(|event| {
+                let width = usize::from(self.list_width.get()).saturating_sub(2).max(1);
+                super::wrap_text(&event_text(event), width)
+                    .into_iter()
+                    .map(|line| Line::styled(line, t.muted()))
+                    .collect()
+            })
+            .unwrap_or_default();
         let rows = events
             .iter()
             .map(|event| {
@@ -2615,24 +2642,7 @@ impl App {
                     ),
                     self.chip(event.kind.as_key(), Intent::Neutral, true),
                     Line::styled(event.actor.clone(), t.text()),
-                    Line::styled(
-                        {
-                            let action = event.action.replace('_', " ");
-                            let objects = event
-                                .objects
-                                .iter()
-                                .map(|id| self.state.object_label(id))
-                                .collect::<Vec<_>>()
-                                .join(", ");
-                            let outcome = event.outcome.replace('_', " ");
-                            if outcome.is_empty() {
-                                format!("{action}  {objects}")
-                            } else {
-                                format!("{action}  {objects}  {outcome}")
-                            }
-                        },
-                        t.text(),
-                    ),
+                    Line::styled(event_text(event), t.text()),
                 ]
             })
             .collect();
@@ -2651,6 +2661,7 @@ impl App {
                 groups: Vec::new(),
                 selected: Some(self.selected),
             }),
+            foot,
             ..ListView::default()
         }
     }

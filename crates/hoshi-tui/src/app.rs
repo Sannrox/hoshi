@@ -2941,6 +2941,10 @@ impl App {
             let mut spans = vec![
                 ui::spans::keycap(t, &(i + 1).to_string()),
                 Span::styled(format!(" {}", choice.label), t.strong()),
+                Span::styled(
+                    format!(" · {}", self.state.story_choice_preview(choice)),
+                    t.text(),
+                ),
             ];
             if choice.id == event.timeout_choice {
                 spans.push(Span::styled("  default if ignored", t.muted()));
@@ -8427,6 +8431,30 @@ mod tests {
         let text = render_text(&app, 80, 24);
         assert!(!text.contains("Burn through"), "{text}");
         assert!(text.contains("Colony / Research"), "{text}");
+    }
+
+    #[test]
+    fn story_popup_shows_what_each_choice_changes_and_history_keeps_it() {
+        let mut app = App::new(GameState::new(1_000));
+        app.state.story_pending = Some(hoshi_core::PendingStory {
+            event_id: "comet_ice".into(),
+            offered_at: 1_000,
+            timeout_at: 90_000,
+        });
+        let text = render_text(&app, 80, 24);
+        assert_eq!(
+            text,
+            include_str!("../tests/fixtures/story/80x24.txt"),
+            "{text}"
+        );
+        app.handle_key(KeyCode::Char('1'), 1_000);
+        app.open(Screen::History);
+        let text = render_text(&app, 80, 24);
+        assert_eq!(
+            text,
+            include_str!("../tests/fixtures/history/80x24.txt"),
+            "{text}"
+        );
     }
 
     #[test]
