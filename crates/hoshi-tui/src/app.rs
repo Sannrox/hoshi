@@ -9494,6 +9494,41 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_names_a_cheaper_owned_world_to_launch_from() {
+        let mut app = app_with_expedition_form();
+        let mut fleet = Fleet::default();
+        fleet.add(ShipKind::LightFighter, 5);
+        let ice = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 9,
+        };
+        app.state.colonies.push(hoshi_core::Colony {
+            coord: ice,
+            kind: hoshi_core::PlanetType::Ice,
+            size: 160,
+            resources: Resources::ZERO,
+            buildings: hoshi_core::Buildings::default(),
+            fleet,
+            defences: hoshi_core::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: std::collections::BTreeMap::new(),
+        });
+        let text = render_text(&app, 80, 24);
+        assert_eq!(
+            text,
+            include_str!("../tests/fixtures/dispatch-cheaper/80x24.txt"),
+            "{text}"
+        );
+        // Without the fighters parked there the colony is not offered.
+        app.state.colonies[0].fleet = Fleet::default();
+        let text = render_text(&app, 80, 24);
+        assert!(!text.contains("cheaper from"), "{text}");
+    }
+
+    #[test]
     fn expedition_dispatch_shows_out_hold_and_home_matching_the_launch() {
         let mut app = app_with_expedition_form();
         let text = render_text(&app, 80, 24);

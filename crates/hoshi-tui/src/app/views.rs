@@ -1557,15 +1557,16 @@ impl App {
                 .min(lines.len().saturating_sub(height))
                 .min(selected)
         };
-        // A pinned line scrolled out of view leads the window instead.
-        if let Some(pin) = pinned
-            && height > 1
-            && !(offset(height)..offset(height) + height).contains(&pin)
-        {
-            let start = offset(height - 1);
-            let mut window = vec![lines[pin].clone()];
-            window.extend(lines.into_iter().skip(start).take(height - 1));
-            return window;
+        // Pinned lines scrolled out of view lead the window instead.
+        if let Some(pin) = pinned {
+            let shown = offset(height)..offset(height) + height;
+            let keep = height.saturating_sub(pin.len());
+            if keep > 0 && !(shown.contains(&pin.start) && shown.contains(&(pin.end - 1))) {
+                let start = offset(keep);
+                let mut window = lines[pin].to_vec();
+                window.extend(lines.into_iter().skip(start).take(keep));
+                return window;
+            }
         }
         let start = offset(height);
         lines.into_iter().skip(start).collect()
@@ -1627,7 +1628,10 @@ impl App {
     /// returns the selected row's line.
     /// The form's lines, the index of the selected row, and a line that must
     /// stay in view however far the form scrolls (an expedition's times).
-    fn dispatch_lines(&self, form: &DispatchForm) -> (Vec<Line<'static>>, usize, Option<usize>) {
+    fn dispatch_lines(
+        &self,
+        form: &DispatchForm,
+    ) -> (Vec<Line<'static>>, usize, Option<std::ops::Range<usize>>) {
         let t = &self.theme;
         let (origin, dest) = (form.origin, form.dest);
         let fleet = self.state.fleet_at(origin).unwrap_or_default();
@@ -1897,11 +1901,12 @@ impl App {
                         }
                     };
                     let fuel_bit = fuel_fmt(fuel);
+                    let fuel_line = lines.len();
                     if form.mission == Mission::Expedition {
                         // The fleet holds at the site, then flies the same
                         // leg back (`MissionPhase::Return` uses outbound_secs).
                         let hold = self.state.config.expedition.min_hold_secs;
-                        pinned = Some(lines.len());
+                        pinned = Some(fuel_line..fuel_line + 1);
                         lines.push(self.props(&[
                             ("out", duration(eta)),
                             ("hold", duration(hold)),
@@ -1910,6 +1915,19 @@ impl App {
                         ]));
                     } else {
                         lines.push(self.props(&[("ETA", duration(eta)), ("fuel", fuel_bit)]));
+                    }
+                    if form.mission != Mission::Recycle
+                        && let Some(cheaper) = self.state.cheaper_origin_hint(
+                            origin,
+                            dest,
+                            form.ships,
+                            form.mission.haul(form.cargo),
+                            form.speed,
+                        )
+                    {
+                        lines.push(Line::styled(format!(" {cheaper}"), t.muted()));
+                        // The hint reads with the fuel it undercuts.
+                        pinned = Some(fuel_line..lines.len());
                     }
                     if form.repeats() {
                         let back_at = if form.dest_pays_return { dest } else { origin };

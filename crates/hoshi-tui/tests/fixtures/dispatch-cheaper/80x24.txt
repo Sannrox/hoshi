@@ -1,0 +1,24 @@
+ ◆ HOSHI  │  Fleet / Star map                        RAID 2h 00m   Home (1:1:1)
+   ▦ Dispatch                                                               x
+
+    OUT 5m 29s   HOLD 1h 00m   HOME IN 1h 10m   FUEL 839885.3 ice
+──   cheaper from 1:1:9: 7137 ice, 99% less                                   ──
+ ▦  DISPATCH                                                                  c
+    to 1:1:10 from 1:1:1   WRECK
+ ─  mission  expedition                                                       ─
+
+ G  SHIPS
+ r   Small cargo          0      of 0
+ H   Large cargo          0      of 0
+ w  ▌Light fighter    -    5  +   of 5
+     Heavy fighter        0      of 0
+     Cruiser              0      of 0
+ ▌   Battleship           0      of 0                                         :
+     Recycler             0      of 0
+     Espionage probe      0      of 0
+     Explorer             0      of 0
+     Colony ship          0      of 0
+     Troop transport      0      of 0
+     speed              100%
+
+      d  detail   hjkl  cursor   enter  dispatch       0000-0000-0000-00 gen 1
