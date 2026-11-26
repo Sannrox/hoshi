@@ -9451,6 +9451,61 @@ mod tests {
         }
     }
 
+    /// Five light fighters at home, the dispatch form open on an expedition
+    /// to the first site.
+    fn app_with_expedition_form() -> App {
+        let mut state = GameState::new(1_000);
+        state.fleet.add(ShipKind::LightFighter, 5);
+        state.resources.deuterium = 1e9;
+        state.resources.water_ice = 1e9;
+        let site = state.sites[0].coord;
+        let mut app = App::new(state);
+        open_dispatch(&mut app, site, ShipKind::LightFighter, 5);
+        assert_eq!(app.dispatch.unwrap().mission, Mission::Expedition);
+        app
+    }
+
+    #[test]
+    fn expedition_dispatch_shows_out_hold_and_home_matching_the_launch() {
+        let mut app = app_with_expedition_form();
+        let text = render_text(&app, 80, 24);
+        assert_eq!(
+            text,
+            include_str!("../tests/fixtures/dispatch-expedition/80x24.txt"),
+            "{text}"
+        );
+        // #683: the narrow form scrolls to the ships but keeps the times.
+        let narrow = render_text(&app, 40, 12);
+        assert_eq!(
+            narrow,
+            include_str!("../tests/fixtures/dispatch-expedition/40x12.txt"),
+            "{narrow}"
+        );
+        let form = app.dispatch.unwrap();
+        let (eta, _, _) = app
+            .state
+            .flight_legs(
+                form.origin,
+                form.dest,
+                form.ships,
+                form.mission.haul(form.cargo),
+                form.speed,
+            )
+            .unwrap();
+        let hold = app.state.config.expedition.min_hold_secs;
+        let out = format!("OUT {}", ui::spans::duration(eta));
+        let home = format!("HOME IN {}", ui::spans::duration(2 * eta + hold));
+        assert!(text.contains(&out) && text.contains(&home), "{text}");
+        app.handle_key(KeyCode::Enter, 1_000);
+        let mission = app.state.missions[0].clone();
+        assert_eq!(mission.phase_ends_at, 1_000 + eta, "{}", app.status);
+        // Core holds `hold_secs` after arrival, then flies `outbound_secs`
+        // back, so the fleet is home at 2 * eta + hold unless the outcome
+        // rolled on arrival cuts the hold short.
+        assert_eq!(mission.outbound_secs, eta);
+        assert_eq!(mission.hold_secs, hold);
+    }
+
     fn cycle_dispatch_to(app: &mut App, mission: Mission) {
         for _ in 0..8 {
             if app.dispatch.expect("dispatch open").mission == mission {
@@ -10877,11 +10932,11 @@ mod tests {
             folded.contains(&format!("pirate weight {weight}")),
             "{text}"
         );
-        assert!(text.contains("ETA"), "{text}");
+        assert!(text.contains("OUT"), "{text}");
         assert!(folded.contains("find x1"), "no explorer: {text}");
         // #685: the hold the find rides home in.
         let cargo = app.state.cargo_capacity(ships);
-        assert!(folded.contains(&format!("hold {cargo:.0}")), "{text}");
+        assert!(folded.contains(&format!("cargo hold {cargo:.0}")), "{text}");
         assert!(
             !text.contains(&format!("found {}", rolled.as_key())),
             "{text}"
