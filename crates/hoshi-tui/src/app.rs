@@ -3492,12 +3492,12 @@ impl App {
                 let unit = self.state.config.ships.get(kind).unit_cost();
                 (
                     Resources::from_parts(unit.iron * n, unit.silicon * n, unit.deuterium * n),
-                    self.state.ship_time_secs(kind) * u64::from(count),
+                    self.state.ship_time_secs(self.selected_coord(), kind) * u64::from(count),
                 )
             }
             Err(kind) => (
                 self.state.defence_cost(kind, count),
-                self.state.defence_time_secs(kind) * u64::from(count),
+                self.state.defence_time_secs(self.selected_coord(), kind) * u64::from(count),
             ),
         })
     }
@@ -7248,7 +7248,9 @@ mod tests {
         for _ in 0..5 {
             app.handle_key(KeyCode::Char('+'), 1_000);
         }
-        let unit = app.state.defence_time_secs(DefenceKind::LightCannon);
+        let unit = app
+            .state
+            .defence_time_secs(Coord::HOME, DefenceKind::LightCannon);
         let text = render_text(&app, 140, 45);
         assert!(text.contains("×6"), "{text}");
         assert!(text.contains(&ui::spans::duration(unit * 6)), "{text}");

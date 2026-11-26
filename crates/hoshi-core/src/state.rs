@@ -2655,35 +2655,41 @@ impl GameState {
         )
     }
 
-    /// Ships queue at home. A rare shipyard-world bonus on any owned planet
-    /// speeds that shared queue.
-    pub fn ship_time_secs(&self, kind: ShipKind) -> u64 {
-        let speed = self
-            .owned_coords()
-            .into_iter()
-            .filter_map(|coord| self.rare_bonus_at(coord).map(|row| row.shipyard_speed))
-            .fold(0.0_f64, f64::max);
-        ship_duration(self.config.ships.get(kind).duration_secs(), speed)
+    /// Per-unit ship build time in `coord`'s yard (see `yard_speed_at`).
+    pub fn ship_time_secs(&self, coord: Coord, kind: ShipKind) -> u64 {
+        ship_duration(
+            self.config.ships.get(kind).duration_secs(),
+            self.yard_speed_at(coord),
+        )
     }
 
-    /// Per-unit defence build time in the shared yard, with the best rare
-    /// shipyard-world bonus.
-    pub fn defence_time_secs(&self, kind: DefenceKind) -> u64 {
-        let speed = self
-            .owned_coords()
-            .into_iter()
-            .filter_map(|coord| self.rare_bonus_at(coord).map(|row| row.shipyard_speed))
-            .fold(0.0_f64, f64::max);
-        ship_duration(self.config.defences.get(kind).duration_secs(), speed)
+    /// Per-unit defence build time in `coord`'s yard, sped up like ships.
+    pub fn defence_time_secs(&self, coord: Coord, kind: DefenceKind) -> u64 {
+        ship_duration(
+            self.config.defences.get(kind).duration_secs(),
+            self.yard_speed_at(coord),
+        )
     }
 
-    /// Duration if this world were the shipyard, including its rare speed bonus.
+    /// Speed factor of `coord`'s yard: its own shipyard level times the
+    /// best rare shipyard-world bonus on any owned planet.
+    pub fn yard_speed_at(&self, coord: Coord) -> f64 {
+        let rare = self
+            .owned_coords()
+            .into_iter()
+            .filter_map(|world| self.rare_bonus_at(world).map(|row| row.shipyard_speed))
+            .fold(0.0_f64, f64::max);
+        let yard = self.available_building_level_at(coord, BuildingKind::Shipyard);
+        (1.0 + rare).max(1.0) * self.config.shipyard_level_speed(yard).max(1.0)
+    }
+
+    /// Duration from this world's own rare speed bonus alone, before yard levels.
     pub fn ship_time_secs_on(&self, coord: Coord, kind: ShipKind) -> u64 {
         let speed = self
             .rare_bonus_at(coord)
             .map(|row| row.shipyard_speed)
             .unwrap_or(0.0);
-        ship_duration(self.config.ships.get(kind).duration_secs(), speed)
+        ship_duration(self.config.ships.get(kind).duration_secs(), 1.0 + speed)
     }
 
     pub fn fleet_slots(&self) -> u32 {
@@ -5226,7 +5232,7 @@ impl GameState {
         if job.completes_at.is_some() {
             return;
         }
-        let duration = self.yard_time_secs(job);
+        let duration = self.yard_time_secs(coord, job);
         let now = now_unix.max(self.last_tick_unix);
         if let Some(job) = self.yard_mut(coord).and_then(|yard| yard.queue.first_mut()) {
             job.started_at = Some(now);
@@ -8023,7 +8029,7 @@ impl GameState {
         let Some(job) = self.ship_queue_at(coord).and_then(<[ShipJob]>::first) else {
             return;
         };
-        let duration = self.yard_time_secs(job);
+        let duration = self.yard_time_secs(coord, job);
         let cause = self.yard_cause(coord, job);
         let ship = job.ship;
         let defence = job.defence;
@@ -8068,11 +8074,11 @@ impl GameState {
         job.completes_at = Some(done_at.saturating_add(duration));
     }
 
-    fn yard_time_secs(&self, job: &ShipJob) -> u64 {
+    fn yard_time_secs(&self, coord: Coord, job: &ShipJob) -> u64 {
         if let Some(kind) = job.defence {
-            self.defence_time_secs(kind)
+            self.defence_time_secs(coord, kind)
         } else if let Some(kind) = job.ship {
-            self.ship_time_secs(kind)
+            self.ship_time_secs(coord, kind)
         } else {
             1
         }
@@ -9399,9 +9405,9 @@ fn scale_ground(strength: u32, mult: f64) -> u32 {
     }
 }
 
-fn ship_duration(base_secs: u64, shipyard_speed: f64) -> u64 {
+fn ship_duration(base_secs: u64, speed: f64) -> u64 {
     let base = base_secs as f64;
-    (base / (1.0 + shipyard_speed).max(1.0)).ceil().max(1.0) as u64
+    (base / speed.max(1.0)).ceil().max(1.0) as u64
 }
 
 fn min_time(a: Option<u64>, b: Option<u64>) -> Option<u64> {
@@ -9620,6 +9626,7 @@ mod tests {
             max_build_queue: 5,
             robotics_speed_per_level: 1.0,
             research_lab_speed_per_level: 0.0,
+            shipyard_speed_per_level: 0.0,
             techs: TechTree::empty(),
             ships: crate::ShipCatalog::default(),
             max_ship_queue: 5,
@@ -11529,7 +11536,7 @@ modifiers = []
     fn ship_batch_completes_one_ship_at_a_time_across_an_offline_gap() {
         let mut gap = yard_state(0);
         gap.enqueue_ships(ShipKind::LightFighter, 5, 0).unwrap();
-        let unit = gap.ship_time_secs(ShipKind::LightFighter);
+        let unit = gap.ship_time_secs(Coord::HOME, ShipKind::LightFighter);
         gap.catch_up(unit * 2);
         assert_eq!(gap.fleet.get(ShipKind::LightFighter), 2);
         assert_eq!(gap.ship_queue[0].remaining, 3);
@@ -11574,6 +11581,69 @@ modifiers = []
         (state, coord)
     }
 
+    /// A yard upgraded mid-unit keeps that unit's timer; the next unit uses
+    /// the new level, and a long gap matches step-by-step ticking.
+    #[test]
+    fn a_yard_upgrade_speeds_the_next_unit_and_catch_up_matches_ticking() {
+        let run = |stepwise: bool| {
+            let (mut state, coord) = yard_with_colony(0, 1);
+            state
+                .enqueue_defence_at(coord, DefenceKind::LightCannon, 4, 0)
+                .unwrap();
+            let base = state.defence_time_secs(coord, DefenceKind::LightCannon);
+            let upgrade_at = base / 2;
+            let advance = |state: &mut GameState, from: u64, to: u64| {
+                if stepwise {
+                    for t in from + 1..=to {
+                        state.catch_up(t);
+                    }
+                } else {
+                    state.catch_up(to);
+                }
+            };
+            advance(&mut state, 0, upgrade_at);
+            state.colonies[0].buildings.shipyard = 11;
+            let fast = state.defence_time_secs(coord, DefenceKind::LightCannon);
+            assert_eq!(fast, base.div_ceil(2));
+            let end = base + 2 * fast;
+            advance(&mut state, upgrade_at, end);
+            assert_eq!(state.colonies[0].defences.get(DefenceKind::LightCannon), 3);
+            (
+                state.colonies[0].defences,
+                state.colonies[0].ship_queue.clone(),
+            )
+        };
+        assert_eq!(run(false), run(true));
+    }
+
+    #[test]
+    fn a_bigger_yard_builds_faster_and_level_one_keeps_raw_time() {
+        let (mut state, coord) = yard_with_colony(0, 7);
+        let base = state
+            .config
+            .defences
+            .get(DefenceKind::LightCannon)
+            .duration_secs();
+        let fast = (base as f64 / 1.6).ceil() as u64;
+        assert_eq!(
+            state.defence_time_secs(Coord::HOME, DefenceKind::LightCannon),
+            base
+        );
+        assert_eq!(
+            state.defence_time_secs(coord, DefenceKind::LightCannon),
+            fast
+        );
+        state
+            .enqueue_defence(DefenceKind::LightCannon, 2, 0)
+            .unwrap();
+        state
+            .enqueue_defence_at(coord, DefenceKind::LightCannon, 2, 0)
+            .unwrap();
+        state.catch_up(fast * 2);
+        assert_eq!(state.colonies[0].defences.get(DefenceKind::LightCannon), 2);
+        assert!(state.defences.get(DefenceKind::LightCannon) < 2);
+    }
+
     #[test]
     fn colony_yard_pays_from_and_delivers_into_that_colony() {
         let (mut state, coord) = yard_with_colony(0, 1);
@@ -11607,8 +11677,8 @@ modifiers = []
                 .any(|r| r.contains("queued production")),
         );
 
-        let done = state.ship_time_secs(ShipKind::LightFighter) * 2
-            + state.defence_time_secs(DefenceKind::LightCannon);
+        let done = state.ship_time_secs(Coord::HOME, ShipKind::LightFighter) * 2
+            + state.defence_time_secs(Coord::HOME, DefenceKind::LightCannon);
         state.catch_up(done);
         assert_eq!(state.colonies[0].fleet.get(ShipKind::LightFighter), 2);
         assert_eq!(state.colonies[0].defences.get(DefenceKind::LightCannon), 1);
@@ -11656,7 +11726,7 @@ modifiers = []
             state
         };
         let mut gap = start(0);
-        let unit = gap.ship_time_secs(ShipKind::LightFighter);
+        let unit = gap.ship_time_secs(Coord::HOME, ShipKind::LightFighter);
         gap.catch_up(unit * 3);
         assert_eq!(gap.fleet.get(ShipKind::LightFighter), 3);
         assert_eq!(gap.colonies[0].fleet.get(ShipKind::LightFighter), 3);
@@ -16650,7 +16720,7 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
             rare: Some("shipyard_world".into()),
             goods: BTreeMap::new(),
         });
-        let sped = world.ship_time_secs(ShipKind::LightFighter);
+        let sped = world.ship_time_secs(Coord::HOME, ShipKind::LightFighter);
         assert!(sped < base, "sped={sped} base={base}");
         assert_eq!(sped, world.ship_time_secs_on(dest, ShipKind::LightFighter));
     }

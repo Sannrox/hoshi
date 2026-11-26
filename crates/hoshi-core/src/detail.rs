@@ -477,7 +477,7 @@ impl GameState {
             costs: material_lines(self, cost),
             energy_draw: None,
             heat: None,
-            duration_secs: Some(spec.duration_secs()),
+            duration_secs: Some(self.ship_time_secs(planet, kind)),
             afford: Some(afford_eta_at(self, planet, cost)),
             deltas: vec![
                 DeltaLine {
@@ -517,7 +517,7 @@ impl GameState {
             costs: material_lines(self, cost),
             energy_draw: None,
             heat: None,
-            duration_secs: Some(spec.duration_secs()),
+            duration_secs: Some(self.defence_time_secs(planet, kind)),
             afford: Some(afford_eta_at(self, planet, cost)),
             deltas: Vec::new(),
             requirements: vec![self.shipyard_line(planet, spec.shipyard)],

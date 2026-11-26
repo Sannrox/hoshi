@@ -219,7 +219,7 @@ time_growth = 2.0
 prerequisites = []
 
 [buildings.shipyard]
-purpose = "Builds ships and defences. Needs a robotics factory."
+purpose = "Builds ships and defences, faster at each level. Needs a robotics factory."
 frames = 400.0
 electronics = 200.0
 fuel = 100.0
@@ -287,6 +287,9 @@ robotics_speed_per_level = 0.5
 # Research speed is 1 + this * (home research lab level - 1). Linear and small:
 # tech durations double per level, so deep techs stay slow. Tune by playtest.
 research_lab_speed_per_level = 0.05
+# Yard speed is 1 + this * (that planet's shipyard level - 1): a bigger yard
+# has more berths and crews, so yard 7 is x1.6 and yard 11 is x2. Tune by playtest.
+shipyard_speed_per_level = 0.1
 
 [prestige]
 # Reset is allowed with a completed wonder, or when score reaches min_score.
