@@ -239,12 +239,46 @@
   ],
   "planets": [
     {
+      "build_queue": [],
+      "buildings": {
+        "crystal_mine": 1,
+        "crystal_storage": 0,
+        "deuterium_storage": 0,
+        "deuterium_synthesizer": 0,
+        "fission_reactor": 0,
+        "fusion_plant": 0,
+        "jump_gate": 0,
+        "metal_mine": 2,
+        "metal_storage": 0,
+        "radiator": 0,
+        "research_lab": 1,
+        "robotics_factory": 0,
+        "scrubber": 0,
+        "shipyard": 0,
+        "solar_plant": 1,
+        "space_elevator": 0
+      },
       "coord": "1:1:1",
       "export": null,
+      "goods": {
+        "iron_ore": 0.5613974067459866,
+        "purified_silicon": 0.5500000000000003,
+        "silicon": 0.470797659518043,
+        "uranium_ore": 0.11348486450901356
+      },
       "helium_3_deuterium_gain": null,
       "home": true,
       "label": "Home (1:1:1)",
-      "rare": null
+      "rare": null,
+      "resources": {
+        "deuterium": 100.0,
+        "helium_3": 0.0,
+        "iron": 452.42499999999995,
+        "rare_earths": 25.751153383635817,
+        "silicon": 741.1666666666667,
+        "water_ice": 0.0
+      },
+      "ship_queue": []
     }
   ],
   "planned": [],

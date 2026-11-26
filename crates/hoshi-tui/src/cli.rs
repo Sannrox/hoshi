@@ -2811,6 +2811,50 @@ fn resources_json(r: hoshi_core::Resources) -> Value {
     })
 }
 
+/// Level of every building kind, keyed by building key.
+fn buildings_json(buildings: &hoshi_core::Buildings) -> Value {
+    BuildingKind::ALL
+        .into_iter()
+        .map(|kind| (kind.as_key().to_owned(), json!(buildings.get(kind))))
+        .collect::<serde_json::Map<_, _>>()
+        .into()
+}
+
+/// One world's construction queue, head first.
+fn build_queue_json(queue: &[hoshi_core::BuildJob]) -> Vec<Value> {
+    queue
+        .iter()
+        .enumerate()
+        .map(|(i, job)| {
+            json!({
+                "index": i,
+                "building": job.building.as_key(),
+                "kind": job.kind.as_key(),
+                "work_left": job.work_left,
+                "from_level": job.from_level,
+                "completes_at": job.completes_at,
+            })
+        })
+        .collect()
+}
+
+/// One world's shipyard queue, head first. Only the head batch has a timer.
+fn ship_queue_json(queue: &[hoshi_core::ShipJob]) -> Vec<Value> {
+    queue
+        .iter()
+        .enumerate()
+        .map(|(i, job)| {
+            json!({
+                "index": i,
+                "unit": job.kind_key(),
+                "remaining": job.remaining,
+                "started_at": job.started_at,
+                "completes_at": job.completes_at,
+            })
+        })
+        .collect()
+}
+
 fn state_value(state: &GameState, actor: Actor) -> Value {
     state_value_for(state, actor, None)
 }
@@ -2862,25 +2906,8 @@ fn state_value_for(
             "batteries_missing": losses.batteries_missing,
         }))
     });
-    let queue: Vec<Value> = state
-        .build_queue
-        .iter()
-        .enumerate()
-        .map(|(i, job)| {
-            json!({
-                "index": i,
-                "building": job.building.as_key(),
-                "kind": job.kind.as_key(),
-                "work_left": job.work_left,
-                "from_level": job.from_level,
-                "completes_at": job.completes_at,
-            })
-        })
-        .collect();
-    let mut buildings = serde_json::Map::new();
-    for kind in BuildingKind::ALL {
-        buildings.insert(kind.as_key().into(), json!(state.buildings.get(kind)));
-    }
+    let queue = build_queue_json(&state.build_queue);
+    let buildings = buildings_json(&state.buildings);
     let mut fleet = serde_json::Map::new();
     for kind in ShipKind::ALL {
         fleet.insert(kind.as_key().into(), json!(state.fleet.get(kind)));
@@ -2911,6 +2938,11 @@ fn state_value_for(
                     "home_per_hour": e.home_per_hour,
                 })),
                 "helium_3_deuterium_gain": state.helium_3_deuterium_gain_at(coord),
+                "resources": state.resources_at(coord).map(|r| resources_json(*r)),
+                "buildings": state.buildings_at(coord).map(buildings_json),
+                "build_queue": build_queue_json(state.queue_at(coord).unwrap_or_default()),
+                "ship_queue": ship_queue_json(state.ship_queue_at(coord).unwrap_or_default()),
+                "goods": state.goods_at(coord),
             })
         })
         .collect();
@@ -6571,6 +6603,72 @@ mod tests {
         let raid = &state_value(&state, Actor::Player)["raid"];
         assert_eq!(raid["target"], "1:3:5");
         assert_eq!(state.upcoming_raid().map(|raid| raid.target), Some(target));
+    }
+
+    #[test]
+    fn state_shows_a_colony_stock_buildings_queues_and_goods() {
+        let mut state = GameState::new(0);
+        let colony = hoshi_core::Coord {
+            galaxy: 1,
+            system: 3,
+            position: 5,
+        };
+        let job = hoshi_core::BuildJob {
+            kind: hoshi_core::BuildJobKind::Build,
+            work_left: 0.0,
+            building: BuildingKind::MetalMine,
+            from_level: 2,
+            paid: hoshi_core::Resources::ZERO,
+            credits: 0.0,
+            started_at: Some(10),
+            completes_at: Some(90),
+        };
+        let ships = hoshi_core::ShipJob {
+            ship: Some(ShipKind::SmallCargo),
+            defence: None,
+            remaining: 3,
+            unit_paid: hoshi_core::Resources::ZERO,
+            credits: 0.0,
+            started_at: Some(10),
+            completes_at: Some(70),
+        };
+        state.colonies.push(hoshi_core::Colony {
+            coord: colony,
+            kind: hoshi_core::PlanetType::Rocky,
+            size: 3,
+            resources: hoshi_core::Resources {
+                iron: 40.0,
+                ..hoshi_core::Resources::ZERO
+            },
+            buildings: hoshi_core::Buildings {
+                metal_mine: 2,
+                shipyard: 1,
+                ..hoshi_core::Buildings::default()
+            },
+            fleet: Fleet::default(),
+            defences: hoshi_core::DefenceGrid::default(),
+            build_queue: vec![job],
+            ship_queue: vec![ships],
+            rare: None,
+            goods: [("frames".to_owned(), 4.0)].into(),
+        });
+        let value = state_value(&state, Actor::Player);
+        let world = &value["planets"][1];
+        assert_eq!(world["coord"], colony.to_string());
+        assert_eq!(world["resources"]["iron"], json!(40.0));
+        assert_eq!(world["buildings"]["metal_mine"], 2);
+        assert_eq!(world["buildings"]["shipyard"], 1);
+        assert_eq!(world["build_queue"][0]["building"], "metal_mine");
+        assert_eq!(world["build_queue"][0]["completes_at"], 90);
+        assert_eq!(
+            world["ship_queue"][0]["unit"],
+            ShipKind::SmallCargo.as_key()
+        );
+        assert_eq!(world["ship_queue"][0]["remaining"], 3);
+        assert_eq!(world["goods"]["frames"], json!(4.0));
+        // The home row repeats what the top-level home fields already say.
+        assert_eq!(value["planets"][0]["buildings"], value["buildings"]);
+        assert_eq!(value["planets"][0]["resources"], value["resources"]);
     }
 
     #[test]

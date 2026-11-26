@@ -83,7 +83,41 @@
       "type": "array",
       "description": "Provenance chain from `hoshi intel provenance`. Source, time, age, confidence and the player-visible value; never hidden truth."
     },
-    "planets": { "type": "array" },
+    "planets": {
+      "type": "array",
+      "description": "Every owned world, home first. Each row carries the world's own stock, buildings, queues and goods, so CLI play needs neither the TUI nor the save. The top-level home fields keep their shape.",
+      "items": {
+        "type": "object",
+        "required": ["coord", "label", "home", "resources", "buildings", "build_queue", "ship_queue", "goods"],
+        "properties": {
+          "coord": { "type": "string" },
+          "label": { "type": "string" },
+          "home": { "type": "boolean" },
+          "rare": { "type": ["string", "null"] },
+          "export": { "type": ["object", "null"] },
+          "helium_3_deuterium_gain": { "type": ["number", "null"] },
+          "resources": { "type": "object", "description": "This world's stock, keyed like the top-level resources." },
+          "buildings": { "type": "object", "description": "Level of every building kind on this world." },
+          "build_queue": { "type": "array", "description": "This world's construction queue, head first, shaped like the top-level build_queue." },
+          "ship_queue": {
+            "type": "array",
+            "description": "This world's shipyard queue, head first. Only the head batch has a timer.",
+            "items": {
+              "type": "object",
+              "required": ["index", "unit", "remaining"],
+              "properties": {
+                "index": { "type": "integer", "minimum": 0 },
+                "unit": { "type": "string", "description": "Ship or defence key." },
+                "remaining": { "type": "integer", "minimum": 0 },
+                "started_at": { "type": ["integer", "null"] },
+                "completes_at": { "type": ["integer", "null"] }
+              }
+            }
+          },
+          "goods": { "type": "object", "description": "Intermediate goods stocked on this world, keyed by good id." }
+        }
+      }
+    },
     "events": { "type": "array" },
     "snapshot": {
       "type": ["object", "null"],
