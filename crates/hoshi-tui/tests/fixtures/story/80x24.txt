@@ -1,0 +1,24 @@
+ ◆ HOSHI  │  Colony / Research                             RAID 2h 00m   Empire
+  Fe       │ Si       │ D        │ REE      │ Fleet    │ Energy   │ Poll
+  500      │ 500      │ 0        │ 0        │ 0        │ +2       │ 9
+  +33/h    │ +22/h    │ 0/h      │ +3/h     │ def 0    │ heat 22/8│ 9/50
+────────────────────────────────────────────────────────────────────────────────
+ ▦ Colony   Empire · research idle                                        ✕ esc
+  Buildings   Production   Worlds   Maintenance   Research   Wonder
+ ─ ▦ Comet ice   story                                                      x ─
+
+    A dirty snowball crosses the inner system. Scooping it is free water
+    ice. Ignoring it costs nothing.
+
+     1  Scoop the ice · +220 water ice at Home (1:1:1)
+     2  Let it pass · no change  default if ignored
+
+    1-9  chooses; ignored too long uses the default
+  QUEUE 0/5
+  TIER 1
+ ▌  Computer Technology           —   400   600   4m 00s   NEED RESEARCH LAB 1
+    Energy Technology             —   800   400   4m 00s   NEED RESEARCH LAB 1
+  TIER 2
+    Deep-core mining            400   200     —   3m 00s   NEED RESEARCH LAB 1
+                                                                    ⏎ research
+      d  detail   h/l  branch   j/k  select            0000-0000-0000-00 gen 1

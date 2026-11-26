@@ -1,0 +1,24 @@
+ ◆ HOSHI  │  Records / History                       RAID 2h 00m   Home (1:1:1)
+  Fe       │ Si       │ D        │ REE      │ H2O      │ He3      │ Energy
+  500      │ 500      │ 0        │ 0        │ 220      │ 0        │ +2
+  +33/h    │ +22/h    │ 0/h      │ +3/h     │ 0/h      │ 0/h      │ heat 22/80
+────────────────────────────────────────────────────────────────────────────────
+ ▦ Records   Home (1:1:1)                                                 ✕ esc
+  History   Scenarios   Legacy
+ ─━━━━━━━──────────────────────────────────────────────────────────────────────
+
+ TYPE all   ACTOR all   RETAINED 1
+
+     ID          AGE  TYPE     ACTOR   EVENT
+ ▌   #1       0s ago   OTHER   player  story choice  Comet ice, 1:1:1  Scoop th
+
+
+
+
+
+
+
+
+ story choice Comet ice, 1:1:1 Scoop the ice · +220 water ice at Home (1:1:1)
+ story: Comet ice → Scoop the ice · +220 water ice at Home (1:1:1)   ⏎ lineage
+      j/k  select   enter  lineage   r  glance         0000-0000-0000-00 gen 1

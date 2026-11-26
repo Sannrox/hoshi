@@ -91,6 +91,72 @@ pub struct StoryChoice {
     pub sets: Vec<String>,
 }
 
+/// One readable list of what a story choice changes, as `+220 water ice
+/// at Home (1:1:1), deuterium price -12%`. Resource and ship deltas name
+/// `world`, where they land; `extras` (prices, raid, standing) follow.
+/// Nothing at all reads `no change`. The popup feeds it a choice's listed
+/// amounts and the event log the amounts that were actually applied.
+pub fn effects_text(
+    resources: &[(crate::ResourceKind, f64)],
+    ships: &[(ShipKind, i64)],
+    world: &str,
+    extras: Vec<String>,
+) -> String {
+    let local: Vec<String> = resources
+        .iter()
+        .filter(|(_, delta)| delta.round() != 0.0)
+        .map(|(kind, delta)| format!("{delta:+.0} {}", kind.label()))
+        .chain(
+            ships
+                .iter()
+                .filter(|(_, delta)| *delta != 0)
+                .map(|(kind, delta)| format!("{delta:+} {kind}")),
+        )
+        .collect();
+    let mut parts = Vec::new();
+    if !local.is_empty() {
+        parts.push(format!("{} at {world}", local.join(", ")));
+    }
+    parts.extend(extras);
+    if parts.is_empty() {
+        "no change".into()
+    } else {
+        parts.join(", ")
+    }
+}
+
+impl StoryChoice {
+    /// The listed resource deltas, in stock order.
+    pub fn resource_deltas(&self) -> [(crate::ResourceKind, f64); 4] {
+        use crate::ResourceKind as R;
+        [
+            (R::Iron, self.iron),
+            (R::Silicon, self.silicon),
+            (R::WaterIce, self.water_ice),
+            (R::Deuterium, self.deuterium),
+        ]
+    }
+
+    /// The listed market price moves as `(kind, relative change)`.
+    pub fn price_shocks(&self) -> [(crate::ResourceKind, f64); 3] {
+        use crate::ResourceKind as R;
+        [
+            (R::Iron, self.metal_price),
+            (R::Silicon, self.crystal_price),
+            (R::Deuterium, self.deuterium_price),
+        ]
+    }
+}
+
+/// `deuterium price -12%` for each non-zero price move.
+pub fn price_texts(shocks: &[(crate::ResourceKind, f64)]) -> Vec<String> {
+    shocks
+        .iter()
+        .filter(|(_, rel)| *rel != 0.0)
+        .map(|(kind, rel)| format!("{} price {:+.0}%", kind.label(), rel * 100.0))
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct StoryEvent {
     pub id: String,

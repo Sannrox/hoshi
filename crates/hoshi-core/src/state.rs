@@ -7888,22 +7888,32 @@ impl GameState {
             .ok_or_else(|| crate::StoryError::UnknownChoice(choice_id.to_string()))?
             .clone();
         let title = event.title.clone();
-        self.resources.iron = (self.resources.iron + choice.iron).max(0.0);
-        self.resources.silicon = (self.resources.silicon + choice.silicon).max(0.0);
-        self.resources.water_ice = (self.resources.water_ice + choice.water_ice).max(0.0);
-        self.resources.deuterium = (self.resources.deuterium + choice.deuterium).max(0.0);
-        for (kind, delta) in choice.ships {
+        // A loss stops at zero stock, so the applied amounts are read back.
+        let mut resources = choice.resource_deltas();
+        for (kind, delta) in &mut resources {
+            let before = self.resources.get(*kind);
+            let after = (before + *delta).max(0.0);
+            self.resources.set(*kind, after);
+            *delta = after - before;
+        }
+        let mut ships = Vec::new();
+        for &(kind, delta) in &choice.ships {
+            let before = i64::from(self.fleet.get(kind));
             if delta >= 0 {
                 self.fleet.add(kind, delta as u32);
             } else {
                 self.fleet.saturating_sub(kind, delta.unsigned_abs());
             }
+            ships.push((kind, i64::from(self.fleet.get(kind)) - before));
         }
+        let mut extras = Vec::new();
         if choice.schedule_raid && self.config.raid.enabled && self.raid_interval_secs(at).is_some()
         {
             self.bring_event_raid(at.saturating_add(60));
+            extras.push("draws a raid".to_string());
         }
         if self.config.market.enabled {
+            extras.extend(crate::story::price_texts(&choice.price_shocks()));
             self.market
                 .shock(ResourceKind::Iron, choice.metal_price, &self.config.market);
             self.market.shock(
@@ -7925,17 +7935,53 @@ impl GameState {
         }
         self.last_story_at = at;
         self.story_pending = None;
-        self.push_event(at, format!("story: {title} → {}", choice.label));
+        // Every effect lands at home. Standing changes log their own line.
+        let world = self.world_label(self.home);
+        let effects = crate::story::effects_text(&resources, &ships, &world, extras);
+        let outcome = format!("{} · {effects}", choice.label);
+        self.push_event(at, format!("story: {title} → {outcome}"));
         self.record_history(crate::HistoryDraft {
             at,
             kind: crate::HistoryKind::Other,
             actor: actor.into(),
             action: "story_choice".into(),
-            objects: vec![title.clone()],
-            outcome: choice.label.clone(),
+            // Title first: the bridge timeline reads objects[0] as the title.
+            objects: vec![title.clone(), self.home.to_string()],
+            outcome,
             ..crate::HistoryDraft::default()
         });
         Ok(())
+    }
+
+    /// What `choice` will change, before it is picked: its listed amounts
+    /// at home, the price moves, a possible raid and faction standing.
+    pub fn story_choice_preview(&self, choice: &crate::StoryChoice) -> String {
+        let ships: Vec<(ShipKind, i64)> = choice
+            .ships
+            .iter()
+            .map(|&(kind, delta)| (kind, i64::from(delta)))
+            .collect();
+        let mut extras = Vec::new();
+        if self.config.market.enabled {
+            extras.extend(crate::story::price_texts(&choice.price_shocks()));
+        }
+        if choice.schedule_raid && self.config.raid.enabled {
+            extras.push("may draw a raid".to_string());
+        }
+        for (faction, delta) in &choice.standing {
+            let name = self
+                .config
+                .diplomacy
+                .get(faction)
+                .map_or(faction.as_str(), |spec| spec.name.as_str());
+            extras.push(format!("{name} {delta:+.0}"));
+        }
+        crate::story::effects_text(
+            &choice.resource_deltas(),
+            &ships,
+            &self.world_label(self.home),
+            extras,
+        )
     }
 
     /// Deliver the next unit of `coord`'s yard head into that planet.
@@ -12616,8 +12662,14 @@ modifiers = []
         let story = rows(&state, "story_choice");
         assert!(story.iter().any(|e| e.actor == "simulation"), "{story:?}");
         let chosen = story.last().unwrap();
-        assert_eq!(chosen.objects, std::slice::from_ref(&event.title));
-        assert_eq!(chosen.outcome, choice.label);
+        assert_eq!(
+            chosen.objects,
+            [event.title.clone(), state.home.to_string()]
+        );
+        assert!(
+            chosen.outcome.starts_with(&format!("{} · ", choice.label)),
+            "{chosen:?}"
+        );
         assert_eq!(chosen.actor, "player");
     }
 
@@ -16930,7 +16982,7 @@ label = "Pass"
             state
                 .events
                 .iter()
-                .any(|e| e.text == "story: Alpha → Leave it"),
+                .any(|e| e.text == "story: Alpha → Leave it · no change"),
             "{:?}",
             state.events
         );
@@ -16963,10 +17015,63 @@ label = "Pass"
             state
                 .events
                 .iter()
-                .any(|e| e.text == "story: Alpha → Take it"),
+                .any(|e| e.text == "story: Alpha → Take it · +40 iron at Home (1:1:1)"),
             "{:?}",
             state.events
         );
+    }
+
+    #[test]
+    fn a_story_cost_stops_at_zero_and_logs_what_it_took() {
+        let mut state = GameState::with_config(0, story_config());
+        state.config.market.enabled = false;
+        state.config.story = crate::StoryCatalog::parse(
+            r#"
+first_delay_secs = 10
+cooldown_secs = 50
+[[event]]
+id = "toll"
+title = "Toll"
+text = "Pay up."
+weight = 1
+timeout_secs = 20
+timeout_choice = "pay"
+[[event.choices]]
+id = "pay"
+label = "Pay"
+metal = -500.0
+"#,
+        )
+        .unwrap();
+        state.resources.iron = 120.0;
+        state.story_pending = Some(crate::PendingStory {
+            event_id: "toll".into(),
+            offered_at: 0,
+            timeout_at: 20,
+        });
+        let choice = state.config.story.get("toll").unwrap().choices[0].clone();
+        assert_eq!(
+            state.story_choice_preview(&choice),
+            "-500 iron at Home (1:1:1)"
+        );
+        state.choose_story("pay", 0).unwrap();
+        close(state.resources.iron, 0.0);
+        assert_eq!(
+            state.events.last().map(|e| e.text.as_str()),
+            Some("story: Toll → Pay · -120 iron at Home (1:1:1)")
+        );
+    }
+
+    #[test]
+    fn a_story_preview_names_prices_and_factions() {
+        let mut state = GameState::with_config(0, story_config());
+        state.config.market.enabled = true;
+        let event = state.config.story.get("alpha").unwrap();
+        let preview = state.story_choice_preview(&event.choices[0]);
+        assert!(preview.starts_with("+40 iron at Home (1:1:1)"), "{preview}");
+        assert!(preview.contains("deuterium price -12%"), "{preview}");
+        assert!(preview.contains("traders +6"), "{preview}");
+        assert_eq!(state.story_choice_preview(&event.choices[1]), "no change");
     }
 
     fn arc_game() -> GameState {
@@ -16995,7 +17100,7 @@ label = "Pass"
             state
                 .events
                 .iter()
-                .any(|event| event.text == "story: Hail on the lane → Answer"),
+                .any(|event| event.text == "story: Hail on the lane → Answer · no change"),
             "{:?}",
             state.events
         );
