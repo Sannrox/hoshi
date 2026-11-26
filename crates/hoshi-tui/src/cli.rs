@@ -121,7 +121,7 @@ crate::help::catalog_commands! {
     Cancel {
         item: CancelItem,
     },
-    #[help("fleet send", "Dispatch ships on a mission. A transport may take resource=amount cargo and --dest-pays-return so the owned destination pays the empty return at launch. A colonize may take cargo up to the colony ship's hold; it lands as the new colony's starter stock. --speed PERCENT (10 to 100, default 100) trades time for fuel: a slower send flies a cheaper transfer and takes longer. The reply reports `fuel_water_ice` / `fuel_deuterium` plus `fuel_out_*` / `fuel_back_*` and `fuel_out_payer` / `fuel_back_payer`.", "fleet send FROM TO MISSION [RESOURCE=AMOUNT...] SHIP:COUNT... [--dest-pays-return] [--speed PERCENT]", "fleet send 1:1:10 home transport water_ice=500 small_cargo:1 --speed 10")]
+    #[help("fleet send", "Dispatch ships on a mission. A transport may take resource=amount cargo and --dest-pays-return so the owned destination pays the empty return at launch. A colonize may take cargo up to the colony ship's hold; it lands as the new colony's starter stock. --speed PERCENT (10 to 100, default 100) trades time for fuel: a slower send flies a cheaper transfer and takes longer. The reply reports `fuel_water_ice` / `fuel_deuterium` plus `fuel_out_*` / `fuel_back_*` and `fuel_out_payer` / `fuel_back_payer`. When another owned world with the same ships parked would pay at least 25% less fuel for the same send, the reply's `hint` (or the refusal) names it.", "fleet send FROM TO MISSION [RESOURCE=AMOUNT...] SHIP:COUNT... [--dest-pays-return] [--speed PERCENT]", "fleet send 1:1:10 home transport water_ice=500 small_cargo:1 --speed 10")]
     FleetSend {
         from: Coord,
         to: Coord,
@@ -1358,80 +1358,104 @@ fn apply(
             let speed = *speed;
             let before = mission_ids(state);
             let mut return_payer = hoshi_core::ReturnPayer::Origin;
-            match mission {
-                MissionKind::Transport => {
-                    let cargo = parse_cargo(cargo)?;
-                    if cargo.total() <= 0.0 {
-                        return Err(CliError::Invalid("transport needs cargo".into()));
+            // Read before launch: the send moves the ships it compares.
+            let haul = match mission {
+                MissionKind::Transport => hoshi_core::Haul::transport(parse_cargo(cargo)?),
+                MissionKind::Colonize => hoshi_core::Haul::colony(parse_cargo(cargo)?),
+                _ => hoshi_core::Haul::empty_round_trip(),
+            };
+            let cheaper = state.cheaper_origin_hint(*from, *to, *ships, haul, speed);
+            let launched = (|| -> Result<(), CliError> {
+                match mission {
+                    MissionKind::Transport => {
+                        let cargo = parse_cargo(cargo)?;
+                        if cargo.total() <= 0.0 {
+                            return Err(CliError::Invalid("transport needs cargo".into()));
+                        }
+                        return_payer = if *dest_pays_return {
+                            hoshi_core::ReturnPayer::Destination
+                        } else {
+                            hoshi_core::ReturnPayer::Origin
+                        };
+                        let _ = state
+                            .launch_transport_paying(
+                                *from,
+                                *to,
+                                *ships,
+                                cargo,
+                                speed,
+                                now,
+                                return_payer,
+                            )
+                            .map_err(|e| CliError::Refused(e.to_string()))?;
                     }
-                    return_payer = if *dest_pays_return {
-                        hoshi_core::ReturnPayer::Destination
-                    } else {
-                        hoshi_core::ReturnPayer::Origin
-                    };
-                    let _ = state
-                        .launch_transport_paying(
-                            *from,
-                            *to,
-                            *ships,
-                            cargo,
-                            speed,
+                    MissionKind::Attack => {
+                        let _ = state
+                            .launch_attack(*from, *ships, *to, speed, now)
+                            .map_err(|e| CliError::Refused(e.to_string()))?;
+                    }
+                    MissionKind::Invade => {
+                        governed(
+                            state,
+                            Intent::Invade {
+                                origin: Some(*from),
+                                ships: *ships,
+                                dest: *to,
+                                speed_percent: speed,
+                            },
                             now,
-                            return_payer,
-                        )
-                        .map_err(|e| CliError::Refused(e.to_string()))?;
-                }
-                MissionKind::Attack => {
-                    let _ = state
-                        .launch_attack(*from, *ships, *to, speed, now)
-                        .map_err(|e| CliError::Refused(e.to_string()))?;
-                }
-                MissionKind::Invade => {
-                    governed(
-                        state,
-                        Intent::Invade {
-                            origin: Some(*from),
-                            ships: *ships,
-                            dest: *to,
-                            speed_percent: speed,
-                        },
-                        now,
-                    )?;
-                }
-                MissionKind::Colonize => {
-                    if ships.get(ShipKind::ColonyShip) != 1 || ships.total() != 1 {
-                        return Err(CliError::Invalid(
-                            "colonize needs exactly colony_ship:1".into(),
-                        ));
+                        )?;
                     }
-                    governed(
-                        state,
-                        Intent::Colonize {
-                            origin: Some(*from),
-                            dest: *to,
-                            cargo: parse_cargo(cargo)?,
-                            speed_percent: speed,
-                        },
-                        now,
-                    )?;
-                }
-                MissionKind::Expedition => {
-                    let dest = state.expedition_dest();
-                    if *to != dest {
-                        return Err(CliError::Invalid(format!("expedition dest must be {dest}")));
+                    MissionKind::Colonize => {
+                        if ships.get(ShipKind::ColonyShip) != 1 || ships.total() != 1 {
+                            return Err(CliError::Invalid(
+                                "colonize needs exactly colony_ship:1".into(),
+                            ));
+                        }
+                        governed(
+                            state,
+                            Intent::Colonize {
+                                origin: Some(*from),
+                                dest: *to,
+                                cargo: parse_cargo(cargo)?,
+                                speed_percent: speed,
+                            },
+                            now,
+                        )?;
                     }
-                    let hold = state.config.expedition.min_hold_secs;
-                    let _ = state
-                        .launch_expedition(*from, *ships, hold, speed, now)
-                        .map_err(|e| CliError::Refused(e.to_string()))?;
+                    MissionKind::Expedition => {
+                        let dest = state.expedition_dest();
+                        if *to != dest {
+                            return Err(CliError::Invalid(format!(
+                                "expedition dest must be {dest}"
+                            )));
+                        }
+                        let hold = state.config.expedition.min_hold_secs;
+                        let _ = state
+                            .launch_expedition(*from, *ships, hold, speed, now)
+                            .map_err(|e| CliError::Refused(e.to_string()))?;
+                    }
+                    MissionKind::Spy => {
+                        let _ = state
+                            .launch_spy(*from, *ships, *to, speed, now)
+                            .map_err(|e| CliError::Refused(e.to_string()))?;
+                    }
                 }
-                MissionKind::Spy => {
-                    let _ = state
-                        .launch_spy(*from, *ships, *to, speed, now)
-                        .map_err(|e| CliError::Refused(e.to_string()))?;
+                Ok(())
+            })();
+            match (launched, cheaper) {
+                (Err(CliError::Refused(why)), Some(hint)) => {
+                    Err(CliError::Refused(format!("{why}; {hint}")))
+                }
+                (Err(e), _) => Err(e),
+                (Ok(()), hint) => {
+                    let mut value = ok_launched(state, &before, "fleet launched", return_payer);
+                    if let Some(hint) = hint {
+                        value["hint"] = json!(hint);
+                    }
+                    Ok(value)
                 }
             }
-            Ok(ok_launched(state, &before, "fleet launched", return_payer))
         }
         Command::Tick { advance } => {
             if !state.deterministic {
@@ -7074,6 +7098,67 @@ mod tests {
         );
         let home_ice = value["resources"]["water_ice"].as_f64().unwrap();
         assert!(home_ice < 50_000.0, "{home_ice}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #672: `fleet send` names an owned world that would launch the same
+    /// ships for far less fuel, on the reply and on a refusal.
+    #[test]
+    fn fleet_send_names_a_cheaper_owned_world() {
+        let dir = unique_save("send-cheaper").with_extension("d");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut state = GameState::new(0);
+        state.deterministic = true;
+        state.fleet.add(ShipKind::LightFighter, 5);
+        let mut parked = Fleet::default();
+        parked.add(ShipKind::LightFighter, 5);
+        state.colonies.push(hoshi_core::Colony {
+            coord: hoshi_core::Coord {
+                galaxy: 1,
+                system: 1,
+                position: 9,
+            },
+            kind: hoshi_core::PlanetType::Ice,
+            size: 100,
+            resources: hoshi_core::Resources::ZERO,
+            buildings: hoshi_core::Buildings::default(),
+            fleet: parked,
+            defences: hoshi_core::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            rare: None,
+            goods: std::collections::BTreeMap::new(),
+        });
+        let dest = state.expedition_dest().to_string();
+        let send = |name: &str, ice: f64| {
+            let mut state = state.clone();
+            state.resources.water_ice = ice;
+            let save = dir.join(name);
+            let mut conn = open_save(&save).unwrap();
+            save_state(&mut conn, &state).unwrap();
+            drop(conn);
+            run_on(
+                &save,
+                &[
+                    "fleet",
+                    "send",
+                    "home",
+                    &dest,
+                    "expedition",
+                    "light_fighter:5",
+                ],
+            )
+        };
+        let (value, exit) = send("paid.sqlite", 1e9);
+        assert_eq!(exit, EXIT_OK, "{value}");
+        let hint = value["hint"].as_str().unwrap_or_default();
+        assert!(hint.starts_with("cheaper from 1:1:9: "), "{value}");
+        let (value, exit) = send("short.sqlite", 0.0);
+        assert_ne!(exit, EXIT_OK, "{value}");
+        assert!(
+            value.to_string().contains("cheaper from 1:1:9: "),
+            "{value}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

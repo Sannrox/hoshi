@@ -972,6 +972,59 @@ impl GameState {
         Some(text)
     }
 
+    /// Another owned world with `ships` parked that would launch the same
+    /// mission to `dest` at `speed_percent` for at least a quarter less
+    /// fuel, named with its bill: "cheaper from Ice (1:1:9): 797 ice, 64%
+    /// less". `None` when `origin` is cheapest or no other world holds the
+    /// ships. Used by the dispatch preview and the `fleet send` reply.
+    pub fn cheaper_origin_hint(
+        &self,
+        origin: Coord,
+        dest: Coord,
+        ships: Fleet,
+        haul: crate::Haul,
+        speed_percent: u8,
+    ) -> Option<String> {
+        // A smaller saving is noise next to the wait for ships to move.
+        const MIN_SAVING: f64 = 0.25;
+        let bill = |from: Coord| {
+            self.flight_legs(from, dest, ships, haul, speed_percent)
+                .ok()
+                .map(|(_, out, back)| out.plus(back))
+        };
+        let here = bill(origin)?.total();
+        if here <= 0.0 {
+            return None;
+        }
+        let (world, fuel) = self
+            .owned_coords()
+            .into_iter()
+            .filter(|&world| world != origin && world != dest)
+            .filter(|&world| {
+                self.fleet_at(world).is_some_and(|parked| {
+                    ShipKind::ALL
+                        .iter()
+                        .all(|&kind| parked.get(kind) >= ships.get(kind))
+                })
+            })
+            .filter_map(|world| bill(world).map(|fuel| (world, fuel)))
+            .min_by(|a, b| a.1.total().total_cmp(&b.1.total()))?;
+        let saving = 1.0 - fuel.total() / here;
+        if saving < MIN_SAVING {
+            return None;
+        }
+        let mut text = format!(
+            "cheaper from {}: {:.0} ice",
+            self.world_label(world),
+            fuel.water_ice
+        );
+        if fuel.deuterium > 1e-9 {
+            text.push_str(&format!(" + {:.0} D", fuel.deuterium));
+        }
+        text.push_str(&format!(", {:.0}% less", saving * 100.0));
+        Some(text)
+    }
+
     /// An unresearched tech that refits a hull in `ships` now flying `drive`
     /// onto a drive with a higher base exhaust velocity.
     fn refit_off_drive(&self, ships: Fleet, drive: &str) -> Option<&crate::TechSpec> {
@@ -2216,6 +2269,70 @@ mod tests {
                 state.last_tick_unix,
             )
             .expect("vehicle can fly again from home");
+    }
+
+    /// Home at 1:1:1 and an ice colony at 1:1:9, each with one Small Cargo.
+    fn two_bases() -> (GameState, Coord, Fleet) {
+        let mut state = GameState::new(0);
+        state.fleet.add(ShipKind::SmallCargo, 1);
+        let ice = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 9,
+        };
+        let mut fleet = Fleet::default();
+        fleet.add(ShipKind::SmallCargo, 1);
+        state.colonies.push(crate::Colony {
+            coord: ice,
+            kind: crate::PlanetType::Ice,
+            size: 8,
+            rare: None,
+            resources: Resources::ZERO,
+            buildings: crate::Buildings::default(),
+            fleet,
+            defences: crate::DefenceGrid::default(),
+            build_queue: Vec::new(),
+            ship_queue: Vec::new(),
+            goods: Default::default(),
+        });
+        (state, ice, fleet)
+    }
+
+    #[test]
+    fn an_outer_send_from_home_names_the_ice_colony_as_cheaper() {
+        let (state, ice, ships) = two_bases();
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 16,
+        };
+        let haul = crate::Haul::empty_round_trip();
+        let hint = state
+            .cheaper_origin_hint(Coord::HOME, dest, ships, haul, 100)
+            .expect("the ice colony pays less");
+        assert!(
+            hint.starts_with(&format!("cheaper from {}: ", state.world_label(ice))),
+            "{hint}"
+        );
+        assert!(hint.ends_with("% less"), "{hint}");
+        // From the colony itself home is no cheaper.
+        assert_eq!(state.cheaper_origin_hint(ice, dest, ships, haul, 100), None);
+    }
+
+    #[test]
+    fn no_cheaper_origin_without_the_ships_parked_there() {
+        let (mut state, _, ships) = two_bases();
+        state.colonies[0].fleet = Fleet::default();
+        let haul = crate::Haul::empty_round_trip();
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 16,
+        };
+        assert_eq!(
+            state.cheaper_origin_hint(Coord::HOME, dest, ships, haul, 100),
+            None
+        );
     }
 
     fn haul_ready(dest: Coord) -> (GameState, Fleet, Resources) {
