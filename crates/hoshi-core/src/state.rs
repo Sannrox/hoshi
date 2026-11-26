@@ -4705,8 +4705,20 @@ impl GameState {
         }
         let old_speed = self.research_speed();
         self.prestige.currency -= spec.cost;
+        let cache = Resources::from_parts(
+            spec.starting_metal,
+            spec.starting_crystal,
+            spec.starting_deuterium,
+        );
         *self.prestige.owned.entry(spec.id).or_insert(0) += 1;
         self.rescale_research(self.last_tick_unix, old_speed, self.research_speed());
+        // A starting cache also pays out now, so a mid-run purchase is not
+        // wasted until the next reset. Later runs still start with it.
+        if cargo_has_mass(cache) {
+            self.settle_ledger(Term::Transfer);
+            self.credit_at(self.home, cache);
+            self.settle_ledger(Term::Other);
+        }
         Ok(())
     }
 
@@ -16885,6 +16897,42 @@ modifiers = [{ kind = "espionage", per_level = 1.0 }]
             with_bonus > plain.production_per_hour(ResourceKind::Iron),
             "bonus {with_bonus} plain {}",
             plain.production_per_hour(ResourceKind::Iron)
+        );
+    }
+
+    #[test]
+    fn a_starter_cache_pays_out_now_and_again_at_the_next_start() {
+        let mut state = GameState::with_config(0, prestige_test_config());
+        let spec = state
+            .config
+            .prestige
+            .bonus("starter_cache")
+            .unwrap()
+            .clone();
+        let cache = Resources::from_parts(
+            spec.starting_metal,
+            spec.starting_crystal,
+            spec.starting_deuterium,
+        );
+        state.prestige.currency = spec.cost * 2;
+        let before = state.resources;
+        state.buy_prestige_bonus("starter_cache", 0).unwrap();
+        state.buy_prestige_bonus("starter_cache", 0).unwrap();
+        for kind in [
+            ResourceKind::Iron,
+            ResourceKind::Silicon,
+            ResourceKind::Deuterium,
+        ] {
+            close(
+                state.resources.get(kind),
+                before.get(kind) + 2.0 * cache.get(kind),
+            );
+        }
+        state.completed_wonders.push("observatory".into());
+        state.prestige_reset(20).unwrap();
+        close(
+            state.resources.iron,
+            state.config.starting_resources.iron + 2.0 * cache.iron,
         );
     }
 
