@@ -1679,9 +1679,31 @@ impl App {
                 }
                 spans
             }),
-            Line::default(),
-            section(t, "ships"),
         ];
+        if form.mission == Mission::Jump && !form.ships.is_empty() {
+            // Same checks as the confirm, read before anything moves.
+            let now = self.state.last_tick_unix;
+            match self
+                .state
+                .check_jump(origin, dest, form.ships, form.cargo, now)
+            {
+                Ok(()) => {
+                    let cool = self.state.config.moons.jump_cooldown_secs;
+                    lines.push(self.props(&[
+                        ("jump", "now".to_string()),
+                        ("fuel", "0".to_string()),
+                        ("both gates cool", duration(cool)),
+                    ]));
+                }
+                Err(e) => lines.extend(callout_lines(
+                    t,
+                    Intent::Danger,
+                    &super::jump_refusal(&e, now),
+                    "",
+                )),
+            }
+        }
+        lines.extend([Line::default(), section(t, "ships")]);
         let w = ShipKind::ALL
             .iter()
             .map(|k| humanize(&k.to_string()).len())
@@ -1880,7 +1902,7 @@ impl App {
                 "pick ships with +/-",
                 "j/k moves between ship types.",
             ));
-        } else {
+        } else if form.mission != Mission::Jump {
             let flight = if form.mission == Mission::Recycle {
                 self.state
                     .recycle_flight(origin, form.ships, dest, form.speed)
@@ -2050,7 +2072,10 @@ impl App {
         }
         lines.push(Line::default());
         // Goods are sent; a colony ship launches, starter cargo or not.
-        let mut keys = if matches!(form.mission, Mission::Transport | Mission::Station) {
+        let mut keys = if matches!(
+            form.mission,
+            Mission::Transport | Mission::Station | Mission::Jump
+        ) {
             vec![keycap(t, "⏎"), Span::styled(" send  ", t.muted())]
         } else {
             vec![keycap(t, "⏎"), Span::styled(" launch  ", t.muted())]
