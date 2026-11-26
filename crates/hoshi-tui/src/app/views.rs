@@ -1577,6 +1577,22 @@ impl App {
         ]
     }
 
+    /// The `launch_colony` slot check, shown before launch. Colony ships in
+    /// flight count, so the line matches what launch would refuse.
+    fn colony_slot_requirement(&self) -> hoshi_core::RequirementLine {
+        let used = self.state.colony_slots_used();
+        let cap = self.state.colony_cap();
+        let text = if used < cap {
+            format!("free colony slot ({used}/{cap})")
+        } else {
+            format!("free colony slot ({used}/{cap}): research Colonization")
+        };
+        hoshi_core::RequirementLine {
+            text,
+            met: used < cap,
+        }
+    }
+
     /// Troop strength versus garrison, only when a delivered spy report has it.
     fn invasion_troop_preview(&self, form: &DispatchForm) -> Option<String> {
         let garrison = self.state.latest_report(form.dest)?.garrison?;
@@ -1951,10 +1967,15 @@ impl App {
         if form.mission == Mission::Station {
             lines.push(Line::styled("ships park at dest", t.muted()));
         }
-        if form.mission == Mission::Invade {
+        let requirements = match form.mission {
+            Mission::Invade => self.invasion_requirements(form),
+            Mission::Colonize => vec![self.colony_slot_requirement()],
+            _ => Vec::new(),
+        };
+        if !requirements.is_empty() {
             lines.push(Line::default());
             lines.push(section(t, "requires"));
-            for req in self.invasion_requirements(form) {
+            for req in requirements {
                 let (mark, intent) = if req.met {
                     ("✓", Intent::Success)
                 } else {
@@ -1965,7 +1986,9 @@ impl App {
                     Span::styled(req.text, if req.met { t.muted() } else { t.text() }),
                 ]));
             }
-            if let Some(preview) = self.invasion_troop_preview(form) {
+            if form.mission == Mission::Invade
+                && let Some(preview) = self.invasion_troop_preview(form)
+            {
                 lines.push(Line::styled(preview, t.text()));
             }
         }

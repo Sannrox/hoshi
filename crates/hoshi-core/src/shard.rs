@@ -3565,6 +3565,7 @@ mod tests {
         a.resources.deuterium = 10_000.0;
         a.resources.water_ice = 10_000.0;
         a.fleet.add(ShipKind::ColonyShip, 1);
+        a.tech_levels.insert("colonization".into(), 1);
         let mut empires = two_empires(a, tenant_b(1_000));
         place_sites(&mut shard);
         let refused = [

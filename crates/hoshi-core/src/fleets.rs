@@ -538,7 +538,10 @@ impl fmt::Display for FleetError {
                 write!(f, "spy mission needs an espionage probe")
             }
             FleetError::ColonyCap { used, cap } => {
-                write!(f, "colony cap reached ({used}/{cap})")
+                write!(
+                    f,
+                    "colony limit reached ({used}/{cap}); research Colonization to raise it"
+                )
             }
             FleetError::DestFull => write!(f, "destination storage is full"),
             FleetError::FrontierLocked { dest } => {

@@ -3671,6 +3671,10 @@ impl GameState {
         if fleet.get(ShipKind::ColonyShip) == 0 {
             return Err(FleetError::NeedColonyShip);
         }
+        let (used, cap) = (self.colony_slots_used(), self.colony_cap());
+        if used >= cap {
+            return Err(FleetError::ColonyCap { used, cap });
+        }
         let mut ships = Fleet::default();
         ships.add(ShipKind::ColonyShip, 1);
         Self::check_cargo(cargo)?;
@@ -4049,6 +4053,14 @@ impl GameState {
 
     pub fn colony_cap(&self) -> u32 {
         1 + self.modifier(ModifierKind::ColonySlots).floor().max(0.0) as u32
+    }
+
+    /// Worlds held plus colony ships still on their way to found one. A new
+    /// colonize send is refused once this reaches `colony_cap`, so two ships
+    /// cannot race for the last slot.
+    pub fn colony_slots_used(&self) -> u32 {
+        let flying = self.missions.iter().filter(|m| m.colonize).count() as u32;
+        1 + self.colonies.len() as u32 + flying
     }
 
     fn expedition_astro(&self) -> u32 {
@@ -5473,7 +5485,9 @@ impl GameState {
     }
 
     /// Found a colony at Action, or leave the mission to return.
-    fn try_colonize_at(&mut self, index: usize, _done_at: u64) -> bool {
+    /// Found a colony when `index` is a colonize mission that can. A
+    /// colonize mission that cannot logs why; the caller sends it home.
+    fn try_colonize_at(&mut self, index: usize, done_at: u64) -> bool {
         if !self.missions[index].colonize {
             return false;
         }
@@ -5489,10 +5503,24 @@ impl GameState {
             } else {
                 format!("colony ship found {dest} taken; returning")
             };
-            self.push_event(_done_at, text);
+            self.push_event(done_at, text);
             return false;
         }
-        if self.occupied(dest) || planets >= self.colony_cap() || no_ship {
+        let cap = self.colony_cap();
+        let refused = if self.occupied(dest) {
+            Some(format!("{dest} is occupied"))
+        } else if planets >= cap {
+            Some(FleetError::ColonyCap { used: planets, cap }.to_string())
+        } else if no_ship {
+            Some("no colony ship is left in the fleet".to_string())
+        } else {
+            None
+        };
+        if let Some(why) = refused {
+            self.push_event(
+                done_at,
+                format!("colony ship could not settle {dest}: {why}; returning"),
+            );
             return false;
         }
         let mission = self.missions.remove(index);
@@ -12698,7 +12726,7 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
     #[test]
     fn failed_colonize_returns_its_cargo() {
         let mut state = colony_ready(0);
-        assert_eq!(state.colony_cap(), 1);
+        state.tech_levels.insert("colonization".into(), 1);
         // No mine, so the only iron that comes back is the cargo.
         state.buildings.metal_mine = 0;
         state.resources.iron = 900.0;
@@ -12723,6 +12751,8 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
             )
             .unwrap();
         assert!((state.resources.iron - 300.0).abs() < 1e-6);
+        // The slot is gone by the time the ship arrives.
+        state.tech_levels.remove("colonization");
         let outbound = state.missions[0].outbound_secs;
         state.catch_up(outbound * 2);
         assert!(state.colonies.is_empty());
@@ -12730,37 +12760,83 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
         assert!((state.resources.iron - 900.0).abs() < 1e-6);
     }
 
+    /// #674: a send that can never found a colony is refused at launch and
+    /// names the research that raises the limit.
     #[test]
-    fn over_cap_or_occupied_returns_the_colony_ship() {
+    fn colonize_past_the_colony_limit_is_refused_at_launch() {
         let mut state = colony_ready(0);
         assert_eq!(state.colony_cap(), 1);
-        state
+        let before = state.resources;
+        let err = state
             .launch_colony(state.home, empty_slot(), Resources::ZERO, 100, 0)
-            .unwrap();
-        let outbound = state.missions[0].outbound_secs;
-        state.catch_up(outbound * 2);
-        assert!(state.colonies.is_empty());
-        assert_eq!(state.fleet.get(ShipKind::ColonyShip), 1);
+            .unwrap_err();
+        assert_eq!(err, FleetError::ColonyCap { used: 1, cap: 1 });
+        assert!(err.to_string().contains("research Colonization"), "{err}");
         assert!(state.missions.is_empty());
+        assert_eq!(state.resources, before);
 
+        // A colony ship in flight holds the last slot against a second one.
         state.tech_levels.insert("colonization".into(), 1);
-        let now = state.last_tick_unix;
-        state
-            .launch_colony(state.home, empty_slot(), Resources::ZERO, 100, now)
-            .unwrap();
-        let outbound = state.missions[0].outbound_secs;
-        state.catch_up(now + outbound * 2);
-        assert_eq!(state.colonies.len(), 1);
-        assert_eq!(state.fleet.get(ShipKind::ColonyShip), 0);
-
         state.fleet.add(ShipKind::ColonyShip, 1);
         state
             .launch_colony(state.home, empty_slot(), Resources::ZERO, 100, 0)
             .unwrap();
-        let outbound = state.missions[0].outbound_secs;
-        state.catch_up(state.last_tick_unix + outbound * 2);
-        assert_eq!(state.colonies.len(), 1);
-        assert_eq!(state.fleet.get(ShipKind::ColonyShip), 1);
+        let other = Coord {
+            position: 15,
+            ..empty_slot()
+        };
+        assert_eq!(
+            state.launch_colony(state.home, other, Resources::ZERO, 100, 0),
+            Err(FleetError::ColonyCap { used: 2, cap: 2 })
+        );
+    }
+
+    /// #674: a colony ship that arrives and cannot settle says why and
+    /// comes home.
+    #[test]
+    fn a_colony_ship_that_cannot_settle_logs_why() {
+        let settle = |prepare: fn(&mut GameState)| {
+            let mut state = colony_ready(0);
+            state.tech_levels.insert("colonization".into(), 2);
+            state
+                .launch_colony(state.home, empty_slot(), Resources::ZERO, 100, 0)
+                .unwrap();
+            prepare(&mut state);
+            let outbound = state.missions[0].outbound_secs;
+            state.catch_up(outbound * 2);
+            assert!(state.missions.is_empty());
+            state
+                .events
+                .iter()
+                .find(|e| e.text.starts_with("colony ship could not settle"))
+                .map(|e| e.text.clone())
+                .expect("settle refusal event")
+        };
+        let limit = settle(|state| {
+            state.tech_levels.remove("colonization");
+        });
+        assert!(limit.contains("colony limit reached (1/1)"), "{limit}");
+        let occupied = settle(|state| {
+            state.colonies.push(Colony {
+                coord: empty_slot(),
+                kind: PlanetType::Rocky,
+                size: 3,
+                resources: Resources::ZERO,
+                buildings: Buildings::default(),
+                fleet: Fleet::default(),
+                defences: crate::DefenceGrid::default(),
+                build_queue: Vec::new(),
+                ship_queue: Vec::new(),
+                rare: None,
+                goods: BTreeMap::new(),
+            });
+        });
+        assert!(occupied.contains("is occupied"), "{occupied}");
+        let no_ship = settle(|state| {
+            state.missions[0].ships = Fleet::default();
+            state.missions[0].ships.add(ShipKind::SmallCargo, 1);
+        });
+        assert!(no_ship.contains("no colony ship"), "{no_ship}");
     }
 
     #[test]
