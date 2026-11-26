@@ -55,8 +55,8 @@ hoshi --save PATH ship <planet> <ship-or-defence> [count]
 hoshi --save PATH trade <pay> <receive> <amount>
 hoshi --save PATH research <tech>
 hoshi --save PATH cancel <queue-item>
-hoshi --save PATH fleet send <from> <to> <mission> [<resource=amount...>] <ships...> [--dest-pays-return]
-hoshi --save PATH fleet deploy <from> <to> <hold_secs> <resource=amount...> <ships...>
+hoshi --save PATH fleet send <from> <to> <mission> [<resource=amount...>] <ships...> [--dest-pays-return] [--speed PERCENT]
+hoshi --save PATH fleet deploy <from> <to> <hold_secs> <resource=amount...> <ships...> [--speed PERCENT]
 hoshi --save PATH fleet route <from> <to> <interval_secs> <resource=amount...> <ships...> [--speed PERCENT] [--dest-pays-return]
 hoshi --save PATH fleet unroute <id>
 hoshi --save PATH tick --advance <dur>
