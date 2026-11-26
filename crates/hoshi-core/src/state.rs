@@ -5347,20 +5347,25 @@ impl GameState {
         if let Some(ledger) = &mut self.ledger {
             ledger.expeditions += 1;
         }
+        let (mission_id, dest) = (self.missions[index].id, self.missions[index].dest);
+        let note = |state: &mut Self, outcome: String| {
+            state.note_expedition(mission_id, dest, ships, done_at, outcome);
+        };
         match result {
             ExpeditionResult::Nothing => {
-                self.push_event(done_at, "expedition: nothing found".into());
+                note(self, "nothing found".into());
                 false
             }
             ExpeditionResult::Merchant => {
                 self.open_merchant_visit(done_at);
+                self.record_expedition(mission_id, dest, ships, done_at, "merchant visit");
                 false
             }
             ExpeditionResult::Resources(found) => {
                 self.settle_ledger(Term::Transfer);
                 self.credit_at(self.missions[index].origin, found);
                 self.settle_ledger(Term::Other);
-                self.push_event(done_at, format!("expedition: found {}", found.brief()));
+                note(self, format!("found {}", found.brief()));
                 false
             }
             ExpeditionResult::Ships(found) => {
@@ -5368,24 +5373,22 @@ impl GameState {
                     self.missions[index].ships.add(kind, found.get(kind));
                 }
                 let n = found.get(self.config.expedition.ship_kind);
-                self.push_event(
-                    done_at,
-                    format!("expedition: found {n} {}", self.config.expedition.ship_kind),
-                );
+                let kind = self.config.expedition.ship_kind;
+                note(self, format!("found {n} {kind}"));
                 false
             }
             ExpeditionResult::Delay { extra_secs } => {
                 self.missions[index].phase_ends_at = self.missions[index]
                     .phase_ends_at
                     .saturating_add(extra_secs);
-                self.push_event(done_at, format!("expedition: delayed {extra_secs}s"));
+                note(self, format!("delayed {extra_secs}s"));
                 false
             }
             ExpeditionResult::EarlyReturn => {
                 let ret = self.missions[index].outbound_secs;
                 self.missions[index].phase = MissionPhase::Return;
                 self.missions[index].phase_ends_at = done_at.saturating_add(ret);
-                self.push_event(done_at, "expedition: returning early".into());
+                note(self, "returning early".into());
                 false
             }
             ExpeditionResult::Pirates { enemy } => {
@@ -5399,12 +5402,9 @@ impl GameState {
                     .iter()
                     .map(|&k| self.missions[index].ships.get(k))
                     .sum();
-                self.push_event(
-                    done_at,
-                    format!(
-                        "expedition: pirates. {} rounds. survivors {survivors}",
-                        report.rounds
-                    ),
+                note(
+                    self,
+                    format!("pirates. {} rounds. survivors {survivors}", report.rounds),
                 );
                 if self.missions[index].ships.is_empty() {
                     self.missions.remove(index);
@@ -5419,15 +5419,52 @@ impl GameState {
                 let ret = self.missions[index].outbound_secs;
                 self.missions[index].phase = MissionPhase::Return;
                 self.missions[index].phase_ends_at = done_at.saturating_add(ret);
-                self.push_event(done_at, "expedition: god mode protected fleet".into());
+                note(self, "god mode protected fleet".into());
                 false
             }
             ExpeditionResult::Loss => {
-                self.push_event(done_at, "expedition: fleet lost".into());
+                note(self, "fleet lost".into());
                 self.missions.remove(index);
                 true
             }
         }
+    }
+
+    /// Log one expedition outcome: the event line and a `fleet` history
+    /// record linked to the launch by `mission:<id>`, so the outcome stays
+    /// findable after newer events push the line out.
+    fn note_expedition(
+        &mut self,
+        mission_id: u64,
+        dest: Coord,
+        ships: Fleet,
+        done_at: u64,
+        outcome: String,
+    ) {
+        self.push_event(done_at, format!("expedition: {outcome}"));
+        self.record_expedition(mission_id, dest, ships, done_at, &outcome);
+    }
+
+    fn record_expedition(
+        &mut self,
+        mission_id: u64,
+        dest: Coord,
+        ships: Fleet,
+        done_at: u64,
+        outcome: &str,
+    ) {
+        self.record_history(crate::HistoryDraft {
+            at: done_at,
+            kind: crate::HistoryKind::Fleet,
+            actor: "player".into(),
+            action: "expedition".into(),
+            objects: vec![dest.to_string()],
+            inputs: ships.label(),
+            outcome: outcome.into(),
+            cause_key: Some(format!("mission:{mission_id}")),
+            parent_key: Some(format!("mission:{mission_id}")),
+            ..crate::HistoryDraft::default()
+        });
     }
 
     /// Open a merchant visit at `at`, or push an open one's end out. A
@@ -14029,6 +14066,48 @@ modifiers = [{ kind = "colony_slots", per_level = 1.0 }]
         assert!(state.merchant.is_some());
         state.catch_up(until);
         assert_eq!(state.merchant, None);
+    }
+
+    /// #682: every outcome leaves a `fleet` history record under the launch's
+    /// `mission:<id>` cause, which outlives the 32-line event log.
+    #[test]
+    fn every_expedition_outcome_leaves_a_history_record() {
+        use crate::ExpeditionKind as K;
+        for kind in [
+            K::Nothing,
+            K::Merchant,
+            K::Resources,
+            K::Ships,
+            K::Delay,
+            K::EarlyReturn,
+            K::Pirates,
+            K::Loss,
+        ] {
+            let (mut state, at) = expedition_rolling(kind);
+            let (id, dest) = (state.missions[0].id, state.missions[0].dest);
+            state.catch_up(at);
+            for n in 0..40 {
+                state.push_event(at, format!("filler {n}"));
+            }
+            let cause = format!("mission:{id}");
+            let record = state
+                .history
+                .search(&crate::HistoryQuery::default())
+                .into_iter()
+                .find(|e| e.action == "expedition" && e.cause_key.as_deref() == Some(&cause))
+                .unwrap_or_else(|| panic!("{kind:?}: no expedition record"))
+                .clone();
+            assert_eq!(record.objects, vec![dest.to_string()], "{kind:?}");
+            assert_eq!(record.inputs, scout_fleet().label(), "{kind:?}");
+            assert!(!record.outcome.is_empty(), "{kind:?}");
+            let chain: Vec<_> = state
+                .history
+                .lineage(record.id)
+                .into_iter()
+                .map(|e| e.action.clone())
+                .collect();
+            assert_eq!(chain, ["launch", "expedition"], "{kind:?}");
+        }
     }
 
     #[test]
