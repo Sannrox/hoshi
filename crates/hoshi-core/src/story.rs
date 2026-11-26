@@ -79,6 +79,7 @@ pub struct StoryChoice {
     pub label: String,
     pub iron: f64,
     pub silicon: f64,
+    pub water_ice: f64,
     pub deuterium: f64,
     pub ships: Vec<(ShipKind, i32)>,
     pub schedule_raid: bool,
@@ -349,6 +350,8 @@ struct FileChoice {
     #[serde(default, alias = "crystal")]
     silicon: f64,
     #[serde(default)]
+    water_ice: f64,
+    #[serde(default)]
     deuterium: f64,
     #[serde(default)]
     ships: BTreeMap<String, i32>,
@@ -403,6 +406,7 @@ impl FileEvent {
                 label: raw.label,
                 iron: raw.iron,
                 silicon: raw.silicon,
+                water_ice: raw.water_ice,
                 deuterium: raw.deuterium,
                 ships,
                 schedule_raid: raw.schedule_raid,

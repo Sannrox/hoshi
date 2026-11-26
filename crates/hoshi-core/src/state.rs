@@ -7776,6 +7776,7 @@ impl GameState {
         let title = event.title.clone();
         self.resources.iron = (self.resources.iron + choice.iron).max(0.0);
         self.resources.silicon = (self.resources.silicon + choice.silicon).max(0.0);
+        self.resources.water_ice = (self.resources.water_ice + choice.water_ice).max(0.0);
         self.resources.deuterium = (self.resources.deuterium + choice.deuterium).max(0.0);
         for (kind, delta) in choice.ships {
             if delta >= 0 {
@@ -16628,6 +16629,20 @@ label = "Pass"
             "{:?}",
             state.events
         );
+    }
+
+    #[test]
+    fn scooping_comet_ice_pays_water_ice() {
+        let mut state = GameState::new(0);
+        state.story_pending = Some(crate::PendingStory {
+            event_id: "comet_ice".into(),
+            offered_at: 0,
+            timeout_at: 86_400,
+        });
+        let before = state.resources;
+        state.choose_story("scoop", 0).unwrap();
+        close(state.resources.water_ice, before.water_ice + 220.0);
+        close(state.resources.silicon, before.silicon);
     }
 
     #[test]
