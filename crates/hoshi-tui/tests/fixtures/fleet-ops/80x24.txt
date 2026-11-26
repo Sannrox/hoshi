@@ -1,0 +1,24 @@
+ ◆ HOSHI  │  Fleet / Ops                                           Home (1:1:1)
+  Fe       │ Si       │ D        │ REE      │ H2O      │ He3      │ Energy
+  9.7k     │ 6.0k     │ 100k     │ 0        │ 100k     │ 0        │ +2
+  +33/h    │ +22/h    │ 0/h      │ +3/h     │ 0/h      │ 0/h      │ heat 22/80
+────────────────────────────────────────────────────────────────────────────────
+ ▦ Fleet   Home (1:1:1) · ship queue 0                                    ✕ esc
+  Shipyard   Star map   Ops   Intel
+ ───────────────────────━━━────────────────────────────────────────────────────
+
+ VEHICLES 0   MISSIONS 0   ALERTS 0   ROUTES 2
+
+  ITEM         DETAIL                                     STATE
+  ROUTES
+ ▌route 0      1:1:1 → 1:1:2  every 2d 00h  Fe132 Si0 D0  next 2d 00h   BEHIND
+  route 1      1:1:1 → 1:1:2  every 2d 00h  Fe0 Si100 D0  next 1d 00h
+
+
+
+
+
+
+  route 0: Fe full at 1:1:1 in 10h 00m; every 4h 00m keeps up
+
+      j/k  select   enter  plan   +  register          0000-0000-0000-00 gen 1

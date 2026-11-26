@@ -3568,6 +3568,40 @@ impl GameState {
         )
     }
 
+    /// Cargo goods `route`'s origin will fill to its storage cap before the
+    /// route's next launch at the current rate, each with the interval that
+    /// would keep up. Advice only: the route keeps its interval. Empty when
+    /// the route keeps up. Read by `state` routes and the Fleet / Ops list.
+    pub fn route_behind(&self, route: &crate::TradeRoute, now: u64) -> Vec<crate::RouteBehind> {
+        let stock = self
+            .resources_at(route.origin)
+            .copied()
+            .unwrap_or(Resources::ZERO);
+        let until_launch = route.next_at.saturating_sub(now);
+        ResourceKind::ALL
+            .into_iter()
+            .filter_map(|good| {
+                let load = route.cargo.get(good);
+                let rate = self.production_per_hour_at(route.origin, good)?;
+                if load <= 1e-9 || rate <= 1e-9 {
+                    return None;
+                }
+                let room = (self.storage_cap_at(route.origin, good) - stock.get(good)).max(0.0);
+                let full_in_secs = (room / rate * 3_600.0) as u64;
+                if full_in_secs >= until_launch {
+                    return None;
+                }
+                let carries = (load / rate * 3_600.0) as u64;
+                Some(crate::RouteBehind {
+                    good,
+                    rate_per_hour: rate,
+                    full_in_secs,
+                    keeps_up_interval_secs: carries.min(route.interval_secs),
+                })
+            })
+            .collect()
+    }
+
     /// [`Self::schedule_route`] with an explicit send speed (10 to 100
     /// percent) and return-leg payer, both kept across relaunches and a
     /// reload.
@@ -15096,6 +15130,42 @@ modifiers = [{ kind = "logistics", per_level = 1.0 }]
             state.cancel_route(0),
             Err(FleetError::UnknownRoute { id: 0 })
         );
+    }
+
+    #[test]
+    fn a_route_whose_origin_fills_before_launch_names_the_interval_that_keeps_up() {
+        let mut state = GameState::with_config(0, logistics_config());
+        plant_colony(&mut state, neighbor());
+        let rate = state.production_per_hour(ResourceKind::Iron);
+        assert!(rate > 0.0);
+        let cap = state.storage_cap_at(state.home, ResourceKind::Iron);
+        // Ten hours of room, a launch in thirty days.
+        state.resources.iron = cap - 10.0 * rate;
+        let mut route = crate::TradeRoute {
+            id: 0,
+            origin: state.home,
+            dest: neighbor(),
+            ships: cargo_fleet(),
+            cargo: Resources::from_parts(rate * 2.0, 0.0, 0.0),
+            speed_percent: 100,
+            interval_secs: 30 * 86_400,
+            next_at: 30 * 86_400,
+            return_payer: crate::ReturnPayer::Origin,
+        };
+        let behind = state.route_behind(&route, 0);
+        assert_eq!(behind.len(), 1, "{behind:?}");
+        assert_eq!(behind[0].good, ResourceKind::Iron);
+        assert!(
+            (behind[0].full_in_secs as i64 - 36_000).abs() <= 1,
+            "{behind:?}"
+        );
+        assert!(
+            (behind[0].keeps_up_interval_secs as i64 - 7_200).abs() <= 1,
+            "{behind:?}"
+        );
+        // A launch before the cap keeps up: nothing new.
+        route.next_at = 3_600;
+        assert!(state.route_behind(&route, 0).is_empty());
     }
 
     #[test]

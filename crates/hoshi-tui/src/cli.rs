@@ -3319,6 +3319,16 @@ fn state_value_for(
                 "next_at": r.next_at,
                 "cargo": resources_json(r.cargo),
                 "return_payer": r.return_payer.as_key(),
+                "behind": state
+                    .route_behind(r, state.last_tick_unix)
+                    .iter()
+                    .map(|b| json!({
+                        "good": b.good.as_key(),
+                        "rate_per_hour": b.rate_per_hour,
+                        "full_in_secs": b.full_in_secs,
+                        "keeps_up_interval_secs": b.keeps_up_interval_secs,
+                    }))
+                    .collect::<Vec<_>>(),
             }))
             .collect::<Vec<_>>()
     );
@@ -7027,6 +7037,8 @@ mod tests {
         assert_eq!(route["interval_secs"], 3600);
         assert_eq!(route["speed_percent"], 10);
         assert_eq!(route["cargo"]["iron"], 100.0);
+        // Home has room for far more than an hour of iron: it keeps up.
+        assert_eq!(route["behind"], json!([]));
         let id = route["id"].as_u64().unwrap().to_string();
         let (gone, exit) = run_on(&save, &["fleet", "unroute", &id]);
         assert_eq!(exit, EXIT_OK, "{gone}");
@@ -7034,6 +7046,35 @@ mod tests {
         let (bad, exit) = run_on(&save, &["fleet", "unroute", &id]);
         assert_ne!(exit, EXIT_OK, "{bad}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #687: a route whose origin caps out before launch names the good.
+    #[test]
+    fn state_routes_name_a_good_the_origin_caps_out_on() {
+        let mut state = GameState::new(0);
+        let rate = state.production_per_hour(hoshi_core::ResourceKind::Iron);
+        state.resources.iron =
+            state.storage_cap_at(state.home, hoshi_core::ResourceKind::Iron) - rate;
+        state.routes.push(hoshi_core::TradeRoute {
+            id: 0,
+            origin: state.home,
+            dest: hoshi_core::Coord {
+                galaxy: 1,
+                system: 1,
+                position: 2,
+            },
+            ships: Fleet::default(),
+            cargo: hoshi_core::Resources::from_parts(rate * 3.0, 0.0, 0.0),
+            speed_percent: 100,
+            interval_secs: 86_400,
+            next_at: 86_400,
+            return_payer: hoshi_core::ReturnPayer::Origin,
+        });
+        let value = state_value(&state, Actor::Player);
+        let behind = &value["routes"][0]["behind"][0];
+        assert_eq!(behind["good"], "iron", "{value}");
+        assert_eq!(behind["full_in_secs"], 3_600, "{value}");
+        assert_eq!(behind["keeps_up_interval_secs"], 10_800, "{value}");
     }
 
     #[test]
