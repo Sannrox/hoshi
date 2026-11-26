@@ -93,7 +93,7 @@
     },
     {
       "at": 333,
-      "text": "expedition: found Fe1068 Si534 D213"
+      "text": "expedition: found Fe1068 Si534 D213, loaded Fe250 Si0 D0; Fe818 Si534 D213 left behind"
     },
     {
       "at": 333,
@@ -125,7 +125,7 @@
     }
   ],
   "finance": {
-    "cash": 811.3282151978684,
+    "cash": 811.3282151978688,
     "debt": 0.0,
     "pending": 0
   },
@@ -295,9 +295,9 @@
       "resources": {
         "deuterium": 10000.0,
         "helium_3": 0.0,
-        "iron": 2018.5752899999993,
+        "iron": 1200.5752899999998,
         "rare_earths": 54.762892153699454,
-        "silicon": 1337.71686,
+        "silicon": 803.71686,
         "water_ice": 10000.0
       },
       "ship_queue": []
@@ -319,9 +319,9 @@
   "rates": {
     "deuterium": 0.0,
     "helium_3": 0.0,
-    "iron": 32.922779999999875,
+    "iron": 32.9227800000001,
     "rare_earths": 2.4770939320804786,
-    "silicon": 21.948519999999917,
+    "silicon": 21.94852000000003,
     "water_ice": 0.0
   },
   "research": {
@@ -369,9 +369,9 @@
   "resources": {
     "deuterium": 10000.0,
     "helium_3": 0.0,
-    "iron": 2018.5752899999993,
+    "iron": 1200.5752899999998,
     "rare_earths": 54.762892153699454,
-    "silicon": 1337.71686,
+    "silicon": 803.71686,
     "water_ice": 10000.0
   },
   "rivals": {
