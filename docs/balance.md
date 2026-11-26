@@ -107,7 +107,7 @@ scale later rebuilds with the player's fighter-equivalent fleet. `rebuild_secs` 
 catch-up interval. `variance` is the ground-combat spread (`0` is an exact
 comparison). `troop_strength` is the landing power of one troop transport.
 `[[outposts.rare]]` rows are the rare-planet bonuses shown on the planet screen.
-`shipyard_speed` speeds every planet's shipyard: the best bonus on any owned planet applies to each queue.
+`shipyard_speed` speeds every planet's shipyard: the best bonus on any owned planet applies to each queue, on top of that yard's level factor.
 
 ## Orbits
 
@@ -317,6 +317,12 @@ Research speed multiplies a home lab factor, `1 + research_lab_speed_per_level *
 `research_lab_speed_per_level` (in `[queues]`) is 0.05, so lab 1 is raw time and
 lab 11 is ×1.5. Colony labs add research slots, not speed. A home lab that
 finishes or is dismantled rescales running research at that moment.
+
+Each planet's yard builds ships and defences at `1 + shipyard_speed_per_level *
+(shipyard - 1)` times raw speed, using that planet's own shipyard level. Bundled
+`shipyard_speed_per_level` (in `[queues]`) is 0.1, so yard 1 is raw time, yard 7
+is ×1.6 and yard 11 is ×2. It multiplies the rare `shipyard_speed` bonus. The unit
+in progress keeps its timer; the next unit uses the new level.
 
 ## Dismantling
 

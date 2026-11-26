@@ -442,6 +442,7 @@ impl App {
             ),
             ("fleet", compact(parked_attack(&self.state, coord))),
             ("def", compact(parked_defence(&self.state, coord))),
+            ("speed", format!("×{:.2}", self.state.yard_speed_at(coord))),
         ])];
         if let Some((cost, secs)) = self.shipyard_batch(self.ship_batch) {
             head.push(Line::from(vec![
@@ -479,7 +480,10 @@ impl App {
                 Line::styled(fleet.get(kind).to_string(), base),
             ];
             row.extend(self.cost_cells(cost, stock, base));
-            row.push(Line::styled(duration(spec.duration_secs()), base));
+            row.push(Line::styled(
+                duration(self.state.ship_time_secs(coord, kind)),
+                base,
+            ));
             row.push(Line::styled(
                 format!("{:.0}", self.state.ship_stats(kind).attack),
                 base,
@@ -497,7 +501,10 @@ impl App {
                 Line::styled(defences.get(kind).to_string(), base),
             ];
             row.extend(self.cost_cells(cost, stock, base));
-            row.push(Line::styled(duration(spec.duration_secs()), base));
+            row.push(Line::styled(
+                duration(self.state.defence_time_secs(coord, kind)),
+                base,
+            ));
             row.push(Line::styled(format!("{:.0}", spec.attack), base));
             row.push(self.status_chip(reason.as_deref()));
             rows.push(row);
