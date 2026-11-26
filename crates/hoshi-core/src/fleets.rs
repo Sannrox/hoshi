@@ -333,6 +333,19 @@ pub struct TradeRoute {
     pub return_payer: ReturnPayer,
 }
 
+/// One cargo good a route's origin will cap out on before the next launch:
+/// production there outruns what the route hauls away.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RouteBehind {
+    pub good: crate::state::ResourceKind,
+    /// The origin's current net rate of `good`.
+    pub rate_per_hour: f64,
+    /// Seconds from now until the origin's stock of `good` hits its cap.
+    pub full_in_secs: u64,
+    /// The interval whose load of `good` matches `rate_per_hour`.
+    pub keeps_up_interval_secs: u64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum FleetError {
     EmptyFleet,

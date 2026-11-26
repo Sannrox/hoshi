@@ -8793,6 +8793,44 @@ mod tests {
     }
 
     #[test]
+    fn ops_marks_a_route_its_origin_outgrows_and_names_the_interval() {
+        let (mut app, dest) = app_with_new_colony();
+        let rate = app.state.production_per_hour(ResourceKind::Iron);
+        let cap = app.state.storage_cap_at(app.state.home, ResourceKind::Iron);
+        // Ten hours of room before the iron cap, a launch in two days.
+        app.state.resources.iron = cap - 10.0 * rate;
+        let mut ships = Fleet::default();
+        ships.add(ShipKind::SmallCargo, 1);
+        let route = |id, cargo: Resources, next_at| hoshi_core::TradeRoute {
+            id,
+            origin: app.state.home,
+            dest,
+            ships,
+            cargo,
+            speed_percent: 100,
+            interval_secs: 2 * 86_400,
+            next_at,
+            return_payer: hoshi_core::ReturnPayer::Origin,
+        };
+        let behind = route(
+            0,
+            Resources::from_parts(4.0 * rate, 0.0, 0.0),
+            1_000 + 2 * 86_400,
+        );
+        // Silicon is not near its cap: this route keeps up.
+        let keeps_up = route(1, Resources::from_parts(0.0, 100.0, 0.0), 1_000 + 86_400);
+        app.state.routes = vec![behind, keeps_up];
+        app.open(Screen::Ops);
+        let text = render_text(&app, 80, 24);
+        assert_eq!(
+            text,
+            include_str!("../tests/fixtures/fleet-ops/80x24.txt"),
+            "{text}"
+        );
+        assert_eq!(text.matches("BEHIND").count(), 1, "{text}");
+    }
+
+    #[test]
     fn ops_registers_a_vehicle_and_plans_a_delivery_without_the_cli() {
         let mut state = GameState::new(1_000);
         state.fleet.add(ShipKind::SmallCargo, 1);

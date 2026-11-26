@@ -144,7 +144,7 @@ pub use finance::{
 };
 pub use fleets::{
     Coord, FleetError, FlightConfig, Haul, LaunchFuel, Mission, MissionPhase, ReturnPayer,
-    TradeRoute, distance, flight_secs,
+    RouteBehind, TradeRoute, distance, flight_secs,
 };
 pub use frontier::{
     FrontierBoard, FrontierConfig, FrontierError, FrontierGlance, FrontierSignal, FrontierWorld,

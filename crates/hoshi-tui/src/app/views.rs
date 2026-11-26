@@ -2797,11 +2797,34 @@ impl App {
             ]);
         }
         groups.push((rows.len(), "routes".into()));
+        // A route its origin outgrows: BEHIND in the row, the advice below.
+        let mut foot = Vec::new();
         for route in &self.state.routes {
+            let behind = self.state.route_behind(route, now);
+            for b in &behind {
+                foot.push(Line::styled(
+                    format!(
+                        " route {}: {} full at {} in {}; every {} keeps up",
+                        route.id,
+                        b.good.abbr(),
+                        route.origin,
+                        duration(b.full_in_secs),
+                        duration(b.keeps_up_interval_secs)
+                    ),
+                    t.intent(Intent::Warning),
+                ));
+            }
             let state = match self.route_last_skip(route.id) {
                 Some(reason) => {
                     Line::styled(format!("last skip: {reason}"), t.intent(Intent::Danger))
                 }
+                None if !behind.is_empty() => Line::from(vec![
+                    Span::styled(
+                        format!("next {}  ", duration(route.next_at.saturating_sub(now))),
+                        t.text(),
+                    ),
+                    tag(t, "BEHIND", Intent::Warning, false),
+                ]),
                 None => Line::styled(
                     format!("next {}", duration(route.next_at.saturating_sub(now))),
                     t.text(),
@@ -2840,6 +2863,7 @@ impl App {
                 groups,
                 selected: Some(self.selected),
             }),
+            foot,
             ..ListView::default()
         }
     }

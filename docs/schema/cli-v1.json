@@ -56,7 +56,7 @@
       "description": "Home planet defence counts and dome/station levels."
     },
     "missions": { "type": "array" },
-    "routes": { "type": "array", "description": "Repeating transports (fleet route): id, origin, dest, interval_secs, speed_percent (10 to 100), next_at, cargo and return_payer (origin or destination)." },
+    "routes": { "type": "array", "description": "Repeating transports (fleet route): id, origin, dest, interval_secs, speed_percent (10 to 100), next_at, cargo, return_payer (origin or destination) and behind: one entry per cargo good the origin will fill to its storage cap before next_at at its current rate, with good, rate_per_hour, full_in_secs and keeps_up_interval_secs (the interval whose load matches that rate); empty when the route keeps up. Additive." },
     "fuel_out_payer": { "type": "string", "description": "Who paid the outbound launch bill. Always origin. Additive on a launch reply." },
     "fuel_back_payer": { "type": "string", "description": "Who paid the return launch bill: origin or destination. Additive on a launch reply." },
     "fuel_out_water_ice": { "type": "number", "description": "Outbound water ice billed at launch. Additive on a launch reply." },
