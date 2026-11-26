@@ -10529,6 +10529,37 @@ mod tests {
         assert!(app.state.missions[0].invade, "{}", app.status);
     }
 
+    /// #674: the dispatch form shows the colony limit before launch, and
+    /// launch refuses with the same reason.
+    #[test]
+    fn colonize_dispatch_shows_the_full_colony_limit_before_launch() {
+        let mut state = GameState::new(1_000);
+        state.fleet.add(ShipKind::ColonyShip, 1);
+        state.resources.water_ice = 1e9;
+        assert_eq!(state.colony_cap(), 1);
+        let dest = Coord {
+            galaxy: 1,
+            system: 1,
+            position: 14,
+        };
+        let mut app = App::new(state);
+        open_dispatch(&mut app, dest, ShipKind::ColonyShip, 1);
+        assert_eq!(app.dispatch.unwrap().mission, Mission::Colonize);
+        let overlay = render_text(&app, 100, 40);
+        assert!(
+            overlay.contains("✗ free colony slot (1/1): research Colonization"),
+            "{overlay}"
+        );
+
+        app.handle_key(KeyCode::Enter, 1_000);
+        assert!(app.state.missions.is_empty());
+        assert!(
+            app.status.contains("colony limit reached"),
+            "{}",
+            app.status
+        );
+    }
+
     #[test]
     fn dispatch_with_a_colony_selected_launches_from_the_colony() {
         let dest = Coord {
